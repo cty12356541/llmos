@@ -715,9 +715,9 @@ impl Error for QuotaLeaseLedgerError {}
 
 /// `CapacityLease` state for the single-Cell prefix.
 ///
-/// Spec chain used here: `GLOBAL_RESERVED → TARGET_PREPARED` and
-/// `GLOBAL_RESERVED`/`TARGET_PREPARED → RETURNING → RETURNED`.
-/// `ACTIVE` / reclaim stay out of this slice.
+/// Spec chain used here: `GLOBAL_RESERVED → TARGET_PREPARED → ACTIVE` (host
+/// attach receipt) and `GLOBAL_RESERVED`/`TARGET_PREPARED`/`ACTIVE →
+/// RETURNING → RETURNED`. Reclaim stays out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CapacityLeaseState {
     /// Issued after durable (here: in-memory) `amount` deduct from the source
@@ -725,7 +725,10 @@ pub enum CapacityLeaseState {
     GlobalReserved,
     /// Pre-active prepare. Source pool is unchanged (`TARGET_PREPARED`).
     TargetPrepared,
-    /// Pre-active return started. Source pool is unchanged (`RETURNING`).
+    /// Host attach receipt accepted; the capacity is in host hands
+    /// (`ACTIVE`). Source pool is unchanged.
+    Active,
+    /// Return started. Source pool is unchanged (`RETURNING`).
     Returning,
     /// Source authority accepted the return. `amount` is back in the pool
     /// (`RETURNED`).
@@ -799,13 +802,15 @@ impl CapacityLeaseGrant {
 
 /// In-memory single-Cell `CapacityLease` grantor.
 ///
-/// Holds the source capacity pool remaining and the Cell authority used for
-/// fence admit. Not a durable ledger and not a second authority store.
+/// Holds the source capacity pool remaining, the committed lease records
+/// with their host attach receipts, and the Cell authority used for fence
+/// admit. Not a durable ledger and not a second authority store.
 #[derive(Debug)]
 pub struct CapacityLeaseGrantor {
     authority: CellAuthority,
     pool_remaining: u64,
     leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
+    attach_receipts: HashMap<CapacityLeaseId, HostAttachReceipt>,
 }
 
 impl CapacityLeaseGrantor {
@@ -817,6 +822,7 @@ impl CapacityLeaseGrantor {
             authority,
             pool_remaining,
             leases: HashMap::new(),
+            attach_receipts: HashMap::new(),
         }
     }
 
@@ -914,8 +920,76 @@ impl CapacityLeaseGrantor {
         }
     }
 
-    /// `GLOBAL_RESERVED` or `TARGET_PREPARED` → `RETURNING`. Does not refund
-    /// the source pool.
+    /// `TARGET_PREPARED → ACTIVE`: accepts the host attach receipt.
+    ///
+    /// The receipt id is the idempotency key: replaying the identical
+    /// committed receipt returns the committed lease. Any other receipt for
+    /// the same lease is a typed conflict. Every receipt axis must bind the
+    /// committed lease (target node, boot generation, capacity epoch,
+    /// fencing token, and the full `amount`). The accepted receipt is stored
+    /// once per lease and never rewritten. The source pool is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`CapacityLeaseReturnError`].
+    pub fn activate(
+        &mut self,
+        presented: &CellFence,
+        receipt: HostAttachReceipt,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.authority.admit(presented)?;
+        let lease = self
+            .leases
+            .get(&receipt.capacity_lease_id)
+            .copied()
+            .ok_or(CapacityLeaseReturnError::UnknownLease)?;
+        match lease.state {
+            CapacityLeaseState::TargetPrepared => {
+                if !attach_receipt_binds_lease(&receipt, &lease) {
+                    return Err(CapacityLeaseReturnError::AttachReceiptMismatch { receipt });
+                }
+                let committed = CapacityLeaseGrant {
+                    state: CapacityLeaseState::Active,
+                    ..lease
+                };
+                self.leases.insert(receipt.capacity_lease_id, committed);
+                self.attach_receipts
+                    .insert(receipt.capacity_lease_id, receipt);
+                Ok(committed)
+            }
+            CapacityLeaseState::Active => {
+                let existing = self
+                    .attach_receipts
+                    .get(&receipt.capacity_lease_id)
+                    .copied()
+                    .ok_or(CapacityLeaseReturnError::UnknownLease)?;
+                if existing == receipt {
+                    return Ok(lease);
+                }
+                Err(CapacityLeaseReturnError::ConflictingAttachReceipt {
+                    existing: existing.receipt_id,
+                    requested: receipt.receipt_id,
+                })
+            }
+            state => Err(CapacityLeaseReturnError::AttachRequiresTargetPrepared { state }),
+        }
+    }
+
+    /// Committed host attach receipt for `capacity_lease_id`, when the lease
+    /// has reached `ACTIVE`.
+    #[must_use]
+    pub fn attach_receipt(&self, capacity_lease_id: CapacityLeaseId) -> Option<HostAttachReceipt> {
+        self.attach_receipts.get(&capacity_lease_id).copied()
+    }
+
+    /// `GLOBAL_RESERVED`, `TARGET_PREPARED`, or `ACTIVE` → `RETURNING`. Does
+    /// not refund the source pool.
+    ///
+    /// Symmetric return semantics: an `ACTIVE` lease returns through the same
+    /// `RETURNING → RETURNED` edge as a pre-active one. Capacity is returned
+    /// whole, not consumed — this family has no usage accounting, so
+    /// `RETURNED` refunds the full `amount` whether the lease passed through
+    /// `ACTIVE` or not.
     ///
     /// # Errors
     ///
@@ -928,7 +1002,9 @@ impl CapacityLeaseGrantor {
         self.authority.admit(presented)?;
         let lease = self.lease_mut(capacity_lease_id)?;
         match lease.state {
-            CapacityLeaseState::GlobalReserved | CapacityLeaseState::TargetPrepared => {
+            CapacityLeaseState::GlobalReserved
+            | CapacityLeaseState::TargetPrepared
+            | CapacityLeaseState::Active => {
                 lease.state = CapacityLeaseState::Returning;
                 Ok(*lease)
             }
@@ -939,7 +1015,8 @@ impl CapacityLeaseGrantor {
         }
     }
 
-    /// `RETURNING → RETURNED`. Refunds `amount` to the source pool once.
+    /// `RETURNING → RETURNED`. Refunds `amount` to the source pool once,
+    /// whether the lease was returned pre-active or from `ACTIVE`.
     ///
     /// # Errors
     ///
@@ -959,7 +1036,8 @@ impl CapacityLeaseGrantor {
                 }
                 CapacityLeaseState::Returned => (*lease, 0),
                 state @ (CapacityLeaseState::GlobalReserved
-                | CapacityLeaseState::TargetPrepared) => {
+                | CapacityLeaseState::TargetPrepared
+                | CapacityLeaseState::Active) => {
                     return Err(CapacityLeaseReturnError::NotReturning { state });
                 }
             }
@@ -975,6 +1053,109 @@ impl CapacityLeaseGrantor {
         self.leases
             .get_mut(&capacity_lease_id)
             .ok_or(CapacityLeaseReturnError::UnknownLease)
+    }
+}
+
+fn attach_receipt_binds_lease(receipt: &HostAttachReceipt, lease: &CapacityLeaseGrant) -> bool {
+    receipt.capacity_lease_id == lease.capacity_lease_id
+        && receipt.target_node == lease.target_node
+        && receipt.target_node_boot_generation == lease.target_node_boot_generation
+        && receipt.capacity_epoch == lease.capacity_epoch
+        && receipt.fencing_token == lease.fencing_token
+        && receipt.attached_amount == lease.amount
+}
+
+/// Immutable host attach receipt that moves a prepared capacity lease into
+/// `ACTIVE` (`TARGET_PREPARED → ACTIVE`).
+///
+/// The target host builds this receipt once the reserved capacity is
+/// attached and submits it to the grantor. `receipt_id` is the idempotency
+/// key: replaying the identical committed receipt returns the committed
+/// lease, while any other receipt for the same lease is a typed conflict.
+/// `attached_amount` must repeat the full lease `amount` — a partial attach
+/// is fail-closed. An accepted receipt is stored once per lease and never
+/// rewritten.
+///
+/// Like [`CellFence::present`], the constructor takes every axis
+/// explicitly: this is a host-side attestation the grantor validates, not a
+/// value the grantor mints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostAttachReceipt {
+    receipt_id: ReceiptId,
+    capacity_lease_id: CapacityLeaseId,
+    target_node: CellIdentity,
+    target_node_boot_generation: Generation,
+    capacity_epoch: CellEpoch,
+    fencing_token: CellFencingToken,
+    attached_amount: u64,
+}
+
+impl HostAttachReceipt {
+    /// Builds the receipt for `capacity_lease_id` under an idempotency key.
+    ///
+    /// Every axis must repeat the fence the lease was issued under; the
+    /// grantor fail-closes on any drift.
+    #[must_use]
+    pub const fn new(
+        receipt_id: ReceiptId,
+        capacity_lease_id: CapacityLeaseId,
+        target_node: CellIdentity,
+        target_node_boot_generation: Generation,
+        capacity_epoch: CellEpoch,
+        fencing_token: CellFencingToken,
+        attached_amount: u64,
+    ) -> Self {
+        Self {
+            receipt_id,
+            capacity_lease_id,
+            target_node,
+            target_node_boot_generation,
+            capacity_epoch,
+            fencing_token,
+            attached_amount,
+        }
+    }
+
+    /// Idempotency key of this receipt.
+    #[must_use]
+    pub const fn receipt_id(self) -> ReceiptId {
+        self.receipt_id
+    }
+
+    /// Capacity lease this receipt attaches.
+    #[must_use]
+    pub const fn capacity_lease_id(self) -> CapacityLeaseId {
+        self.capacity_lease_id
+    }
+
+    /// Target host Cell on the receipt.
+    #[must_use]
+    pub const fn target_node(self) -> CellIdentity {
+        self.target_node
+    }
+
+    /// Target node boot generation on the receipt.
+    #[must_use]
+    pub const fn target_node_boot_generation(self) -> Generation {
+        self.target_node_boot_generation
+    }
+
+    /// Capacity epoch on the receipt.
+    #[must_use]
+    pub const fn capacity_epoch(self) -> CellEpoch {
+        self.capacity_epoch
+    }
+
+    /// Fencing token on the receipt.
+    #[must_use]
+    pub const fn fencing_token(self) -> CellFencingToken {
+        self.fencing_token
+    }
+
+    /// Attached capacity amount on the receipt.
+    #[must_use]
+    pub const fn attached_amount(self) -> u64 {
+        self.attached_amount
     }
 }
 
@@ -1105,7 +1286,7 @@ impl fmt::Display for CapacityLeaseGrantError {
 
 impl Error for CapacityLeaseGrantError {}
 
-/// Typed fail-closed rejects for `CapacityLease` pre-active return.
+/// Typed fail-closed rejects for `CapacityLease` prepare, attach, and return.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapacityLeaseReturnError {
     /// Presented fence was rejected by [`CellAuthority::admit`].
@@ -1113,7 +1294,7 @@ pub enum CapacityLeaseReturnError {
     /// No capacity lease with this id has been issued.
     UnknownLease,
     /// Return was asked of a lease that is neither `GLOBAL_RESERVED`,
-    /// `TARGET_PREPARED`, nor `RETURNING`.
+    /// `TARGET_PREPARED`, `ACTIVE`, nor `RETURNING`.
     NotReserved {
         /// State of the committed lease.
         state: CapacityLeaseState,
@@ -1130,6 +1311,26 @@ pub enum CapacityLeaseReturnError {
         /// State of the committed lease.
         state: CapacityLeaseState,
     },
+    /// Attach receipt was submitted for a lease that is neither
+    /// `TARGET_PREPARED` nor `ACTIVE`.
+    AttachRequiresTargetPrepared {
+        /// State of the committed lease.
+        state: CapacityLeaseState,
+    },
+    /// Attach receipt does not bind the committed lease on the target node,
+    /// boot, epoch, token, or full-`amount` axis. Compare the receipt against
+    /// [`CapacityLeaseGrantor::query`] to find the drifting axis.
+    AttachReceiptMismatch {
+        /// Receipt as submitted.
+        receipt: HostAttachReceipt,
+    },
+    /// A different attach receipt is already committed for this lease.
+    ConflictingAttachReceipt {
+        /// Idempotency key already committed.
+        existing: ReceiptId,
+        /// Idempotency key on this attempt.
+        requested: ReceiptId,
+    },
 }
 
 impl From<CellAdmitError> for CapacityLeaseReturnError {
@@ -1145,7 +1346,7 @@ impl fmt::Display for CapacityLeaseReturnError {
             Self::UnknownLease => write!(formatter, "unknown CapacityLease"),
             Self::NotReserved { state } => write!(
                 formatter,
-                "CapacityLease return requires GLOBAL_RESERVED or TARGET_PREPARED, found {state:?}"
+                "CapacityLease return requires GLOBAL_RESERVED, TARGET_PREPARED, or ACTIVE, found {state:?}"
             ),
             Self::NotGlobalReserved { state } => write!(
                 formatter,
@@ -1154,6 +1355,21 @@ impl fmt::Display for CapacityLeaseReturnError {
             Self::NotReturning { state } => write!(
                 formatter,
                 "CapacityLease return ACK requires RETURNING, found {state:?}"
+            ),
+            Self::AttachRequiresTargetPrepared { state } => write!(
+                formatter,
+                "CapacityLease attach requires TARGET_PREPARED, found {state:?}"
+            ),
+            Self::AttachReceiptMismatch { receipt } => write!(
+                formatter,
+                "CapacityLease attach receipt does not bind the committed lease: {receipt:?}"
+            ),
+            Self::ConflictingAttachReceipt {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "CapacityLease attach receipt conflict: committed {existing:?} != requested {requested:?}"
             ),
         }
     }
