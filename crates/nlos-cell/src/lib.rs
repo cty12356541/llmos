@@ -11,6 +11,8 @@
 //! does not implement the Cell-local seven-piece set, product IPC, consensus,
 //! or Raft.
 
+mod failure_detector;
+
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -19,6 +21,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nlos_types::{Generation, SchedulerDomainId};
+
+pub use failure_detector::{
+    DeadJudgment, EpochAdvanceReport, FailureDetector, FailureDetectorConfig, FailureDetectorError,
+    HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
+};
 
 static PROCESS_CLAIM: Mutex<Option<CellIdentity>> = Mutex::new(None);
 
