@@ -40,6 +40,7 @@
 //! b-slice-k-001-end-to-end.md`) as a known limitation or gap, not patched
 //! over here.
 
+mod cell_host;
 mod chain;
 mod error;
 mod fiber;
@@ -53,6 +54,10 @@ mod semantic_stream;
 mod semantic_writer;
 mod teardown;
 
+pub use cell_host::{
+    CellAssemblyInspect, CellBroadcastRefusal, CellEpochAdvance, CellEpochBroadcastIncomplete,
+    CellHost, CellHostConfig,
+};
 pub use chain::{
     CancelFacts, HappyChain, RecoveryPrefix, SECOND_BACKGROUND_TASK_SEED_OFFSET,
     SECOND_BINDING_SEED_OFFSET, SECOND_MATERIALIZE_SEED_OFFSET, SECOND_TASK_SEED_OFFSET,
