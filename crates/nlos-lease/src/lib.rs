@@ -48,7 +48,9 @@ use std::fmt;
 use nlos_cell::{
     CellAdmitError, CellAuthority, CellEpoch, CellError, CellFence, CellFencingToken, CellIdentity,
 };
-use nlos_types::{CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId};
+use nlos_types::{
+    CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId, ReceiptId,
+};
 
 /// Fence scope for a single-Cell grant: the Cell identity itself.
 ///
@@ -1159,18 +1161,27 @@ impl fmt::Display for CapacityLeaseReturnError {
 
 impl Error for CapacityLeaseReturnError {}
 
-/// `ExclusiveDeviceLease` state after a successful grant. Full state machine
-/// (`HOLDER_PREPARED` / `ACTIVE` / reset / …) is deferred.
+/// `ExclusiveDeviceLease` state across the reset-gated return.
+///
+/// Spec chain used here: `DEVICE_RESERVED → RESETTING → RETURNED`. The return
+/// leg is unlocked only by an accepted reset+zeroization receipt. The full
+/// `HOLDER_PREPARED` / `ACTIVE` chain stays deferred.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ExclusiveDeviceLeaseState {
     /// Issued after durable (here: in-memory) FREE→reserved claim on the
     /// `DeviceLeaseHead` (`LEASE-DEVICE-001` `DEVICE_RESERVED`).
     DeviceReserved,
+    /// Reset+zeroization declared; the receipt is not accepted yet. The head
+    /// is not FREE (`RESETTING`).
+    Resetting,
+    /// Reset+zeroization receipt accepted; the head is back to FREE
+    /// (`RETURNED`).
+    Returned,
 }
 
 /// A single-Cell `ExclusiveDeviceLease` grant snapshot (v0.5 §12 fields used by
 /// this slice: id, device, exclusivity epoch, holder node/boot, fencing token,
-/// state).
+/// state; plus the slice-local `reset_generation` head fence).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExclusiveDeviceLeaseGrant {
     device_lease_id: ExclusiveDeviceLeaseId,
@@ -1180,6 +1191,7 @@ pub struct ExclusiveDeviceLeaseGrant {
     exclusivity_epoch: CellEpoch,
     fencing_token: CellFencingToken,
     fence_scope: FenceScope,
+    reset_generation: Generation,
     state: ExclusiveDeviceLeaseState,
 }
 
@@ -1227,6 +1239,14 @@ impl ExclusiveDeviceLeaseGrant {
         self.fence_scope
     }
 
+    /// `DeviceLeaseHead` reset generation bound at claim time. The
+    /// reset+zeroization receipt must repeat it; a receipt from another head
+    /// era is fenced out.
+    #[must_use]
+    pub const fn reset_generation(self) -> Generation {
+        self.reset_generation
+    }
+
     /// Lease state after grant.
     #[must_use]
     pub const fn state(self) -> ExclusiveDeviceLeaseState {
@@ -1236,24 +1256,32 @@ impl ExclusiveDeviceLeaseGrant {
 
 /// In-memory single-Cell `ExclusiveDeviceLease` grantor.
 ///
-/// Holds one `DeviceLeaseHead` (FREE or reserved) and the Cell authority used
-/// for fence admit. Not a durable ledger and not a second authority store.
+/// Holds one `DeviceLeaseHead` (FREE or reserved) with its monotonic reset
+/// generation, the committed lease history, and the immutable reset receipt
+/// log, plus the Cell authority used for fence admit. Not a durable ledger
+/// and not a second authority store.
 #[derive(Debug)]
 pub struct ExclusiveDeviceLeaseGrantor {
     authority: CellAuthority,
     device_id: DeviceId,
     free: bool,
+    reset_generation: Generation,
+    leases: HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
+    reset_receipts: Vec<DeviceResetReceipt>,
 }
 
 impl ExclusiveDeviceLeaseGrantor {
     /// Opens a grantor bound to an existing Cell authority with a FREE device
-    /// head for `device_id`.
+    /// head for `device_id` at reset generation [`Generation::INITIAL`].
     #[must_use]
-    pub const fn open(authority: CellAuthority, device_id: DeviceId) -> Self {
+    pub fn open(authority: CellAuthority, device_id: DeviceId) -> Self {
         Self {
             authority,
             device_id,
             free: true,
+            reset_generation: Generation::INITIAL,
+            leases: HashMap::new(),
+            reset_receipts: Vec::new(),
         }
     }
 
@@ -1269,11 +1297,30 @@ impl ExclusiveDeviceLeaseGrantor {
         self.free
     }
 
+    /// Reset generation currently held by the `DeviceLeaseHead`.
+    ///
+    /// Bumps once per accepted reset receipt; receipts from an older head era
+    /// are fenced out against it.
+    #[must_use]
+    pub const fn reset_generation(&self) -> Generation {
+        self.reset_generation
+    }
+
+    /// Immutable reset receipt log in acceptance order. Receipts are appended
+    /// on commit and never rewritten.
+    #[must_use]
+    pub fn reset_receipts(&self) -> &[DeviceResetReceipt] {
+        &self.reset_receipts
+    }
+
     /// Grants an `ExclusiveDeviceLease` against a presented Cell fence.
     ///
     /// `LEASE-DEVICE-001` prefix: the FREE head is claimed before the lease
     /// enters [`ExclusiveDeviceLeaseState::DeviceReserved`]. Fail-closed fence
-    /// checks run via [`CellAuthority::admit`] before any claim.
+    /// checks run via [`CellAuthority::admit`] before any claim. The head
+    /// reset generation at claim time is bound into the grant. A
+    /// `device_lease_id` already on record replays the committed lease and
+    /// does not claim again.
     ///
     /// # Errors
     ///
@@ -1283,6 +1330,9 @@ impl ExclusiveDeviceLeaseGrantor {
         presented: &CellFence,
         device_lease_id: ExclusiveDeviceLeaseId,
     ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantError> {
+        if let Some(existing) = self.leases.get(&device_lease_id).copied() {
+            return Ok(existing);
+        }
         self.authority.admit(presented)?;
         if !self.free {
             return Err(ExclusiveDeviceLeaseGrantError::DeviceNotFree {
@@ -1291,7 +1341,7 @@ impl ExclusiveDeviceLeaseGrantor {
         }
         self.free = false;
         let holder_node = self.authority.identity();
-        Ok(ExclusiveDeviceLeaseGrant {
+        let grant = ExclusiveDeviceLeaseGrant {
             device_lease_id,
             device_id: self.device_id,
             holder_node,
@@ -1299,8 +1349,249 @@ impl ExclusiveDeviceLeaseGrantor {
             exclusivity_epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
             fence_scope: FenceScope::cell(holder_node),
+            reset_generation: self.reset_generation,
             state: ExclusiveDeviceLeaseState::DeviceReserved,
-        })
+        };
+        self.leases.insert(device_lease_id, grant);
+        Ok(grant)
+    }
+
+    /// Reads the committed device lease snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`ExclusiveDeviceLeaseReturnError::UnknownLease`] when `device_lease_id`
+    /// was never issued.
+    pub fn query(
+        &self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.leases
+            .get(&device_lease_id)
+            .copied()
+            .ok_or(ExclusiveDeviceLeaseReturnError::UnknownLease)
+    }
+
+    /// `DEVICE_RESERVED → RESETTING`: the holder declares reset+zeroization
+    /// intent. The head is not FREE yet.
+    ///
+    /// A second declare on `RESETTING` returns the committed lease.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`ExclusiveDeviceLeaseReturnError`].
+    pub fn declare_reset(
+        &mut self,
+        presented: &CellFence,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(device_lease_id)?;
+        match lease.state {
+            ExclusiveDeviceLeaseState::DeviceReserved => {
+                lease.state = ExclusiveDeviceLeaseState::Resetting;
+                Ok(*lease)
+            }
+            ExclusiveDeviceLeaseState::Resetting => Ok(*lease),
+            state @ ExclusiveDeviceLeaseState::Returned => {
+                Err(ExclusiveDeviceLeaseReturnError::DeclareRequiresReserved { state })
+            }
+        }
+    }
+
+    /// Accepts the reset+zeroization receipt and unblocks the return
+    /// (`RESETTING → RETURNED`).
+    ///
+    /// The receipt id is the idempotency key: replaying the identical
+    /// committed receipt returns the committed lease without touching the
+    /// head again. Any other receipt for the same lease or key is a typed
+    /// conflict. The receipt `reset_generation` must match the head fence
+    /// (older-era receipts are fenced out) and every other axis must bind the
+    /// committed lease. On accept, the receipt is appended to the immutable
+    /// log, the head moves back to FREE, and the head reset generation bumps.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`ExclusiveDeviceLeaseReturnError`].
+    pub fn submit_reset_receipt(
+        &mut self,
+        presented: &CellFence,
+        receipt: DeviceResetReceipt,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.authority.admit(presented)?;
+        if let Some(committed) = self
+            .reset_receipts
+            .iter()
+            .find(|logged| logged.receipt_id == receipt.receipt_id)
+            .copied()
+        {
+            if committed == receipt {
+                return self.query(committed.device_lease_id);
+            }
+            return Err(ExclusiveDeviceLeaseReturnError::ConflictingResetReceipt {
+                existing: committed.receipt_id,
+                requested: receipt.receipt_id,
+            });
+        }
+        let lease = self
+            .leases
+            .get(&receipt.device_lease_id)
+            .copied()
+            .ok_or(ExclusiveDeviceLeaseReturnError::UnknownLease)?;
+        match lease.state {
+            ExclusiveDeviceLeaseState::Resetting => {
+                if receipt.reset_generation != self.reset_generation {
+                    return Err(ExclusiveDeviceLeaseReturnError::StaleResetGeneration {
+                        receipt: receipt.reset_generation,
+                        head: self.reset_generation,
+                    });
+                }
+                if !receipt_binds_lease(&receipt, &lease) {
+                    return Err(ExclusiveDeviceLeaseReturnError::ReceiptBindMismatch { receipt });
+                }
+                let next = self
+                    .reset_generation
+                    .checked_next()
+                    .ok_or(ExclusiveDeviceLeaseReturnError::ResetGenerationExhausted)?;
+                let returned = ExclusiveDeviceLeaseGrant {
+                    state: ExclusiveDeviceLeaseState::Returned,
+                    ..lease
+                };
+                self.leases.insert(receipt.device_lease_id, returned);
+                self.reset_receipts.push(receipt);
+                self.reset_generation = next;
+                self.free = true;
+                Ok(returned)
+            }
+            ExclusiveDeviceLeaseState::Returned => {
+                let existing = self
+                    .reset_receipts
+                    .iter()
+                    .find(|logged| logged.device_lease_id == receipt.device_lease_id)
+                    .map(|logged| logged.receipt_id)
+                    .ok_or(ExclusiveDeviceLeaseReturnError::UnknownLease)?;
+                Err(ExclusiveDeviceLeaseReturnError::ConflictingResetReceipt {
+                    existing,
+                    requested: receipt.receipt_id,
+                })
+            }
+            state @ ExclusiveDeviceLeaseState::DeviceReserved => {
+                Err(ExclusiveDeviceLeaseReturnError::ReceiptRequiresResetting { state })
+            }
+        }
+    }
+
+    fn lease_mut(
+        &mut self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<&mut ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.leases
+            .get_mut(&device_lease_id)
+            .ok_or(ExclusiveDeviceLeaseReturnError::UnknownLease)
+    }
+}
+
+fn receipt_binds_lease(receipt: &DeviceResetReceipt, lease: &ExclusiveDeviceLeaseGrant) -> bool {
+    receipt.device_lease_id == lease.device_lease_id
+        && receipt.holder_node == lease.holder_node
+        && receipt.holder_node_boot_generation == lease.holder_node_boot_generation
+        && receipt.exclusivity_epoch == lease.exclusivity_epoch
+        && receipt.fencing_token == lease.fencing_token
+        && receipt.reset_generation == lease.reset_generation
+}
+
+/// Immutable reset+zeroization receipt that unblocks one
+/// `ExclusiveDeviceLease` return (`RESETTING → RETURNED`).
+///
+/// The holder builds this receipt after the device reset+zeroization
+/// completes and submits it to the grantor. `receipt_id` is the idempotency
+/// key: replaying the identical committed receipt returns the committed
+/// lease, while any other receipt for the same lease or key is a typed
+/// conflict. `reset_generation` is the generation fence: it must repeat the
+/// `DeviceLeaseHead` generation the lease was claimed under, so a receipt
+/// from an older head era is rejected fail-closed. Accepted receipts are
+/// appended to the grantor's immutable log and never rewritten.
+///
+/// Like [`CellFence::present`], the constructor takes every axis explicitly:
+/// this is a holder-side attestation the grantor validates, not a value the
+/// grantor mints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceResetReceipt {
+    receipt_id: ReceiptId,
+    device_lease_id: ExclusiveDeviceLeaseId,
+    holder_node: CellIdentity,
+    holder_node_boot_generation: Generation,
+    exclusivity_epoch: CellEpoch,
+    fencing_token: CellFencingToken,
+    reset_generation: Generation,
+}
+
+impl DeviceResetReceipt {
+    /// Builds the receipt for `device_lease_id` under an idempotency key.
+    ///
+    /// Every axis must repeat the fence the lease was issued under; the
+    /// grantor fail-closes on any drift.
+    #[must_use]
+    pub const fn new(
+        receipt_id: ReceiptId,
+        device_lease_id: ExclusiveDeviceLeaseId,
+        holder_node: CellIdentity,
+        holder_node_boot_generation: Generation,
+        exclusivity_epoch: CellEpoch,
+        fencing_token: CellFencingToken,
+        reset_generation: Generation,
+    ) -> Self {
+        Self {
+            receipt_id,
+            device_lease_id,
+            holder_node,
+            holder_node_boot_generation,
+            exclusivity_epoch,
+            fencing_token,
+            reset_generation,
+        }
+    }
+
+    /// Idempotency key of this receipt.
+    #[must_use]
+    pub const fn receipt_id(self) -> ReceiptId {
+        self.receipt_id
+    }
+
+    /// Device lease this receipt returns.
+    #[must_use]
+    pub const fn device_lease_id(self) -> ExclusiveDeviceLeaseId {
+        self.device_lease_id
+    }
+
+    /// Holder Cell on the receipt.
+    #[must_use]
+    pub const fn holder_node(self) -> CellIdentity {
+        self.holder_node
+    }
+
+    /// Holder node boot generation on the receipt.
+    #[must_use]
+    pub const fn holder_node_boot_generation(self) -> Generation {
+        self.holder_node_boot_generation
+    }
+
+    /// Exclusivity epoch on the receipt.
+    #[must_use]
+    pub const fn exclusivity_epoch(self) -> CellEpoch {
+        self.exclusivity_epoch
+    }
+
+    /// Fencing token on the receipt.
+    #[must_use]
+    pub const fn fencing_token(self) -> CellFencingToken {
+        self.fencing_token
+    }
+
+    /// Head reset generation this receipt is fenced by.
+    #[must_use]
+    pub const fn reset_generation(self) -> Generation {
+        self.reset_generation
     }
 }
 
@@ -1411,3 +1702,95 @@ impl fmt::Display for ExclusiveDeviceLeaseGrantError {
 }
 
 impl Error for ExclusiveDeviceLeaseGrantError {}
+
+/// Typed fail-closed rejects for the reset-gated `ExclusiveDeviceLease`
+/// return.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExclusiveDeviceLeaseReturnError {
+    /// Presented fence was rejected by [`CellAuthority::admit`].
+    Fence(ExclusiveDeviceLeaseGrantError),
+    /// No device lease with this id has been issued.
+    UnknownLease,
+    /// Reset declare was asked of a lease that already returned.
+    DeclareRequiresReserved {
+        /// State of the committed lease.
+        state: ExclusiveDeviceLeaseState,
+    },
+    /// Receipt was submitted before reset was declared.
+    ReceiptRequiresResetting {
+        /// State of the committed lease.
+        state: ExclusiveDeviceLeaseState,
+    },
+    /// Receipt `reset_generation` does not match the `DeviceLeaseHead` fence:
+    /// a receipt from an older head era (or any other drift) fails closed.
+    StaleResetGeneration {
+        /// Generation bound into the receipt.
+        receipt: Generation,
+        /// Generation currently held by the head.
+        head: Generation,
+    },
+    /// Receipt does not bind the committed lease on the holder, boot, epoch,
+    /// or token axis. Compare the receipt against
+    /// [`ExclusiveDeviceLeaseGrantor::query`] to find the drifting axis.
+    ReceiptBindMismatch {
+        /// Receipt as submitted.
+        receipt: DeviceResetReceipt,
+    },
+    /// A different receipt is already committed for this lease or idempotency
+    /// key.
+    ConflictingResetReceipt {
+        /// Idempotency key already committed.
+        existing: ReceiptId,
+        /// Idempotency key on this attempt.
+        requested: ReceiptId,
+    },
+    /// Reset generation space exhausted; the head cannot fence another
+    /// return.
+    ResetGenerationExhausted,
+}
+
+impl From<CellAdmitError> for ExclusiveDeviceLeaseReturnError {
+    fn from(error: CellAdmitError) -> Self {
+        Self::Fence(ExclusiveDeviceLeaseGrantError::from(error))
+    }
+}
+
+impl fmt::Display for ExclusiveDeviceLeaseReturnError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fence(error) => write!(formatter, "ExclusiveDeviceLease fence rejected: {error}"),
+            Self::UnknownLease => write!(formatter, "unknown ExclusiveDeviceLease"),
+            Self::DeclareRequiresReserved { state } => write!(
+                formatter,
+                "ExclusiveDeviceLease reset declare requires DEVICE_RESERVED or RESETTING, found {state:?}"
+            ),
+            Self::ReceiptRequiresResetting { state } => write!(
+                formatter,
+                "ExclusiveDeviceLease reset receipt requires RESETTING, found {state:?}"
+            ),
+            Self::StaleResetGeneration { receipt, head } => write!(
+                formatter,
+                "ExclusiveDeviceLease reset receipt generation fenced out: receipt {} != head {}",
+                receipt.get(),
+                head.get()
+            ),
+            Self::ReceiptBindMismatch { receipt } => write!(
+                formatter,
+                "ExclusiveDeviceLease reset receipt does not bind the committed lease: {receipt:?}"
+            ),
+            Self::ConflictingResetReceipt {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "ExclusiveDeviceLease reset receipt conflict: committed {existing:?} != requested {requested:?}"
+            ),
+            Self::ResetGenerationExhausted => write!(
+                formatter,
+                "ExclusiveDeviceLease DeviceLeaseHead reset generation space exhausted"
+            ),
+        }
+    }
+}
+
+impl Error for ExclusiveDeviceLeaseReturnError {}
