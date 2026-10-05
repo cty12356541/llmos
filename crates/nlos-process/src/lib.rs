@@ -10,6 +10,7 @@ mod platform_kill;
 mod schema;
 mod supervisor;
 mod supervisor_pid;
+mod supervisor_pid_scan;
 
 use std::error::Error;
 use std::fmt;
@@ -49,6 +50,10 @@ pub use supervisor::{
 pub use supervisor_pid::{
     RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
     SupervisorPidRegistryError,
+};
+pub use supervisor_pid_scan::{
+    HostSupervisorPidProbe, SupervisorPidFinding, SupervisorPidLiveness, SupervisorPidProbe,
+    SupervisorPidScanReport, SupervisorPidScanTarget, SupervisorPidStaleReason,
 };
 
 #[derive(Debug)]
@@ -653,6 +658,54 @@ impl ProcessAuthority {
             return Err(ProcessAuthorityError::StaleProcessBinding);
         }
         Ok(record)
+    }
+
+    /// Lists every non-terminal (`Active`) Process binding — the discovery
+    /// source for [`ProcessSupervisor::scan_pids`]: one current
+    /// [`ProcessBindingRecord`] per head whose lifecycle state is still
+    /// active, converted to [`SupervisorPidScanTarget`] by the caller, and
+    /// ordered by `process_id` bytes so repeated listings drive
+    /// deterministic scans. Terminal heads (`Terminated` / `Crashed`) are
+    /// excluded: a dead binding has nothing left to discover.
+    ///
+    /// Unlike [`Self::inspect_active_process_binding`], the referenced
+    /// `IsolationDomain` fence is not re-verified here. A rotated domain
+    /// must not hide a live child from the pid scan: the discovery report
+    /// feeds the caller's kill / restore / unregister decisions, and those
+    /// decisions — not this listing — own the domain-staleness gate.
+    ///
+    /// # Errors
+    ///
+    /// Fails when storage cannot be read or a head row disagrees with its
+    /// current immutable binding.
+    pub fn list_active_process_bindings(
+        &self,
+    ) -> Result<Vec<ProcessBindingRecord>, ProcessAuthorityError> {
+        let connection = self.lock()?;
+        let mut statement =
+            connection.prepare("SELECT process_id FROM process_heads WHERE lifecycle_state = 0")?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut records = Vec::new();
+        for row in rows {
+            let process_id = ProcessId::from_bytes(array16(row?)?);
+            let head = load_process_head_optional(&connection, process_id)?.ok_or(
+                ProcessAuthorityError::CorruptRecord(
+                    "process head disappeared during the active listing",
+                ),
+            )?;
+            let record = load_process_binding(&connection, process_id, head.process_generation)?;
+            if record.process_fencing_token != head.process_fencing_token
+                || record.agent_instance_id != head.agent_instance_id
+                || record.agent_instance_generation != head.agent_instance_generation
+            {
+                return Err(ProcessAuthorityError::CorruptRecord(
+                    "process head disagrees with current immutable binding",
+                ));
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| *record.process_id.as_bytes());
+        Ok(records)
     }
 
     /// Reads the authority-derived participant proof for the current Process
