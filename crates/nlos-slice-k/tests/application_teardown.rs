@@ -554,6 +554,113 @@ async fn teardown_adopts_committed_platform_kill_before_terminal_marker() {
     }
 }
 
+/// Reverse NL timestamp same-source (W46-B): the adopted kill receipt's
+/// `killed_at_ms` is minted in the NL kill path's own wall domain (the
+/// system-control daemon's `AuthorityClock` store), which this runtime's
+/// crash-clock reading never advanced through. When that foreign reading is
+/// AHEAD of the local wall domain, the crash marker that continues the
+/// adopted kill must be floored with it — the durable chain never orders
+/// the crash marker before the kill it continues — and a teardown re-run
+/// replays the identical floored timestamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn teardown_crash_marker_never_precedes_adopted_nl_kill_timestamp() {
+    let dir = TempDir::new("teardown-kill-clock-domain");
+    let seed = 0xe2_u8;
+    let runtime = Arc::new(SliceKRuntime::open(dir.root()).expect("open slice-k runtime"));
+    let adapter = slice_adapter();
+    let mut children = Vec::new();
+    let (pid_first, pid_second) = if cfg!(unix) {
+        let first = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("spawn first sleeper");
+        let second = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("spawn second sleeper");
+        let pids = (first.id(), second.id());
+        children.push(first);
+        children.push(second);
+        pids
+    } else {
+        (std::process::id(), std::process::id())
+    };
+    let pair = run_second_process_pair(&runtime, &adapter, seed, pid_first, pid_second)
+        .await
+        .expect("second process pair");
+    let process = pair.process_second;
+    let nl_key = nlos_types::IdempotencyKey::from_bytes(*process.process_id.as_bytes());
+    // Far-future reading (2100-01-01T00:00:00Z): strictly ahead of any
+    // local wall reading this test's clock store can mint, so the floor is
+    // the only thing that can order the crash marker after the kill.
+    let killed_at_ms = 4_102_444_800_000_u64;
+    let prior_adapter = nlos_process::StubPlatformKillAdapter::new();
+    let prior = runtime
+        .process
+        .request_platform_kill(
+            nlos_process::RequestPlatformKillRequest {
+                process_id: process.process_id,
+                expected_process_generation: process.process_generation,
+                expected_process_fencing_token: process.process_fencing_token,
+                idempotency_key: nl_key,
+                killed_at_ms,
+            },
+            &prior_adapter,
+        )
+        .expect("NL-shaped kill commits with the foreign-domain reading");
+    assert!(matches!(prior, PlatformKillDecision::Signaled(_)));
+    assert!(
+        runtime
+            .process
+            .inspect_process_terminal(process.process_id)
+            .expect("terminal inspect")
+            .is_none(),
+        "the race window is a kill receipt with no crash marker"
+    );
+
+    let teardown =
+        run_application_teardown(&runtime, &adapter, pair.package_id, seed, &pair.registry)
+            .expect("teardown adopts the committed kill");
+    let crash = teardown
+        .crashes
+        .iter()
+        .find(|crash| crash.process_id == process.process_id)
+        .expect("second process crash marker");
+    assert_eq!(
+        crash.marked_at_ms, killed_at_ms,
+        "the crash marker continues the adopted kill: it must never precede \
+         the foreign-domain kill reading"
+    );
+
+    let rerun = run_application_teardown(&runtime, &adapter, pair.package_id, seed, &pair.registry)
+        .expect("teardown re-run replays");
+    let replayed = rerun
+        .crashes
+        .iter()
+        .find(|crash| crash.process_id == process.process_id)
+        .expect("second process crash replay");
+    assert_eq!(
+        replayed.marked_at_ms, crash.marked_at_ms,
+        "the floored timestamp is durable replay bytes, not a fresh reading"
+    );
+    assert_eq!(replayed.idempotency_key, crash.idempotency_key);
+    let adopted = rerun
+        .kills
+        .iter()
+        .find(|kill| kill.receipt().process_id == process.process_id)
+        .expect("second process kill replay");
+    assert!(
+        matches!(adopted, PlatformKillDecision::Replayed(_)),
+        "committed kill must replay, got {adopted:?}"
+    );
+    assert_eq!(adopted.receipt().killed_at_ms, killed_at_ms);
+
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// 关联下沉 (W30-D deliverable 3): the schema-v44 declaration association
 /// — `application_id` from a real installation AND a declared plan
 /// revision — lands in the durable task rows, survives reopen, and the
