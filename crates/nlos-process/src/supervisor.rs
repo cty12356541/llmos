@@ -31,6 +31,14 @@
 //! integration stays with
 //! [`crate::ProcessAuthority::request_platform_kill`], whose adapter can be
 //! fed by [`SupervisorPidRegistry::pid_map`].
+//!
+//! The discovery face (W47-L1, the `C-APP-CONTROL` #11 pid-discovery half)
+//! stays pure-read on top of the same registry:
+//! [`crate::ProcessSupervisor::scan_pids`] classifies the authority's
+//! non-terminal bindings as fresh / stale / missing against the recorded
+//! pids plus an injected liveness-and-resolution hook, and the explicit
+//! opt-in [`crate::ProcessSupervisor::adopt_fresh_findings`] feeds the
+//! fresh rows back through the unchanged registry gates.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -133,6 +141,10 @@ pub enum SupervisorError {
     UnsupportedOnPlatform { operation: &'static str },
     /// A Unix signal syscall failed for the registered OS pid.
     Signal(&'static str),
+    /// The pid liveness probe could not classify an OS pid (host probe
+    /// syscall or subprocess failure); the discovery scan fails closed
+    /// with zero side effect and produces no report.
+    LivenessProbe(&'static str),
 }
 
 impl fmt::Display for SupervisorError {
@@ -153,6 +165,9 @@ impl fmt::Display for SupervisorError {
                 "supervisor {operation} is unsupported on this host platform"
             ),
             Self::Signal(reason) => write!(formatter, "supervisor signal failure: {reason}"),
+            Self::LivenessProbe(reason) => {
+                write!(formatter, "supervisor pid liveness probe failure: {reason}")
+            }
         }
     }
 }
@@ -163,7 +178,7 @@ impl Error for SupervisorError {
             Self::Registry(error) | Self::SpawnRefused { cause: error, .. } => Some(error),
             Self::Spawn(error) => Some(error),
             Self::PlatformKill(error) => Some(error),
-            Self::UnsupportedOnPlatform { .. } | Self::Signal(_) => None,
+            Self::UnsupportedOnPlatform { .. } | Self::Signal(_) | Self::LivenessProbe(_) => None,
         }
     }
 }
