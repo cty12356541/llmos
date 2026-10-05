@@ -6,6 +6,7 @@
 //! 2026-10-05 W47-L2 起七件套建设中（首批 failure detector + name cache）。
 
 //! 接线前提：slice-k runtime 按 ADR-0018 装配本 crate 的 cell 权威（当前 runtime 内联进程域，未引本 crate）。
+//! 2026-10-05 W48：接线计划已落地（slice-k CellHost 装配 + nlos-slice-k→nlos-cell 依赖边）——解冻条件达成；CellHost 为首个装配消费方。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate

@@ -5,6 +5,7 @@
 //! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
 
 //! 接线前提：slice-k/daemon 装配 `CellAuthority` 与 lease 三族 admit/release 面（W38 lease-admit 前片已指向该路径）。
+//! 2026-10-05 W48：接线计划已落地（slice-k CellHost 装配 + nlos-slice-k→nlos-lease 依赖边）——解冻条件达成；生产调用方为 CellHost 的 quota 面（capacity/device 族因 grantor 按值持 CellAuthority 的结构限制未进单进程装配，见 cell-assembly-wiring-map.md）。
 //! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
