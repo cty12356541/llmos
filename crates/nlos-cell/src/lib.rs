@@ -3,13 +3,22 @@
 //! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
 //! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
 //! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
+//! 2026-10-05 W47-L2 起七件套建设中（首批 failure detector + name cache）。
 
 //! 接线前提：slice-k runtime 按 ADR-0018 装配本 crate 的 cell 权威（当前 runtime 内联进程域，未引本 crate）。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
-//! does not implement the Cell-local seven-piece set, product IPC, consensus,
-//! or Raft.
+//! implements the first two pieces of the Cell-local seven-piece set — the
+//! failure detector ([`failure_detector`]) and the capability/name cache
+//! ([`name_cache`]), both in-memory and not yet assembled into a runtime.
+//! The remaining five pieces (process supervisor, resource lease sub-ledger,
+//! driver gateway, durable event/outbox, artifact cache) are not implemented
+//! here. This crate also does not implement product IPC, consensus, or
+//! Raft.
+
+mod failure_detector;
+mod name_cache;
 
 use std::error::Error;
 use std::fmt;
@@ -19,6 +28,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nlos_types::{Generation, SchedulerDomainId};
+
+pub use failure_detector::{
+    DeadJudgment, EpochAdvanceReport, FailureDetector, FailureDetectorConfig, FailureDetectorError,
+    HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
+};
+pub use name_cache::{
+    CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,
+    InvalidationOutcome, NameCacheError, NamePath,
+};
 
 static PROCESS_CLAIM: Mutex<Option<CellIdentity>> = Mutex::new(None);
 
