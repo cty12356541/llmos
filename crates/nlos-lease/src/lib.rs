@@ -12,8 +12,12 @@
 //!   deducted from the in-memory available pool before issue.
 //! - `CapacityLease` (`LEASE-CAPACITY-001` prefix): source pool →
 //!   `GLOBAL_RESERVED`; `amount` deducted before issue.
-//! - `ExclusiveDeviceLease` (`LEASE-DEVICE-001` prefix): FREE `DeviceLeaseHead` →
-//!   `DEVICE_RESERVED`; device claimed before issue.
+//! - `ExclusiveDeviceLease` (`LEASE-DEVICE-001`): FREE `DeviceLeaseHead` →
+//!   `DEVICE_RESERVED`; device claimed before issue. The return leg is
+//!   reset-gated: `DEVICE_RESERVED → RESETTING` declares the holder's
+//!   reset+zeroization, and only an accepted `DeviceResetReceipt`
+//!   (`RESETTING → RETURNED`) moves the head back to FREE and bumps the head
+//!   reset generation.
 //!
 //! Stale epoch is a typed fail-closed reject for all three families.
 //!
@@ -23,23 +27,33 @@
 //! The high-water moves face value straight from local remaining to spent;
 //! this slice has no held-reservation bucket.
 //!
+//! `QuotaLease` TTL (`LEASE-TTL-001`): a grant may bind a logical
+//! `LeaseInstant` deadline (the caller sweeps with `now`; this crate reads no
+//! wall clock). `sweep_expired` moves expired `ISSUED` / `ACTIVE` / `CLOSING`
+//! leases into `FENCED` — no new use — and `settle_fenced` returns the unspent
+//! remainder once. `None` deadlines never expire.
+//!
 //! Fence admit is delegated to [`CellAuthority::admit`]; this crate does not
 //! re-implement the fail-closed fence checks.
 //!
 //! `CapacityLease` additionally has idempotent
-//! `GLOBAL_RESERVED → TARGET_PREPARED` and
-//! `GLOBAL_RESERVED`/`TARGET_PREPARED → RETURNING → RETURNED`
+//! `GLOBAL_RESERVED → TARGET_PREPARED`, the host attach receipt edge
+//! `TARGET_PREPARED → ACTIVE` ([`HostAttachReceipt`]: idempotency key, axes
+//! bound to the committed lease, full `amount` only), and
+//! `GLOBAL_RESERVED`/`TARGET_PREPARED`/`ACTIVE → RETURNING → RETURNED`
 //! (`LEASE-PREACTIVE-001`). `RETURNING` does not refund; `RETURNED` refunds
-//! `amount` once. `ACTIVE` stays out: there is no host attach receipt.
+//! `amount` once, whether the lease passed through `ACTIVE` or not — capacity
+//! is returned whole, not consumed.
 //!
 //! `QuotaLease` loss (`LEASE-LOSS-001`): advancing the Cell epoch moves
-//! `ISSUED` / `ACTIVE` / `CLOSING` leases into `QUARANTINED` without returning
-//! their face value to `AVAILABLE`. `CLOSED` and `CANCELLED` stay put.
+//! `ISSUED` / `ACTIVE` / `CLOSING` / un-settled `FENCED` leases into
+//! `QUARANTINED` without returning their face value to `AVAILABLE`. `CLOSED`
+//! and `CANCELLED` stay put.
 //!
 //! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
 //! transport, Raft, gateway fence-barrier, TTL-as-reuse, durable second
-//! ledger, Capacity `ACTIVE` and later reclaim states, and Device
-//! reset/zeroization.
+//! ledger, Capacity reclaim states, and the Device `HOLDER_PREPARED` /
+//! `ACTIVE` chain.
 
 use std::collections::HashMap;
 use std::error::Error;
