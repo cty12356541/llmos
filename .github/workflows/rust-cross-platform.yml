@@ -183,6 +183,13 @@ jobs:
         run: npx tsc --noEmit
         working-directory: desktop
 
+      # 前端产物打包面（F2 边界收窄的落地面）: vite 产物哈希指纹与 CSS/JS
+      # 分包可在三平台核对; tauri GUI 安装包打包(bundler)仍按 W44-F2c
+      # 注释维持边界外。
+      - name: Frontend bundle build (vite)
+        run: npx vite build
+        working-directory: desktop
+
       - name: Clippy (dev-fixture)
         run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --features dev-fixture --all-targets -- -D warnings
 
