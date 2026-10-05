@@ -12,6 +12,7 @@
 //! or Raft.
 
 mod failure_detector;
+mod name_cache;
 
 use std::error::Error;
 use std::fmt;
@@ -25,6 +26,10 @@ use nlos_types::{Generation, SchedulerDomainId};
 pub use failure_detector::{
     DeadJudgment, EpochAdvanceReport, FailureDetector, FailureDetectorConfig, FailureDetectorError,
     HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
+};
+pub use name_cache::{
+    CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,
+    InvalidationOutcome, NameCacheError, NamePath,
 };
 
 static PROCESS_CLAIM: Mutex<Option<CellIdentity>> = Mutex::new(None);
