@@ -192,6 +192,9 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
 - 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`CANDIDATE`；C-SHARD 派发仍以其 `VERIFIED` 为前置）
 - 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD）
+- lease grantor 共享 `CellAuthority` 所有权（capacity/device 进 CellHost 装配）：[ADR-0021](./adrs/0021-lease-grantor-shared-cell-authority.md)
+- capability 签发闭环 operator 密钥文件路径：[ADR-0022](./adrs/0022-operator-root-capability-issuance.md)
+- 语义写入端 driver 回调桥（解除 D6 后置）：[ADR-0023](./adrs/0023-semantic-write-side-driver-bridge.md)
 - Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 
 ## 12. 阶段 B 管理入口
