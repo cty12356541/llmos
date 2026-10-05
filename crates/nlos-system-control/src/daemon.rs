@@ -44,6 +44,19 @@
 //! with a typed `NOT_FOUND` naming the unwired arm, exactly like the
 //! [`crate::UnwiredOperationCommandExecutor`] they replaced.
 //!
+//! ADR-0022 operator root issuance (fail-closed default): when
+//! `DaemonOptions::operator_key_file` is configured, assembly opens the
+//! capability authority under `<root>/capability`, bootstraps (or
+//! idempotently replays) the operator principal from the checked key file
+//! (64-hex Ed25519 seed, owner-only `0600` on Unix), and issues — or
+//! deterministically replays, for the same key and parameters — one root
+//! capability binding that principal over the root namespace, closing the
+//! `issue_root_signed` production-caller gap. Unconfigured, none of this
+//! happens: no capability authority is opened, the state root keeps its
+//! pre-issuance layout, and the capability face stays exactly as it was.
+//! The organizational envelope template (constraining the root to a
+//! declared deployment subset) is a registered follow-up, out of scope.
+//!
 //! Honest registration-surface gap: the daemon owns the
 //! [`nlos_process::SupervisorPidRegistry`] as an in-process, daemon-lifetime
 //! instance, but no supervisor loop inside this daemon registers pid
@@ -80,6 +93,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_application::ApplicationAuthority;
 use nlos_artifact::ArtifactStore;
+use nlos_capability::{
+    CapabilityAuthority, CapabilityAuthorityError, CapabilityIssueDecision, CapabilityIssueReceipt,
+    CapabilityRecord, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
+    SignedIssueRootCapabilityRequest, issue_root_command_message,
+};
 use nlos_channel::{ChannelAuthority, ChannelAuthorityError};
 use nlos_clock::{AuthorityClock, AuthorityClockError};
 use nlos_commit_coordinator::{
@@ -88,7 +106,7 @@ use nlos_commit_coordinator::{
 };
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
-    KeyPurpose,
+    IdentityBinding, KeyPurpose,
 };
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
 #[cfg(unix)]
@@ -119,8 +137,10 @@ use nlos_semantic::{SemanticAuthority, SemanticAuthorityError};
 use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_task::{SqliteTaskAuthority, TASK_PROFILE_10K, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
-use nlos_types::IdempotencyKey;
+use nlos_types::{IdempotencyKey, NamespaceId};
 use sha2::{Digest, Sha256};
+
+use ed25519_dalek::Signer as _;
 
 use crate::application_inspector::ApplicationAuthorityInspector;
 use crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor;
@@ -152,6 +172,21 @@ use crate::{
 /// Key validity ceiling for daemon-bootstrapped principals: 2100-01-01. Not
 /// a secret; only an upper bound, mirroring the dev-fixture window.
 const BOOTSTRAP_KEY_VALID_UNTIL_MS: u64 = 4_102_444_800_000;
+/// ADR-0022 operator root-issuance constants. The issued root is a
+/// ceiling-not-a-policy artifact: the operator key is the trust anchor, so
+/// the conservative defaults bound only what the authority models natively —
+/// the validity window reuses the daemon's bounded bootstrap ceiling (valid
+/// from the deterministic epoch `0` through 2100-01-01) and the delegation
+/// depth takes the capability crate's root-issuance fixture depth, small by
+/// construction. The call limit stays unlimited (`None`): a root with a
+/// numeric budget would silently brick the semantic admission chain when the
+/// budget drained, and downstream attenuation remains the place to bound use.
+const OPERATOR_ROOT_VALID_FROM_MS: u64 = 0;
+const OPERATOR_ROOT_DELEGATION_DEPTH: u8 = 3;
+const OPERATOR_ROOT_RIGHTS: CapabilityRights = CapabilityRights::SEMANTIC_APPEND
+    .union(CapabilityRights::SEMANTIC_RETRACT)
+    .union(CapabilityRights::SEMANTIC_ADJUDICATE)
+    .union(CapabilityRights::DELEGATE);
 /// Handshake nonce registry capacity for the authenticated endpoint.
 const HANDSHAKE_NONCE_CAPACITY: usize = 64;
 /// Named-pipe instance budget for one daemon endpoint on Windows (the
@@ -225,6 +260,45 @@ fn default_pipe_endpoint(role: &str, root: &Path) -> PathBuf {
     ))
 }
 
+/// Typed ADR-0022 operator key-file contract failure: the configured
+/// `--operator-key-file` violated the desktop-client key-file conventions
+/// (existence/readability, the 64-hex Ed25519 seed format, or — on Unix —
+/// the owner-only `0600` permission bits). The permission arm is a known
+/// platform boundary: non-Unix hosts carry no POSIX mode bits on the file,
+/// so only the existence and format arms are enforced there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperatorKeyFileError {
+    /// The file cannot be read at all (absent path or I/O failure).
+    Unreadable,
+    /// The trimmed content is not exactly 64 hex characters of Ed25519 seed.
+    NotHexSeed,
+    /// Unix-only: the file mode carries group/other permission bits.
+    #[cfg(unix)]
+    InsecureMode(u32),
+}
+
+impl fmt::Display for OperatorKeyFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable => {
+                formatter.write_str("operator key file cannot be read (absent or unreadable)")
+            }
+            Self::NotHexSeed => {
+                formatter.write_str("operator key file must hold 64 hex characters of Ed25519 seed")
+            }
+            #[cfg(unix)]
+            Self::InsecureMode(mode) => {
+                write!(
+                    formatter,
+                    "operator key file mode must be 0600 (found {mode:04o})"
+                )
+            }
+        }
+    }
+}
+
+impl Error for OperatorKeyFileError {}
+
 /// Typed assembly failure. No durable state is changed solely by reporting
 /// one of these; every authority the daemon already opened stays valid for
 /// the caller to drop.
@@ -251,6 +325,12 @@ pub enum DaemonError {
     /// The `--identity-key-file` content violates the 64-hex Ed25519 seed
     /// contract shared with the desktop client.
     KeyFile(&'static str),
+    /// The ADR-0022 `--operator-key-file` violates the key-file contract
+    /// (existence, seed format, or the Unix `0600` permission bits).
+    OperatorKeyFile(OperatorKeyFileError),
+    /// The ADR-0022 operator root issuance was rejected by the capability
+    /// authority (identity resolution, signature gate, or storage failure).
+    Capability(CapabilityAuthorityError),
 }
 
 impl fmt::Display for DaemonError {
@@ -277,6 +357,8 @@ impl fmt::Display for DaemonError {
                 write!(formatter, "materialization driver: {error}")
             }
             Self::KeyFile(reason) => write!(formatter, "identity key file: {reason}"),
+            Self::OperatorKeyFile(error) => write!(formatter, "{error}"),
+            Self::Capability(error) => write!(formatter, "operator root issuance: {error}"),
         }
     }
 }
@@ -303,6 +385,8 @@ impl Error for DaemonError {
             Self::Worker(error) => Some(error),
             Self::MaterializationDriver(error) => Some(error),
             Self::KeyFile(_) => None,
+            Self::OperatorKeyFile(error) => Some(error),
+            Self::Capability(error) => Some(error),
         }
     }
 }
@@ -324,6 +408,18 @@ pub struct DaemonOptions {
     /// the matching principal in the identity authority so a client holding
     /// the same seed can authenticate.
     pub identity_key_file: Option<PathBuf>,
+    /// Optional ADR-0022 operator root-issuance key file (the same 64-hex
+    /// Ed25519 seed conventions as [`Self::identity_key_file`], plus the
+    /// owner-only `0600` permission bits on Unix). Fail-closed default:
+    /// unconfigured means no issuance step runs at all — no capability
+    /// authority is opened under the state root and the capability face
+    /// stays exactly as it was.
+    pub operator_key_file: Option<PathBuf>,
+    /// Optional purpose digest passed through to the ADR-0022 operator root
+    /// (`None` issues a purpose-unbound root, matching the capability
+    /// authority's root convention). Part of the issuance identity: a
+    /// different digest derives a different root, not a replay.
+    pub operator_purpose_digest: Option<[u8; 32]>,
     /// Recovery worker tuning; the first scan runs immediately on start.
     pub worker_config: RecoveryWorkerConfig,
     /// Materialization driver tuning (window, cadence, backoff, fault
@@ -339,6 +435,8 @@ impl DaemonOptions {
             auth_socket: None,
             plain_socket: None,
             identity_key_file: None,
+            operator_key_file: None,
+            operator_purpose_digest: None,
             worker_config: RecoveryWorkerConfig::default(),
             driver_config: MaterializationDriverConfig::default(),
         }
@@ -364,6 +462,25 @@ impl DaemonOptions {
     #[must_use]
     pub fn with_identity_key_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.identity_key_file = Some(path.into());
+        self
+    }
+
+    /// Requests the ADR-0022 operator root-issuance step: the daemon opens
+    /// the capability authority under the state root, bootstraps (or
+    /// idempotently replays) the operator principal from the key file, and
+    /// issues — or replays, for the same key and parameters — one root
+    /// capability binding that principal. Without this the issuance step and
+    /// the capability authority stay absent (fail-closed default).
+    #[must_use]
+    pub fn with_operator_key_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.operator_key_file = Some(path.into());
+        self
+    }
+
+    /// Overrides the ADR-0022 purpose digest of the issued root.
+    #[must_use]
+    pub const fn with_operator_purpose_digest(mut self, digest: Option<[u8; 32]>) -> Self {
+        self.operator_purpose_digest = digest;
         self
     }
 
@@ -632,6 +749,23 @@ fn arm_unwired(arm: &'static str) -> SabiFailure {
     }
 }
 
+/// Outcome of the ADR-0022 operator root-issuance step: the durable decision
+/// the capability authority returned (`replayed` distinguishes a restart
+/// replay from a first issuance; both carry the same authority-record and
+/// receipt pair), kept queryable on the assembled daemon for hosts and
+/// probes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperatorRootIssuance {
+    /// True when the authority replayed the original receipt (same operator
+    /// key, same issuance parameters) instead of issuing a new root.
+    pub replayed: bool,
+    /// The durable root capability record: operator principal as issuer and
+    /// holder, root namespace target, conservative defaults.
+    pub record: CapabilityRecord,
+    /// The durable issuance receipt (the §25.3-style proof of the issuance).
+    pub receipt: CapabilityIssueReceipt,
+}
+
 /// The assembled daemon: every authority handle plus the running worker.
 /// All fields are read-only handles; nothing here is mutated after
 /// [`assemble`].
@@ -645,6 +779,14 @@ pub struct SystemControlDaemon {
     /// Principal id bootstrapped from `--identity-key-file`, if requested
     /// (32 hex).
     pub bootstrapped_principal_hex: Option<String>,
+    /// Capability authority the ADR-0022 issuance step opened under the
+    /// state root; `None` when no operator key file was configured (the
+    /// authority is not even opened — the fail-closed default keeps the
+    /// state root layout identical to a pre-ADR-0022 daemon).
+    pub capabilities: Option<Arc<CapabilityAuthority>>,
+    /// The ADR-0022 operator root issuance outcome, when the operator key
+    /// file was configured.
+    pub operator_root: Option<OperatorRootIssuance>,
     /// ADR-0011 verifier for the authenticated endpoint.
     pub identity: Arc<IdentityAuthority>,
     /// Durable wall/tick source for handshake and command time.
@@ -821,8 +963,9 @@ pub struct DaemonEndpoints {
 /// Assembles the daemon: opens every authority under `options.root`, starts
 /// the recovery worker with all three recovery domains live (the artifact,
 /// semantic, and resource halves each scan and converge their due plans),
-/// optionally bootstraps the `--identity-key-file` principal, and binds both
-/// endpoints.
+/// optionally bootstraps the `--identity-key-file` principal, runs the
+/// ADR-0022 operator root-issuance step when `--operator-key-file` is
+/// configured, and binds both endpoints.
 ///
 /// # Errors
 ///
@@ -839,13 +982,8 @@ pub fn assemble(
 
     let identity =
         IdentityAuthority::open(options.root.join("identity")).map_err(DaemonError::Identity)?;
-    let bootstrapped_principal_hex = match &options.identity_key_file {
-        Some(key_file) => {
-            let principal = bootstrap_principal(&identity, key_file)?;
-            Some(hex(principal.as_bytes()))
-        }
-        None => None,
-    };
+    let bootstrapped_principal_hex = assemble_identity_bootstrap(&identity, &options)?;
+    let (capabilities, operator_root) = assemble_operator_root(&identity, &options)?;
     let clock = AuthorityClock::open(options.root.join("clock")).map_err(DaemonError::Clock)?;
     let clock = Arc::new(clock);
     let tasks = Arc::new(
@@ -918,6 +1056,8 @@ pub fn assemble(
         auth_socket_path,
         plain_socket_path,
         bootstrapped_principal_hex,
+        capabilities,
+        operator_root,
         identity: Arc::new(identity),
         clock,
         tasks,
@@ -1149,9 +1289,18 @@ fn bootstrap_principal(
     key_file: &Path,
 ) -> Result<nlos_types::PrincipalId, DaemonError> {
     let seed = read_key_seed(key_file)?;
-    let public_key = ed25519_dalek::SigningKey::from_bytes(&seed)
-        .verifying_key()
-        .to_bytes();
+    let public_key = public_key_from_seed(&seed);
+    Ok(bootstrap_principal_for_public_key(identity, public_key)?.principal_id)
+}
+
+/// Shared bootstrap core over an already-parsed public key: both the
+/// `--identity-key-file` path and the ADR-0022 operator issuance step derive
+/// the principal identically, so one seed file names one principal however
+/// it is used.
+fn bootstrap_principal_for_public_key(
+    identity: &IdentityAuthority,
+    public_key: [u8; 32],
+) -> Result<IdentityBinding, DaemonError> {
     let decision = identity
         .bootstrap_principal(BootstrapPrincipalRequest {
             principal_profile_digest: digest32(
@@ -1174,10 +1323,217 @@ fn bootstrap_principal(
         })
         .map_err(DaemonError::Identity)?;
     match decision {
-        BootstrapDecision::Created(binding) | BootstrapDecision::Replayed(binding) => {
-            Ok(binding.principal_id)
-        }
+        BootstrapDecision::Created(binding) | BootstrapDecision::Replayed(binding) => Ok(binding),
     }
+}
+
+/// Identity-key bootstrap step: when `DaemonOptions::identity_key_file` is
+/// configured, bootstrap (or idempotently replay) the matching principal and
+/// return its 32-hex id; unconfigured, `None`.
+///
+/// # Errors
+///
+/// Returns the typed key-file and identity rejections of
+/// [`bootstrap_principal`].
+fn assemble_identity_bootstrap(
+    identity: &IdentityAuthority,
+    options: &DaemonOptions,
+) -> Result<Option<String>, DaemonError> {
+    match &options.identity_key_file {
+        Some(key_file) => {
+            let principal = bootstrap_principal(identity, key_file)?;
+            Ok(Some(hex(principal.as_bytes())))
+        }
+        None => Ok(None),
+    }
+}
+
+/// ADR-0022 operator root-issuance step (fail-closed default): without
+/// `DaemonOptions::operator_key_file` the capability authority is not even
+/// opened — the capability face stays exactly as it was. Configured, the
+/// step opens the authority under `<root>/capability`, bootstraps (or
+/// replays) the operator principal, and issues — or replays,
+/// deterministically — one root capability.
+///
+/// # Errors
+///
+/// Returns [`DaemonError::Capability`] when the authority cannot be opened
+/// or rejects the command, and the typed key-file rejections of
+/// [`issue_operator_root`].
+fn assemble_operator_root(
+    identity: &IdentityAuthority,
+    options: &DaemonOptions,
+) -> Result<
+    (
+        Option<Arc<CapabilityAuthority>>,
+        Option<OperatorRootIssuance>,
+    ),
+    DaemonError,
+> {
+    match &options.operator_key_file {
+        Some(key_file) => {
+            let authority = Arc::new(
+                CapabilityAuthority::open(options.root.join("capability"))
+                    .map_err(DaemonError::Capability)?,
+            );
+            let issuance = issue_operator_root(
+                identity,
+                authority.as_ref(),
+                key_file,
+                options.operator_purpose_digest,
+            )?;
+            Ok((Some(authority), Some(issuance)))
+        }
+        None => Ok((None, None)),
+    }
+}
+
+/// ADR-0022 operator root-issuance step: read the operator key file under
+/// the checked key-file contract (existence, 64-hex seed, Unix `0600`
+/// permission bits), bootstrap (or idempotently replay) the operator
+/// principal, and issue — or replay — one root capability binding that
+/// principal as both issuer and holder over the root namespace. Every
+/// timestamped field is deterministic (`0`-anchored, mirroring the bootstrap
+/// convention), so restarting with the same key and the same parameters
+/// replays the original receipt instead of minting a second root.
+///
+/// # Errors
+///
+/// Returns [`DaemonError::OperatorKeyFile`] when the key file violates the
+/// contract and [`DaemonError::Capability`] when the capability authority
+/// rejects the command (identity resolution, signature gate, or storage).
+fn issue_operator_root(
+    identity: &IdentityAuthority,
+    capabilities: &CapabilityAuthority,
+    key_file: &Path,
+    purpose_digest: Option<[u8; 32]>,
+) -> Result<OperatorRootIssuance, DaemonError> {
+    let seed = read_operator_key_seed(key_file)?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let public_key = signing_key.verifying_key().to_bytes();
+    let binding = bootstrap_principal_for_public_key(identity, public_key)?;
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: binding.key_id,
+        holder_key_id: binding.key_id,
+        target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0; 16])),
+        rights: OPERATOR_ROOT_RIGHTS,
+        purpose_digest,
+        valid_from_ms: OPERATOR_ROOT_VALID_FROM_MS,
+        valid_until_ms: BOOTSTRAP_KEY_VALID_UNTIL_MS,
+        delegation_depth_remaining: OPERATOR_ROOT_DELEGATION_DEPTH,
+        call_limit: None,
+        idempotency_key: operator_root_idempotency_key(public_key, purpose_digest),
+        issued_at_ms: 0,
+    };
+    let decision = capabilities
+        .issue_root_signed(
+            identity,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: binding.principal_id,
+                signature: signing_key
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
+            },
+        )
+        .map_err(DaemonError::Capability)?;
+    let replayed = matches!(decision, CapabilityIssueDecision::Replayed(..));
+    Ok(OperatorRootIssuance {
+        replayed,
+        record: decision.record(),
+        receipt: decision.receipt(),
+    })
+}
+
+/// Reads the operator key file under the checked contract: the desktop
+/// client's 64-hex Ed25519 seed format plus the owner-only `0600` mode on
+/// Unix. Known platform boundary: non-Unix hosts carry no POSIX mode bits,
+/// so the permission arm is not enforced there (the existence and format
+/// arms still are).
+///
+/// # Errors
+///
+/// Returns [`DaemonError::OperatorKeyFile`] with the typed contract arm that
+/// failed.
+fn read_operator_key_seed(key_file: &Path) -> Result<[u8; 32], DaemonError> {
+    check_operator_key_mode(key_file)?;
+    let content = fs::read_to_string(key_file)
+        .map_err(|_| DaemonError::OperatorKeyFile(OperatorKeyFileError::Unreadable))?;
+    parse_key_seed(&content)
+        .map_err(|_| DaemonError::OperatorKeyFile(OperatorKeyFileError::NotHexSeed))
+}
+
+/// Unix permission arm of the operator key-file contract: every
+/// group/other permission bit fails closed. Non-Unix platforms register the
+/// arm as a known boundary and skip it (there are no POSIX mode bits to
+/// read).
+#[cfg(unix)]
+fn check_operator_key_mode(key_file: &Path) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(key_file)
+        .map_err(|_| DaemonError::OperatorKeyFile(OperatorKeyFileError::Unreadable))?
+        .permissions()
+        .mode();
+    if mode & 0o777 != 0o600 {
+        return Err(DaemonError::OperatorKeyFile(
+            OperatorKeyFileError::InsecureMode(mode & 0o777),
+        ));
+    }
+    Ok(())
+}
+
+/// Non-Unix permission arm: a registered known boundary, not an enforcement
+/// (see the Unix half for the contract).
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // the Unix half of this arm fails closed
+fn check_operator_key_mode(_key_file: &Path) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+/// Deterministic ADR-0022 idempotency key: SHA-256 over the daemon domain,
+/// the operator public key, and every issuance parameter (target, rights,
+/// purpose, validity, depth, call limit). Restarting with the same key and
+/// the same parameters replays the original receipt (same key, same request
+/// digest); any parameter change — an operator editing the purpose digest or
+/// a future revision of the conservative defaults — derives a fresh key and
+/// issues a distinct root instead of colliding on the old digest with an
+/// `IdempotencyConflict`.
+fn operator_root_idempotency_key(
+    public_key: [u8; 32],
+    purpose_digest: Option<[u8; 32]>,
+) -> IdempotencyKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/system-control-daemon/operator-root-idempotency/v1");
+    hasher.update(public_key);
+    // The issuance target, spelled literally: namespace kind 1 (the
+    // capability wire encoding) over the all-zero root namespace id.
+    hasher.update([1u8]);
+    hasher.update([0u8; 16]);
+    hasher.update(OPERATOR_ROOT_RIGHTS.bits().to_be_bytes());
+    match purpose_digest {
+        Some(digest) => {
+            hasher.update([1]);
+            hasher.update(digest);
+        }
+        None => hasher.update([0]),
+    }
+    hasher.update(OPERATOR_ROOT_VALID_FROM_MS.to_be_bytes());
+    hasher.update(BOOTSTRAP_KEY_VALID_UNTIL_MS.to_be_bytes());
+    hasher.update([OPERATOR_ROOT_DELEGATION_DEPTH]);
+    hasher.update([0]);
+    let digest: [u8; 32] = hasher.finalize().into();
+    IdempotencyKey::from_bytes(
+        digest[..16]
+            .try_into()
+            .expect("SHA-256 prefix has fixed length"),
+    )
+}
+
+fn public_key_from_seed(seed: &[u8; 32]) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(seed)
+        .verifying_key()
+        .to_bytes()
 }
 
 /// Reads the desktop-client key-file format: one file whose trimmed content
@@ -1188,9 +1544,15 @@ fn bootstrap_principal(
 /// Returns [`DaemonError::KeyFile`] when the file cannot be read or is not
 /// a 64-hex seed.
 fn read_key_seed(key_file: &Path) -> Result<[u8; 32], DaemonError> {
-    let invalid = || DaemonError::KeyFile("expected 64 hex characters of Ed25519 seed");
     let content =
         fs::read_to_string(key_file).map_err(|_| DaemonError::KeyFile("key file unreadable"))?;
+    parse_key_seed(&content)
+}
+
+/// Shared 64-hex Ed25519 seed parser (the format half of the desktop-client
+/// key-file contract, shared by the identity and operator key paths).
+fn parse_key_seed(content: &str) -> Result<[u8; 32], DaemonError> {
+    let invalid = || DaemonError::KeyFile("expected 64 hex characters of Ed25519 seed");
     let raw = content.trim().as_bytes();
     if raw.len() != 64 || !raw.iter().all(u8::is_ascii_hexdigit) {
         return Err(invalid());
