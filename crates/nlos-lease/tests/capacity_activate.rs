@@ -19,8 +19,7 @@ use nlos_types::{CapacityLeaseId, ReceiptId, SchedulerDomainId};
 
 #[test]
 fn capacity_lease_host_attach_receipt_moves_prepared_to_active() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xa4; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa4; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
     let mut grantor = CapacityLeaseGrantor::open(authority, 100);

@@ -19,8 +19,7 @@ use nlos_types::{QuotaLeaseId, SchedulerDomainId};
 
 #[test]
 fn quota_lease_ttl_deadline_fences_and_settles() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xab; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xab; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
     let mut grantor = QuotaLeaseGrantor::open(authority, 1000);

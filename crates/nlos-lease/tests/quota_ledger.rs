@@ -17,8 +17,7 @@ use nlos_types::{QuotaLeaseId, SchedulerDomainId};
 
 #[test]
 fn quota_lease_high_water_close_and_preactive_cancel() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xe1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xe1; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
     let mut grantor = QuotaLeaseGrantor::open(authority, 100);

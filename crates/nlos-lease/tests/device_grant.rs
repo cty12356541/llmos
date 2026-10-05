@@ -17,8 +17,7 @@ use nlos_types::{DeviceId, ExclusiveDeviceLeaseId, Generation, SchedulerDomainId
 
 #[test]
 fn exclusive_device_lease_grant_uses_cell_authority_admit_and_reserves_free_device() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
 
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");

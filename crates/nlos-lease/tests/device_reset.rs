@@ -19,8 +19,7 @@ use nlos_types::{DeviceId, ExclusiveDeviceLeaseId, Generation, ReceiptId, Schedu
 
 #[test]
 fn exclusive_device_lease_return_unblocks_only_on_reset_receipt() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xa5; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa5; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
 

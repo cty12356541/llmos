@@ -13,8 +13,7 @@ use nlos_types::{CapacityLeaseId, Generation, SchedulerDomainId};
 
 #[test]
 fn capacity_lease_grant_uses_cell_authority_admit_and_deducts_pool() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
 
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");

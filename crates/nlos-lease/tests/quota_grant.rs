@@ -12,8 +12,7 @@ use nlos_types::{Generation, QuotaLeaseId, SchedulerDomainId};
 
 #[test]
 fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xb1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xb1; 16])).expect("claim");
 
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");

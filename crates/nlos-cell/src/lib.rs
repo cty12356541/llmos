@@ -7,6 +7,8 @@
 
 //! 接线前提：slice-k runtime 按 ADR-0018 装配本 crate 的 cell 权威（当前 runtime 内联进程域，未引本 crate）。
 //! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-cell 依赖边）——解冻条件达成；CellHost 为首个装配消费方。
+//! 2026-10-05 W49：ADR-0021——`CellAuthority` 增共享面 `into_shared`（claim 排他仍在进程槽；
+//! epoch 单写者纪律移交装配面运行时不变量承载）。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
@@ -26,7 +28,7 @@ use std::fmt;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nlos_types::{Generation, SchedulerDomainId};
 
@@ -197,14 +199,26 @@ impl CellFence {
 }
 
 /// Process-scoped Cell authority. Not cloneable: a second in-process
-/// instance is not a second Cell (ADR-0018).
+/// instance is not a second Cell (ADR-0018). Claim exclusivity lives in the
+/// OS-process claim slot, so the claiming process may share one authority
+/// through [`CellAuthority::into_shared`] instead of holding it by value
+/// (ADR-0021) — sharing mints readers of one Cell, never a second Cell.
 #[derive(Debug)]
 pub struct CellAuthority {
     identity: CellIdentity,
     node_boot_generation: Generation,
+    counters: Mutex<FenceCounters>,
+    os_process_id: u32,
+}
+
+/// Interior-mutable epoch / fencing-token pair of a [`CellAuthority`].
+///
+/// The two counters move together under one lock, so a shared authority can
+/// never present a torn fence (epoch from one era, token from another).
+#[derive(Debug)]
+struct FenceCounters {
     epoch: CellEpoch,
     fencing_token: CellFencingToken,
-    os_process_id: u32,
 }
 
 impl CellAuthority {
@@ -249,8 +263,10 @@ impl CellAuthority {
         Ok(Self {
             identity,
             node_boot_generation,
-            epoch: CellEpoch::INITIAL,
-            fencing_token: CellFencingToken::INITIAL,
+            counters: Mutex::new(FenceCounters {
+                epoch: CellEpoch::INITIAL,
+                fencing_token: CellFencingToken::INITIAL,
+            }),
             os_process_id: std::process::id(),
         })
     }
@@ -269,10 +285,29 @@ impl CellAuthority {
         Ok(Self {
             identity,
             node_boot_generation,
-            epoch: CellEpoch::INITIAL,
-            fencing_token: CellFencingToken::INITIAL,
+            counters: Mutex::new(FenceCounters {
+                epoch: CellEpoch::INITIAL,
+                fencing_token: CellFencingToken::INITIAL,
+            }),
             os_process_id: std::process::id(),
         })
+    }
+
+    /// Converts this authority into the in-process shared form (ADR-0021).
+    ///
+    /// Claim exclusivity is process-scoped: the OS-process claim slot — not
+    /// Rust ownership — is what makes this authority unique, so every grantor
+    /// of one Cell shares one authority `Arc`-wise inside the claiming
+    /// process (one process, one Cell, one trust domain). A second process
+    /// claim still fails typed ([`CellError::AlreadyClaimedInProcess`]).
+    ///
+    /// Sharing does not mint a second epoch writer: epoch advance stays a
+    /// single-initiator discipline of the assembly (the wiring map's
+    /// broadcast chain), carried as a runtime invariant now that the
+    /// compiler no longer proves it.
+    #[must_use]
+    pub fn into_shared(self) -> Arc<Self> {
+        Arc::new(self)
     }
 
     /// Stable identity. Does not include the OS pid.
@@ -289,14 +324,14 @@ impl CellAuthority {
 
     /// Current epoch.
     #[must_use]
-    pub const fn epoch(&self) -> CellEpoch {
-        self.epoch
+    pub fn epoch(&self) -> CellEpoch {
+        self.counters().epoch
     }
 
     /// Current fencing token.
     #[must_use]
-    pub const fn fencing_token(&self) -> CellFencingToken {
-        self.fencing_token
+    pub fn fencing_token(&self) -> CellFencingToken {
+        self.counters().fencing_token
     }
 
     /// OS process that holds this authority. Observational only; not part of
@@ -308,33 +343,46 @@ impl CellAuthority {
 
     /// Snapshot of the current fence.
     #[must_use]
-    pub const fn fence(&self) -> CellFence {
+    pub fn fence(&self) -> CellFence {
+        let counters = self.counters();
         CellFence::present(
             self.identity,
             self.node_boot_generation,
-            self.epoch,
-            self.fencing_token,
+            counters.epoch,
+            counters.fencing_token,
         )
     }
 
     /// Advances epoch and fencing token together.
     ///
+    /// ADR-0021: the shared face admits multiple in-process holders, so the
+    /// counters live behind an interior lock instead of `&mut` exclusivity;
+    /// the single-initiator discipline of epoch advances (the assembly's
+    /// broadcast chain) is a runtime invariant, not a property of this
+    /// signature.
+    ///
     /// # Errors
     ///
     /// Returns [`CellError::GenerationExhausted`] when either counter cannot
     /// advance.
-    pub fn advance_epoch(&mut self) -> Result<CellFence, CellError> {
-        let epoch = self
+    pub fn advance_epoch(&self) -> Result<CellFence, CellError> {
+        let mut counters = self.counters();
+        let epoch = counters
             .epoch
             .checked_next()
             .ok_or(CellError::GenerationExhausted)?;
-        let fencing_token = self
+        let fencing_token = counters
             .fencing_token
             .checked_next()
             .ok_or(CellError::GenerationExhausted)?;
-        self.epoch = epoch;
-        self.fencing_token = fencing_token;
-        Ok(self.fence())
+        counters.epoch = epoch;
+        counters.fencing_token = fencing_token;
+        Ok(CellFence::present(
+            self.identity,
+            self.node_boot_generation,
+            epoch,
+            fencing_token,
+        ))
     }
 
     /// Admits a presented fence against the current authority.
@@ -346,6 +394,7 @@ impl CellAuthority {
     ///
     /// Typed reject: [`CellAdmitError`].
     pub fn admit(&self, presented: &CellFence) -> Result<(), CellAdmitError> {
+        let counters = self.counters();
         if presented.identity != self.identity {
             return Err(CellAdmitError::IdentityMismatch {
                 presented: presented.identity,
@@ -358,25 +407,36 @@ impl CellAuthority {
                 current: self.node_boot_generation,
             });
         }
-        if presented.epoch < self.epoch {
+        if presented.epoch < counters.epoch {
             return Err(CellAdmitError::StaleEpoch {
                 presented: presented.epoch,
-                current: self.epoch,
+                current: counters.epoch,
             });
         }
-        if presented.epoch != self.epoch {
+        if presented.epoch != counters.epoch {
             return Err(CellAdmitError::EpochMismatch {
                 presented: presented.epoch,
-                current: self.epoch,
+                current: counters.epoch,
             });
         }
-        if presented.fencing_token != self.fencing_token {
+        if presented.fencing_token != counters.fencing_token {
             return Err(CellAdmitError::FencingTokenMismatch {
                 presented: presented.fencing_token,
-                current: self.fencing_token,
+                current: counters.fencing_token,
             });
         }
         Ok(())
+    }
+
+    /// Locks the interior epoch/token counters for reading or advancing.
+    ///
+    /// The critical section runs only infallible arithmetic and field
+    /// writes, so this lock cannot be poisoned through this type; should a
+    /// foreign panic poison it anyway, the inner counters are still a
+    /// consistent pair and are recovered instead of panicking every
+    /// subsequent fence read.
+    fn counters(&self) -> MutexGuard<'_, FenceCounters> {
+        self.counters.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

@@ -16,8 +16,7 @@ use nlos_types::{CapacityLeaseId, SchedulerDomainId};
 
 #[test]
 fn capacity_lease_target_prepared_returns_without_refund_until_ack() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xc3; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xc3; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
     let mut grantor = CapacityLeaseGrantor::open(authority, 80);
