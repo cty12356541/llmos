@@ -20,14 +20,14 @@ fn quota_lease_epoch_advance_quarantines_unreconciled_face() {
     let closed_id = QuotaLeaseId::from_bytes([0xe9; 16]);
 
     grantor
-        .grant(&current, active_id, 40)
+        .grant(&current, active_id, 40, None)
         .expect("grant active");
     grantor.activate(&current, active_id).expect("activate");
     grantor
         .report_usage(&current, active_id, 15)
         .expect("spend");
     grantor
-        .grant(&current, closed_id, 20)
+        .grant(&current, closed_id, 20, None)
         .expect("grant closed");
     grantor
         .activate(&current, closed_id)
@@ -74,7 +74,7 @@ fn quota_lease_epoch_advance_quarantines_unreconciled_face() {
     ));
     assert_eq!(
         grantor
-            .grant(&next, active_id, 40)
+            .grant(&next, active_id, 40, None)
             .expect("same id does not deduct again")
             .state(),
         QuotaLeaseState::Quarantined
@@ -91,10 +91,12 @@ fn quota_lease_epoch_advance_quarantines_unreconciled_face() {
     );
 
     let fresh = QuotaLeaseId::from_bytes([0xea; 16]);
-    grantor.grant(&later, fresh, 60).expect("pool still usable");
+    grantor
+        .grant(&later, fresh, 60, None)
+        .expect("pool still usable");
     assert_eq!(grantor.available(), 0);
     assert!(matches!(
-        grantor.grant(&later, QuotaLeaseId::from_bytes([0xeb; 16]), 1),
+        grantor.grant(&later, QuotaLeaseId::from_bytes([0xeb; 16]), 1, None),
         Err(nlos_lease::QuotaLeaseGrantError::InsufficientAvailable { .. })
     ));
 }
