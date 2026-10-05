@@ -26,7 +26,7 @@ use nlos_process::ProcessBindingRecord;
 use nlos_runtime_tokio::{PumpState, TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{CellEpochAdvance, CellHost, CellHostConfig, SliceKError};
 use nlos_types::{
-    CapabilityId, Generation, QuotaLeaseId, SchedulerDomainId, TaskAttemptId, TaskId,
+    CapabilityId, DeviceId, Generation, QuotaLeaseId, SchedulerDomainId, TaskAttemptId, TaskId,
 };
 
 struct TempDir {
@@ -99,6 +99,8 @@ fn assert_seven_pieces_assembled(host: &mut CellHost, domain: SchedulerDomainId)
     assert_eq!(inspect.epoch, CellEpoch::INITIAL);
     assert_eq!(inspect.fencing_token.get(), 1);
     assert_eq!(inspect.quota_available, 1000);
+    assert_eq!(inspect.capacity_pool_remaining, 500);
+    assert!(inspect.device_head_free);
     // The runtime's open already registered the semantic-writer delegated
     // process, so the supervisor face lists exactly that one binding.
     assert_eq!(inspect.active_process_bindings, 1);
@@ -380,7 +382,13 @@ async fn cell_host_assembles_seven_pieces_and_advances_epoch_with_broadcast() {
     let domain = SchedulerDomainId::from_bytes([0x48; 16]);
     let mut host = CellHost::open(
         temp.root(),
-        CellHostConfig::new(domain, 1000, detector_config()),
+        CellHostConfig::new(
+            domain,
+            1000,
+            500,
+            DeviceId::from_bytes([0x48; 16]),
+            detector_config(),
+        ),
     )
     .expect("assemble cell host");
 
@@ -398,6 +406,8 @@ async fn cell_host_assembles_seven_pieces_and_advances_epoch_with_broadcast() {
         CellHostConfig::new(
             SchedulerDomainId::from_bytes([0x49; 16]),
             1,
+            1,
+            DeviceId::from_bytes([0x49; 16]),
             detector_config(),
         ),
     );

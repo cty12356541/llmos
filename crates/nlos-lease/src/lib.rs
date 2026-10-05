@@ -5,7 +5,9 @@
 //! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
 
 //! 接线前提：slice-k/daemon 装配 `CellAuthority` 与 lease 三族 admit/release 面（W38 lease-admit 前片已指向该路径）。
-//! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-lease 依赖边）——解冻条件达成；生产调用方为 `CellHost` 的 quota 面（capacity/device 族因 grantor 按值持 `CellAuthority` 的结构限制未进单进程装配，见 cell-assembly-wiring-map.md）。
+//! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-lease 依赖边）——解冻条件达成；生产调用方为 `CellHost` 的 quota 面。
+//! 2026-10-05 W49：ADR-0021——三族 grantor 改持共享权威 `Arc<CellAuthority>`（`CellAuthority::into_shared`），
+//! capacity/device 族随 W49 进入单进程装配；quota 族仍是唯一 epoch 推进入口。
 //! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
@@ -59,6 +61,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use nlos_cell::{
     CellAdmitError, CellAuthority, CellEpoch, CellError, CellFence, CellFencingToken, CellIdentity,
@@ -232,20 +235,24 @@ impl QuotaLeaseGrant {
 
 /// In-memory single-Cell `QuotaLease` grantor.
 ///
-/// Holds the control-plane AVAILABLE pool and the Cell authority used for
-/// fence admit. Not a durable ledger and not a second authority store.
+/// Holds the control-plane AVAILABLE pool and the shared Cell authority
+/// used for fence admit. Not a durable ledger and not a second authority
+/// store. This family remains the epoch-advance entry of the assembly
+/// (`advance_epoch_and_quarantine`): sharing the authority (ADR-0021)
+/// mints readers, not a second writer.
 #[derive(Debug)]
 pub struct QuotaLeaseGrantor {
-    authority: CellAuthority,
+    authority: Arc<CellAuthority>,
     available: u64,
     leases: HashMap<QuotaLeaseId, QuotaLeaseGrant>,
 }
 
 impl QuotaLeaseGrantor {
-    /// Opens a grantor bound to an existing Cell authority with an initial
-    /// AVAILABLE pool.
+    /// Opens a grantor bound to the process's shared Cell authority
+    /// ([`CellAuthority::into_shared`], ADR-0021) with an initial AVAILABLE
+    /// pool.
     #[must_use]
-    pub fn open(authority: CellAuthority, available: u64) -> Self {
+    pub fn open(authority: Arc<CellAuthority>, available: u64) -> Self {
         Self {
             authority,
             available,
@@ -962,21 +969,22 @@ impl CapacityLeaseGrant {
 /// In-memory single-Cell `CapacityLease` grantor.
 ///
 /// Holds the source capacity pool remaining, the committed lease records
-/// with their host attach receipts, and the Cell authority used for fence
-/// admit. Not a durable ledger and not a second authority store.
+/// with their host attach receipts, and the shared Cell authority used for
+/// fence admit. Not a durable ledger and not a second authority store.
 #[derive(Debug)]
 pub struct CapacityLeaseGrantor {
-    authority: CellAuthority,
+    authority: Arc<CellAuthority>,
     pool_remaining: u64,
     leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
     attach_receipts: HashMap<CapacityLeaseId, HostAttachReceipt>,
 }
 
 impl CapacityLeaseGrantor {
-    /// Opens a grantor bound to an existing Cell authority with an initial
-    /// source capacity pool.
+    /// Opens a grantor bound to the process's shared Cell authority
+    /// ([`CellAuthority::into_shared`], ADR-0021) with an initial source
+    /// capacity pool.
     #[must_use]
-    pub fn open(authority: CellAuthority, pool_remaining: u64) -> Self {
+    pub fn open(authority: Arc<CellAuthority>, pool_remaining: u64) -> Self {
         Self {
             authority,
             pool_remaining,
@@ -1633,11 +1641,11 @@ impl ExclusiveDeviceLeaseGrant {
 ///
 /// Holds one `DeviceLeaseHead` (FREE or reserved) with its monotonic reset
 /// generation, the committed lease history, and the immutable reset receipt
-/// log, plus the Cell authority used for fence admit. Not a durable ledger
-/// and not a second authority store.
+/// log, plus the shared Cell authority used for fence admit. Not a durable
+/// ledger and not a second authority store.
 #[derive(Debug)]
 pub struct ExclusiveDeviceLeaseGrantor {
-    authority: CellAuthority,
+    authority: Arc<CellAuthority>,
     device_id: DeviceId,
     free: bool,
     reset_generation: Generation,
@@ -1646,10 +1654,11 @@ pub struct ExclusiveDeviceLeaseGrantor {
 }
 
 impl ExclusiveDeviceLeaseGrantor {
-    /// Opens a grantor bound to an existing Cell authority with a FREE device
-    /// head for `device_id` at reset generation [`Generation::INITIAL`].
+    /// Opens a grantor bound to the process's shared Cell authority
+    /// ([`CellAuthority::into_shared`], ADR-0021) with a FREE device head
+    /// for `device_id` at reset generation [`Generation::INITIAL`].
     #[must_use]
-    pub fn open(authority: CellAuthority, device_id: DeviceId) -> Self {
+    pub fn open(authority: Arc<CellAuthority>, device_id: DeviceId) -> Self {
         Self {
             authority,
             device_id,

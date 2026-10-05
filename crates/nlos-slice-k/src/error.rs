@@ -14,7 +14,10 @@ use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
-use nlos_lease::{QuotaLeaseGrantError, QuotaLeaseLedgerError};
+use nlos_lease::{
+    CapacityLeaseGrantError, CapacityLeaseReturnError, ExclusiveDeviceLeaseGrantError,
+    ExclusiveDeviceLeaseReturnError, QuotaLeaseGrantError, QuotaLeaseLedgerError,
+};
 use nlos_plan::PlanStoreError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
@@ -133,6 +136,23 @@ pub enum SliceKError {
     /// The cell host's quota lease sub-ledger refused a ledger read (W48):
     /// an unknown lease id.
     LeaseLedger(QuotaLeaseLedgerError),
+    /// The cell host's capacity lease sub-ledger refused a grant (W49): a
+    /// stale or mismatched presented fence, an insufficient source pool, or
+    /// a conflicting replay of the same capacity lease id.
+    CapacityLeaseGrant(CapacityLeaseGrantError),
+    /// The cell host's capacity lease sub-ledger refused a prepare, attach,
+    /// return, or query (W49): an unknown lease id, an ill-state transition,
+    /// or an attach receipt that does not bind the committed lease.
+    CapacityLeaseReturn(CapacityLeaseReturnError),
+    /// The cell host's exclusive device lease sub-ledger refused a grant
+    /// (W49): a stale or mismatched presented fence, or a
+    /// `DeviceLeaseHead` that is not FREE.
+    DeviceLeaseGrant(ExclusiveDeviceLeaseGrantError),
+    /// The cell host's exclusive device lease sub-ledger refused a reset
+    /// declare, reset receipt, return, or query (W49): an unknown lease id,
+    /// an ill-state transition, or a receipt that does not bind the
+    /// committed lease or head fence.
+    DeviceLeaseReturn(ExclusiveDeviceLeaseReturnError),
     /// The cell-local failure detector refused a heartbeat or sweep the
     /// cell host drove (W48): a logical-clock regression, or a heartbeat
     /// for an incarnation already judged dead.
@@ -211,6 +231,18 @@ impl fmt::Display for SliceKError {
             Self::Cell(error) => write!(formatter, "cell authority: {error}"),
             Self::Lease(error) => write!(formatter, "quota lease grantor: {error}"),
             Self::LeaseLedger(error) => write!(formatter, "quota lease ledger: {error}"),
+            Self::CapacityLeaseGrant(error) => {
+                write!(formatter, "capacity lease grantor: {error}")
+            }
+            Self::CapacityLeaseReturn(error) => {
+                write!(formatter, "capacity lease ledger: {error}")
+            }
+            Self::DeviceLeaseGrant(error) => {
+                write!(formatter, "device lease grantor: {error}")
+            }
+            Self::DeviceLeaseReturn(error) => {
+                write!(formatter, "device lease ledger: {error}")
+            }
             Self::FailureDetector(error) => write!(formatter, "cell failure detector: {error}"),
             Self::NameCache(error) => write!(formatter, "cell name cache: {error}"),
             Self::CellHost(reason) => write!(formatter, "cell host state refusal: {reason}"),
@@ -272,6 +304,10 @@ impl Error for SliceKError {
             Self::Cell(error) => Some(error),
             Self::Lease(error) => Some(error),
             Self::LeaseLedger(error) => Some(error),
+            Self::CapacityLeaseGrant(error) => Some(error),
+            Self::CapacityLeaseReturn(error) => Some(error),
+            Self::DeviceLeaseGrant(error) => Some(error),
+            Self::DeviceLeaseReturn(error) => Some(error),
             Self::FailureDetector(error) => Some(error),
             Self::NameCache(error) => Some(error),
             Self::CellBroadcast(incomplete) => match &incomplete.refusal {
@@ -405,6 +441,30 @@ impl From<QuotaLeaseGrantError> for SliceKError {
 impl From<QuotaLeaseLedgerError> for SliceKError {
     fn from(error: QuotaLeaseLedgerError) -> Self {
         Self::LeaseLedger(error)
+    }
+}
+
+impl From<CapacityLeaseGrantError> for SliceKError {
+    fn from(error: CapacityLeaseGrantError) -> Self {
+        Self::CapacityLeaseGrant(error)
+    }
+}
+
+impl From<CapacityLeaseReturnError> for SliceKError {
+    fn from(error: CapacityLeaseReturnError) -> Self {
+        Self::CapacityLeaseReturn(error)
+    }
+}
+
+impl From<ExclusiveDeviceLeaseGrantError> for SliceKError {
+    fn from(error: ExclusiveDeviceLeaseGrantError) -> Self {
+        Self::DeviceLeaseGrant(error)
+    }
+}
+
+impl From<ExclusiveDeviceLeaseReturnError> for SliceKError {
+    fn from(error: ExclusiveDeviceLeaseReturnError) -> Self {
+        Self::DeviceLeaseReturn(error)
     }
 }
 

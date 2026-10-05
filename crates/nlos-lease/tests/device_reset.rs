@@ -19,13 +19,12 @@ use nlos_types::{DeviceId, ExclusiveDeviceLeaseId, Generation, ReceiptId, Schedu
 
 #[test]
 fn exclusive_device_lease_return_unblocks_only_on_reset_receipt() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xa5; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa5; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
 
     let device_id = DeviceId::from_bytes([0xa6; 16]);
-    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority, device_id);
+    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority.into_shared(), device_id);
 
     let lease_id = ExclusiveDeviceLeaseId::from_bytes([0xa7; 16]);
     let grant = grantor.grant(&current, lease_id).expect("grant");
