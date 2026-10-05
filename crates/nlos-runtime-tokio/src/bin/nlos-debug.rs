@@ -47,8 +47,8 @@
 //!    `journal_mode=WAL` on an already-WAL database is a no-op read,
 //!    `synchronous`/`foreign_keys`/`busy_timeout` are connection-local, and
 //!    the migration chain is skipped at the current version.
-//! **保留声明（F1 / 2026-10-05）**：本运维面按裁定保留——不是死代码；schema
-//! 钉子与 tripwire 由 CI 实跑（W44-INT 缝即由其钉子测试照出）。
+//!
+//! **保留声明（F1 / 2026-10-05）**：本运维面按裁定保留——不是死代码；schema 钉子与 tripwire 由 CI 实跑。
 //! 3. **Tripwire**: after rendering, every touched database's `user_version`
 //!    is re-read through a fresh read-only connection; any drift fails the
 //!    run. The bin tests additionally assert a full logical dump of every
