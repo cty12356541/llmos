@@ -22,7 +22,7 @@ fn quota_lease_ttl_deadline_fences_and_settles() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xab; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = QuotaLeaseGrantor::open(authority, 1000);
+    let mut grantor = QuotaLeaseGrantor::open(authority.into_shared(), 1000);
 
     let first = QuotaLeaseId::from_bytes([0xd1; 16]);
     ttl_binds_and_replays(&mut grantor, &current, first);

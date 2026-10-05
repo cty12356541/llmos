@@ -19,7 +19,7 @@ fn capacity_lease_target_prepared_returns_without_refund_until_ack() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xc3; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = CapacityLeaseGrantor::open(authority, 80);
+    let mut grantor = CapacityLeaseGrantor::open(authority.into_shared(), 80);
     let lease_id = CapacityLeaseId::from_bytes([0xc4; 16]);
 
     let reserved = grantor.grant(&current, lease_id, 30).expect("reserve");

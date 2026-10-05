@@ -28,7 +28,7 @@ fn exclusive_device_lease_grant_uses_cell_authority_admit_and_reserves_free_devi
     );
 
     let device_id = DeviceId::from_bytes([0xf0; 16]);
-    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority, device_id);
+    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority.into_shared(), device_id);
     assert!(grantor.is_free());
 
     assert_eq!(

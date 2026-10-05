@@ -22,7 +22,7 @@ fn capacity_lease_host_attach_receipt_moves_prepared_to_active() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa4; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = CapacityLeaseGrantor::open(authority, 100);
+    let mut grantor = CapacityLeaseGrantor::open(authority.into_shared(), 100);
     let lease_id = CapacityLeaseId::from_bytes([0xa6; 16]);
 
     let reserved = grantor.grant(&current, lease_id, 40).expect("reserve");

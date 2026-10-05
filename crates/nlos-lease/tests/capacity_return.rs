@@ -19,7 +19,7 @@ fn capacity_lease_preactive_return_refunds_once_on_ack() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa1; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = CapacityLeaseGrantor::open(authority, 100);
+    let mut grantor = CapacityLeaseGrantor::open(authority.into_shared(), 100);
     let lease_id = CapacityLeaseId::from_bytes([0xb1; 16]);
 
     let reserved = grantor

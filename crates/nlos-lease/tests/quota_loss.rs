@@ -14,7 +14,7 @@ use nlos_types::{QuotaLeaseId, SchedulerDomainId};
 fn quota_lease_epoch_advance_quarantines_unreconciled_face() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xe7; 16])).expect("claim");
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = QuotaLeaseGrantor::open(authority, 100);
+    let mut grantor = QuotaLeaseGrantor::open(authority.into_shared(), 100);
     let active_id = QuotaLeaseId::from_bytes([0xe8; 16]);
     let closed_id = QuotaLeaseId::from_bytes([0xe9; 16]);
 

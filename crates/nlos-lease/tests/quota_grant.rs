@@ -22,7 +22,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
         CellEpoch::INITIAL.checked_next().expect("epoch 2")
     );
 
-    let mut grantor = QuotaLeaseGrantor::open(authority, 100);
+    let mut grantor = QuotaLeaseGrantor::open(authority.into_shared(), 100);
 
     assert_eq!(
         grantor.grant(&stale, QuotaLeaseId::from_bytes([0xc2; 16]), 25, None),

@@ -20,7 +20,7 @@ fn quota_lease_high_water_close_and_preactive_cancel() {
     let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xe1; 16])).expect("claim");
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
-    let mut grantor = QuotaLeaseGrantor::open(authority, 100);
+    let mut grantor = QuotaLeaseGrantor::open(authority.into_shared(), 100);
     let lease_id = QuotaLeaseId::from_bytes([0x11; 16]);
 
     issue_refuses_spend_and_face_change(&mut grantor, &current, lease_id);
