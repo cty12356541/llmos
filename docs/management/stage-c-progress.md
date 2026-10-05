@@ -398,3 +398,12 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | W46-B #12 收尾 | `4272cdf` | ①反向 NL 时间戳同源（`bbcd431`）：拆卸采纳 NL kill 回执后 `marked_at_ms=max(本域,回执 killed_at_ms)`，跨墙域下限+重放稳定；②完整复活链（`05b67ca`）：`run_process_revival` 贯通 LOST→RECOVERING（restore 出新代次）→supervisor 按新代次重登记→RUNNABLE（复活围栏下真实派发一笔 durable 操作），复活键 (process id, 被复活代次) 域分离，端到端测试故障→恢复→再派发→重放。slice-k 79/0 |
 
 **验证**：全仓 fmt/clippy/test **1861 passed / 0 failed / 27 ignored**（净增 133）。**推送** `296ab8b..7e16850`。CI run 37309312636 结果以实际 run 为准。**C-LEASE 三族状态机面与 C-LIFECYCLE #12 的登记目标至此落地**（`PARTIAL_PASS` 前片状态待 Evidence 复核后升格）；lease 仍为冻结 crate（无生产消费方，本波为面向接线前提的能力完备）。仍开：C-SHARD（ADR-0019）、Cell 七件套、supervisor pid 发现、Stage D 语义写端（D6 后置）/capability 闭环。
+
+2026-10-05（W47 波：Cell 七件套首批 + supervisor pid 发现）：两车道并行、写集互斥（nlos-cell / nlos-process）。
+
+| 车道 | 内容 |
+|---|---|
+| W47-L2 nlos-cell | 七件套首批两件全实现：**failure detector**（`0f7d375`，`DIST-FAIL-001`：Alive→Suspect→Dead 单调升级、心跳复活/Dead 不可原地复活、epoch 联动=怀疑不跨栅栏晋升+心跳证据不跨 epoch 重计时+Dead 判决不可变而对象以新 incarnation 重入）；**capability/name cache**（`e3f877c`：路径→句柄缓存、失效高水位单调、世代栅栏不可越过、epoch 栅栏+高水位跨边界存活、miss 一律 None 配 `NS-NOENT-001`）。F1 冻结声明更新为"七件套建设中"（`5d21f49`）。**其余五件接线图入册** [cell-assembly-wiring-map.md](./cell-assembly-wiring-map.md)（`a2841d7`）：Cell=装配体不搬件进 nlos-cell；单持有者 epoch 广播不变量；逐件现有机械/装配形态/依赖边/ADR-0018 关系。cell 18/0 |
+| W47-L1 nlos-process | supervisor pid 自动发现（`67678bd`）：`scan_pids` 纯读三分类（Fresh/Stale{代次漂移/记录 pid 死/候选死}/Missing）+ `SupervisorPidProbe` 探针 trait（Unix kill(pid,0)/Windows tasklist）+ `adopt_fresh_findings` opt-in 采纳走既有 register 门 + `list_active_process_bindings` 权威源。C-APP-CONTROL #11 的"supervisor 自动 pid 发现"登记目标落地。OS 进程表扫描型 resolver 登记为后续切片。process 69/0 |
+
+**验证**：全仓 fmt/clippy/test **1888 passed / 0 failed / 27 ignored**（净增 27）。**C-CELL 七件套 2/7 落地**（其余五件有施工图）；#11 目标全落地。仍开：C-SHARD（ADR-0019）、七件套余五件（按施工图）、语义写端（D6 后置）、capability 闭环。
