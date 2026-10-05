@@ -1,6 +1,6 @@
 # ADR-0023：语义写入端——driver 回调→语义事件桥（解除 D6 后置）
 
-- 状态：`ACCEPTED`（设计裁断，2026-10-05；实现证据由后续车道落档后升 `VERIFIED`）
+- 状态：`VERIFIED`（修订 1 追认实然实现，2026-10-06；原 ACCEPTED 2026-10-05）
 - 日期：2026-10-05
 - Owner：nlos-slice-k / nlos-semantic
 - 裁断来源：2026-09-25 决策 D6（"Capability 最小装配+写端后置"）——后置理由"先接 Capability 实例"自 W40-D/W48 起已失效；用户授权"按推荐裁定"
@@ -28,3 +28,15 @@
 ## 验证与复审
 
 实现车道：slice-k 桥 + capability 准入 + 缺省关闭/开启双路测试 + admission→outbox 端到端。复审触发：议题 19（语义计算地基）落地结构化写端时。
+
+---
+
+## 修订 1（2026-10-06）：前提更正与实然追认（additive，不改写上文）
+
+**前提更正**：本 ADR 撰写时引用的"append_* 零生产调用方"出自 2026-09-25 审查结论，在入册时点（2026-10-05）已不成立——并行工作流已于 2026-10-03/04 将语义写端全家族落入 main：`c1b90a1`（W49/D6 payload 终态桥）、`f47f5e7`（W50 semantic_outbox 生产消费者）、`1f3e39f`（W51 capability consume 账本扣减）、`8d3fef0`（W53-B 预算 raise）。该家族未登记本仓进度台账，导致本 ADR 上下文失真。
+
+**实然追认**：既有实现即本 ADR 的决定语义，原"缺省关闭+外部供给"规格作废（explicitly superseded）——canonical 形态为：桥在 `SliceKRuntime::open` 无条件装配（always-on）；桥**自签发 per-application 根能力**（较 operator 单根更细粒度）；consume 先扣费→admission 内 authorize→append，fail-closed 已文档化并有测试；幂等由 consume 账本承载。原规格中的"缺省关闭""外部供给"两 delta 登记为已考虑并否决（与 W51/W53-B 地基冲突，改造无收益）。
+
+**状态升 `VERIFIED`**：证据=上述四提交 + 2026-10-06 定向复跑（`semantic_writer_bridge` 6/6、`payload_execution` 6/6、`semantic_consume_ledger` 3/3、`semantic_budget_raise` 6/6、`semantic_stream` 6/6，隔离 target 全绿）。
+
+**复审触发器（修订后）**：议题 19 结构化写端立项时；或 always-on 装配出现需要关闭语义的新场景（届时增开 Option 装配须连 W51/W53-B 一并重排）。
