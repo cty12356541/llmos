@@ -111,6 +111,13 @@ pub enum SliceKError {
     /// out-of-band crash): the assembly names the refusal instead of
     /// guessing a transition the authorities do not offer.
     TeardownState(&'static str),
+    /// The crash-revival lane refused a durable state this chain never
+    /// produces (e.g. a terminal marker at a generation the caller's
+    /// crashed binding does not name, or a head that is neither the
+    /// crashed generation nor its direct revival): the assembly names the
+    /// refusal instead of guessing a transition the authorities do not
+    /// offer.
+    RevivalState(&'static str),
     /// The system-control prefix refused an NL command (out-of-grammar
     /// sentence or dispatch-contract defect); handler rejections surface
     /// as typed receipt failures inside
@@ -166,6 +173,9 @@ impl fmt::Display for SliceKError {
             Self::TeardownState(reason) => {
                 write!(formatter, "teardown state refusal: {reason}")
             }
+            Self::RevivalState(reason) => {
+                write!(formatter, "crash-revival state refusal: {reason}")
+            }
             Self::Control(error) => write!(formatter, "system-control prefix: {error}"),
             Self::TimestampOverflow(value) => {
                 write!(
@@ -198,6 +208,7 @@ impl Error for SliceKError {
             Self::Driver(error) => Some(error),
             Self::PayloadState(_)
             | Self::TeardownState(_)
+            | Self::RevivalState(_)
             | Self::TimestampOverflow(_)
             | Self::SizeOverflow(_)
             | Self::Pump(_)

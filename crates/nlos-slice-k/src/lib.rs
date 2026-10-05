@@ -47,6 +47,7 @@ mod nl;
 mod package;
 mod payload;
 mod pump;
+mod restore;
 mod runtime;
 mod semantic_stream;
 mod semantic_writer;
@@ -70,6 +71,7 @@ pub use payload::{
     payload_execution_seed,
 };
 pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
+pub use restore::{ProcessRevival, RevivalDispatch, run_process_revival};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
