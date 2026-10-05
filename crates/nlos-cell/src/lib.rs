@@ -1,4 +1,10 @@
 //! Process-scoped Cell identity / epoch / fencing (C-CELL first slice).
+//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
+//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
+//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
+//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
+
+//! 接线前提：slice-k runtime 按 ADR-0018 装配本 crate 的 cell 权威（当前 runtime 内联进程域，未引本 crate）。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate

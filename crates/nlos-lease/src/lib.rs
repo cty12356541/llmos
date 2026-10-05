@@ -1,4 +1,10 @@
 //! Single-Cell `QuotaLease` / `CapacityLease` / `ExclusiveDeviceLease` grant
+//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
+//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
+//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
+//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
+
+//! 接线前提：slice-k/daemon 装配 CellAuthority 与 lease 三族 admit/release 面（W38 lease-admit 前片已指向该路径）。
 //! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
