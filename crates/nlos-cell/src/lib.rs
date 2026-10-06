@@ -12,6 +12,9 @@
 //! 2026-10-05 W50：federation 机制面最小面（[`federation`]：`CellDirectory` 跨 Cell
 //! 名称/服务发现 + `MigrationIntent` 迁移意图登记，共享文件目录 std-only）——ADR-0019
 //! 决定 5 的机制面前两项；不含跨 Cell 提交、全局共识或意图执行。
+//! 2026-10-06 W51：补齐第三项机制面（`ReconciliationCheckpoint` 登记：`CheckpointFact`
+//! 不可变追加 + 按 Cell 前缀枚举读）；仍不含 checkpoint 验证/执行或跨 Cell
+//! reconciliation 协调（ADR-0019 定案后）。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
@@ -41,8 +44,9 @@ pub use failure_detector::{
     HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
 };
 pub use federation::{
-    CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, FederationError, MigrationIntent,
-    MigrationIntentLog, MigrationIntentRecord, MigrationObject,
+    CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, CheckpointFact, CheckpointLog,
+    CheckpointRecord, FederationError, MigrationIntent, MigrationIntentLog, MigrationIntentRecord,
+    MigrationObject,
 };
 pub use name_cache::{
     CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,

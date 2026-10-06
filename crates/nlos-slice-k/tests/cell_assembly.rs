@@ -393,6 +393,14 @@ async fn cell_host_assembles_seven_pieces_and_advances_epoch_with_broadcast() {
     .expect("assemble cell host");
 
     assert_seven_pieces_assembled(&mut host, domain);
+    // W51-L1 default-opening zero delta: a non-federated host carries no
+    // federation face — the checkpoint registration entry is a no-op `None`.
+    assert!(host.cell_directory().is_none());
+    assert_eq!(
+        host.record_reconciliation_checkpoint("must not record")
+            .expect("no-op on non-federated host"),
+        None
+    );
     let (subject, binding) = assert_heartbeat_lane(&mut host);
     let (cap_path, lease_id) = assert_cache_and_lease_pieces(&mut host);
     assert_epoch_three_way_linkage(&mut host, subject, &cap_path, lease_id);

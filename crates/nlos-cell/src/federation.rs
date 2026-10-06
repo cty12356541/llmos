@@ -1,15 +1,18 @@
-//! Federation mechanism face, minimal slice (W50-L2): cross-Cell
-//! name/service discovery and migration-intent registration over one
-//! shared file directory — the two §26.1 control-plane responsibilities
-//! ADR-0019 decision 5 names as the mechanism face ("跨 Cell 名称与服务发现",
-//! "placement 与 migration intent").
+//! Federation mechanism face, minimal slice (W50-L2 + W51-L1): cross-Cell
+//! name/service discovery, migration-intent registration, and
+//! reconciliation/audit checkpoint registration over one shared file
+//! directory — the three §26.1 control-plane responsibilities ADR-0019
+//! decision 5 names as the mechanism face ("跨 Cell 名称与服务发现",
+//! "placement 与 migration intent", "reconciliation 和审计 checkpoint").
 //!
 //! **Deliberately not here:** cross-Cell atomic commit, global consensus,
-//! intent *execution* (that is `C-MIGRATE`), and any cross-host claims. A
-//! shared-root directory is a single-host, ADR-0018-topology mechanism: two
-//! OS processes on one host each holding one Cell discover each other
-//! through files, nothing more. Citing this face as cross-machine evidence
-//! would violate RISK-B-11.
+//! intent *execution* (that is `C-MIGRATE`), checkpoint *verification* or
+//! *execution*, any cross-Cell reconciliation coordination (ADR-0019
+//! extension point B leaves those shapes to its finalization), and any
+//! cross-host claims. A shared-root directory is a single-host,
+//! ADR-0018-topology mechanism: two OS processes on one host each holding
+//! one Cell discover each other through files, nothing more. Citing this
+//! face as cross-machine evidence would violate RISK-B-11.
 //!
 //! **Layout** (one caller-supplied federation root, `std`-only):
 //!
@@ -22,11 +25,19 @@
 //!   one immutable file per intent, append-only by construction (the
 //!   writer never rewrites or removes); enumeration sorts by
 //!   (`recorded_ms`, `pid`, `sequence`).
+//! - `<root>/checkpoints/<hex identity>-<recorded_ms>-<pid>-<sequence>.ckpt`
+//!   — one immutable checkpoint file per registered fact, append-only by
+//!   construction; the owning Cell's identity is the filename prefix, so
+//!   enumerating one Cell's audit trail never reads another Cell's files,
+//!   and enumeration sorts by (`recorded_ms`, `pid`, `sequence`).
 //!
 //! Freshness (`live_cells`) compares the record's wall `heartbeat_ms`
 //! against a caller-supplied silence window. That is a single-host
 //! discovery heuristic, not a fencing oracle: liveness here grants no
 //! authority, and `[DIST-LOCAL-001]` still binds what a Cell may act on.
+//! A registered checkpoint is likewise a *claim by its author*: this face
+//! stores and enumerates the fact, never verifies it — proving the digest
+//! behind a checkpoint is the (deferred) reconciliation executor's job.
 
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -47,15 +58,25 @@ const CELL_FILE_EXT: &str = "cell";
 const INTENTS_DIR: &str = "migration-intents";
 /// Extension of a migration-intent file.
 const INTENT_FILE_EXT: &str = "intent";
-/// Upper bound of the free-text fields (description / reason), in bytes.
+/// Sub-directory holding one immutable checkpoint file per registered
+/// reconciliation/audit fact.
+const CHECKPOINTS_DIR: &str = "checkpoints";
+/// Extension of a checkpoint file.
+const CHECKPOINT_FILE_EXT: &str = "ckpt";
+/// Upper bound of the free-text fields (description / reason / digest),
+/// in bytes.
 const MAX_TEXT_BYTES: usize = 256;
 /// Process-unique sequence feeding intent filenames, so two records from
 /// one process can never collide on the same name.
 static INTENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Process-unique sequence feeding checkpoint filenames, same collision
+/// discipline as [`INTENT_SEQUENCE`].
+static CHECKPOINT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// The shared-root cross-Cell directory: registration files under
-/// `<root>/cells/` and the append-only migration-intent log under
-/// `<root>/migration-intents/`.
+/// `<root>/cells/`, the append-only migration-intent log under
+/// `<root>/migration-intents/`, and the append-only checkpoint log under
+/// `<root>/checkpoints/`.
 ///
 /// One handle per process (the owning `CellHost` holds it); opening is
 /// idempotent and safe to race — `create_dir_all` only.
@@ -126,6 +147,42 @@ pub struct MigrationIntentLog {
     corrupt: usize,
 }
 
+/// One Cell's authoritative-side checkpoint fact as its author states it:
+/// the fence snapshot (boot generation, epoch, fencing token) the fact is
+/// taken at, plus a free one-line digest axis (for example a high-water
+/// summary of the Cell's own authorities). Registering a fact verifies
+/// nothing — the enumeration face stores and replays the claim verbatim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointFact {
+    node_boot_generation: Generation,
+    epoch: CellEpoch,
+    fencing_token: CellFencingToken,
+    digest: String,
+}
+
+/// One registered checkpoint: the owning Cell's identity, the author's
+/// fact, and the log's own ordering axes (`recorded_ms`,
+/// `os_process_id`, `sequence`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointRecord {
+    cell: CellIdentity,
+    fact: CheckpointFact,
+    recorded_ms: u64,
+    os_process_id: u32,
+    sequence: u64,
+}
+
+/// Enumeration result of one Cell's files under `<root>/checkpoints/`:
+/// every parseable record in append order, plus the corrupt-file count
+/// (files under the Cell's filename prefix that do not parse, or that
+/// parse into a record naming a different Cell — a shape this face never
+/// writes).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointLog {
+    records: Vec<CheckpointRecord>,
+    corrupt: usize,
+}
+
 /// Fail-closed errors of the federation mechanism face.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FederationError {
@@ -147,6 +204,9 @@ pub enum FederationError {
     /// A caller-supplied field is invalid (empty or multi-line text, or a
     /// source equal to the target).
     InvalidIntent(&'static str),
+    /// A caller-supplied checkpoint field is invalid (empty, multi-line,
+    /// or over-long digest text).
+    InvalidCheckpoint(&'static str),
     /// The wall clock read before the Unix epoch, so no `heartbeat_ms` /
     /// `recorded_ms` can be assigned.
     WallClockUnavailable,
@@ -167,6 +227,9 @@ impl fmt::Display for FederationError {
             Self::InvalidIntent(reason) => {
                 write!(formatter, "invalid migration intent: {reason}")
             }
+            Self::InvalidCheckpoint(reason) => {
+                write!(formatter, "invalid reconciliation checkpoint: {reason}")
+            }
             Self::WallClockUnavailable => {
                 formatter.write_str("wall clock reads before the Unix epoch")
             }
@@ -178,7 +241,8 @@ impl std::error::Error for FederationError {}
 
 impl CellDirectory {
     /// Opens (idempotently) the shared federation root, creating
-    /// `<root>/cells/` and `<root>/migration-intents/` as needed.
+    /// `<root>/cells/`, `<root>/migration-intents/`, and
+    /// `<root>/checkpoints/` as needed.
     ///
     /// # Errors
     ///
@@ -189,6 +253,8 @@ impl CellDirectory {
         fs::create_dir_all(root.join(CELLS_DIR))
             .map_err(|_| FederationError::DirectoryUnavailable)?;
         fs::create_dir_all(root.join(INTENTS_DIR))
+            .map_err(|_| FederationError::DirectoryUnavailable)?;
+        fs::create_dir_all(root.join(CHECKPOINTS_DIR))
             .map_err(|_| FederationError::DirectoryUnavailable)?;
         Ok(Self { root })
     }
@@ -363,6 +429,85 @@ impl CellDirectory {
         Ok(MigrationIntentLog { records, corrupt })
     }
 
+    /// Appends one reconciliation/audit checkpoint of `cell` to
+    /// `<root>/checkpoints/` as an immutable file and returns the recorded
+    /// form with the log's own ordering axes. The owning Cell's identity
+    /// becomes the filename prefix; recording verifies nothing and
+    /// executes nothing (the fact is the author's claim, stored verbatim).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`FederationError::InvalidCheckpoint`] when the fact's
+    /// digest is invalid, [`FederationError::DirectoryUnavailable`] on
+    /// I/O failure, and [`FederationError::WallClockUnavailable`] when the
+    /// recording time cannot be stamped.
+    pub fn record_checkpoint(
+        &self,
+        cell: CellIdentity,
+        fact: &CheckpointFact,
+    ) -> Result<CheckpointRecord, FederationError> {
+        fact.validate()?;
+        let recorded_ms = wall_ms_since_epoch()?;
+        let sequence = CHECKPOINT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let record = CheckpointRecord {
+            cell,
+            fact: fact.clone(),
+            recorded_ms,
+            os_process_id: std::process::id(),
+            sequence,
+        };
+        let path = self.checkpoint_file(&record);
+        if path
+            .try_exists()
+            .map_err(|_| FederationError::DirectoryUnavailable)?
+        {
+            return Err(FederationError::DirectoryUnavailable);
+        }
+        atomic_write(&path, &staged_checkpoint(&record))?;
+        Ok(record)
+    }
+
+    /// Enumerates `cell`'s checkpoint audit trail in append order — only
+    /// the files under that Cell's filename prefix are read, sorted by
+    /// (`recorded_ms`, `os_process_id`, `sequence`), the same axes that
+    /// make filenames unique. See [`CheckpointLog::corrupt`] for the
+    /// unparseable/misfiled tail.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`FederationError::DirectoryUnavailable`] when the
+    /// directory cannot be listed or one file cannot be read.
+    pub fn checkpoints(&self, cell: CellIdentity) -> Result<CheckpointLog, FederationError> {
+        let prefix = format!("{}-", hex_identity(cell.as_bytes()));
+        let mut records = Vec::new();
+        let mut corrupt = 0;
+        for path in self.files_with_ext(CHECKPOINTS_DIR, CHECKPOINT_FILE_EXT)? {
+            let matches_cell = path
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().starts_with(prefix.as_bytes()));
+            if !matches_cell {
+                continue;
+            }
+            match Self::parse_checkpoint_file(&path) {
+                Ok(record) => {
+                    if record.cell == cell {
+                        records.push(record);
+                    } else {
+                        // A parseable file misfiled under this Cell's
+                        // prefix but naming another Cell — a shape this
+                        // face never writes: counted corrupt, never
+                        // silently adopted into the trail.
+                        corrupt += 1;
+                    }
+                }
+                Err(FederationError::StateCorrupt) => corrupt += 1,
+                Err(error) => return Err(error),
+            }
+        }
+        records.sort_by_key(|record| (record.recorded_ms, record.os_process_id, record.sequence));
+        Ok(CheckpointLog { records, corrupt })
+    }
+
     fn cell_file(&self, identity: CellIdentity) -> PathBuf {
         let mut name = hex_identity(identity.as_bytes());
         name.push('.');
@@ -376,6 +521,17 @@ impl CellDirectory {
             record.recorded_ms, record.os_process_id, record.sequence
         );
         self.root.join(INTENTS_DIR).join(name)
+    }
+
+    fn checkpoint_file(&self, record: &CheckpointRecord) -> PathBuf {
+        let name = format!(
+            "{}-{:020}-{:010}-{:010}.{CHECKPOINT_FILE_EXT}",
+            hex_identity(record.cell.as_bytes()),
+            record.recorded_ms,
+            record.os_process_id,
+            record.sequence
+        );
+        self.root.join(CHECKPOINTS_DIR).join(name)
     }
 
     fn files_with_ext(&self, dir: &str, ext: &str) -> Result<Vec<PathBuf>, FederationError> {
@@ -406,6 +562,11 @@ impl CellDirectory {
     fn parse_intent_file(path: &Path) -> Result<MigrationIntentRecord, FederationError> {
         let raw = fs::read_to_string(path).map_err(|_| FederationError::DirectoryUnavailable)?;
         parse_intent(&raw).ok_or(FederationError::StateCorrupt)
+    }
+
+    fn parse_checkpoint_file(path: &Path) -> Result<CheckpointRecord, FederationError> {
+        let raw = fs::read_to_string(path).map_err(|_| FederationError::DirectoryUnavailable)?;
+        parse_checkpoint(&raw).ok_or(FederationError::StateCorrupt)
     }
 }
 
@@ -637,6 +798,108 @@ impl MigrationIntentLog {
     }
 }
 
+impl CheckpointFact {
+    /// Builds a checkpoint fact from the fence snapshot the fact is taken
+    /// at (boot generation, epoch, fencing token) plus a one-line digest
+    /// of what the author claims reconciled (for example a high-water
+    /// summary of its own authorities).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`FederationError::InvalidCheckpoint`] when the digest
+    /// is empty, multi-line, or longer than `MAX_TEXT_BYTES`.
+    pub fn new(
+        node_boot_generation: Generation,
+        epoch: CellEpoch,
+        fencing_token: CellFencingToken,
+        digest: &str,
+    ) -> Result<Self, FederationError> {
+        validate_checkpoint_digest(digest)?;
+        Ok(Self {
+            node_boot_generation,
+            epoch,
+            fencing_token,
+            digest: digest.to_string(),
+        })
+    }
+
+    /// Boot generation of the process claim the fact's fence belongs to.
+    #[must_use]
+    pub const fn node_boot_generation(&self) -> Generation {
+        self.node_boot_generation
+    }
+
+    /// Cell epoch the fact was taken at.
+    #[must_use]
+    pub const fn epoch(&self) -> CellEpoch {
+        self.epoch
+    }
+
+    /// Fencing token the fact was taken at.
+    #[must_use]
+    pub const fn fencing_token(&self) -> CellFencingToken {
+        self.fencing_token
+    }
+
+    /// The one-line digest of what the author claims reconciled.
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    fn validate(&self) -> Result<(), FederationError> {
+        validate_checkpoint_digest(&self.digest)
+    }
+}
+
+impl CheckpointRecord {
+    /// The owning Cell whose audit trail this record belongs to.
+    #[must_use]
+    pub const fn cell(&self) -> CellIdentity {
+        self.cell
+    }
+
+    /// The author's fact.
+    #[must_use]
+    pub const fn fact(&self) -> &CheckpointFact {
+        &self.fact
+    }
+
+    /// Wall millis (Unix epoch) the log accepted the checkpoint.
+    #[must_use]
+    pub const fn recorded_ms(&self) -> u64 {
+        self.recorded_ms
+    }
+
+    /// OS process that recorded the checkpoint (a log axis, not
+    /// authority).
+    #[must_use]
+    pub const fn os_process_id(&self) -> u32 {
+        self.os_process_id
+    }
+
+    /// Process-unique sequence of this record (a log axis).
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl CheckpointLog {
+    /// Every parseable record, in append order.
+    #[must_use]
+    pub fn into_records(self) -> Vec<CheckpointRecord> {
+        self.records
+    }
+
+    /// How many checkpoint files under the Cell's prefix failed to parse
+    /// or parsed into a record naming a different Cell.
+    #[must_use]
+    pub const fn corrupt(&self) -> usize {
+        self.corrupt
+    }
+}
+
 fn staged_registration(entry: &CellRegistrationEntry) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "cell={}", hex_identity(entry.identity.as_bytes()));
@@ -725,6 +988,49 @@ fn parse_intent(raw: &str) -> Option<MigrationIntentRecord> {
     })
 }
 
+fn staged_checkpoint(record: &CheckpointRecord) -> String {
+    let fact = &record.fact;
+    let mut out = String::new();
+    let _ = writeln!(out, "cell={}", hex_identity(record.cell.as_bytes()));
+    let _ = writeln!(out, "boot={}", fact.node_boot_generation.get());
+    let _ = writeln!(out, "epoch={}", fact.epoch.get());
+    let _ = writeln!(out, "token={}", fact.fencing_token.get());
+    let _ = writeln!(out, "recorded_ms={}", record.recorded_ms);
+    let _ = writeln!(out, "pid={}", record.os_process_id);
+    let _ = writeln!(out, "sequence={}", record.sequence);
+    let _ = write!(out, "digest={}", fact.digest);
+    out
+}
+
+fn parse_checkpoint(raw: &str) -> Option<CheckpointRecord> {
+    let fields = parse_keyed(raw)?;
+    let cell = CellIdentity::from_domain(nlos_types::SchedulerDomainId::from_bytes(hex16(
+        fields.get("cell")?,
+    )?));
+    let node_boot_generation = Generation::new(NonZeroU64::new(u64_field(&fields, "boot")?)?);
+    let epoch = CellEpoch::from_u64(u64_field(&fields, "epoch")?)?;
+    let fencing_token = CellFencingToken::from_u64(u64_field(&fields, "token")?)?;
+    let recorded_ms = u64_field(&fields, "recorded_ms")?;
+    let os_process_id = u32::try_from(u64_field(&fields, "pid")?).ok()?;
+    let sequence = u64_field(&fields, "sequence")?;
+    let digest = fields.get("digest")?;
+    if digest.is_empty() || digest.contains(['\n', '\r']) {
+        return None;
+    }
+    Some(CheckpointRecord {
+        cell,
+        fact: CheckpointFact {
+            node_boot_generation,
+            epoch,
+            fencing_token,
+            digest: digest.to_string(),
+        },
+        recorded_ms,
+        os_process_id,
+        sequence,
+    })
+}
+
 /// Splits a staged file into its `key=value` fields. Strict: a duplicated
 /// or unknown key fails the parse (fail closed on shapes this face never
 /// writes).
@@ -782,6 +1088,13 @@ fn hex_identity(bytes: &[u8; 16]) -> String {
 fn validate_text(field: &'static str, text: &str) -> Result<(), FederationError> {
     if text.is_empty() || text.len() > MAX_TEXT_BYTES || text.contains(['\n', '\r']) {
         return Err(FederationError::InvalidIntent(field));
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_digest(digest: &str) -> Result<(), FederationError> {
+    if digest.is_empty() || digest.len() > MAX_TEXT_BYTES || digest.contains(['\n', '\r']) {
+        return Err(FederationError::InvalidCheckpoint("digest"));
     }
     Ok(())
 }
