@@ -3,7 +3,7 @@
 - 状态：`CANDIDATE`（W37 开档，非定案、非 VERIFIED；见决定 1）
 - 日期：2026-09-22
 - Owner：TaskAuthority / `C-SHARD`（编排入口：[stage-c-progress](../stage-c-progress.md) §C.3.1 / §C.5.2）
-- 关联 Requirement：总纲 v0.5 §26.1 `[DIST-TASK-001]`/`[DIST-TASK-002]`/`[DIST-TASK-003]`/`[DIST-TASK-004]`；`[CONS-SCOPE-001]`（不建立跨 Cell 全局总序）；`[NLOS-DEFER-001]` / §29.2（全球联邦与跨组织清算延后但保留接口）；`[SEM-CHECKPOINT-001]`（分布式 View 用签名 vector/checkpoint，不得假设跨 Cell 全局标量 `log_seq`）
+- 关联 Requirement：总纲 v0.5 §26.1 `[DIST-TASK-001]`/`[DIST-TASK-002]`/`[DIST-TASK-003]`/`[DIST-TASK-004]`；`[CONS-SCOPE-001]`（不建立跨 Cell 全局总序）；`[NLOS-DEFER-001]` / §29.2（全球联邦与跨组织清算延后但保留接口）；`[SEM-CHECKPOINT-001]`（分布式 View 用签名 vector/checkpoint，不得假设跨 Cell 全局标量 `log_seq`） 本节只定「读已提交前缀」这一可见性通道；`[CONS-SCOPE-001]` 同句允许的 durable outbox/saga 等跨 shard 传播机制不在本节排除或收窄范围，其跨 Cell 形状同属 `C-SHARD`/后续定案。
 - 关联工作包：`C-SHARD`（本 ADR 的 VERIFIED 是其派发前置）；`C-FANOUT`（`DIST-TASK-003` 层级 fanout 主写）；`C-MIGRATE`（federation 机制面验收边界，决策点 5）；`C-CELL`（决策点 1 拓扑首片）；拓扑 / 共识基底 ADR（W37 并行开档，写集不相交，本文件不占用 `0018`）
 - 决策来源：
   - [ADR-0013](./0013-cross-authority-verify-then-commit-contract.md) 决定 3 与复审触发器「Stage C 跨机提交语义定案」——本文件是该扩展点的开档载体，**不改写** ADR-0013 已 ACCEPTED 的单机契约
@@ -176,7 +176,7 @@
 
 **归属**：canonical authority 恒在单 Cell——每 Task generation 唯一 durable Assignment（`[DIST-TASK-001]`）。他 Cell 持有的至多是发现快照与审计事实（R1.2.5 三面），一律不是权威。他 Cell 的 worker 至多按 `[DIST-TASK-002]`（行 4776）尾句在未过期 TaskSnapshot/lease 内做纯计算，无有效 assignment/CommitPermit 时不得发布 canonical output 或启动新不可逆 effect。
 
-**传递**：他 Cell 对该 Task 的全部合法跨 Cell 动作是**接管请求权**——本修订对既有机制面组合的命名，不是新增权威通道：
+**传递**：他 Cell 对该 Task 的全部合法跨 Cell 权威动作是**接管请求权**——本修订对既有机制面组合的命名，不是新增权威通道（DIST-TASK-002 尾句允许的未过期 lease 内纯计算不在此列，因其不产生任何跨 Cell 可见状态）：
 
 1. 经发现面定位对象与其当前权威 Cell（directory：`find` / `live_cells`）；
 2. 在登记面登记接管请求（intent：source→target、对象、其 fenced generation、理由摘要；不可变追加，登记不执行）；
@@ -205,11 +205,11 @@
 | `MigrationIntent` | 接管请求的**登记面**：谁向谁、对哪个对象、哪个 fenced generation 提出请求 | 非执行面——登记不触发 DIST-TASK-002 CAS（执行归 `C-MIGRATE` / `C-SHARD` 车道） |
 | `ReconciliationCheckpoint` | 审计与收敛的**观察面**：旧权威声称已收敛到的 durable 前缀；审计与接管后收敛从此起步 | 非验证面——登记不核对摘要（核对属延后的 reconciliation 执行者） |
 
-三面皆不铸 fencing token：**fence 只在 Cell 内的 `CellAuthority`**（epoch/fencing token 的唯一推进入口是 quota 族的 `advance_epoch_and_quarantine`，`[LEASE-LOSS-001]`，v0.5 行 2327；见 `cell_host.rs` 装配声明）。接管请求权不等于接管权，权威迁移只有 R1.2.2 的 CAS 链一条。
+三面皆不铸 fencing token：**fence 只在 Cell 内的 `CellAuthority`**（epoch/fencing token 的唯一推进入口是 quota 族的 `advance_epoch_and_quarantine`——此为 `cell_host.rs` 装配声明，该名非 v0.5 规范句；隔离语义背景见 `[LEASE-LOSS-001]`（v0.5 行 2327）；见 `cell_host.rs` 装配声明）。接管请求权不等于接管权，权威迁移只有 R1.2.2 的 CAS 链一条。
 
 ### R1.3 状态建议
 
-- **`CANDIDATE` → `ACCEPTED`（定案）**。理由：上文复审触发器 3 的前置「单机双 Cell 证据齐备」已由台账判定满足（2026-10-06 W51 段原文：「§26.1 federation 机制面三项（发现/intent/checkpoint）自此齐备——ADR-0019 定案评估进入可调度状态」）；本修订即触发器 3 预期的 additive 修订路径。先例与边界同 ADR-0017：既有证据上的 DESIGN 级 ACCEPTED，无新实现声称。按上文触发器 1，晋升必须另有独立审查 + 定向门，不得以本草案提交冒充；审查通过后由 canonical 提交把状态行翻为 `ACCEPTED`。
+- **`CANDIDATE` → `ACCEPTED`（定案）**。理由：上文复审触发器 3 的前置「单机双 Cell 证据齐备」的**证据事实**已由台账登记（2026-10-06 W51 段原文：「§26.1 federation 机制面三项（发现/intent/checkpoint）自此齐备——ADR-0019 定案评估进入可调度状态」；台账显式把「是否齐备到可定案」留给下一次裁断）；该裁断即本次独立审查 + 定向门，本修订是触发器 3 预期的 additive 修订申请路径。晋升提交须记录裁断与授权来源（同 ADR-0017/0018 状态行先例），并同步 L0 索引（management/README.md ADR-0019 状态行、stage-c-progress 台账登记），沿上文后果节的 integrator 屏障合并纪律。先例与边界同 ADR-0017：既有证据上的 DESIGN 级 ACCEPTED，无新实现声称。按上文触发器 1，晋升必须另有独立审查 + 定向门，不得以本草案提交冒充；审查通过后由 canonical 提交把状态行翻为 `ACCEPTED`。
 - **`VERIFIED` 不预写**。留给 `C-SHARD` 实现证据：H6 分布式故障注入（[§C.5.5](../stage-c-progress.md) 门 1 类目：分区/重启/迁移/重复消息、stale epoch/分区双主等）+ RISK-B-11 / U-5 退役。**`ACCEPTED` 不解锁 `C-SHARD`**——上文决定 2 的派发门以 VERIFIED 为前置，本修订不触碰。
 - **生效即联动**：本修订升 `ACCEPTED` 即构成上文触发器 5 的「跨机 reconciliation 定案」，联动 ADR-0017 复审触发器 4（三域 coordinator 边界复审）与 ADR-0013 复审触发器「Stage C 跨机提交语义定案」。本修订选择的形状是 reconciliation（非 2PC），两处复审的落档由各自复审留痕，不由本修订代答。
 
