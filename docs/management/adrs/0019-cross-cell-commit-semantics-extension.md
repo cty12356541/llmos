@@ -1,6 +1,6 @@
 # ADR-0019：跨 Cell 提交语义——ADR-0013 扩展点开档
 
-- 状态：`CANDIDATE`（W37 开档，非定案、非 VERIFIED；见决定 1）
+- 状态：`ACCEPTED`（DESIGN 级定案，2026-10-06：修订 1 经独立审查门 pass-with-fixes、必修 F1/F3 与建议 F2/F4 已修；授权链=用户 2026-10-05"按推荐裁定/不中途请示"+2026-10-06"开始裁断/能继续一直继续"；`VERIFIED` 仍留 C-SHARD 实现证据，派发门不变）
 - 日期：2026-09-22
 - Owner：TaskAuthority / `C-SHARD`（编排入口：[stage-c-progress](../stage-c-progress.md) §C.3.1 / §C.5.2）
 - 关联 Requirement：总纲 v0.5 §26.1 `[DIST-TASK-001]`/`[DIST-TASK-002]`/`[DIST-TASK-003]`/`[DIST-TASK-004]`；`[CONS-SCOPE-001]`（不建立跨 Cell 全局总序）；`[NLOS-DEFER-001]` / §29.2（全球联邦与跨组织清算延后但保留接口）；`[SEM-CHECKPOINT-001]`（分布式 View 用签名 vector/checkpoint，不得假设跨 Cell 全局标量 `log_seq`） 本节只定「读已提交前缀」这一可见性通道；`[CONS-SCOPE-001]` 同句允许的 durable outbox/saga 等跨 shard 传播机制不在本节排除或收窄范围，其跨 Cell 形状同属 `C-SHARD`/后续定案。
