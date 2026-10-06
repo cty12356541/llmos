@@ -48,26 +48,27 @@
 //! (which consumer had already received the fence, and the refusal) — an
 //! advanced-but-partially-broadcast epoch is never silently swallowed.
 //!
-//! **Federation face (W50-L2, opt-in):** [`CellHost::open_federated`]
-//! additionally publishes this Cell into one shared [`CellDirectory`]
-//! (cross-Cell name/service discovery) and exposes migration-intent
-//! registration on the same root — the two §26.1 control-plane mechanism
-//! faces of ADR-0019 decision 5. Default opening ([`CellHost::open`]) is
-//! unchanged: no federation root, no registration, no behavior delta. The
-//! published registration carries the host's *last published* fence
-//! (refreshed by [`CellHost::refresh_cell_registration`]); it is a
-//! discovery snapshot, not a fencing oracle, and no cross-Cell commit or
-//! intent execution is implied or performed here.
+//! **Federation face (W50-L2 + W51-L1, opt-in):**
+//! [`CellHost::open_federated`] additionally publishes this Cell into one
+//! shared [`CellDirectory`] (cross-Cell name/service discovery) and exposes
+//! migration-intent registration and reconciliation-checkpoint registration
+//! on the same root — the three §26.1 control-plane mechanism faces of
+//! ADR-0019 decision 5. Default opening ([`CellHost::open`]) is unchanged:
+//! no federation root, no registration, no behavior delta. The published
+//! registration carries the host's *last published* fence (refreshed by
+//! [`CellHost::refresh_cell_registration`]); it is a discovery snapshot,
+//! not a fencing oracle, and no cross-Cell commit, intent execution, or
+//! checkpoint verification/coordination is implied or performed here.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use nlos_cell::{
     CacheHit, CapabilityNameCache, CellAuthority, CellDirectory, CellEpoch, CellFence,
-    CellFencingToken, CellIdentity, CellRegistrationEntry, EpochAdvanceReport, EpochInvalidation,
-    FailureDetector, FailureDetectorConfig, FailureDetectorError, HeartbeatOutcome, InsertOutcome,
-    InvalidationOutcome, MigrationIntent, MigrationIntentRecord, MonitoredSubject, NameCacheError,
-    NamePath, SweepReport,
+    CellFencingToken, CellIdentity, CellRegistrationEntry, CheckpointFact, CheckpointRecord,
+    EpochAdvanceReport, EpochInvalidation, FailureDetector, FailureDetectorConfig,
+    FailureDetectorError, HeartbeatOutcome, InsertOutcome, InvalidationOutcome, MigrationIntent,
+    MigrationIntentRecord, MonitoredSubject, NameCacheError, NamePath, SweepReport,
 };
 use nlos_clock::NowRequest;
 use nlos_driver_mock::{CacheHealth, MockProvider, ProviderCache};
@@ -330,6 +331,40 @@ impl CellHost {
             Some(face) => Ok(Some(face.directory.record_migration_intent(intent)?)),
             None => Ok(None),
         }
+    }
+
+    /// Appends one reconciliation/audit checkpoint of this Cell to the
+    /// federation root's checkpoint log (W51-L1, the third §26.1 mechanism
+    /// face of ADR-0019 decision 5): the host's current fence snapshot
+    /// (boot generation, epoch, fencing token) plus the caller's one-line
+    /// digest of what claims reconciled. Registration only — verifying or
+    /// executing the fact, and any cross-Cell reconciliation coordination,
+    /// stay deferred until ADR-0019's finalization. Returns the recorded
+    /// form, or `None` when this host is not federated (the call is then a
+    /// no-op, not an error).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::Federation`] when the digest is invalid
+    /// or the append refuses.
+    pub fn record_reconciliation_checkpoint(
+        &self,
+        digest: &str,
+    ) -> SliceKResult<Option<CheckpointRecord>> {
+        let Some(face) = &self.federation else {
+            return Ok(None);
+        };
+        let fence = self.fence;
+        let checkpoint_fact = CheckpointFact::new(
+            fence.node_boot_generation(),
+            fence.epoch(),
+            fence.fencing_token(),
+            digest,
+        )?;
+        Ok(Some(
+            face.directory
+                .record_checkpoint(fence.identity(), &checkpoint_fact)?,
+        ))
     }
 
     /// The wrapped slice runtime — the assembled home of the process
