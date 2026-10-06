@@ -1,18 +1,21 @@
-//! W50-L2: the federation mechanism face over one shared file directory —
-//! `CellDirectory` (cross-Cell name/service discovery) and
-//! `MigrationIntent` (append-only intent log, no execution).
+//! W50-L2 + W51-L1: the federation mechanism face over one shared file
+//! directory — `CellDirectory` (cross-Cell name/service discovery),
+//! `MigrationIntent` (append-only intent log, no execution), and the
+//! reconciliation/audit checkpoint face (append-only per-Cell fact log,
+//! registration + enumeration only).
 //!
-//! ADR-0019 decision 5 names these two §26.1 control-plane
+//! ADR-0019 decision 5 names these three §26.1 control-plane
 //! responsibilities as the mechanism face of federation. This file pins
 //! the single-directory semantics: whole-record atomic registration,
 //! monotone heartbeat (refused backwards), boot supersession, the
-//! discovery read faces (enumerate / by name / live window), and the
-//! append-only, ordered intent log.
+//! discovery read faces (enumerate / by name / live window), the
+//! append-only ordered intent log, and the append-only checkpoint log
+//! enumerated under its owning Cell's filename prefix.
 //!
 //! Single-process unit surface: the *dual-CellHost, dual-process*
 //! evidence of ADR-0019's precondition lives in `nlos-slice-k`
-//! (`tests/dual_cell_federation.rs`); this file proves the mechanism
-//! under it.
+//! (`tests/dual_cell_federation.rs`, `tests/dual_cell_checkpoint.rs`);
+//! this file proves the mechanism under it.
 
 use std::fs;
 use std::num::NonZeroU64;
@@ -83,6 +86,26 @@ fn intent(source: u8, target: u8, object: u8, generation: u64) -> MigrationInten
         "w50-l2 unit fixture intent",
     )
     .expect("valid intent")
+}
+
+fn fact(digest: &str) -> nlos_cell::CheckpointFact {
+    nlos_cell::CheckpointFact::new(
+        Generation::INITIAL,
+        CellEpoch::INITIAL,
+        CellFencingToken::INITIAL,
+        digest,
+    )
+    .expect("valid checkpoint fact")
+}
+
+fn advanced_fact(digest: &str) -> nlos_cell::CheckpointFact {
+    nlos_cell::CheckpointFact::new(
+        Generation::INITIAL.checked_next().expect("boot 2"),
+        CellEpoch::INITIAL.checked_next().expect("epoch 2"),
+        CellFencingToken::INITIAL.checked_next().expect("token 2"),
+        digest,
+    )
+    .expect("valid advanced checkpoint fact")
 }
 
 #[test]
@@ -367,4 +390,190 @@ fn hex(bytes: &[u8; 16]) -> String {
         write!(&mut out, "{byte:02x}").expect("write hex nibble");
     }
     out
+}
+
+#[test]
+fn checkpoints_append_in_order_and_round_trip() {
+    let root = TempDir::new("checkpoints");
+    let directory = CellDirectory::open(root.path()).expect("open directory");
+    let cell = identity(0xf1);
+
+    let first = directory
+        .record_checkpoint(cell, &fact("quota high-water 7/10"))
+        .expect("record first");
+    let second = directory
+        .record_checkpoint(
+            cell,
+            &advanced_fact("quota high-water 3/10 after epoch advance"),
+        )
+        .expect("record second");
+    // Re-stating the same fact is an append, not a dedupe: the log is a
+    // log, checkpoint state machines belong to the (deferred) executor.
+    let third = directory
+        .record_checkpoint(cell, &fact("quota high-water 7/10"))
+        .expect("record restated");
+
+    assert!(third.recorded_ms() >= second.recorded_ms());
+    assert!(second.recorded_ms() >= first.recorded_ms());
+    // The sequence counter is process-unique, so sibling tests recording
+    // concurrently interleave their bumps; the guarantee the filename
+    // uniqueness relies on is strict monotonicity per recording thread.
+    assert!(second.sequence() > first.sequence());
+    assert!(third.sequence() > second.sequence());
+
+    let log = directory.checkpoints(cell).expect("enumerate checkpoints");
+    assert_eq!(log.corrupt(), 0);
+    let records = log.into_records();
+    assert_eq!(records.len(), 3, "append-only: restatement included");
+    assert_eq!(records[0], first, "append order preserved");
+    assert_eq!(records[1], second);
+    assert_eq!(records[2], third);
+
+    // Round trip: every axis the author and the log contributed survives.
+    assert_eq!(records[1].cell(), cell);
+    assert_eq!(
+        records[1].fact().node_boot_generation(),
+        Generation::INITIAL.checked_next().expect("boot 2")
+    );
+    assert_eq!(
+        records[1].fact().epoch(),
+        CellEpoch::INITIAL.checked_next().expect("epoch 2")
+    );
+    assert_eq!(
+        records[1].fact().fencing_token(),
+        CellFencingToken::INITIAL.checked_next().expect("token 2")
+    );
+    assert_eq!(
+        records[1].fact().digest(),
+        "quota high-water 3/10 after epoch advance"
+    );
+    assert_eq!(records[1].os_process_id(), std::process::id());
+    assert!(records[1].recorded_ms() > 0);
+}
+
+#[test]
+fn checkpoints_of_distinct_cells_stay_disjoint() {
+    let root = TempDir::new("checkpoints-cells");
+    let directory = CellDirectory::open(root.path()).expect("open directory");
+    let left = identity(0xf1);
+    let right = identity(0xf2);
+
+    let left_first = directory
+        .record_checkpoint(left, &fact("left audit 1"))
+        .expect("left 1");
+    let right_first = directory
+        .record_checkpoint(right, &fact("right audit 1"))
+        .expect("right 1");
+    let left_second = directory
+        .record_checkpoint(left, &fact("left audit 2"))
+        .expect("left 2");
+
+    let left_log = directory.checkpoints(left).expect("left enumeration");
+    assert_eq!(left_log.corrupt(), 0);
+    assert_eq!(
+        left_log.into_records(),
+        vec![left_first, left_second],
+        "left's audit trail holds exactly its own two records"
+    );
+    let right_log = directory.checkpoints(right).expect("right enumeration");
+    assert_eq!(right_log.corrupt(), 0);
+    assert_eq!(
+        right_log.into_records(),
+        vec![right_first],
+        "right's audit trail holds exactly its own one record; no cross-talk"
+    );
+
+    // A Cell that registered no checkpoint enumerates empty, not an error.
+    let absent = directory
+        .checkpoints(identity(0xff))
+        .expect("absent enumeration");
+    assert_eq!(absent.corrupt(), 0);
+    assert_eq!(absent.into_records().len(), 0);
+}
+
+#[test]
+fn corrupt_checkpoint_files_reported_not_hidden() {
+    let root = TempDir::new("checkpoints-corrupt");
+    let directory = CellDirectory::open(root.path()).expect("open directory");
+    let cell = identity(0xf3);
+    directory
+        .record_checkpoint(cell, &fact("healthy audit"))
+        .expect("record healthy");
+
+    let prefix = hex(&[0xf3; 16]);
+    let checkpoints = root.path().join("checkpoints");
+    // A corrupt file under the Cell's prefix: counted, never silently
+    // hidden (format pinned by this face).
+    fs::write(
+        checkpoints.join(format!(
+            "{prefix}-00000000000000000001-0000000001-0000000000.ckpt"
+        )),
+        "cell=not-hex\n",
+    )
+    .expect("write corrupt checkpoint");
+    // A parseable file misfiled under the Cell's prefix but naming another
+    // Cell — a shape this face never writes: counted corrupt, never
+    // silently adopted into the trail.
+    let foreign_hex = hex(&[0xf4; 16]);
+    fs::write(
+        checkpoints.join(format!("{prefix}-00000000000000000002-0000000001-0000000001.ckpt")),
+        format!(
+            "cell={foreign_hex}\nboot=1\nepoch=1\ntoken=1\nrecorded_ms=2\npid={}\nsequence=1\ndigest=misfiled fixture\n",
+            std::process::id()
+        ),
+    )
+    .expect("write misfiled checkpoint");
+
+    let log = directory.checkpoints(cell).expect("enumerate");
+    assert_eq!(log.corrupt(), 2, "corrupt and misfiled files are reported");
+    let records = log.into_records();
+    assert_eq!(records.len(), 1, "the healthy record still enumerates");
+    assert_eq!(records[0].fact().digest(), "healthy audit");
+
+    // The debris under one Cell's prefix never leaks into another's read.
+    let other = directory
+        .checkpoints(identity(0xf4))
+        .expect("foreign enumeration");
+    assert_eq!(other.corrupt(), 0);
+    assert_eq!(other.into_records().len(), 0);
+}
+
+#[test]
+fn checkpoint_validates_digest_before_any_write() {
+    let root = TempDir::new("checkpoints-validation");
+    let directory = CellDirectory::open(root.path()).expect("open directory");
+    let cell = identity(0xf5);
+    let build = |digest: &str| {
+        nlos_cell::CheckpointFact::new(
+            Generation::INITIAL,
+            CellEpoch::INITIAL,
+            CellFencingToken::INITIAL,
+            digest,
+        )
+    };
+
+    assert_eq!(
+        build("quota reconciled at high-water 9")
+            .expect("valid")
+            .digest(),
+        "quota reconciled at high-water 9"
+    );
+    assert_eq!(
+        build("").unwrap_err(),
+        FederationError::InvalidCheckpoint("digest")
+    );
+    assert_eq!(
+        build("two\nlines").unwrap_err(),
+        FederationError::InvalidCheckpoint("digest")
+    );
+    let over_long = "x".repeat(257);
+    assert_eq!(
+        build(&over_long).unwrap_err(),
+        FederationError::InvalidCheckpoint("digest")
+    );
+
+    // Nothing was recorded through the refusals above.
+    let log = directory.checkpoints(cell).expect("enumerate");
+    assert_eq!(log.corrupt(), 0);
+    assert_eq!(log.into_records().len(), 0);
 }
