@@ -190,11 +190,12 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36–W39 合入与推送状态见 §C.8；本地 main 与 origin/main 对齐（ahead/behind 0）；范围 `ee649d3..194b014` 已由 bound SSH ls-remote 核实在 origin；台账提交 `3c5cc9a` 亦在 origin；权威 tip 以 `git ls-remote origin refs/heads/main` 为准，本文件不冻结 tip SHA；`PARTIAL_PASS` 前片；2026-09-26 续片 QuotaLease 高水位/关闭 `df8abd6`、Capacity 预激活归还 `43f2600`、Surface create/hide `6165bc4`、Capacity `TARGET_PREPARED` `cd2205e`、拆卸采纳已提交 kill `3d8da80`、表面进程绑定投影 `80fd1e3`、Quota 失联 `QUARANTINED` `7573260`、`InspectApplication` 接线 `3560800`、当前代际后台任务投影 `74305de`，仍为 `PARTIAL_PASS`；三平台 job（ubuntu、macos、windows）与 MSRV 已在 `47986000adebb8bf58e03e6ebffa44ee041990f0` 成功（run [36239183617](https://github.com/cty12356541/llmos/actions/runs/36239183617)）；scale-probe job 为 skipped，故夜间 schedule 仍开；C-SHARD / Cell 七件套 / Stage D 余量 / Device reset / reconcile 路由 / #12 余量仍开；`PARTIAL_PASS` 维持；不声称计划或阶段 C 已退出，不声称屏障闭合）
 - 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
 - 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
-- 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`ACCEPTED` DESIGN 级定案 2026-10-06，VERIFIED 仍门 C-SHARD；C-SHARD 派发仍以其 `VERIFIED` 为前置）
+- 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`ACCEPTED` DESIGN 级定案 2026-10-06；修订 2（2026-10-08 授权裁定）：Phase 0 证据车道豁免消除循环前置 + `VERIFIED` 效力域界定（拓扑=ADR-0018 单机双进程、分区/双主须双存活注入、partial 退役≠自动满足、物理 cleanup 残域保留）；C-SHARD 本体派发仍以其 `VERIFIED` 为前置）
 - 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD）
 - lease grantor 共享 `CellAuthority` 所有权（capacity/device 进 CellHost 装配）：[ADR-0021](./adrs/0021-lease-grantor-shared-cell-authority.md)
 - capability 签发闭环 operator 密钥文件路径：[ADR-0022](./adrs/0022-operator-root-capability-issuance.md)
 - 语义写入端 driver 回调桥（解除 D6 后置）：[ADR-0023](./adrs/0023-semantic-write-side-driver-bridge.md)
+- C-SHARD 工作包计划：[c-shard-plan.md](./c-shard-plan.md)（2026-10-08 附条件采纳；Phase 0 证据车道族（ADR-0019 VERIFIED 证据面）/ Phase 1 本体迁移两阶段；**实施派发待用户另行确认**）
 - Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 
 ## 12. 阶段 B 管理入口
