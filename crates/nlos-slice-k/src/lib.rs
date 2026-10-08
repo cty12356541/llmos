@@ -52,6 +52,7 @@ mod restore;
 mod runtime;
 mod semantic_stream;
 mod semantic_writer;
+mod takeover_drive;
 mod teardown;
 
 pub use cell_host::{
@@ -90,5 +91,10 @@ pub use semantic_writer::{
     OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact,
     SEMANTIC_WRITER_ROOT_CALL_LIMIT, SemanticWriter, SemanticWriterBudgetRaise, SemanticWriterKey,
     application_namespace,
+};
+pub use takeover_drive::{
+    BarrierObservationDemand, BarrierObservationSource, CrossCellTakeoverOutcome,
+    CrossCellTakeoverRequest, SignedBarrierObservation, TakeoverDriveError,
+    drive_cross_cell_takeover,
 };
 pub use teardown::{ApplicationTeardown, run_application_teardown};
