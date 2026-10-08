@@ -15,6 +15,9 @@
 //! 2026-10-06 W51：补齐第三项机制面（`ReconciliationCheckpoint` 登记：`CheckpointFact`
 //! 不可变追加 + 按 Cell 前缀枚举读）；仍不含 checkpoint 验证/执行或跨 Cell
 //! reconciliation 协调（ADR-0019 定案后）。
+//! 2026-10-08 CS0-B：checkpoint digest 钉面——`CheckpointDigest` 域分隔 `SHA-256`
+//! （fence 三轴 + 规范化前缀字节）与 fail-closed 验证器（`CheckpointFact::verify_digest`）；
+//! 验证 API 已提供，executor 消费仍属 CS0-C，checkpoint 执行/跨 Cell 协调仍不含。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
@@ -44,7 +47,8 @@ pub use failure_detector::{
     HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
 };
 pub use federation::{
-    CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, CheckpointFact, CheckpointLog,
+    CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, CheckpointDigest,
+    CheckpointDigestVerification, CheckpointFact, CheckpointLog, CheckpointPrefix,
     CheckpointRecord, FederationError, MigrationIntent, MigrationIntentLog, MigrationIntentRecord,
     MigrationObject,
 };

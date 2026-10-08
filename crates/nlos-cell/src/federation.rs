@@ -6,10 +6,13 @@
 //! "placement 与 migration intent", "reconciliation 和审计 checkpoint").
 //!
 //! **Deliberately not here:** cross-Cell atomic commit, global consensus,
-//! intent *execution* (that is `C-MIGRATE`), checkpoint *verification* or
-//! *execution*, any cross-Cell reconciliation coordination (ADR-0019
-//! extension point B leaves those shapes to its finalization), and any
-//! cross-host claims. A shared-root directory is a single-host,
+//! intent *execution* (that is `C-MIGRATE`), checkpoint *execution*, any
+//! cross-Cell reconciliation coordination (ADR-0019 extension point B
+//! leaves those shapes to its finalization), and any cross-host claims.
+//! (CS0-B note: the digest *verification primitives* —
+//! [`CheckpointDigest`] and [`CheckpointFact::verify_digest`] — are here;
+//! consuming them inside a reconciliation executor is not.) A shared-root
+//! directory is a single-host,
 //! ADR-0018-topology mechanism: two OS processes on one host each holding
 //! one Cell discover each other through files, nothing more. Citing this
 //! face as cross-machine evidence would violate RISK-B-11.
@@ -35,9 +38,14 @@
 //! against a caller-supplied silence window. That is a single-host
 //! discovery heuristic, not a fencing oracle: liveness here grants no
 //! authority, and `[DIST-LOCAL-001]` still binds what a Cell may act on.
-//! A registered checkpoint is likewise a *claim by its author*: this face
-//! stores and enumerates the fact, never verifies it — proving the digest
-//! behind a checkpoint is the (deferred) reconciliation executor's job.
+//! A registered checkpoint is likewise a *claim by its author*: the log
+//! itself stores and enumerates the fact verbatim, without judging it.
+//! Since CS0-B the structured half of that claim is pinnable and checkable
+//! here: [`CheckpointDigest::from_prefix`] derives a domain-separated
+//! `SHA-256` over the fence axes plus a canonical prefix serialization,
+//! and [`CheckpointFact::verify_digest`] recomputes and compares it
+//! fail-closed. What remains deferred is the executor: *acting* on a
+//! verified checkpoint during reconciliation is the CS0-C slice's job.
 
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -47,6 +55,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_types::Generation;
+use sha2::{Digest, Sha256};
 
 use crate::{CellEpoch, CellFencingToken, CellIdentity};
 
@@ -72,6 +81,14 @@ static INTENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Process-unique sequence feeding checkpoint filenames, same collision
 /// discipline as [`INTENT_SEQUENCE`].
 static CHECKPOINT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Domain-separation string hashed into every structured checkpoint
+/// digest — one domain, one meaning, same discipline as the
+/// task-authority domains (`"llmos/task-authority-assignment/v1"`).
+const CHECKPOINT_DIGEST_DOMAIN: &[u8] = b"llmos/reconciliation-checkpoint/v1";
+/// Prefix marking a digest axis as the canonical text form of a
+/// [`CheckpointDigest`] (everything else on that axis is author free
+/// text). Canonical bodies are exactly 64 lowercase hex characters.
+const STRUCTURED_DIGEST_TAG: &str = "v1:sha256:";
 
 /// The shared-root cross-Cell directory: registration files under
 /// `<root>/cells/`, the append-only migration-intent log under
@@ -149,9 +166,11 @@ pub struct MigrationIntentLog {
 
 /// One Cell's authoritative-side checkpoint fact as its author states it:
 /// the fence snapshot (boot generation, epoch, fencing token) the fact is
-/// taken at, plus a free one-line digest axis (for example a high-water
-/// summary of the Cell's own authorities). Registering a fact verifies
-/// nothing — the enumeration face stores and replays the claim verbatim.
+/// taken at, plus a one-line digest axis — either author free text (for
+/// example a high-water summary of the Cell's own authorities) or the
+/// canonical text form of a [`CheckpointDigest`]. Registering a fact still
+/// verifies nothing: the log stores and replays the claim verbatim;
+/// [`Self::verify_digest`] is the separate, explicit check.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckpointFact {
     node_boot_generation: Generation,
@@ -181,6 +200,60 @@ pub struct CheckpointRecord {
 pub struct CheckpointLog {
     records: Vec<CheckpointRecord>,
     corrupt: usize,
+}
+
+/// The claimed durable prefix a checkpoint digest is taken over: an
+/// ordered, append-only sequence of opaque entries. The *meaning* of each
+/// entry (a commit id, a row image, an exact root) is fixed by the
+/// authority that computes or checks the digest — this face pins only the
+/// byte grammar, so the author and any verifier serialize one prefix one
+/// way.
+#[derive(Clone, Default, Debug, Eq, PartialEq)]
+pub struct CheckpointPrefix {
+    entries: Vec<Vec<u8>>,
+}
+
+/// The structured digest of one checkpoint claim: a domain-separated
+/// `SHA-256` pinning a [`CheckpointPrefix`] to the fence snapshot (boot
+/// generation, epoch, fencing token) the claim was taken at. Any change
+/// to any axis or any prefix byte changes the digest.
+///
+/// The digest's canonical single-line text form (`v1:sha256:` + 64
+/// lowercase hex characters, 74 bytes) fits the fact's `MAX_TEXT_BYTES`
+/// digest axis unchanged, so storing one costs no storage-format change.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CheckpointDigest {
+    bytes: [u8; 32],
+}
+
+/// Typed outcome of recomputing one fact's digest axis against a claimed
+/// durable prefix ([`CheckpointFact::verify_digest`]). Mismatch and
+/// corruption are reported, never smoothed into a pass: consumers must
+/// treat them fail-closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckpointDigestVerification {
+    /// The fact's digest axis is a well-formed structured digest equal to
+    /// the one recomputed from the claimed prefix at the fact's own fence
+    /// axes.
+    Verified,
+    /// The fact's digest axis is well-formed but differs from the
+    /// recomputed one — a tampered claim, a wrong prefix, or fence axes
+    /// moved under the digest. Fail closed.
+    Mismatch {
+        /// The digest the fact presented.
+        presented: CheckpointDigest,
+        /// The digest recomputed from the claimed prefix.
+        recomputed: CheckpointDigest,
+    },
+    /// The fact's digest axis carries no structured-digest tag: author
+    /// free text this module cannot compare. No verification claim may be
+    /// derived from it (the honest `PARTIAL` / `UNCERTAIN` read of
+    /// ADR-0019 R1.2.3), but it is not corruption either.
+    FreeText,
+    /// The digest axis tags itself as a structured digest but its body
+    /// does not decode (wrong length, non-hex, or non-canonical casing).
+    /// Fail closed; never silently re-read as free text.
+    Corrupt,
 }
 
 /// Fail-closed errors of the federation mechanism face.
@@ -847,6 +920,47 @@ impl CheckpointFact {
         &self.digest
     }
 
+    /// Recomputes this fact's digest over `prefix` at the fact's *own*
+    /// fence axes and compares, fail-closed. The digest pins the pair
+    /// (fence snapshot, prefix bytes); comparing the axes themselves
+    /// against a fence the caller knows is the executor's job, not this
+    /// check.
+    ///
+    /// The outcome is typed ([`CheckpointDigestVerification`]): a
+    /// well-formed equal digest is [`CheckpointDigestVerification::Verified`];
+    /// a well-formed unequal one is
+    /// [`CheckpointDigestVerification::Mismatch`] (tampered claim, wrong
+    /// prefix, or moved axes — all fail closed); a digest axis without the
+    /// structured tag is [`CheckpointDigestVerification::FreeText`]
+    /// (comparable to nothing, and said so); a tagged body that does not
+    /// decode is [`CheckpointDigestVerification::Corrupt`]. This function
+    /// is infallible precisely because every failure mode is a value, not
+    /// an exception to be swallowed.
+    #[must_use]
+    pub fn verify_digest(&self, prefix: &CheckpointPrefix) -> CheckpointDigestVerification {
+        let text = self.digest.as_str();
+        if !text.starts_with(STRUCTURED_DIGEST_TAG) {
+            return CheckpointDigestVerification::FreeText;
+        }
+        let Some(presented) = CheckpointDigest::from_text(text) else {
+            return CheckpointDigestVerification::Corrupt;
+        };
+        let recomputed = CheckpointDigest::from_prefix(
+            self.node_boot_generation,
+            self.epoch,
+            self.fencing_token,
+            prefix,
+        );
+        if presented == recomputed {
+            CheckpointDigestVerification::Verified
+        } else {
+            CheckpointDigestVerification::Mismatch {
+                presented,
+                recomputed,
+            }
+        }
+    }
+
     fn validate(&self) -> Result<(), FederationError> {
         validate_checkpoint_digest(&self.digest)
     }
@@ -897,6 +1011,120 @@ impl CheckpointLog {
     #[must_use]
     pub const fn corrupt(&self) -> usize {
         self.corrupt
+    }
+}
+
+impl CheckpointPrefix {
+    /// The empty prefix — the "nothing committed yet" claim.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Builds a prefix from its ordered opaque entries, first entry the
+    /// oldest. Entries may be empty themselves; the grammar keeps them
+    /// distinct from "no entry".
+    #[must_use]
+    pub fn from_entries(entries: impl IntoIterator<Item: AsRef<[u8]>>) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|entry| entry.as_ref().to_vec())
+                .collect(),
+        }
+    }
+
+    /// The ordered opaque entries, in prefix order.
+    #[must_use]
+    pub fn entries(&self) -> &[Vec<u8>] {
+        &self.entries
+    }
+
+    /// Canonical byte grammar every digest is taken over:
+    /// `be64(count) || (be64(len) || bytes)*` — count first, then each
+    /// entry length-prefixed big-endian, so two distinct entry sequences
+    /// never share a serialization (for example `[b"ab", b"c"]` and
+    /// `[b"abc"]` differ).
+    fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + 8 * self.entries.len());
+        out.extend_from_slice(
+            &u64::try_from(self.entries.len())
+                .expect("count fits u64")
+                .to_be_bytes(),
+        );
+        for entry in &self.entries {
+            out.extend_from_slice(
+                &u64::try_from(entry.len())
+                    .expect("entry fits u64")
+                    .to_be_bytes(),
+            );
+            out.extend_from_slice(entry);
+        }
+        out
+    }
+}
+
+impl CheckpointDigest {
+    /// Derives the structured digest of one checkpoint claim:
+    /// `SHA-256("llmos/reconciliation-checkpoint/v1" || be64(boot) ||
+    /// be64(epoch) || be64(token) || canonical(prefix))`. Deterministic in
+    /// every input; any axis or prefix-byte change changes the digest.
+    #[must_use]
+    pub fn from_prefix(
+        node_boot_generation: Generation,
+        epoch: CellEpoch,
+        fencing_token: CellFencingToken,
+        prefix: &CheckpointPrefix,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(CHECKPOINT_DIGEST_DOMAIN);
+        hasher.update(node_boot_generation.get().to_be_bytes());
+        hasher.update(epoch.get().to_be_bytes());
+        hasher.update(fencing_token.get().to_be_bytes());
+        hasher.update(prefix.canonical_bytes());
+        Self {
+            bytes: hasher.finalize().into(),
+        }
+    }
+
+    /// The 32 raw digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+
+    /// The canonical single-line text form `v1:sha256:<64 lowercase hex>`
+    /// (74 bytes, inside the fact's `MAX_TEXT_BYTES` single-line bound —
+    /// the storage format does not change to carry one).
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        let mut out = String::with_capacity(STRUCTURED_DIGEST_TAG.len() + 64);
+        out.push_str(STRUCTURED_DIGEST_TAG);
+        for byte in self.bytes {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// Strict inverse of [`Self::to_text`]: only the exact canonical form
+    /// decodes (`None` otherwise) — same digest bytes have exactly one
+    /// accepted spelling, so byte-exact replay discipline never has to
+    /// forgive an encoding drift.
+    fn from_text(text: &str) -> Option<Self> {
+        let body = text.strip_prefix(STRUCTURED_DIGEST_TAG)?;
+        let raw = body.as_bytes();
+        if raw.len() != 64 {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (index, chunk) in raw.chunks(2).enumerate() {
+            let high = lowercase_hex_nibble(chunk[0])?;
+            let low = lowercase_hex_nibble(chunk[1])?;
+            bytes[index] = (high << 4) | low;
+        }
+        Some(Self { bytes })
     }
 }
 
@@ -1073,6 +1301,17 @@ fn hex_nibble(byte: u8) -> Option<u8> {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Strictly lowercase hex nibble: the structured digest's canonical text
+/// form is lowercase-only, so uppercase spellings decode to `None` (corrupt)
+/// instead of silently equaling the canonical one.
+const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
         _ => None,
     }
 }

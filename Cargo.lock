@@ -441,6 +441,7 @@ name = "nlos-cell"
 version = "0.1.0"
 dependencies = [
  "nlos-types",
+ "sha2",
 ]
 
 [[package]]
