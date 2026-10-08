@@ -48,6 +48,7 @@ mod nl;
 mod package;
 mod payload;
 mod pump;
+mod reconciliation;
 mod restore;
 mod runtime;
 mod semantic_stream;
@@ -77,6 +78,11 @@ pub use payload::{
     payload_execution_seed,
 };
 pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
+pub use reconciliation::{
+    AdoptedEntry, ConvergenceInvariants, DurableCommitPrefix, FinalAuthorityState,
+    PrefixVisibility, ReconciliationError, ReconciliationOutcome, ReconciliationRequest,
+    TrailCover, TrailReview, VerifiedAnchor, converge_commit_prefix_gap, durable_commit_prefix,
+};
 pub use restore::{ProcessRevival, RevivalDispatch, run_process_revival};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
