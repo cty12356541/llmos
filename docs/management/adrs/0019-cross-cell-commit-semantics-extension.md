@@ -1,6 +1,6 @@
 # ADR-0019：跨 Cell 提交语义——ADR-0013 扩展点开档
 
-- 状态：`ACCEPTED`（DESIGN 级定案，2026-10-06：修订 1 经独立审查门 pass-with-fixes、必修 F1/F3 与建议 F2/F4 已修；授权链=用户 2026-10-05"按推荐裁定/不中途请示"+2026-10-06"开始裁断/能继续一直继续"；`VERIFIED` 仍留 C-SHARD 实现证据，派发门不变）
+- 状态：`VERIFIED`（2026-10-08：Phase 0 证据车道族（W54/W55 波，Evidence C-SHARD-001..004）满足修订 2 R2.2 四条件；独立审查门 pass-with-fixes（零阻断、诚实性红线零命中，建议项 F1–F3 已修）；授权链=维护者 2026-10-08 立项四点裁断（修订 2 授权链）+「持续推进」确认 Phase 0 全程。**效力域=R2.2 所界**：ADR-0018 单机双进程拓扑上的 R1.2.2 接管通道、R1.2.3 trail 可见性（PARTIAL/UNCERTAIN）、R1.2.4 失败语义（不抢先+QUARANTINE+四不变量有界收敛）与 H6 六类目双存活注入；endpoint 覆盖仅 TaskStore（六类映射留 CS1-C）。**不得据此声称**：跨机/真网络分区/跨时钟域（残域挂 R1.4 触发器 7）、远端物理 cleanup（R2.3 第 2 条残域保留）。C-SHARD 本体（Phase 1）派发按 R2.1 既定授权边界另行确认。前史：DESIGN 级 ACCEPTED（2026-10-06）=修订 1 经独立审查 pass-with-fixes，授权链=用户 2026-10-05「按推荐裁定/不中途请示」+2026-10-06「开始裁断/能继续一直继续」）
 - 日期：2026-09-22
 - Owner：TaskAuthority / `C-SHARD`（编排入口：[stage-c-progress](../stage-c-progress.md) §C.3.1 / §C.5.2）
 - 关联 Requirement：总纲 v0.5 §26.1 `[DIST-TASK-001]`/`[DIST-TASK-002]`/`[DIST-TASK-003]`/`[DIST-TASK-004]`；`[CONS-SCOPE-001]`（不建立跨 Cell 全局总序）；`[NLOS-DEFER-001]` / §29.2（全球联邦与跨组织清算延后但保留接口）；`[SEM-CHECKPOINT-001]`（分布式 View 用签名 vector/checkpoint，不得假设跨 Cell 全局标量 `log_seq`） 本节只定「读已提交前缀」这一可见性通道；`[CONS-SCOPE-001]` 同句允许的 durable outbox/saga 等跨 shard 传播机制不在本节排除或收窄范围，其跨 Cell 形状同属 `C-SHARD`/后续定案。

@@ -23,7 +23,7 @@
 | stale epoch | `stale_epoch_submissions_are_all_refused` | 拒绝三形：`Err(AuthorityLeaseFenced)`/`Err(ParticipantRegistryFrozen)`/`Ok(Superseded{winner})`；第二面=无 outstanding permit 的新任务以旧 lease 请求必须 `Err(AuthorityLeaseFenced)`（Superseded 契约先证：model.rs:1325「请求 attempt 被 durable fence 为终态」+ compete CAS store.rs:3926 先于 issue_permit 内 lease 门 :4146——非弱化，反而补强） |
 | 分区双主 | `dual_primary_partition_arbitrates_a_single_winner` | 双存活分区窗口双活声称 → lease/fencing 仲裁单胜者；输家提交全拒；不抢先（`AuthorityLeaseHeld` + 零 durable 效果） |
 
-方法学硬约束核验：kill 仅 restart/migration_midfault 两文件；partition/dual_primary 每个 cut 窗口有通道外心跳前进断言 + 显式存活断言 + demand 计数为 0。旧 Cell 六类动作（result/message/permit/callback/effect/commit）中本场景可注入子集：fence/permit/effect/result/commit（stale 类目逐条注释对应；message/callback 无本 slice 注入面，未声明——CS1-C）。
+方法学硬约束核验：kill 仅 `fault_restart.rs`（15 处）；`migration_midfault` 为双存活瞬态通道故障（零 kill，文件头自声明 both-alive）；partition/dual_primary 每个 cut 窗口有通道外心跳前进断言 + 显式存活断言 + demand 计数为 0。旧 Cell 六类动作（result/message/permit/callback/effect/commit）中本场景可注入子集：fence/permit/effect/result/commit（stale 类目逐条注释对应；message/callback 无本 slice 注入面，未声明——CS1-C）。
 
 ## 3. 验证（2026-10-08，macOS arm64 darwin 25.6.0）
 

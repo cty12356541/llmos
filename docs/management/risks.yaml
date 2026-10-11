@@ -136,7 +136,7 @@
   category: durable-state-loss
   severity: P1
   status: partial
-  description: "多 Cell/跨机器原子提交（分域口径 2026-10-08）：单机 bounded convergence 与统一恢复面已证；单机双进程域的跨 Cell 接管（DIST-TASK-002 CAS 链 + 四不变量收敛 + H6 六类目注入）已证（C-SHARD-001..004）；**残域显式保留**：跨机器原子性/真网络分区/跨时钟域（挂 ADR-0019 修订 2 R1.4 触发器 7 再评估门）与远端物理 cleanup 证明（拒绝/QUARANTINE ≠ cleanup，R2.3 第 2 条）。把已证域外推为残域能力即构成状态丢失风险"
+  description: "多 Cell/跨机器原子提交（分域口径 2026-10-08）：单机 bounded convergence 与统一恢复面已证；单机双进程域的跨 Cell 接管（DIST-TASK-002 CAS 链 + 四不变量收敛 + H6 六类目注入）已证（C-SHARD-001..004）；**残域显式保留**：跨机器原子性/真网络分区/跨时钟域（挂 ADR-0019 R1.4 触发器 7 再评估门，修订 2 R2.5 沿用）与远端物理 cleanup 证明（拒绝/QUARANTINE ≠ cleanup，R2.3 第 2 条）。把已证域外推为残域能力即构成状态丢失风险"
   mitigation: "全部 claim 限定单机双进程域（C-SHARD-001..004 evidence 边界声明）；endpoint 覆盖仅 TaskStore（六类映射留 CS1-C）；kill-9=页缓存存活的进程崩溃建模不外推真实断电/跨机/三权威原子性（W31-G/W34-A 沿引）；注入「掐通道」为 harness 通道层投递拒绝，非 OS 级分区"
   evidence_refs:
     - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md

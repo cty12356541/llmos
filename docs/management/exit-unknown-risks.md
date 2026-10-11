@@ -42,7 +42,7 @@
 | RISK-B-08 | single-person-dependency | P1/open | 维护者（兼唯一知识载体） | 知识外化全库化（证据/ADR/台账/编排留痕）——登记态非闭环 | 阶段 C 第二维护者实际接入并独立复现一次全仓门 |
 | RISK-B-09 | third-party-supply-chain | P2/open | 维护者 | 无（open；desktop Tauri/Node 面为新暴露） | 依赖树专项复审 + license/维护性检查记录 |
 | RISK-B-10 | cancel-effect-unknown | P1/open | 维护者 | Windows kill CI 契约道 step 级绿（精确口径见 risks.yaml）+ claims 口径限定 | Windows 实机 live-child 实杀 + B2-1 双活三层场景证据（见 U-2） |
-| RISK-B-11 | durable-state-loss | P1/open | 维护者 | claims 显式限定单机范围；多 Cell 属阶段 C | 阶段 C 多 Cell PoC + 跨 Cell barrier/物理 cleanup 证明（见 U-5） |
+| RISK-B-11 | durable-state-loss | P1/partial（2026-10-08 分域：单机双进程域已证 C-SHARD-001..004；跨机/物理 cleanup 残域保留，见 U-5） | 维护者 | claims 限定单机双进程域；endpoint 仅 TaskStore；注入为 harness 通道层非 OS 级分区 | 跨机残域：真跨机证据（R1.4 触发器 7）；物理 cleanup 残域：实际清理/对账完成证明（见 U-5） |
 | RISK-B-12 | durable-state-loss | P1/open | 维护者（处置决定归 W34-D） | demo 级定级 + 登记 + W33-B 现行演示替代 | 根因定位 + 修复测试或 demo 显式退役记录（见 U-6；含 P0 升级条款） |
 
 ## 3. 未知项清单（unknowns：当前无证据、不可现在判定；§6.5.5 条件 3「未知风险」本体）
@@ -53,7 +53,7 @@
 - **U-2 Windows 实机终止语义**：taskkill /F/T 在真实进程树上的行为（live-child、权限边界、孤儿）未知；CI 契约道 step 绿不含实杀断言（W34-A §6 residual 4）。owner：维护者。缓解：RISK-B-10 登记 + claims 口径限定。退役证据：Windows 实机 kill 矩阵（B6-2）+ W29-F 双活三层场景 Windows 实杀（B2-1）。
 - **U-3 GUI 真机可用性**：Tauri 壳在真实用户机的交互可用性（点按/权限/多窗口/中文输入/长期运行）未知；现有证据为命令层集成测试 + 窗口注册 + CLI 活体冒烟。owner：维护者。缓解：computer-use 交互清单已登记为收尾动作（§6 B-005 行）；五层 inspect desktop 派发接线显式未做（操作者路径走 CLI）。退役证据：computer-use 清单全量跑完并落 evidence。
 - **U-4 真实硬件掉电**：kill-9=页缓存存活建模；层 1 APFS 校准与层 2 dm-flakey 已有，M4/M6/M8 模型校准无专项数据，真实物理掉电未做。owner：维护者。缓解：分层阶梯策略 + 各 evidence disclaimer 不外推。退役证据：真机掉电设备证据，或 M4/M6/M8 校准完成（B-STORE-FS-SEMANTICS-001 推进）。
-- **U-5 多 Cell/跨机原子提交（分域口径 2026-10-08，W56）**：**单机双进程半边已证**——跨 Cell barrier（双进程签名 observation）、authority 接管原子性（DIST-TASK-002 CAS 链 + H6 六类目注入 + 四不变量收敛，C-SHARD-001..004）、效果拒绝语义（fence 后旧权威提交全拒）。**残域显式保留**：①跨机器原子性/真网络分区/跨时钟域——未证，挂 ADR-0019 修订 2 R1.4 触发器 7 再评估门（终局属跨机拓扑决策，ADR-0018 复审触发器 2/4 路径）；②远端物理 cleanup 证明——未证（拒绝/QUARANTINE ≠ cleanup，R2.3 第 2 条），实际清理证据存在前不得退役。owner：维护者。缓解：claims 全部限定单机双进程域；RISK-B-11（partial）。残域退役证据：真跨机双 Cell 证据 + 实际清理/对账完成证明。
+- **U-5 多 Cell/跨机原子提交（分域口径 2026-10-08，W56）**：**单机双进程半边已证**——跨 Cell barrier（双进程签名 observation）、authority 接管原子性（DIST-TASK-002 CAS 链 + H6 六类目注入 + 四不变量收敛，C-SHARD-001..004）、效果拒绝语义（fence 后旧权威提交全拒）。**残域显式保留**：①跨机器原子性/真网络分区/跨时钟域——未证，挂 ADR-0019 R1.4 触发器 7 再评估门（修订 2 R2.5 沿用；终局属跨机拓扑决策，ADR-0018 复审触发器 2/4 路径）；②远端物理 cleanup 证明——未证（拒绝/QUARANTINE ≠ cleanup，R2.3 第 2 条），实际清理证据存在前不得退役。owner：维护者。缓解：claims 全部限定单机双进程域；RISK-B-11（partial）。残域退役证据：真跨机双 Cell 证据 + 实际清理/对账完成证明。
 - **U-6 slice-k-demo 09d 根因**：auto-GC blast radius 嫌疑未定位；若为生产 GC 误收在册 blob 则升级 P0。owner：维护者（W34-D 裁量处置）。缓解：RISK-B-12 登记；测试面不受影响；W33-B 为现行演示。退役证据：根因定位报告 + 修复测试（或 demo 退役决定记录）。
 - **U-7 G3 未证伪三条件与授权面**：Namespace/ResourceContract/fanout gate 对应权威未落，门语义三条件不可证伪；WAITING_AUTHORIZATION 解除无 enforcement。owner：维护者。缓解：W31-G 边界带入 ROAD-B-004 limitations。退役证据：对应权威落地后的门测试（物化门负路径扩展）。
 - **U-8 G4 生态 selector 半边**：Package/Skill/Tool/Model/Artifact/Topic/外部服务 typed selector→generation handle 解析未落，其上的「latest 不得当已授权依赖」不可判定。owner：维护者。缓解：现以 input_selectors_digest 摘要绑定。退役证据：生态 selector 解析车道落地 + 负路径测试。
