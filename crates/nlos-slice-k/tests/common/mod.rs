@@ -699,17 +699,30 @@ pub(crate) fn serve_observations(
 }
 
 /// Parses the last heartbeat counter of a heartbeat file.
+///
+/// A not-yet-created file reads as zero: the child may not have written its
+/// first heartbeat when the parent's bounded wait loop polls, and that race
+/// must keep polling (the loop's deadline bounds it), not panic.
 pub(crate) fn heartbeat_counter(path: &Path) -> u64 {
-    let text = fs::read_to_string(path).expect("read heartbeat file");
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(error) => panic!("read heartbeat file: {error}"),
+    };
     text.lines()
         .filter_map(|line| line.strip_prefix("hb ").and_then(|n| n.parse().ok()))
         .max()
         .unwrap_or(0)
 }
 
-/// Parses how many demands the child served so far.
+/// Parses how many demands the child served so far (same not-yet-created
+/// semantics as [`heartbeat_counter`]).
 pub(crate) fn demand_count(path: &Path) -> usize {
-    let text = fs::read_to_string(path).expect("read heartbeat file");
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(error) => panic!("read heartbeat file: {error}"),
+    };
     text.lines()
         .filter_map(|line| line.strip_prefix("demand ").and_then(|n| n.parse().ok()))
         .max()
