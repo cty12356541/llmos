@@ -130,11 +130,10 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        match fs::remove_dir_all(&self.root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("remove cs0c temp root: {error}"),
-        }
+        // Windows cannot remove files still held open by this process's
+        // store/directory handles (sharing violation); best-effort cleanup
+        // is the repo's cross-platform test convention (see nlos-task tests).
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -175,10 +174,12 @@ fn holder_from_pid(pid: u32, tag: u8) -> ProcessId {
 /// One local authority fixture: a fresh store, a term-1 lease held by this
 /// process, the Task registered, and a federation directory for trails.
 struct CoreFixture {
-    _dir: TempDir,
     authority: SqliteTaskAuthority,
     directory: CellDirectory,
     lease: nlos_task::AuthorityLeaseRecord,
+    // Declared last so it drops last: the store/directory handles must close
+    // before the temp root is removed (Windows sharing violation otherwise).
+    _dir: TempDir,
 }
 
 fn core_fixture(name: &str, holder_tag: u8) -> CoreFixture {
