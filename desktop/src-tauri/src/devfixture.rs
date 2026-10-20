@@ -5,27 +5,17 @@
 //! Ed25519 验签)、`AuthorityClock`(真实系统墙钟 + SQLite 持久化)、
 //! `SqliteTaskAuthority`(含一条 escalated 恢复计划)——并同时开放:
 //!
-//! - **认证入口**:ADR-0011 challenge-response(GUI 的唯一接线方式);
-//! - **plain 入口**:`serve_one` + `handle_for_ipc`,供一致性比对
-//!   (Unix:真实 `system-control-cli` 二进制;Windows:`dispatch_plain`
-//!   测试助手——CLI 二进制本身仍是 Unix-only)。
-//!
-//! 传输面按平台分派(F3-c2):Unix 走 `nlos-ipc` 的 Unix domain socket
-//! 适配器与上游 `authenticated_serve_one_control`(W32 起路径零改动);
-//! Windows 走 `nlos-ipc` 的 named pipe 适配器 + 平台中立握手原语在
-//! devfixture 侧装配的等价服务回路(上游 auth 模块整体 cfg(unix))。
-//!
-//! OS 凭据面(F3-c3):Windows 侧 named pipe 对端 pid 由 `nlos-ipc` 解析
-//! (`GetNamedPipeClientProcessId`),服务端以 `SameUserAuthorizer` 做
-//! 同用户令牌门(0600 Unix socket 权限位的 Windows 等价物:仅创建用户
-//! 的进程可入);Unix 夹具维持 `AllowPeer` 现状(生产凭据门在上游
-//! daemon,夹具语义两平台对齐:认证入口另有 ADR-0011 principal 级握手)。
+//! - **认证入口**:ADR-0011 challenge-response(`authenticated_serve_one_control`),
+//!   GUI 的唯一接线方式;
+//! - **plain 入口**:`serve_one` + `handle_for_ipc`,供真实
+//!   `system-control-cli` 二进制做一致性比对。
 //!
 //! 两个入口共享同一类 `RecoverySystemControl` handler(B-TASK-006L 三入口
-//! 字节一致契约的服务侧前提)。夹具密钥为进程内随机生成(OS 随机源种子),
-//! 只写入权限收窄的临时文件,绝不入仓库。本模块不承载任何生产语义。
+//! 字节一致契约的服务侧前提)。夹具密钥为进程内随机生成(/dev/urandom 种子),
+//! 只写入 `0600` 临时文件,绝不入仓库。本模块不承载任何生产语义。
 
 use std::fs;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,12 +26,8 @@ use nlos_commit_coordinator::{
     RecoveryFailureAuthority, RecoveryWorkerFailure, RecoveryWorkerHealth, RecoveryWorkerState,
 };
 use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
-#[cfg(unix)]
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
-#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
-#[cfg(windows)]
-use nlos_ipc::windows::NamedPipeListenerAdapter;
 use nlos_ipc::{OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one};
 use nlos_resource::{
     ActivateReservationRequest, ActivationDecision, ConsumeReservationRequest,
@@ -49,7 +35,6 @@ use nlos_resource::{
     RegisterDriverRequest, ReserveRequest, ResourceAuthority, ResourceDemand,
 };
 use nlos_schema::sabi::v1::{ControlCommand as SabiWireCommand, ExchangeResponse};
-#[cfg(unix)]
 use nlos_system_control::auth::authenticated_serve_one_control;
 use nlos_system_control::control::{CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT};
 use nlos_system_control::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer};
@@ -64,19 +49,6 @@ use nlos_types::{
     TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use tokio::task::JoinHandle;
-
-/// 夹具监听器(cfg 分派:Unix domain socket / Windows named pipe)。
-#[cfg(unix)]
-type ListenerAdapter = UnixListenerAdapter;
-#[cfg(windows)]
-type ListenerAdapter = NamedPipeListenerAdapter;
-
-/// 服务端握手上下文(Unix:上游 `ServerHandshakeContext`;
-/// Windows:devfixture 侧等价物,见 [`WindowsHandshakeContext`])。
-#[cfg(unix)]
-type HandshakeServerContext = ServerHandshakeContext;
-#[cfg(windows)]
-type HandshakeServerContext = WindowsHandshakeContext;
 
 /// 夹具装配失败(类型化;零 panic)。
 #[derive(Debug)]
@@ -143,17 +115,10 @@ impl RandomSource {
 }
 
 fn read_os_random(buffer: &mut [u8]) -> Result<(), FixtureError> {
-    #[cfg(unix)]
-    {
-        use std::io::Read;
+    use std::io::Read;
 
-        let mut source = fs::File::open("/dev/urandom").map_err(FixtureError::Io)?;
-        source.read_exact(buffer).map_err(FixtureError::Io)
-    }
-    #[cfg(windows)]
-    {
-        getrandom::fill(buffer).map_err(|error| FixtureError::Io(std::io::Error::other(error)))
-    }
+    let mut source = fs::File::open("/dev/urandom").map_err(FixtureError::Io)?;
+    source.read_exact(buffer).map_err(FixtureError::Io)
 }
 
 fn wall_now_ms() -> u64 {
@@ -201,78 +166,36 @@ impl Drop for TempRoot {
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
-/// 夹具端点地址。Unix:短 socket 路径(macOS `SUN_LEN` 上限 104 字节,
-/// Drop 清理 socket 文件);Windows:`\\.\pipe\` 本地管道名(全句柄关闭后
-/// 命名空间自动回收,无需清理)。
-struct FixtureEndpoint {
-    #[cfg(unix)]
-    path: PathBuf,
-    #[cfg(windows)]
-    name: String,
-}
+/// 短 socket 路径(macOS `SUN_LEN` 上限 104 字节)。
+struct SocketPath(PathBuf);
 
-impl FixtureEndpoint {
+impl SocketPath {
     fn new(label: &str) -> Self {
-        #[cfg(unix)]
-        {
-            Self {
-                path: std::env::temp_dir().join(format!(
-                    "llmosdt-{label}-{}-{}.sock",
-                    std::process::id(),
-                    NEXT_PATH.fetch_add(1, Ordering::Relaxed),
-                )),
-            }
-        }
-        #[cfg(windows)]
-        {
-            Self {
-                name: format!(
-                    r"\\.\pipe\llmosdt-{label}-{}-{}",
-                    std::process::id(),
-                    NEXT_PATH.fetch_add(1, Ordering::Relaxed),
-                ),
-            }
-        }
-    }
-
-    /// 端点地址字符串(GUI 会话配置 / dispatch 入参形态)。
-    fn to_endpoint_string(&self) -> String {
-        #[cfg(unix)]
-        {
-            self.path.display().to_string()
-        }
-        #[cfg(windows)]
-        {
-            self.name.clone()
-        }
+        Self(std::env::temp_dir().join(format!(
+            "llmosdt-{label}-{}-{}.sock",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed),
+        )))
     }
 }
 
-#[cfg(unix)]
-impl AsRef<Path> for FixtureEndpoint {
+impl Deref for SocketPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for SocketPath {
     fn as_ref(&self) -> &Path {
-        &self.path
+        &self.0
     }
 }
 
-#[cfg(unix)]
-impl Drop for FixtureEndpoint {
+impl Drop for SocketPath {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// 绑定一个夹具端点(Unix:0600 权限位收窄;Windows:named pipe,
-/// `reject_remote_clients`,顺序服务 4 实例足够)。
-fn bind_endpoint(endpoint: &FixtureEndpoint) -> Result<ListenerAdapter, FixtureError> {
-    #[cfg(unix)]
-    {
-        UnixListenerAdapter::bind(endpoint).map_err(FixtureError::Bind)
-    }
-    #[cfg(windows)]
-    {
-        NamedPipeListenerAdapter::bind(&endpoint.name, 4, TransportConfig::default())
-            .map_err(FixtureError::Bind)
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -321,300 +244,11 @@ fn authorize_capability(
     }
 }
 
-/// Unix 夹具 peer 门(F3-c3 起 Windows 装配 `SameUserAuthorizer`,此桩
-/// 仅 Unix 保留——与上游夹具现状一致,生产凭据门在 daemon)。
-#[cfg(unix)]
 struct AllowPeer;
 
-#[cfg(unix)]
 impl PeerAuthorizer for AllowPeer {
     fn authorize(&self, _: &PeerIdentity) -> Result<(), String> {
         Ok(())
-    }
-}
-
-/// 密钥文件创建:两端平台都在落盘时显式收窄访问面——Unix 以 0600 权限位;
-/// Windows 以 owner-only DACL(`crate::winsec`:唯一 allow-ACE = 当前用户
-/// `FILE_ALL_ACCESS`,创建时经 `SECURITY_ATTRIBUTES` 一次到位,不存在默认
-/// DACL 存续窗口;`key_file_acl_side.rs` 钉死其结构)。
-fn open_key_file(path: &Path) -> Result<fs::File, FixtureError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(FixtureError::Io)
-    }
-    #[cfg(windows)]
-    {
-        crate::winsec::create_new_owner_only(path).map_err(FixtureError::Io)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Windows named pipe 服务侧(F3-c2)
-// ---------------------------------------------------------------------------
-
-/// Windows 服务端握手上下文:上游 `ServerHandshakeContext` 的 devfixture
-/// 等价物(上游 `handshake::transport` 整体 cfg(unix))。绑定派生与客户端
-/// 共用 [`crate::transport::endpoint_channel_binding`]。
-#[cfg(windows)]
-struct WindowsHandshakeContext {
-    binding: [u8; 32],
-    nonces: nlos_ipc::handshake::HandshakeNonceRegistry,
-}
-
-#[cfg(windows)]
-impl WindowsHandshakeContext {
-    fn new(
-        endpoint: &str,
-        nonce_capacity: usize,
-    ) -> Result<Self, nlos_ipc::handshake::HandshakeError> {
-        let normalized = crate::transport::normalize_endpoint(endpoint).map_err(|_| {
-            nlos_ipc::handshake::HandshakeError::InvalidConfig(
-                "named pipe endpoint must be \\\\.\\pipe\\<name>",
-            )
-        })?;
-        Ok(Self {
-            binding: crate::transport::endpoint_channel_binding(&normalized),
-            nonces: nlos_ipc::handshake::HandshakeNonceRegistry::new(nonce_capacity)?,
-        })
-    }
-
-    fn nonces(&self) -> &nlos_ipc::handshake::HandshakeNonceRegistry {
-        &self.nonces
-    }
-}
-
-/// named pipe accept:F3-c3 起 `nlos-ipc` 适配器的 accept 超时是
-/// cancel-safe 的(超时实例连同挂起的 ConnectNamedPipe 一并归还 listener,
-/// 下轮复用),夹具不再需要放宽超时预算规避"超时丢弃预创建实例且不重建"
-/// 的旧行为——空闲轮按 `TransportConfig` 的 connect 预算轮转,与 Unix
-/// 夹具的空闲轮语义一致。
-#[cfg(windows)]
-async fn accept_pipe(
-    listener: &mut NamedPipeListenerAdapter,
-    config: TransportConfig,
-) -> Result<
-    (
-        tokio::net::windows::named_pipe::NamedPipeServer,
-        PeerIdentity,
-    ),
-    nlos_ipc::IpcError,
-> {
-    listener.accept(config).await
-}
-
-/// Windows 版 `authenticated_serve_one_control` 的 devfixture 镜像:语义逐
-/// 步对齐上游(`nlos-system-control` auth.rs,整体 cfg(unix))——
-/// 时钟签发的握手验证时间 → accept → peer 门 → challenge → 验证 attestation
-/// → `serve_one`(墙钟经 `AuthorityClock`,按 correlation id 幂等)。
-/// 上游把 post-handshake serve 结果放在 `AuthenticatedServeOutcome.served`
-/// (不算握手错误);夹具循环同样忽略 serve 结果,只对握手错误退避。
-/// peer 门为泛型(F3-c3:Windows 装配 `SameUserAuthorizer`)。
-#[cfg(windows)]
-#[allow(clippy::too_many_arguments)]
-async fn authenticated_serve_one_control_pipe<H, A, G, N>(
-    listener: &mut NamedPipeListenerAdapter,
-    config: TransportConfig,
-    control: &RecoverySystemControl<'_, H, A>,
-    identity: &IdentityAuthority,
-    clock: &AuthorityClock,
-    handshake: &WindowsHandshakeContext,
-    peer_gate: &G,
-    now_monotonic_ns: u64,
-    next_nonce: N,
-) -> Result<(), nlos_ipc::handshake::HandshakeError>
-where
-    H: RecoveryHealthSource,
-    A: SystemControlAuthorizer,
-    G: PeerAuthorizer,
-    N: FnOnce() -> [u8; nlos_schema::HANDSHAKE_NONCE_BYTES],
-{
-    use nlos_clock::NowRequest;
-    use nlos_identity::IdentityAuthorityError;
-    use nlos_ipc::FramedIo;
-    use nlos_ipc::handshake::{
-        HandshakeError, decode_attestation_wire, encode_challenge_wire, issue_challenge,
-        verify_attestation,
-    };
-
-    let nonce = next_nonce();
-    let verified_at_ms = clock
-        .wall_now(NowRequest {
-            idempotency_key: handshake_wall_key(&nonce),
-        })
-        .map_err(|error| HandshakeError::Identity(IdentityAuthorityError::Clock(error)))?
-        .reading()
-        .as_u64();
-
-    let (stream, peer) = accept_pipe(listener, config)
-        .await
-        .map_err(HandshakeError::Transport)?;
-    peer_gate
-        .authorize(&peer)
-        .map_err(HandshakeError::PeerAuthorization)?;
-
-    let mut framed = FramedIo::new(stream, config);
-    let challenge = issue_challenge(handshake.nonces(), nonce)?;
-    framed
-        .send(&encode_challenge_wire(&challenge)?)
-        .await
-        .map_err(HandshakeError::Transport)?;
-    let attestation_wire = framed.receive().await.map_err(HandshakeError::Transport)?;
-    let attestation = decode_attestation_wire(&attestation_wire)?;
-    // nonce 在验签前即被消费(失败也烧掉,不可重放)——上游同序。
-    verify_attestation(
-        identity,
-        handshake.nonces(),
-        &attestation,
-        &handshake.binding,
-        verified_at_ms,
-    )?;
-
-    let served = serve_one(
-        framed.into_inner(),
-        config,
-        peer,
-        peer_gate,
-        |validated| async move {
-            Ok(OutboundResponse::Typed(ExchangeResponse {
-                envelope: Some(serve_validated_pipe(
-                    control,
-                    clock,
-                    now_monotonic_ns,
-                    validated.envelope(),
-                )),
-            }))
-        },
-    )
-    .await;
-    if let Err(error) = served {
-        eprintln!("dev_server: windows authenticated serve: {error}");
-    }
-    Ok(())
-}
-
-/// Windows 版 `serve_validated` 镜像(上游 auth.rs 私有函数;命令级墙钟
-/// 经 `AuthorityClock` 幂等读,correlation id 上界外的请求为类型化失败信封)。
-#[cfg(windows)]
-fn serve_validated_pipe<H, A>(
-    control: &RecoverySystemControl<'_, H, A>,
-    clock: &AuthorityClock,
-    now_monotonic_ns: u64,
-    request: &nlos_schema::sabi::v1::Envelope,
-) -> nlos_schema::sabi::v1::Envelope
-where
-    H: RecoveryHealthSource,
-    A: SystemControlAuthorizer,
-{
-    use nlos_clock::NowRequest;
-    use nlos_schema::REQUEST_ID_BYTES;
-    use nlos_schema::sabi::v1::envelope;
-    use nlos_system_control::{SystemControlError, failure_envelope};
-
-    // 上游 `command_wall_key`(pub 但住在 cfg(unix) 的 auth 模块)的逐字
-    // 镜像:correlation id 即幂等键。
-    let command_wall_key =
-        |correlation_id: &[u8; REQUEST_ID_BYTES]| IdempotencyKey::from_bytes(*correlation_id);
-    let bounded_correlation =
-        |request: &nlos_schema::sabi::v1::Envelope| match request.common_context.as_ref() {
-            Some(envelope::CommonContext::RequestContext(context))
-                if context.correlation_id.len() == REQUEST_ID_BYTES =>
-            {
-                let mut correlation = [0; REQUEST_ID_BYTES];
-                correlation.copy_from_slice(&context.correlation_id);
-                Some(correlation)
-            }
-            _ => None,
-        };
-    let Some(correlation_id) = bounded_correlation(request) else {
-        return failure_envelope(request, &SystemControlError::UnboundedCorrelation);
-    };
-    match clock.wall_now(NowRequest {
-        idempotency_key: command_wall_key(&correlation_id),
-    }) {
-        Ok(decision) => {
-            let wall_ms = i64::try_from(decision.reading().as_u64()).unwrap_or(i64::MAX);
-            control.handle_for_ipc(request, now_monotonic_ns, wall_ms)
-        }
-        Err(_) => failure_envelope(request, &SystemControlError::ClockWallUnavailable),
-    }
-}
-
-/// 上游 auth.rs 私有 `handshake_wall_key` 的逐字镜像(握手验证时间的
-/// 幂等键派生;域分隔常量相同,保持时钟幂等域同源)。
-#[cfg(windows)]
-fn handshake_wall_key(nonce: &[u8; nlos_schema::HANDSHAKE_NONCE_BYTES]) -> IdempotencyKey {
-    use sha2::{Digest, Sha256};
-
-    const HANDSHAKE_WALL_DOMAIN: &[u8] = b"llmos/control-auth/handshake-wall/v1";
-    let mut hasher = Sha256::new();
-    hasher.update(HANDSHAKE_WALL_DOMAIN);
-    hasher.update(nonce);
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut key = [0; 16];
-    key.copy_from_slice(&digest[..16]);
-    IdempotencyKey::from_bytes(key)
-}
-
-impl DevFixture {
-    /// plain 入口派发助手(测试一致性比对用):Unix 委托上游
-    /// `dispatch_over_socket`(与真实 CLI 同一字节路径);Windows 为其
-    /// named pipe 等价镜像(transport 换 named pipe,handler/receipt 同构)。
-    pub async fn dispatch_plain(
-        &self,
-        command: &nlos_system_control::control::ControlCommand,
-        process: Option<&dyn nlos_system_control::control::ProcessInspector>,
-        resource: Option<&dyn nlos_system_control::control::ResourceInspector>,
-        application: Option<&dyn nlos_system_control::control::ApplicationInspector>,
-    ) -> Result<nlos_system_control::control::ControlReceipt, crate::error::DesktopError> {
-        #[cfg(unix)]
-        {
-            nlos_system_control::control::dispatch_over_socket(
-                &self.endpoint_plain,
-                command,
-                process,
-                resource,
-                application,
-            )
-            .await
-            .map_err(|error| crate::error::from_control_error(&error))
-        }
-        #[cfg(windows)]
-        {
-            use nlos_ipc::{LocalRpcClient, TransportConfig, windows};
-            use nlos_schema::sabi::v1::ExchangeRequest;
-            use nlos_system_control::control::build_request_envelope;
-
-            let name = crate::transport::normalize_endpoint(&self.endpoint_plain.name)?;
-            let request = build_request_envelope(command)
-                .map_err(|error| crate::error::from_control_error(&error))?;
-            let config = TransportConfig::default();
-            let (stream, _peer) = windows::connect(&name, config).await.map_err(|error| {
-                crate::error::DesktopError::ipc(format!("control transport: {error}"))
-            })?;
-            let response = LocalRpcClient::new(stream, config)
-                .exchange_validated(ExchangeRequest {
-                    envelope: Some(request),
-                })
-                .await
-                .map_err(|error| {
-                    crate::error::DesktopError::ipc(format!("control transport: {error}"))
-                })?;
-            nlos_system_control::control::ControlReceipt::compose(
-                command,
-                response.envelope(),
-                process,
-                resource,
-                application,
-            )
-            .map_err(|error| crate::error::from_control_error(&error))
-        }
     }
 }
 
@@ -840,19 +474,16 @@ pub struct DevFixture {
     /// keepalive:TempRoot 只为借用其 Drop(夹具释放时清理临时目录)。
     #[allow(dead_code)]
     root: TempRoot,
-    endpoint_authenticated: FixtureEndpoint,
-    endpoint_plain: FixtureEndpoint,
+    socket_authenticated: SocketPath,
+    socket_plain: SocketPath,
     tasks: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
     clock: Arc<AuthorityClock>,
-    handshake: Arc<HandshakeServerContext>,
+    handshake: Arc<ServerHandshakeContext>,
     health: StubHealth,
-    listener_authenticated: Option<ListenerAdapter>,
-    listener_plain: Option<ListenerAdapter>,
+    listener_authenticated: Option<UnixListenerAdapter>,
+    listener_plain: Option<UnixListenerAdapter>,
     random: RandomSource,
-    /// Windows OS 凭据门(F3-c3):named pipe 双入口共用的同用户 peer 门。
-    #[cfg(windows)]
-    peer_gate: nlos_ipc::windows::SameUserAuthorizer,
     principal_hex: String,
     key_seed_hex: String,
     plan_id_hex: String,
@@ -866,8 +497,7 @@ pub struct DevFixture {
 }
 
 impl DevFixture {
-    /// 装配全部真实权威并绑定两个本地 IPC 端点(Unix socket / Windows
-    /// named pipe;label 仅用于端点命名,≤3 字符)。
+    /// 装配全部真实权威并绑定两个 Unix socket(label 仅用于临时路径命名,≤3 字符)。
     pub fn spawn(label: &str) -> Result<Self, FixtureError> {
         let random = RandomSource::from_os()?;
         let key_seed = random.bytes32();
@@ -935,28 +565,22 @@ impl DevFixture {
             resource_domain_faulted: false,
         });
 
-        let endpoint_authenticated = FixtureEndpoint::new(&format!("{label}a"));
-        let endpoint_plain = FixtureEndpoint::new(&format!("{label}p"));
-        #[cfg(unix)]
+        let socket_authenticated = SocketPath::new(&format!("{label}a"));
+        let socket_plain = SocketPath::new(&format!("{label}p"));
         let handshake = Arc::new(
-            ServerHandshakeContext::new(endpoint_authenticated.as_ref(), 64)
+            ServerHandshakeContext::new(&socket_authenticated, 64)
                 .map_err(FixtureError::HandshakeContext)?,
         );
-        #[cfg(windows)]
-        let handshake = Arc::new(
-            WindowsHandshakeContext::new(&endpoint_authenticated.to_endpoint_string(), 64)
-                .map_err(FixtureError::HandshakeContext)?,
-        );
-        let listener_authenticated = Some(bind_endpoint(&endpoint_authenticated)?);
-        let listener_plain = Some(bind_endpoint(&endpoint_plain)?);
+        let listener_authenticated =
+            Some(UnixListenerAdapter::bind(&socket_authenticated).map_err(FixtureError::Bind)?);
+        let listener_plain =
+            Some(UnixListenerAdapter::bind(&socket_plain).map_err(FixtureError::Bind)?);
         let settled = create_settled_reservation(&root.0)?;
-        #[cfg(windows)]
-        let peer_gate = nlos_ipc::windows::SameUserAuthorizer::new().map_err(FixtureError::Io)?;
 
         Ok(Self {
             root,
-            endpoint_authenticated,
-            endpoint_plain,
+            socket_authenticated,
+            socket_plain,
             tasks,
             identity: Arc::new(identity),
             clock: Arc::new(clock),
@@ -965,8 +589,6 @@ impl DevFixture {
             listener_authenticated,
             listener_plain,
             random,
-            #[cfg(windows)]
-            peer_gate,
             principal_hex: hex(binding.principal_id.as_bytes()),
             key_seed_hex: hex(&key_seed),
             plan_id_hex: hex(plan_id.as_bytes()),
@@ -979,17 +601,14 @@ impl DevFixture {
         })
     }
 
-    /// 认证端点地址(GUI 会话配置 `LLMOS_DESKTOP_SOCKET` 的取值形态;
-    /// Unix 为 socket 路径,Windows 为 `\\.\pipe\` 管道名)。
     #[must_use]
-    pub fn endpoint_authenticated(&self) -> String {
-        self.endpoint_authenticated.to_endpoint_string()
+    pub fn socket_authenticated(&self) -> &Path {
+        &self.socket_authenticated
     }
 
-    /// plain 端点地址(一致性比对入口;`dispatch_plain` 的服务端)。
     #[must_use]
-    pub fn endpoint_plain(&self) -> String {
-        self.endpoint_plain.to_endpoint_string()
+    pub fn socket_plain(&self) -> &Path {
+        &self.socket_plain
     }
 
     #[must_use]
@@ -1025,13 +644,17 @@ impl DevFixture {
         }
     }
 
-    /// 把 Ed25519 种子写入权限收窄的密钥文件(客户端派发时读取)。
-    /// Unix:0600 权限位;Windows:owner-only DACL(`crate::winsec`,
-    /// 0600 等价物——`key_file_acl_side.rs` 断言其单 ACE 结构)。
+    /// 把 Ed25519 种子写入 `0600` 密钥文件(客户端派发时读取)。
     pub fn write_key_file(&self, path: &Path) -> Result<(), FixtureError> {
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
 
-        let mut file = open_key_file(path)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(FixtureError::Io)?;
         file.write_all(self.key_seed_hex.as_bytes())
             .and_then(|()| file.sync_all())
             .map_err(FixtureError::Io)?;
@@ -1053,39 +676,21 @@ impl DevFixture {
         let handshake = Arc::clone(&self.handshake);
         let health = self.health.clone();
         let random = self.random.clone();
-        #[cfg(windows)]
-        let peer_gate = self.peer_gate.clone();
         tokio::spawn(async move {
-            // Windows 的 named pipe accept 需要 &mut(Unix 不需要)。
-            #[allow(unused_mut)]
             let Some(mut listener) = listener else {
                 return;
             };
             loop {
                 let control =
                     RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy);
-                #[cfg(unix)]
                 let outcome = authenticated_serve_one_control(
-                    &listener,
-                    TransportConfig::default(),
-                    &control,
-                    identity.as_ref(),
-                    clock.as_ref(),
-                    handshake.as_ref(),
-                    &AllowPeer,
-                    monotonic_now_ns(),
-                    || random.bytes32(),
-                )
-                .await;
-                #[cfg(windows)]
-                let outcome = authenticated_serve_one_control_pipe(
                     &mut listener,
                     TransportConfig::default(),
                     &control,
                     identity.as_ref(),
                     clock.as_ref(),
                     handshake.as_ref(),
-                    &peer_gate,
+                    &AllowPeer,
                     monotonic_now_ns(),
                     || random.bytes32(),
                 )
@@ -1104,15 +709,11 @@ impl DevFixture {
         let listener = self.listener_plain.take();
         let tasks = Arc::clone(&self.tasks);
         let health = self.health.clone();
-        #[cfg(windows)]
-        let peer_gate = self.peer_gate.clone();
         tokio::spawn(async move {
-            #[allow(unused_mut)]
-            let Some(mut listener) = listener else {
+            let Some(listener) = listener else {
                 return;
             };
             loop {
-                #[cfg(unix)]
                 let (stream, peer) = match listener.accept(TransportConfig::default()).await {
                     Ok(connection) => connection,
                     Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
@@ -1122,24 +723,12 @@ impl DevFixture {
                         continue;
                     }
                 };
-                #[cfg(windows)]
-                let (stream, peer) =
-                    match accept_pipe(&mut listener, TransportConfig::default()).await {
-                        Ok(connection) => connection,
-                        Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => {
-                            continue;
-                        }
-                        Err(error) => {
-                            eprintln!("dev_server: plain accept: {error}");
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            continue;
-                        }
-                    };
                 let wall_ms = i64::try_from(wall_now_ms()).unwrap_or(i64::MAX);
-                let handler = {
+                // 一个坏交换不拖垮端点:handler 失败只影响该连接。
+                let _ = serve_one(stream, TransportConfig::default(), peer, &AllowPeer, {
                     let tasks = Arc::clone(&tasks);
                     let health = health.clone();
-                    move |validated: nlos_schema::ValidatedExchangeRequest| {
+                    move |validated| {
                         let control =
                             RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy);
                         let response = control.handle_for_ipc(
@@ -1153,25 +742,7 @@ impl DevFixture {
                             }))
                         }
                     }
-                };
-                // 一个坏交换不拖垮端点:handler 失败只影响该连接。
-                #[cfg(unix)]
-                let _ = serve_one(
-                    stream,
-                    TransportConfig::default(),
-                    peer,
-                    &AllowPeer,
-                    handler,
-                )
-                .await;
-                #[cfg(windows)]
-                let _ = serve_one(
-                    stream,
-                    TransportConfig::default(),
-                    peer,
-                    &peer_gate,
-                    handler,
-                )
+                })
                 .await;
             }
         })

@@ -206,5 +206,5 @@ fn malformed_requests_return_bounded_invalid_request_without_reflecting_input() 
         DirectoryErrorCode::try_from(error.code).unwrap(),
         DirectoryErrorCode::InvalidRequest
     );
-    assert!(error.service.is_empty());
+    assert_eq!(error.service, "");
 }

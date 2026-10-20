@@ -203,7 +203,16 @@ pub fn run_application_teardown(
 /// (NL kill uses the process id as its command id, then returns before
 /// teardown writes the terminal marker) is adopted: teardown replays that
 /// receipt's idempotency key and `killed_at_ms` instead of minting a second
-/// key.
+/// key. The reverse same-source direction holds too: the adopted receipt's
+/// `killed_at_ms` was minted in the NL kill path's wall domain (the
+/// system-control daemon's own `AuthorityClock` store), which this
+/// runtime's crash-clock reading never advanced through, so the crash
+/// marker's `marked_at_ms` is floored with the adopted reading — the
+/// durable chain never orders the crash marker before the kill it
+/// continues, exactly the ordering the single-domain fresh branch gets from
+/// the wall domain's monotonic high-water. Both floor inputs are durable
+/// replay bytes (the adopted receipt plus the crash-clock wall receipt), so
+/// a re-run rebuilds the identical timestamp.
 fn teardown_step_for(
     runtime: &SliceKRuntime,
     process_id: ProcessId,
@@ -233,6 +242,8 @@ fn teardown_step_for(
         .process
         .inspect_platform_kill_receipt(process_id, binding.process_generation)?
     {
+        let local_crash_ms =
+            runtime.wall_now_ms(teardown_key(b"crash-clock", process_id.as_bytes()))?;
         return Ok(BindingTeardownStep {
             process_id,
             process_generation: binding.process_generation,
@@ -240,8 +251,7 @@ fn teardown_step_for(
             kill_idempotency_key: kill.idempotency_key,
             killed_at_ms: kill.killed_at_ms,
             crash_idempotency_key: crash_key,
-            marked_at_ms: runtime
-                .wall_now_ms(teardown_key(b"crash-clock", process_id.as_bytes()))?,
+            marked_at_ms: local_crash_ms.max(kill.killed_at_ms),
         });
     }
     Ok(BindingTeardownStep {

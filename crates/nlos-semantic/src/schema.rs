@@ -628,6 +628,45 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), SemanticAuth
     Ok(())
 }
 
+/// Adds the signature preimage shape marker to `durability_receipts` so
+/// production issuance can sign the `nlos-canonical` `DigestEnvelope`
+/// preimage (shape 1) while pre-v9 rows keep their legacy domain-message
+/// signature (shape 0) verifiable bit-for-bit. The column defaults to 0:
+/// every existing row and any external direct-write stays on the legacy
+/// verification path.
+///
+/// The preflight mirrors v3/v4/v6/v7/v8: a store whose v9 column is already
+/// present but whose `user_version` stamp never landed is re-stamped as
+/// exactly v9, while a store in any other half-state fails closed as a typed
+/// `CorruptRecord` before the `DDL` pass.
+pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('durability_receipts')
+         WHERE name = 'signature_preimage_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 1 {
+        // The v9 column is known complete here, so this is a v9 store whose
+        // stamp never landed — stamp it as exactly that (see migrate_v6).
+        connection.pragma_update(None, "user_version", 9)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic durability preimage schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE durability_receipts ADD COLUMN signature_preimage_version INTEGER
+            NOT NULL DEFAULT 0 CHECK(signature_preimage_version IN (0, 1));
+         PRAGMA user_version = 9;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 /// True when every stored type-2/3 event has at least one index row.
 fn typed_links_backfill_complete(connection: &Connection) -> Result<bool, SemanticAuthorityError> {
     let unindexed: i64 = connection.query_row(
@@ -750,7 +789,7 @@ mod tests {
 
     use super::{
         SemanticAuthorityError, migrate_v1_to_v2, migrate_v2, migrate_v3, migrate_v4, migrate_v5,
-        migrate_v6, migrate_v7,
+        migrate_v6, migrate_v7, migrate_v8, migrate_v9,
     };
 
     fn user_version(connection: &Connection) -> i64 {
@@ -775,6 +814,15 @@ mod tests {
         let mut connection = v5_store();
         migrate_v6(&mut connection).unwrap();
         assert_eq!(user_version(&connection), 6);
+        connection
+    }
+
+    /// A v8 store, built by the same forward migration chain `open()` runs.
+    fn v8_store() -> Connection {
+        let mut connection = v6_store();
+        migrate_v7(&mut connection).unwrap();
+        migrate_v8(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 8);
         connection
     }
 
@@ -930,6 +978,72 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    /// The v9 marker defaults to the legacy shape (0), is range-checked, and
+    /// a store whose v9 column landed without the stamp re-stamps as exactly
+    /// v9 — mirroring the v7 preflight contract on the single new column.
+    #[test]
+    fn v9_preimage_marker_defaults_legacy_and_restamps_exactly_v9() {
+        let mut connection = v8_store();
+        migrate_v9(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 9);
+        connection
+            .execute_batch(
+                "INSERT INTO content_objects VALUES (zeroblob(32), 'text/plain', X'01');
+                 INSERT INTO semantic_events (
+                    event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+                    issuer_principal_id, issuer_process_id, issuer_process_generation,
+                    control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+                    key_id, content_digest, spec_body_digest
+                 ) VALUES (
+                    zeroblob(32), X'01', 1, 1, zeroblob(16), zeroblob(16), zeroblob(16),
+                    1, zeroblob(16), 1, NULL, NULL, zeroblob(16), zeroblob(32), NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO durability_receipts (
+                    receipt_id, event_id, durable_checkpoint_id, durable_at_ms, store_signature
+                 ) VALUES (zeroblob(16), zeroblob(32), zeroblob(32), 1, zeroblob(64))",
+                [],
+            )
+            .unwrap();
+        let shape: i64 = connection
+            .query_row(
+                "SELECT signature_preimage_version FROM durability_receipts",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(shape, 0, "existing rows must stay on the legacy shape");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO durability_receipts (
+                    receipt_id, event_id, durable_checkpoint_id, durable_at_ms, store_signature,
+                    signature_preimage_version
+                 ) VALUES (zeroblob(16), zeroblob(32), zeroblob(32), 1, zeroblob(64), 2)",
+                    [],
+                )
+                .is_err(),
+            "out-of-contract shapes must fail closed at the storage boundary"
+        );
+
+        // Complete v9 column whose stamp never landed re-stamps as exactly v9.
+        connection.pragma_update(None, "user_version", 8).unwrap();
+        migrate_v9(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 9);
+        let columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('durability_receipts')
+                 WHERE name = 'signature_preimage_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1, "the fast path must not duplicate the column");
     }
 
     #[test]

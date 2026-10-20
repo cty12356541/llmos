@@ -328,10 +328,9 @@ async fn rearm_self_flips_high_water_covered_wait_satisfied() {
     assert_eq!(flipped.woken_up_to_sequence, 1);
     // A distinct notify key over the same range flips nothing: the row is
     // terminal, so the self-flip notification stays idempotent.
-    assert!(
-        notify(&pair.wait, channel.channel_id, 1, 31)
-            .woken
-            .is_empty()
+    assert_eq!(
+        notify(&pair.wait, channel.channel_id, 1, 31).woken,
+        [] as [nlos_wait::WaitRecord; 0]
     );
     adapter
         .cancel_scope(scope, Generation::INITIAL)

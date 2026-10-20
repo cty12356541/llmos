@@ -648,11 +648,9 @@ fn converge_pending_after_restart_reaches_unique_terminal_state_without_caller()
     let mut nested = receipt.resource_cost_receipts.clone();
     nested.sort_unstable_by_key(|record| record.reservation_id);
     assert_eq!(nested, expected_nested(&owner, &reservations));
-    assert!(
-        restarted
-            .list_incomplete_resource_commit_plans(8)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        restarted.list_incomplete_resource_commit_plans(8).unwrap(),
+        [] as [nlos_task::ResourceCommitPlanRecord; 0]
     );
 
     // And the explicit replay is byte-equal with no duplicated rows.

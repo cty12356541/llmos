@@ -1,3 +1,6 @@
+//! **退役声明（F1 / 2026-10-05）**：本演示 bin 处于退役状态——功能已被
+//! system-control-daemon（feature `daemon`）与 CLI 取代；保留仅作库消费示例，
+//! 不再随演进更新，勿在新工作中引用。
 //! `slice-k-demo` — single-process sequential run of the first
 //! longitudinal slice: happy chain, cancel path, crash recovery
 //! (drop + reopen), and the authority-sourced inspect view. One stable

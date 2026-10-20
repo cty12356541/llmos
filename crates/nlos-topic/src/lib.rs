@@ -18,6 +18,28 @@
 //! key: the channel's key-scoped replay converges without a duplicate
 //! enqueue.  The slice deliberately does not claim cross-authority atomicity.
 //!
+//! The same discipline bounds every channel read a write path consumes (the
+//! W57 reconciliation of registry finding #23 / deep-audit finding D8): the
+//! retention admission, the advance cursor and attribution bounds, both
+//! pattern-attach subscribe points and the publish-resume fence re-read all
+//! take their channel snapshot *before* the topic `Immediate` transaction
+//! opens — or, for enqueue-side effects, after it commits — so no
+//! cross-authority IO ever runs while this authority's write lock (or its
+//! connection mutex) is held.  Queue watermarks (`max_sequence`,
+//! `consume_high_water`, `trim_high_water`) are monotonic and survive a
+//! channel rotation unchanged, so a snapshot racing a concurrent enqueue,
+//! ack, trim or rotation can only be stale-low, never stale-high: retention
+//! measures the backlog no lower than the truth (a possibly false rejection
+//! whose documented recovery is retrying the same idempotency key — the key
+//! is not consumed by a rejection), an advance to a sequence enqueued inside
+//! the race window fails with the typed
+//! [`TopicAuthorityError::InvalidSequence`] retry, and an attached
+//! subscriber's cursor may start below the live high-water, so it receives
+//! the race-window entries — over-delivery, never loss.  A rotation racing
+//! the snapshot stays typed: the enqueue path propagates
+//! [`ChannelAuthorityError::StaleChannel`] instead of silently rebinding,
+//! and the resumed replay's live re-read plus fence re-bind converge it.
+//!
 //! Cascade republish ([`TopicAuthority::republish`]) spends one unit of the
 //! parent publication's cascade budget through a guarded compare-and-set
 //! inside the same `Immediate` transaction that durably registers the child
@@ -42,7 +64,14 @@
 //! [`TopicAuthority::poll`] answers the typed
 //! [`TopicAuthorityError::DeliveryQuarantined`] without reading any entry,
 //! while cursor advance and unsubscribe keep working, no channel entry or
-//! cursor is touched, and other subscribers are unaffected.  Recovery is the
+//! cursor is touched at the flip, and other subscribers are unaffected.
+//! A quarantined lag holds no budget on either axis (the unified
+//! population of the trim, ack and retention release points): a
+//! [`TopicAuthority::compact`] may ack and trim past it, and a later
+//! explicit [`TopicAuthority::reinstate_with_token`] then surfaces the
+//! crossed cursor on poll as the typed
+//! [`TopicAuthorityError::CursorBehindChannelConsumption`] whose documented
+//! recovery is the blind catch-up advance.  Recovery is the
 //! explicit, token-authenticated [`TopicAuthority::reinstate_with_token`]:
 //! the counter is zeroed, the state flips back to active and the cursor
 //! stays exactly where it was.
@@ -54,9 +83,12 @@
 //! the topic's unconsumed backlog as the exact payload-length sum over the
 //! durable publication journal beyond
 //! `min(active subscriber cursors, channel consume high-water)` (the lag of
-//! a `QUARANTINED` subscriber holds no retention budget) and the age of the
-//! oldest live entry still held by an active subscriber (measured against
-//! the caller-supplied request time, never a wall clock).  Rows recorded by
+//! a `QUARANTINED` subscriber holds no retention budget, the same
+//! population that holds the trim and ack release points) and never below
+//! the channel trim high-water (rows the channel owner already trimmed out
+//! of the single log are deleted bytes and hold no budget), plus the age
+//! of the oldest live entry still held by an active subscriber (measured
+//! against the caller-supplied request time, never a wall clock).  Rows recorded by
 //! pre-v5 schemas carry the `0` length sentinel; while such a row sits in
 //! the summation window the measurement merges the exact known-row sum with
 //! the channel-side retained upper bound in the never-understating
@@ -161,10 +193,12 @@ use std::time::Duration;
 use nlos_channel::{
     AckRequest, ChannelAuthority, ChannelAuthorityError, ChannelRecord,
     CompactDecision as ChannelCompactDecision, CompactReceipt as ChannelCompactReceipt,
-    EnqueueDecision, EnqueueRequest, FencingToken, QueueEntryRecord,
+    EnqueueDecision, EnqueueRequest, FencingToken, QueueEntryRecord, QueueState,
 };
 use nlos_types::{ChannelId, Generation, IdempotencyKey, ResourceAccountId};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use sha2::{Digest, Sha256};
 
 macro_rules! nominal_id {
@@ -941,6 +975,24 @@ pub enum TopicAuthorityError {
     /// `QUARANTINED` and has no completed reinstate to replay; recovery is
     /// explicit, so nothing is written.
     NotQuarantined(SubscriptionId),
+    /// The polled subscription's cursor is behind the channel consume
+    /// high-water (the W55 reconciliation of deep-audit finding #18): the
+    /// channel owner's direct ack — or the service-layer compact crossing a
+    /// `QUARANTINED` lag — confirmed the `(cursor, consume_high_water]`
+    /// window as consumed at the single-log level, so those entries are no
+    /// longer receivable and a poll would silently drop them.  The poll
+    /// fails closed with this typed signal instead.  Recovery is explicit:
+    /// advance the cursor to `consume_high_water` (a documented blind
+    /// catch-up — the entries are confirmed gone from the delivery path)
+    /// or unsubscribe.
+    CursorBehindChannelConsumption {
+        subscription_id: SubscriptionId,
+        /// The subscription's durable cursor, strictly below
+        /// `consume_high_water`.
+        cursor: u64,
+        /// The channel-level consume high-water that crossed the cursor.
+        consume_high_water: u64,
+    },
     /// A consumption token was presented that does not match the
     /// authority-issued token of the subscription's current generation; the
     /// caller is not the holder of the subscribe grant and nothing is written.
@@ -956,6 +1008,16 @@ pub enum TopicAuthorityError {
     /// authority-issued token of the pattern row's current generation; the
     /// caller is not the holder of the pattern grant and nothing is written.
     PatternConsumptionTokenMismatch(PatternId),
+    /// A pattern subscribe lost the verify-then-commit snapshot race too
+    /// many times in a row (registry finding #23): every attempt saw a
+    /// matching topic appear between its pre-transaction subscribe-point
+    /// snapshot pass and the transaction itself — a concurrent
+    /// [`TopicAuthority::create_topic`] landing inside the race window.
+    /// Each attempt rolled back whole, so the failure leaves zero partial
+    /// state and the create idempotency key stays unconsumed; the
+    /// documented recovery is retrying the same request (the snapshot pass
+    /// of the retry observes the new topic and converges).
+    PatternAttachSnapshotRace(PatternId),
     PublicationNotFound(IdempotencyKey),
     /// The parent publication exists but has not reached the terminal
     /// [`PublicationStatus::Enqueued`] state, so it is not forwardable.
@@ -1061,6 +1123,17 @@ impl fmt::Display for TopicAuthorityError {
                 formatter,
                 "subscription {id:?} is not quarantined, so there is nothing to reinstate"
             ),
+            Self::CursorBehindChannelConsumption {
+                subscription_id,
+                cursor,
+                consume_high_water,
+            } => write!(
+                formatter,
+                "subscription {subscription_id:?} cursor {cursor} is behind the channel consume \
+                 high-water {consume_high_water}: the skipped window is no longer receivable \
+                 through the single log; advance the cursor to the high-water (blind catch-up) \
+                 or unsubscribe"
+            ),
             Self::ConsumptionTokenMismatch(id) => write!(
                 formatter,
                 "consumption token does not match the authority-issued token of subscription {id:?}"
@@ -1078,6 +1151,11 @@ impl fmt::Display for TopicAuthorityError {
                 formatter,
                 "pattern consumption token does not match the authority-issued token of \
                  pattern {id:?}"
+            ),
+            Self::PatternAttachSnapshotRace(id) => write!(
+                formatter,
+                "pattern {id:?} subscribe lost the attach snapshot race against a concurrent \
+                 topic create; retry the same request (zero partial state, the key is unconsumed)"
             ),
             Self::PublicationNotFound(key) => {
                 write!(formatter, "publication {key:?} does not exist")
@@ -1217,6 +1295,8 @@ impl TopicAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
@@ -1226,6 +1306,8 @@ impl TopicAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -1234,6 +1316,8 @@ impl TopicAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
@@ -1241,20 +1325,26 @@ impl TopicAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             // The watermark version: the rebuild chain is complete, so only
             // the idempotent additive pre-checks remain (no-ops when the v6,
-            // v7 and v8 objects are already present).
+            // v7, v8, v9 and v10 objects are already present).
             schema::SCHEMA_VERSION => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1288,6 +1378,11 @@ impl TopicAuthority {
     /// transaction, under the same admission rules as
     /// [`TopicAuthority::subscribe`] (a filled `max_recipients` slot or an
     /// already-active key for the pattern's subscriber skips that pattern).
+    /// The attachments' subscribe point is the channel sequence high-water
+    /// snapshotted before the transaction opened (registry finding #23: the
+    /// channel read never runs under the write lock), so it can only be
+    /// stale-low — an attached subscriber may receive entries enqueued in
+    /// the snapshot-to-commit race window, never miss earlier ones.
     /// The decision value stays the topic record; the minimal observation
     /// entry for the attach results is
     /// [`TopicAuthority::inspect_pattern_attachments`] plus the
@@ -1307,11 +1402,26 @@ impl TopicAuthority {
         validate_name(&request.name)?;
         validate_policy(&request.policy)?;
         // Owner readback: the Channel and its current fence must be durable
-        // before the topic head references them.
+        // before the topic head references them.  Both channel reads run
+        // before the `Immediate` transaction opens (registry finding #23 /
+        // deep-audit D8): no cross-authority IO under this authority's write
+        // lock.
         let channel_head = self
             .channel
             .inspect_channel(request.channel_id)
             .map_err(TopicAuthorityError::Channel)?;
+        // The create-time attach subscribe point: the channel's sequence
+        // high-water snapshotted here (still lock-free) instead of a live
+        // read inside the attach transaction.  `max_sequence` is monotonic
+        // and rotation-invariant, so the value can only be stale-low: an
+        // attached subscriber may start below the live high-water and then
+        // receive entries enqueued inside the race window — over-delivery,
+        // never loss.
+        let attach_subscribe_point = self
+            .channel
+            .inspect_queue(request.channel_id)
+            .map_err(TopicAuthorityError::Channel)?
+            .max_sequence;
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = load_topic_by_create_key(&transaction, request.idempotency_key)? {
@@ -1344,10 +1454,12 @@ impl TopicAuthority {
         insert_topic(&transaction, &record)?;
         // Pattern attach at the create time point (ADR-0007 matching
         // addendum): part of the create transaction, so a failure here
-        // aborts the create with zero durable state.
+        // aborts the create with zero durable state.  The subscribe point
+        // comes from the pre-transaction snapshot above (finding #23): no
+        // channel read happens under the write lock.
         attach_topic_to_matching_patterns(
             &transaction,
-            &self.channel,
+            attach_subscribe_point,
             &record,
             request.created_at_ms,
         )?;
@@ -1401,6 +1513,18 @@ impl TopicAuthority {
     /// A direct subscription is recorded with `attached_by = NULL` (any
     /// provenance from a previous activation of the row is cleared).
     ///
+    /// The subscribe point is a channel sequence high-water snapshot read
+    /// *before* the `Immediate` transaction opens (registry finding #23 /
+    /// deep-audit D8, the W58 closure of the W57-C residual: no channel IO
+    /// runs under this authority's write lock; an already-active key replays
+    /// without paying — or newly failing on — the channel read).  The
+    /// snapshot's `max_sequence` is monotonic and rotation-invariant, so the
+    /// point can only be stale-low: a publication enqueued inside the
+    /// snapshot-to-commit race window is still delivered to the new
+    /// subscriber — over-delivery, never a loss, and never a replay of the
+    /// history before the subscribe point (the same semantics as the
+    /// pattern-attach subscribe point).
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic, the recipient limit, a Channel
@@ -1408,6 +1532,43 @@ impl TopicAuthority {
     pub fn subscribe(
         &self,
         request: SubscribeRequest,
+    ) -> Result<SubscribeDecision, TopicAuthorityError> {
+        // Verify-then-commit (registry finding #23 / deep-audit D8, the W58
+        // closure of the W57-C residual): the cursor's subscribe point is a
+        // channel snapshot read before the `Immediate` transaction opens, so
+        // no channel IO runs under this authority's write lock.  The pre-pass
+        // is read-only under the connection mutex only: an already-active
+        // key replays right there (the replay arm must not pay, or newly
+        // fail on, a channel read — the same guard
+        // `snapshot_pattern_subscribe_points` applies to pattern keys), and
+        // the topic's channel binding is immutable from creation, so the
+        // snapshot cannot aim at a stale binding.
+        let subscribe_point = {
+            let connection = self.lock()?;
+            if let Some(existing) =
+                load_subscription_optional(&connection, request.topic_id, request.subscriber_key)?
+                    .filter(|existing| existing.active)
+            {
+                return Ok(SubscribeDecision::Replayed(existing));
+            }
+            let channel_id = load_topic_channel_id(&connection, request.topic_id)?;
+            drop(connection);
+            self.channel
+                .inspect_queue(channel_id)
+                .map_err(TopicAuthorityError::Channel)?
+                .max_sequence
+        };
+        self.subscribe_with_subscribe_point(request, subscribe_point)
+    }
+
+    /// The subscribe decision transaction against one subscribe point — the
+    /// verify-then-commit half of [`Self::subscribe`], separated so the
+    /// documented snapshot race (a publish inside the snapshot-to-transaction
+    /// window) is testable with a crafted stale snapshot.
+    fn subscribe_with_subscribe_point(
+        &self,
+        request: SubscribeRequest,
+        subscribe_point: u64,
     ) -> Result<SubscribeDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1420,10 +1581,6 @@ impl TopicAuthority {
             transaction.commit()?;
             return Ok(SubscribeDecision::Replayed(*existing));
         }
-        let live = self
-            .channel
-            .inspect_queue(topic.channel_id)
-            .map_err(TopicAuthorityError::Channel)?;
         let active = count_active_subscriptions(&transaction, request.topic_id)?;
         if active >= topic.policy.max_recipients {
             return Err(TopicAuthorityError::SubscriberLimitReached);
@@ -1437,7 +1594,7 @@ impl TopicAuthority {
             topic_id: request.topic_id,
             subscriber_key: request.subscriber_key,
             active: true,
-            cursor: live.max_sequence,
+            cursor: subscribe_point,
             subscribed_at_ms: request.subscribed_at_ms,
             unsubscribed_at_ms: 0,
             last_advanced_at_ms: 0,
@@ -1473,20 +1630,32 @@ impl TopicAuthority {
     /// (from the pattern text and the subscriber key), the opaque `binding`,
     /// a consumption token derived from the pattern id and its generation
     /// (mirroring the concrete subscription token; required by
-    /// [`TopicAuthority::cancel_pattern`]) and a UNIQUE idempotency key.
-    /// Replaying the exact key returns the *current* durable row (its state
-    /// may have advanced past the original subscribe — e.g. been cancelled);
-    /// the same for an already-active (pattern, key) pair under any key;
-    /// re-subscribing a previously cancelled pair re-activates it with a
-    /// bumped generation and a fresh token; a key rebound to a different
-    /// pattern, binding or subscriber key is an
-    /// [`TopicAuthorityError::IdempotencyConflict`].
+    /// [`TopicAuthority::cancel_pattern`]) and a UNIQUE create idempotency
+    /// key that is frozen identity, exactly like a topic's create key (the
+    /// W55 reconciliation of deep-audit finding #15): the row never rewrites
+    /// it, so the original key's replay evidence survives every later
+    /// lifecycle step.  Replaying the exact key returns the *current*
+    /// durable row (its state may have advanced past the original
+    /// subscribe — e.g. been cancelled); a *different* key naming an
+    /// existing (pattern, subscriber key) identity — active or cancelled
+    /// — is a typed [`TopicAuthorityError::IdempotencyConflict`] before
+    /// any write (never the silent replay or the create-key overwrite the
+    /// pre-W55 row served), and a key rebound to a different pattern,
+    /// binding or subscriber key is the same conflict.  The identity's
+    /// lifecycle is therefore bound to its first create key; a cancelled
+    /// (pattern, subscriber key) pair stays cancelled for every later
+    /// re-subscribe attempt.
     ///
     /// The subscribe time point enumerates every existing topic whose name
     /// matches and attaches each one as a regular concrete subscription —
     /// the same admission and cursor semantics as [`TopicAuthority::subscribe`]
-    /// (cursor at the current channel sequence high-water, history never
-    /// replayed, ordinary per-topic consume token) — recorded with
+    /// (cursor at a pre-transaction channel sequence high-water snapshot —
+    /// registry finding #23: the enumeration performs no channel IO under
+    /// the write lock, so the subscribe point can only be stale-low and the
+    /// attached subscriber may receive entries enqueued inside the
+    /// snapshot-to-commit race window, never miss earlier ones; history
+    /// before the subscribe point is still never replayed, with the
+    /// ordinary per-topic consume token) — recorded with
     /// `attached_by` provenance.  A matching topic where the key already
     /// holds an active subscription is skipped (the earlier grant wins, no
     /// duplicate delivery); a matching topic at its `max_recipients` is
@@ -1496,7 +1665,12 @@ impl TopicAuthority {
     /// Publish never evaluates patterns: a topic created after this call is
     /// covered by the `create_topic` attach time point.  The whole operation
     /// (pattern row plus attach enumeration) is one transaction: a failure
-    /// leaves zero durable state.
+    /// leaves zero durable state.  A matching topic created between the
+    /// pre-transaction snapshot pass and the transaction restarts the whole
+    /// verify-then-commit sequence a bounded number of times (the snapshot
+    /// race never silently drops the new topic); exhaustion fails with the
+    /// typed [`TopicAuthorityError::PatternAttachSnapshotRace`], still zero
+    /// partial state, and the same create key retries fresh.
     ///
     /// # Errors
     ///
@@ -1508,71 +1682,140 @@ impl TopicAuthority {
         &self,
         request: SubscribePatternRequest,
     ) -> Result<PatternSubscribeDecision, TopicAuthorityError> {
-        validate_pattern(&request.pattern)?;
-        if request.binding.as_bytes() == &[0; 16] {
+        let SubscribePatternRequest {
+            pattern,
+            binding,
+            subscriber_key,
+            idempotency_key,
+            subscribed_at_ms,
+        } = request;
+        validate_pattern(&pattern)?;
+        if binding.as_bytes() == &[0; 16] {
             return Err(TopicAuthorityError::InvalidPolicy(
                 "pattern binding must be a non-zero ResourceAccountId",
             ));
         }
-        let pattern_id = pattern_id_for(&request.pattern, request.subscriber_key);
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_pattern_by_key(&transaction, request.idempotency_key)? {
-            if existing.pattern != request.pattern
-                || existing.binding != request.binding
-                || existing.subscriber_key != request.subscriber_key
-            {
-                return Err(TopicAuthorityError::IdempotencyConflict);
+        let pattern_id = pattern_id_for(&pattern, subscriber_key);
+        // Verify-then-commit (registry finding #23 / deep-audit D8): the
+        // per-channel subscribe-point snapshots are collected before the
+        // `Immediate` transaction opens, so the attach enumeration performs
+        // no channel IO under this authority's write lock.  A matching topic
+        // that appears between the snapshot pass and the transaction (a
+        // concurrent `create_topic`) has no snapshot; the attempt rolls back
+        // whole and the sequence restarts, bounded, before failing typed.
+        for _ in 0..PATTERN_ATTACH_SNAPSHOT_ATTEMPTS {
+            let subscribe_points =
+                self.snapshot_pattern_subscribe_points(idempotency_key, &pattern)?;
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(existing) = load_pattern_by_key(&transaction, idempotency_key)? {
+                if existing.pattern != pattern
+                    || existing.binding != binding
+                    || existing.subscriber_key != subscriber_key
+                {
+                    return Err(TopicAuthorityError::IdempotencyConflict);
+                }
+                let (current, _create_key) = load_pattern_optional(&transaction, pattern_id)?
+                    .ok_or(TopicAuthorityError::CorruptRecord(
+                        "pattern row vanished during key replay",
+                    ))?;
+                transaction.commit()?;
+                return Ok(PatternSubscribeDecision::Replayed(
+                    PatternSubscribeOutcome {
+                        pattern: current,
+                        report: AttachReport::default(),
+                    },
+                ));
             }
-            let current = load_pattern_optional(&transaction, pattern_id)?.ok_or(
-                TopicAuthorityError::CorruptRecord("pattern row vanished during key replay"),
-            )?;
-            transaction.commit()?;
-            return Ok(PatternSubscribeDecision::Replayed(
-                PatternSubscribeOutcome {
-                    pattern: current,
-                    report: AttachReport::default(),
-                },
-            ));
+            // Rebinding gate (the W55 reconciliation of deep-audit finding
+            // #15): a (pattern, subscriber key) identity is permanently bound
+            // to the create key that first subscribed it.  The row never
+            // rewrites its create key, so the original key's replay evidence
+            // survives every later lifecycle step — cancelling, foreign-key
+            // re-subscribe attempts, anything.  A request reaching this point
+            // necessarily carries a foreign key (the same-key case replayed
+            // above), whether the stored row is ACTIVE or CANCELLED: that is a
+            // typed idempotency conflict, never a silent replay and never a
+            // key overwrite.
+            if let Some((_previous, previous_create_key)) =
+                load_pattern_optional(&transaction, pattern_id)?
+            {
+                if previous_create_key != idempotency_key {
+                    return Err(TopicAuthorityError::IdempotencyConflict);
+                }
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "pattern create key lookup disagrees with the stored row",
+                ));
+            }
+            let record = PatternRecord {
+                pattern_id,
+                pattern: pattern.clone(),
+                binding,
+                subscriber_key,
+                active: true,
+                consume_token: derive_pattern_token(pattern_id, 1),
+                pattern_generation: 1,
+                subscribed_at_ms,
+                cancelled_at_ms: 0,
+            };
+            insert_or_resubscribe_pattern(&transaction, &record, idempotency_key)?;
+            // A `None` report is the snapshot race (finding #23): the
+            // in-transaction enumeration found a matching topic whose
+            // channel has no snapshot — it was created after the snapshot
+            // pass.  Falling through drops the transaction, rolling the
+            // pattern row and every attachment back (zero partial state),
+            // and the attempt restarts with a fresh snapshot pass.
+            if let Some(report) = attach_pattern_to_existing_topics(
+                &transaction,
+                &subscribe_points,
+                &record,
+                subscribed_at_ms,
+            )? {
+                transaction.commit()?;
+                return Ok(PatternSubscribeDecision::Subscribed(
+                    PatternSubscribeOutcome {
+                        pattern: record,
+                        report,
+                    },
+                ));
+            }
         }
-        let previous = load_pattern_optional(&transaction, pattern_id)?;
-        if let Some(active) = previous.as_ref().filter(|row| row.active) {
-            transaction.commit()?;
-            return Ok(PatternSubscribeDecision::Replayed(
-                PatternSubscribeOutcome {
-                    pattern: active.clone(),
-                    report: AttachReport::default(),
-                },
-            ));
-        }
-        let pattern_generation = previous
-            .as_ref()
-            .map_or(1, |existing| existing.pattern_generation + 1);
-        let record = PatternRecord {
-            pattern_id,
-            pattern: request.pattern,
-            binding: request.binding,
-            subscriber_key: request.subscriber_key,
-            active: true,
-            consume_token: derive_pattern_token(pattern_id, pattern_generation),
-            pattern_generation,
-            subscribed_at_ms: request.subscribed_at_ms,
-            cancelled_at_ms: 0,
+        Err(TopicAuthorityError::PatternAttachSnapshotRace(pattern_id))
+    }
+
+    /// Collects the attach subscribe points for one pattern subscribe: the
+    /// current `max_sequence` of every channel hosting a topic whose name
+    /// matches the pattern, read before any write transaction opens (the
+    /// verify-then-commit snapshot pass of registry finding #23).
+    ///
+    /// A pattern key that already holds a durable row never reaches the
+    /// enumeration (it replays or conflicts instead), so its call must not
+    /// pay — or newly fail on — channel reads: the pre-pass checks the key
+    /// under the connection mutex and returns empty.  The channel reads then
+    /// run with no lock held at all.
+    fn snapshot_pattern_subscribe_points(
+        &self,
+        idempotency_key: IdempotencyKey,
+        pattern: &[u8],
+    ) -> Result<BTreeMap<ChannelId, u64>, TopicAuthorityError> {
+        let channel_ids: Vec<ChannelId> = {
+            let connection = self.lock()?;
+            if load_pattern_by_key(&connection, idempotency_key)?.is_some() {
+                return Ok(BTreeMap::new());
+            }
+            load_matching_channel_ids(&connection, pattern)?
         };
-        insert_or_resubscribe_pattern(&transaction, &record, request.idempotency_key)?;
-        let report = attach_pattern_to_existing_topics(
-            &transaction,
-            &self.channel,
-            &record,
-            request.subscribed_at_ms,
-        )?;
-        transaction.commit()?;
-        Ok(PatternSubscribeDecision::Subscribed(
-            PatternSubscribeOutcome {
-                pattern: record,
-                report,
-            },
-        ))
+        let mut subscribe_points = BTreeMap::new();
+        for channel_id in channel_ids {
+            let max_sequence = self
+                .channel
+                .inspect_queue(channel_id)
+                .map_err(TopicAuthorityError::Channel)?
+                .max_sequence;
+            subscribe_points.insert(channel_id, max_sequence);
+        }
+        Ok(subscribe_points)
     }
 
     /// Flips a subscription to inactive.
@@ -1703,9 +1946,10 @@ impl TopicAuthority {
     ) -> Result<CancelPatternDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = load_pattern_optional(&transaction, request.pattern_id)?.ok_or(
-            TopicAuthorityError::TopicPatternNotFound(request.pattern_id),
-        )?;
+        let (existing, _create_key) = load_pattern_optional(&transaction, request.pattern_id)?
+            .ok_or(TopicAuthorityError::TopicPatternNotFound(
+                request.pattern_id,
+            ))?;
         if *consume_token != existing.consume_token {
             return Err(TopicAuthorityError::PatternConsumptionTokenMismatch(
                 request.pattern_id,
@@ -1737,9 +1981,11 @@ impl TopicAuthority {
             request.pattern_id,
             request.cancelled_at_ms,
         )?;
-        let cancelled = load_pattern_optional(&transaction, request.pattern_id)?.ok_or(
-            TopicAuthorityError::CorruptRecord("pattern row vanished during cancel"),
-        )?;
+        let cancelled = load_pattern_optional(&transaction, request.pattern_id)?
+            .map(|(record, _create_key)| record)
+            .ok_or(TopicAuthorityError::CorruptRecord(
+                "pattern row vanished during cancel",
+            ))?;
         transaction.commit()?;
         Ok(CancelPatternDecision::Cancelled(CancelPatternReceipt {
             pattern: cancelled,
@@ -1861,6 +2107,7 @@ impl TopicAuthority {
     ) -> Result<PatternRecord, TopicAuthorityError> {
         let connection = self.lock()?;
         load_pattern_optional(&connection, pattern_id)?
+            .map(|(record, _create_key)| record)
             .ok_or(TopicAuthorityError::TopicPatternNotFound(pattern_id))
     }
 
@@ -1942,7 +2189,14 @@ impl TopicAuthority {
     /// the new payload must fit `retained_bytes`, and the oldest live entry
     /// still held by an active subscriber must not be older than
     /// `retention_ms`, measured against the caller-supplied
-    /// `published_at_ms`.  Either bound exceeded is
+    /// `published_at_ms`.  The channel side of the measurement is a queue
+    /// snapshot read *before* the transaction opens (registry finding #23:
+    /// no channel IO under the write lock); its watermarks are monotonic,
+    /// so a snapshot racing a concurrent enqueue, ack or trim can only be
+    /// stale-low and the admission is conservative — a possibly false
+    /// rejection whose documented recovery is retrying the same
+    /// idempotency key (a rejection consumes no key and writes nothing).
+    /// Either bound exceeded is
     /// [`TopicAuthorityError::TopicRetentionExhausted`] before any durable
     /// write: a rejected publish leaves zero partial state and nothing is
     /// deleted.  A resumed `PENDING_ENQUEUE` row replays without re-running
@@ -1989,6 +2243,35 @@ impl TopicAuthority {
         }
         let digest = derive_payload_digest(&payload);
 
+        // Verify-then-commit (registry finding #23 / deep-audit D8): the
+        // retention admission's channel queue snapshot is read before the
+        // `Immediate` transaction opens, so no channel IO runs under this
+        // authority's write lock.  The pre-pass is a read-only local lookup
+        // under the connection mutex only: the topic's immutable channel
+        // binding, plus whether this key already holds a publication row —
+        // the replay and resume arms re-run no admission and must not pay
+        // (or newly fail on) a channel read.  Publication rows are
+        // append-only, so a row seen here is still there in the transaction.
+        let retention_queue = {
+            let (channel_id, fresh_publication) = {
+                let connection = self.lock()?;
+                let channel_id = load_topic_channel_id(&connection, topic_id)?;
+                (
+                    channel_id,
+                    load_publication_by_key(&connection, idempotency_key)?.is_none(),
+                )
+            };
+            if fresh_publication {
+                Some(
+                    self.channel
+                        .inspect_queue(channel_id)
+                        .map_err(TopicAuthorityError::Channel)?,
+                )
+            } else {
+                None
+            }
+        };
+
         // Step 1: durable PENDING row first (or replay short-circuit).
         let (topic, resumed) = {
             let mut connection = self.lock()?;
@@ -2006,13 +2289,20 @@ impl TopicAuthority {
                 transaction.commit()?;
                 (topic, true)
             } else {
-                // Retention admission (`RSM-FANOUT-001`): in this same
-                // `Immediate` transaction, after the idempotency gates and
-                // before the first durable write, so a rejected publish
-                // leaves zero partial state.
+                // Retention admission (`RSM-FANOUT-001`): the decision runs
+                // in this same `Immediate` transaction, after the
+                // idempotency gates and before the first durable write, so a
+                // rejected publish leaves zero partial state.  Its channel
+                // measurement is the pre-transaction snapshot above; the
+                // watermarks are monotonic, so staleness can only measure
+                // the backlog conservatively (never below the truth).
                 check_retention_admission(
                     &transaction,
-                    &self.channel,
+                    retention_queue
+                        .as_ref()
+                        .ok_or(TopicAuthorityError::CorruptRecord(
+                            "publication row vanished during publish admission",
+                        ))?,
                     &topic,
                     published_at_ms,
                     payload.len() as u64,
@@ -2129,6 +2419,32 @@ impl TopicAuthority {
         }
         let digest = derive_payload_digest(&payload);
 
+        // Verify-then-commit (registry finding #23 / deep-audit D8), the
+        // republish mirror of the publish pre-pass: the child-topic
+        // retention snapshot is read before the `Immediate` transaction
+        // opens; a key that already holds a publication row (completed or
+        // spent-but-pending crash window) re-runs no admission and pays no
+        // channel read.  Rows are append-only, so the pre-read is stable.
+        let retention_queue = {
+            let (channel_id, fresh_publication) = {
+                let connection = self.lock()?;
+                let channel_id = load_topic_channel_id(&connection, child_topic_id)?;
+                (
+                    channel_id,
+                    load_publication_by_key(&connection, idempotency_key)?.is_none(),
+                )
+            };
+            if fresh_publication {
+                Some(
+                    self.channel
+                        .inspect_queue(channel_id)
+                        .map_err(TopicAuthorityError::Channel)?,
+                )
+            } else {
+                None
+            }
+        };
+
         // Step 1: one Immediate transaction — replay short-circuit, parent
         // readback and chain audit, pre-write gates, guarded budget CAS and
         // the durable PENDING child row.
@@ -2185,10 +2501,16 @@ impl TopicAuthority {
                 // declared bounds.  It stays with the other pre-write gates,
                 // strictly before the budget compare-and-set (the first
                 // durable write), so a rejected republish spends no budget
-                // and leaves zero partial state.
+                // and leaves zero partial state; its channel measurement is
+                // the pre-transaction snapshot above (monotonic watermarks,
+                // so staleness is conservative).
                 check_retention_admission(
                     &transaction,
-                    &self.channel,
+                    retention_queue
+                        .as_ref()
+                        .ok_or(TopicAuthorityError::CorruptRecord(
+                            "publication row vanished during republish admission",
+                        ))?,
                     &child_topic,
                     republished_at_ms,
                     payload.len() as u64,
@@ -2268,15 +2590,38 @@ impl TopicAuthority {
         &self,
         publication_key: IdempotencyKey,
     ) -> Result<PublicationRecord, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let record = load_publication_by_key(&connection, publication_key)?
-            .ok_or(TopicAuthorityError::PublicationNotFound(publication_key))?;
-        let topic = load_topic_verified(&connection, record.topic_id)?;
-        if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer {
-            return Err(TopicAuthorityError::CorruptRecord(
-                "publication binding disagrees with the topic head",
-            ));
-        }
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): every
+        // topic-authority read the cross-checks needs — record, verified
+        // head, parent chain and the child count — runs inside one mutex
+        // window, and the channel read below runs after the guard drops, so
+        // a slow Channel never lengthens this authority's mutex window.  The
+        // path is read-only, so no transaction semantics are involved: the
+        // split only shrinks the window.  The channel check only gets
+        // fresher (`max_sequence` is monotonic); the publication rows are
+        // append-only with frozen identity, so their cross-checks are
+        // insensitive to the reordering.
+        let (record, topic, children) = {
+            let connection = self.lock()?;
+            let record = load_publication_by_key(&connection, publication_key)?
+                .ok_or(TopicAuthorityError::PublicationNotFound(publication_key))?;
+            let topic = load_topic_verified(&connection, record.topic_id)?;
+            if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "publication binding disagrees with the topic head",
+                ));
+            }
+            verify_parent_chain(&connection, &record)?;
+            // The spent budget must reconcile with the durable children:
+            // every referencing child row committed together with exactly
+            // one unit.
+            let children: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM topic_publications WHERE parent_idempotency_key=?1",
+                [publication_key.as_bytes().as_slice()],
+                |row| row.get(0),
+            )?;
+            (record, topic, children)
+        };
         if record.status == PublicationStatus::Enqueued {
             let queue = self
                 .channel
@@ -2288,14 +2633,6 @@ impl TopicAuthority {
                 ));
             }
         }
-        verify_parent_chain(&connection, &record)?;
-        // The spent budget must reconcile with the durable children: every
-        // referencing child row committed together with exactly one unit.
-        let children: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM topic_publications WHERE parent_idempotency_key=?1",
-            [publication_key.as_bytes().as_slice()],
-            |row| row.get(0),
-        )?;
         let spent = decode_u64(children)?;
         let Some(expected_remaining) = topic.policy.cascade_depth.checked_sub(spent) else {
             return Err(TopicAuthorityError::CorruptRecord(
@@ -2332,50 +2669,80 @@ impl TopicAuthority {
     /// A slow subscriber's lag never hides entries from another subscriber
     /// and vice versa; only the shared channel consume high-water bounds
     /// everyone.  This service advances that high-water only inside
-    /// [`TopicAuthority::compact`] and only up to the minimum active
-    /// subscriber cursor (the service-layer ack linkage; the channel owner's
+    /// [`TopicAuthority::compact`] and only up to the minimum cursor over
+    /// the subscriptions still receiving deliveries (`ACTIVE`, not
+    /// `QUARANTINED` — the service-layer ack linkage; the channel owner's
     /// direct acks remain the other writer), so an entry is never hidden
-    /// behind the high-water before every active subscriber has consumed it.
+    /// behind the high-water before every delivery-eligible subscriber has
+    /// consumed it.
+    ///
+    /// A cursor behind the consume high-water is loud, never silent (the
+    /// W55 reconciliation of deep-audit finding #18): the channel owner's
+    /// direct ack — or the compact linkage crossing a `QUARANTINED` lag —
+    /// means the `(cursor, consume_high_water]` window is confirmed
+    /// consumed at the single-log level and can never be received again,
+    /// so the poll fails closed with the typed
+    /// [`TopicAuthorityError::CursorBehindChannelConsumption`] instead of
+    /// silently returning the shortened tail.  Recovery is the explicit
+    /// blind catch-up (`advance_with_token` to the high-water) or
+    /// unsubscribing.
     ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, an inactive
     /// subscription, a quarantined subscription, a cursor inconsistent with
-    /// the channel high-water, or a propagated Channel rejection.
+    /// the channel high-water, a cursor behind the channel consume
+    /// high-water ([`TopicAuthorityError::CursorBehindChannelConsumption`]),
+    /// or a propagated Channel rejection.
     pub fn poll(
         &self,
         topic_id: TopicId,
         subscriber_key: SubscriberKey,
         limit: usize,
     ) -> Result<Vec<QueueEntryRecord>, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
-        let subscription = load_subscription_optional(&connection, topic_id, subscriber_key)?
-            .ok_or(TopicAuthorityError::SubscriptionNotFound(
+        // The topic-side reads stay under the connection mutex; the channel
+        // reads below run after it is released, so a slow Channel never
+        // holds the topic authority's writer lock (deep-audit finding #23,
+        // the poll half — the poll is a read, so no write transaction is
+        // held across the boundary either way).
+        let (channel_id, subscription) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            let subscription = load_subscription_optional(&connection, topic_id, subscriber_key)?
+                .ok_or(TopicAuthorityError::SubscriptionNotFound(
                 subscription_id_for(topic_id, subscriber_key),
             ))?;
-        if !subscription.active {
-            return Err(TopicAuthorityError::SubscriptionInactive(
-                subscription.subscription_id,
-            ));
-        }
-        if subscription.state == SubscriptionState::Quarantined {
-            return Err(TopicAuthorityError::DeliveryQuarantined(
-                subscription.subscription_id,
-            ));
-        }
+            if !subscription.active {
+                return Err(TopicAuthorityError::SubscriptionInactive(
+                    subscription.subscription_id,
+                ));
+            }
+            if subscription.state == SubscriptionState::Quarantined {
+                return Err(TopicAuthorityError::DeliveryQuarantined(
+                    subscription.subscription_id,
+                ));
+            }
+            (topic.channel_id, subscription)
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
         if subscription.cursor > queue.max_sequence {
             return Err(TopicAuthorityError::CorruptRecord(
                 "subscriber cursor exceeds the channel sequence high-water",
             ));
         }
+        if subscription.cursor < queue.consume_high_water {
+            return Err(TopicAuthorityError::CursorBehindChannelConsumption {
+                subscription_id: subscription.subscription_id,
+                cursor: subscription.cursor,
+                consume_high_water: queue.consume_high_water,
+            });
+        }
         let window = self
             .channel
-            .receive(topic.channel_id, limit)
+            .receive(channel_id, limit)
             .map_err(TopicAuthorityError::Channel)?;
         Ok(window
             .into_iter()
@@ -2422,6 +2789,15 @@ impl TopicAuthority {
     /// deliberately stays token-free: it is a zero-write read path, and the
     /// cursor advance — not the read — is the authenticated boundary.
     ///
+    /// The sequence bound is verified against a channel queue snapshot read
+    /// *before* the transaction opens (registry finding #23: no channel IO
+    /// under the write lock).  The snapshot's watermarks are monotonic, so
+    /// the only race is stale-low: an advance to a sequence enqueued inside
+    /// the snapshot-to-transaction window fails with the typed
+    /// [`TopicAuthorityError::InvalidSequence`] and the documented recovery
+    /// is retrying the same advance (the retry snapshots fresh and
+    /// converges).
+    ///
     /// Payer metering (the ADR-0007 payer-metering addendum): inside this
     /// same transaction as the accepted cursor CAS, every ENQUEUED
     /// publication of the topic whose channel sequence lies in the crossed
@@ -2458,9 +2834,43 @@ impl TopicAuthority {
         request: AdvanceRequest,
         consume_token: Option<ConsumeToken>,
     ) -> Result<AdvanceDecision, TopicAuthorityError> {
+        // Verify-then-commit (registry finding #23 / deep-audit D8): the
+        // queue snapshot feeding the cursor bound and the attribution trim
+        // bound is read before the `Immediate` transaction opens, so no
+        // channel IO runs under this authority's write lock.  The snapshot
+        // can only be stale-low (watermarks are monotonic and
+        // rotation-invariant): an advance to a sequence enqueued inside the
+        // snapshot-to-transaction race window fails with the typed
+        // [`TopicAuthorityError::InvalidSequence`] and the documented
+        // recovery is retrying the same advance, which snapshots fresh.
+        let queue_snapshot = {
+            let channel_id = {
+                let connection = self.lock()?;
+                load_topic_channel_id(&connection, request.topic_id)?
+            };
+            self.channel
+                .inspect_queue(channel_id)
+                .map_err(TopicAuthorityError::Channel)?
+        };
+        self.advance_with_queue_snapshot(request, consume_token, &queue_snapshot)
+    }
+
+    /// The advance decision transaction against one queue snapshot — the
+    /// verify-then-commit half of [`Self::advance_inner`], separated so the
+    /// documented snapshot races (high-water advance, channel rotation)
+    /// are testable with a crafted stale snapshot.
+    fn advance_with_queue_snapshot(
+        &self,
+        request: AdvanceRequest,
+        consume_token: Option<ConsumeToken>,
+        queue: &QueueState,
+    ) -> Result<AdvanceDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let topic = load_topic_verified(&transaction, request.topic_id)?;
+        // The verified topic read stays inside the transaction (existence
+        // plus head/counter cross-check); its channel binding was already
+        // consumed by the snapshot pass, so nothing else needs it here.
+        load_topic_verified(&transaction, request.topic_id)?;
         let subscription =
             load_subscription_optional(&transaction, request.topic_id, request.subscriber_key)?
                 .ok_or(TopicAuthorityError::SubscriptionNotFound(
@@ -2472,10 +2882,11 @@ impl TopicAuthority {
                 subscription.subscription_id,
             ));
         }
-        let queue = self
-            .channel
-            .inspect_queue(topic.channel_id)
-            .map_err(TopicAuthorityError::Channel)?;
+        // The cursor can never exceed the snapshot's high-water: the cursor
+        // was validated against the then-live high-water at its own advance,
+        // and `max_sequence` never regresses (it survives rotation), so any
+        // later snapshot dominates it.  The upper bound below is the only
+        // race-sensitive check.
         if subscription.cursor > queue.max_sequence {
             return Err(TopicAuthorityError::CorruptRecord(
                 "subscriber cursor exceeds the channel sequence high-water",
@@ -2541,42 +2952,55 @@ impl TopicAuthority {
     }
 
     /// Computes the service-layer trim bound for a topic:
-    /// `min(min-active-subscriber cursor, channel consume high-water)`.
+    /// `min(min-delivery-eligible cursor, channel consume high-water)`.
     ///
-    /// With no active subscribers the bound is the channel consume high-water
-    /// alone (the retention declarations are durable policy but are not
-    /// enforced by this slice).  The bound only consults this topic's
-    /// subscribers; channels hosting several topics need a cross-topic
-    /// aggregation before trimming (a known limitation of this slice).
+    /// With no delivery-eligible subscribers (`ACTIVE`, not `QUARANTINED` —
+    /// a quarantined subscriber's lag holds neither retention budget nor
+    /// this release point, the unified population of deep-audit finding
+    /// #17) the bound is the channel consume high-water alone (the
+    /// retention declarations are durable policy but are not enforced by
+    /// this slice).  The bound only consults this topic's subscribers;
+    /// channels hosting several topics need a cross-topic aggregation
+    /// before trimming (a known limitation of this slice).
     /// [`TopicAuthority::compact`] advances the high-water to the cursor
-    /// component before trimming (the service-layer ack linkage), so after a
-    /// compact the two components coincide whenever an active subscriber
-    /// holds the log.
+    /// component before trimming (the service-layer ack linkage), so after
+    /// a compact the two components coincide whenever a delivery-eligible
+    /// subscriber holds the log.
     ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic, corrupt state, or a propagated
     /// Channel rejection.
     pub fn compact_bound(&self, topic_id: TopicId) -> Result<u64, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head and the delivery-eligible cursor minimum are read in
+        // one mutex window, and the channel read below runs after the guard
+        // drops.  The path is read-only (no transaction semantics), the
+        // cursor minimum is a topic-authority fact computed entirely under
+        // the same guard as before, and `consume_high_water` is monotonic,
+        // so reading it later only makes the bound fresher — never past an
+        // entitlement the ack-linkage invariant protects.
+        let (channel_id, min_cursor) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            (topic.channel_id, min_active_cursor(&connection, topic_id)?)
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        Ok(
-            min_active_cursor(&connection, topic_id)?.map_or(queue.consume_high_water, |cursor| {
-                cursor.min(queue.consume_high_water)
-            }),
-        )
+        Ok(min_cursor.map_or(queue.consume_high_water, |cursor| {
+            cursor.min(queue.consume_high_water)
+        }))
     }
 
     /// Advances the channel consume high-water to the topic's subscriber
-    /// release point: the minimum cursor over the topic's active
-    /// subscriptions, the exact population [`TopicAuthority::compact_bound`]
-    /// clamps with (a `QUARANTINED` subscription is still active, so its lag
-    /// still holds the release point; the channel owner's direct acks remain
-    /// the other writer of the high-water).
+    /// release point: the minimum cursor over the topic's subscriptions
+    /// still receiving deliveries (`ACTIVE`, not `QUARANTINED` — the
+    /// unified population of deep-audit finding #17, the exact population
+    /// [`TopicAuthority::compact_bound`] clamps with; the channel owner's
+    /// direct acks remain the other writer of the high-water).
     ///
     /// This is the service-layer half of the compact linkage (deep-audit
     /// finding 25, decision D3): Topic is the Channel's service layer, and
@@ -2586,9 +3010,14 @@ impl TopicAuthority {
     /// the backlog admitted against the capacity grows monotonically and a
     /// bounded multi-subscriber channel dead-ends on
     /// [`ChannelAuthorityError::QueueFull`] with no release path.  The ack
-    /// target is safe by construction: it is the minimum over the active
-    /// cursors, so the advance never crosses an entry any active subscriber
-    /// has not consumed.
+    /// target is safe by construction: it is the minimum over the
+    /// delivery-eligible cursors, so the advance never crosses an entry any
+    /// subscription still entitled to receive deliveries has not consumed.
+    /// A `QUARANTINED` lag may be crossed (quarantine holds no budget on
+    /// either axis, audit #17); if that subscription is later reinstated,
+    /// its crossed cursor surfaces on poll as the typed
+    /// [`TopicAuthorityError::CursorBehindChannelConsumption`] with the
+    /// blind catch-up as the documented recovery.
     ///
     /// The ack runs before the trim and is idempotent, so a crash between
     /// the two is healed by re-running the compact (replaying the exact
@@ -2729,37 +3158,54 @@ impl TopicAuthority {
         &self,
         topic_id: TopicId,
     ) -> Result<Vec<PublicationRecord>, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head plus the raw journal rows are collected in one mutex
+        // window; the channel read below runs after the guard drops, and the
+        // decode/cross-check tail is pure over the collected locals.  The
+        // path is read-only (no transaction semantics); the journal rows are
+        // append-only with frozen identity, so collecting them inside the
+        // guard is insensitive to the reordering, and the sequence
+        // high-water check only gets fresher (monotonic watermark).
+        let (channel_id, topic_digest, topic_payer, rows) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            let mut statement = connection.prepare(
+                "SELECT idempotency_key, policy_digest, payer_account_id, payload_digest,
+                        status, channel_sequence, channel_generation, cascade_budget_remaining,
+                        cascade_level, published_at_ms, enqueued_at_ms, parent_idempotency_key
+                 FROM topic_publications WHERE topic_id=?1
+                 ORDER BY published_at_ms, idempotency_key",
+            )?;
+            let rows = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, Option<Vec<u8>>>(11)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                topic.channel_id,
+                topic.policy_digest,
+                topic.policy.payer,
+                rows,
+            )
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        let mut statement = connection.prepare(
-            "SELECT idempotency_key, policy_digest, payer_account_id, payload_digest,
-                    status, channel_sequence, channel_generation, cascade_budget_remaining,
-                    cascade_level, published_at_ms, enqueued_at_ms, parent_idempotency_key
-             FROM topic_publications WHERE topic_id=?1
-             ORDER BY published_at_ms, idempotency_key",
-        )?;
-        let rows = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, i64>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, Option<Vec<u8>>>(11)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|row| {
                 let key = IdempotencyKey::from_bytes(array16(row.0)?);
@@ -2775,8 +3221,7 @@ impl TopicAuthority {
                         row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
                     ),
                 )?;
-                if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer
-                {
+                if record.policy_digest != topic_digest || record.payer != topic_payer {
                     return Err(TopicAuthorityError::CorruptRecord(
                         "publication binding disagrees with the topic head",
                     ));
@@ -2820,48 +3265,61 @@ impl TopicAuthority {
         &self,
         topic_id: TopicId,
     ) -> Result<AttributionReport, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head plus both raw row sets (journal window and ledger)
+        // are collected in one mutex window; the channel read below runs
+        // after the guard drops, and the whole journal-vs-ledger cross-check
+        // tail is pure over the collected locals.  The path is read-only (no
+        // transaction semantics); the journal and ledger rows are
+        // append-only with frozen identity, so collecting them inside the
+        // guard is insensitive to the reordering, and the trim-watermark
+        // check only gets fresher (monotonic watermark).
+        let (channel_id, publications, ledger) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            let mut statement = connection.prepare(
+                "SELECT channel_sequence, payer_account_id, payload_bytes
+                 FROM topic_publications
+                WHERE topic_id=?1 AND status=1
+                ORDER BY channel_sequence",
+            )?;
+            let publications = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            let mut statement = connection.prepare(
+                "SELECT ledger_id, payer_account_id, kind, payload_bytes,
+                        policy_version, evidence_sequence
+                 FROM topic_attribution_ledger
+                WHERE topic_id=?1
+                ORDER BY evidence_sequence",
+            )?;
+            let ledger = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            (topic.channel_id, publications, ledger)
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        let mut statement = connection.prepare(
-            "SELECT channel_sequence, payer_account_id, payload_bytes
-             FROM topic_publications
-            WHERE topic_id=?1 AND status=1
-            ORDER BY channel_sequence",
-        )?;
-        let publications = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        let mut statement = connection.prepare(
-            "SELECT ledger_id, payer_account_id, kind, payload_bytes,
-                    policy_version, evidence_sequence
-             FROM topic_attribution_ledger
-            WHERE topic_id=?1
-            ORDER BY evidence_sequence",
-        )?;
-        let ledger = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
 
         let mut journal: BTreeMap<u64, ([u8; 16], u64, bool)> = BTreeMap::new();
         let mut total: u64 = 0;
@@ -3334,21 +3792,29 @@ fn wrap_compact(
     }
 }
 
-/// The minimum cursor over the topic's active subscriptions, or `None` when
-/// the topic has no active subscriber.  `MIN(cursor)` is SQL NULL when the
-/// topic has rows but none active, and the query returns no row at all when
-/// it has no rows: both mean "no live subscriber".  A `QUARANTINED`
-/// subscription is still active and still holds the release point (its
-/// cursor keeps advancing); this is the exact population
-/// [`TopicAuthority::compact_bound`] clamps with and
-/// [`TopicAuthority::advance_consume_high_water`] acks to.
+/// The minimum cursor over the topic's subscriptions that are still
+/// receiving deliveries (`ACTIVE`, not `QUARANTINED`), or `None` when the
+/// topic has none.  `MIN(cursor)` is SQL NULL when the topic has rows but
+/// none in that population, and the query returns no row at all when it
+/// has no rows: both mean "no live release holder".  A `QUARANTINED`
+/// subscription has stopped receiving deliveries by policy and holds
+/// neither retention budget nor the service-layer release point (the W55
+/// reconciliation of deep-audit finding #17: quarantine must not hold the
+/// log's budget indefinitely — its lag may be acked past and trimmed away
+/// by [`TopicAuthority::compact`], and a later reinstate surfaces the
+/// crossed cursor as the typed
+/// [`TopicAuthorityError::CursorBehindChannelConsumption`]).  This is the
+/// exact population [`TopicAuthority::compact_bound`] clamps with,
+/// [`TopicAuthority::advance_consume_high_water`] acks to and the
+/// retention admission measures against.
 fn min_active_cursor(
     connection: &Connection,
     topic_id: TopicId,
 ) -> Result<Option<u64>, TopicAuthorityError> {
     let min_live: Option<Option<i64>> = connection
         .query_row(
-            "SELECT MIN(cursor) FROM topic_subscriptions WHERE topic_id=?1 AND active=1",
+            "SELECT MIN(cursor) FROM topic_subscriptions
+             WHERE topic_id=?1 AND active=1 AND state=0",
             [topic_id.as_bytes().as_slice()],
             |row| row.get(0),
         )
@@ -3363,12 +3829,30 @@ fn min_active_cursor(
 /// transaction (the same one that read the policy), so a rejected
 /// publication leaves zero partial state and nothing is ever deleted here.
 ///
+/// The channel side of the measurement is a [`QueueState`] snapshot the
+/// caller read *before* opening its transaction (registry finding #23 /
+/// deep-audit D8: no cross-authority IO under the topic write lock).  The
+/// snapshot's watermarks are monotonic and rotation-invariant, so it can
+/// only be stale-low: a lower consume/trim high-water includes more journal
+/// rows in the summation window and measures the backlog conservatively
+/// (never below the truth), and the mixed mode's channel-side upper bound
+/// holds for every entry live at the snapshot.  The one residual
+/// understating corner — sentinel rows in the window *and* channel
+/// `retained_bytes` grown inside the race window — is a legacy-sentinel-only
+/// snapshot artifact documented here; the next admission's fresh snapshot
+/// closes it.
+///
 /// Byte bound: the unconsumed backlog is measured exactly as the ADR-0007
 /// addendum defines it — `Σ payload_bytes` over the enqueued
-/// [`crate::PublicationRecord`] rows whose channel sequence lies beyond the
-/// same release point [`TopicAuthority::compact_bound`] uses —
+/// [`crate::PublicationRecord`] rows whose channel sequence lies beyond
+/// the same release point [`TopicAuthority::compact_bound`] uses —
 /// `min(active subscriber cursors, channel consume high-water)`, falling
-/// back to the consume high-water when no active subscriber holds the log.
+/// back to the consume high-water when no active subscriber holds the
+/// log — and, since the W55 reconciliation of deep-audit finding #19,
+/// never below the channel trim high-water: rows the channel owner
+/// already trimmed out of the single log are deleted bytes and hold no
+/// retention budget, so they cannot pin the backlog from beyond the
+/// grave.
 /// The per-row payload length is durable metadata recorded with the
 /// publication itself since schema v5 (never a message-body copy: the body
 /// stays in the Channel log), so the sum is available for any sequence
@@ -3401,7 +3885,7 @@ fn min_active_cursor(
 /// declared bounds and the measured values.
 fn check_retention_admission(
     transaction: &Transaction<'_>,
-    channel: &ChannelAuthority,
+    queue: &QueueState,
     topic: &TopicRecord,
     request_at_ms: u64,
     payload_bytes: u64,
@@ -3418,14 +3902,19 @@ fn check_retention_admission(
         )
         .optional()?;
     let min_active_cursor = min_live.flatten().map(decode_u64).transpose()?;
-    let queue = channel
-        .inspect_queue(topic.channel_id)
-        .map_err(TopicAuthorityError::Channel)?;
     // Same release-point trade-off as `compact_bound`: with no active
     // subscriber the channel consume high-water alone releases the log.
     let bound = min_active_cursor.map_or(queue.consume_high_water, |cursor| {
         cursor.min(queue.consume_high_water)
     });
+    // Rows the channel owner already trimmed out of the single log (a
+    // direct compact of the shared channel, deep-audit finding #19) are
+    // deleted log bytes: they hold no retention budget even before every
+    // subscriber has crossed them, so the summation window never reaches
+    // below the trim high-water.  Without the clamp such journal rows (the
+    // journal itself is append-only) would count in the backlog forever
+    // and monotonically block publishing.
+    let sum_bound = bound.max(queue.trim_high_water);
     // Exact ADR-0007 backlog: the payload length was recorded durably with
     // each enqueued publication (schema v5), so any sequence window —
     // including the one a live subscriber shadows below the channel consume
@@ -3436,7 +3925,7 @@ fn check_retention_admission(
                 COALESCE(SUM(payload_bytes = 0), 0)
            FROM topic_publications
           WHERE topic_id=?1 AND status=1 AND channel_sequence > ?2",
-        params![topic.topic_id.as_bytes().as_slice(), encode_u64(bound)?,],
+        params![topic.topic_id.as_bytes().as_slice(), encode_u64(sum_bound)?,],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let measured_bytes = decode_u64(summed_bytes)?;
@@ -4037,15 +4526,87 @@ fn pattern_matches(pattern: &[u8], name: &[u8]) -> bool {
     }
 }
 
+/// The SQL narrowing of one `topics` name scan, pushed down through the v10
+/// `topics_topic_name` index (the W58-2 closure of deep-audit finding #24):
+/// byte-equality for an exact pattern, the half-open memcmp range for a
+/// trailing-`*` pattern — the bare `*` is the empty-prefix range
+/// (`topic_name >= x''`), i.e. every row, as it must be.  Every narrowed
+/// predicate is a *superset* of what [`pattern_matches`] accepts, and the
+/// callers keep the Rust-side test as the authoritative filter, so an index
+/// plan change can never silently drop a match.
+enum TopicNameScan {
+    /// `WHERE topic_name = ?1` with the exact name.
+    Exact(Vec<u8>),
+    /// `WHERE topic_name >= ?1 AND topic_name < ?2` (`?2` absent when the
+    /// prefix has no finite successor bound).
+    Range(Vec<u8>, Option<Vec<u8>>),
+}
+
+fn topic_name_scan_for(pattern: &[u8]) -> TopicNameScan {
+    match pattern.split_last() {
+        Some((b'*', prefix)) => {
+            TopicNameScan::Range(prefix.to_vec(), successor_prefix_bound(prefix))
+        }
+        _ => TopicNameScan::Exact(pattern.to_vec()),
+    }
+}
+
+/// The exclusive upper bound of the memcmp range holding exactly the byte
+/// strings with the given prefix (both SQLite BLOB ordering and Rust byte
+/// ordering are memcmp, so the two agree row for row): the prefix truncated
+/// after its rightmost byte below `0xFF`, that byte incremented — e.g. the
+/// prefix `[0x61, 0xFF, 0xFF]` bounds at `[0x62]`, past every `0x61...`
+/// continuation.  An all-`0xFF` prefix has no finite successor (every
+/// continuation stays inside the class), so the range runs to the end of
+/// the index.
+fn successor_prefix_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    (0..prefix.len())
+        .rev()
+        .find(|index| prefix[*index] < 0xFF)
+        .map(|index| {
+            let mut bound = prefix[..=index].to_vec();
+            bound[index] += 1;
+            bound
+        })
+}
+
+/// Builds the narrowed `topics` scan: the caller's column list with the
+/// pattern's predicate appended (values stay bound parameters; only the
+/// static predicate text is interpolated) and the id-order preserved, so the
+/// attach report stays deterministic.
+fn topic_name_scan_sql(scan: &TopicNameScan, columns: &str) -> (String, Vec<Vec<u8>>) {
+    match scan {
+        TopicNameScan::Exact(name) => (
+            format!("SELECT {columns} FROM topics WHERE topic_name = ?1 ORDER BY topic_id"),
+            vec![name.clone()],
+        ),
+        TopicNameScan::Range(lower, Some(upper)) => (
+            format!(
+                "SELECT {columns} FROM topics
+                  WHERE topic_name >= ?1 AND topic_name < ?2 ORDER BY topic_id"
+            ),
+            vec![lower.clone(), upper.clone()],
+        ),
+        TopicNameScan::Range(lower, None) => (
+            format!("SELECT {columns} FROM topics WHERE topic_name >= ?1 ORDER BY topic_id"),
+            vec![lower.clone()],
+        ),
+    }
+}
+
 /// Attempts to attach one pattern subscriber to one matching topic: the
 /// shared core of both attach time points.  Mirrors
 /// [`TopicAuthority::subscribe`] exactly — the same replay skip for an
-/// already-active key, the same channel readback for the subscribe point,
-/// the same `max_recipients` admission and the same re-activation CAS — and
-/// additionally records the pattern provenance on the concrete row.
+/// already-active key, the same `max_recipients` admission and the same
+/// re-activation CAS — and additionally records the pattern provenance on
+/// the concrete row.  The subscribe point is the caller's pre-transaction
+/// channel snapshot value (`max_sequence`), never a live channel read:
+/// registry finding #23 keeps every channel IO out from under the write
+/// lock, so the point can only be stale-low (over-delivery of the
+/// snapshot-to-commit race window, never a replay of history before it).
 fn attach_one(
     transaction: &Transaction<'_>,
-    channel: &ChannelAuthority,
+    subscribe_point: u64,
     topic: &TopicRecord,
     pattern: &PatternRecord,
     subscribed_at_ms: u64,
@@ -4054,9 +4615,6 @@ fn attach_one(
     if previous.as_ref().is_some_and(|existing| existing.active) {
         return Ok(Err(AttachSkipReason::AlreadySubscribed));
     }
-    let live = channel
-        .inspect_queue(topic.channel_id)
-        .map_err(TopicAuthorityError::Channel)?;
     let active = count_active_subscriptions(transaction, topic.topic_id)?;
     if active >= topic.policy.max_recipients {
         return Ok(Err(AttachSkipReason::RecipientLimitReached));
@@ -4070,7 +4628,7 @@ fn attach_one(
         topic_id: topic.topic_id,
         subscriber_key: pattern.subscriber_key,
         active: true,
-        cursor: live.max_sequence,
+        cursor: subscribe_point,
         subscribed_at_ms,
         unsubscribed_at_ms: 0,
         last_advanced_at_ms: 0,
@@ -4090,26 +4648,59 @@ fn attach_one(
 /// The subscribe-time attach enumeration: every existing topic whose name
 /// matches the pattern is offered to [`attach_one`], and every attachment
 /// and skip is reported verbatim.  Topics are visited in id order so the
-/// report is deterministic.
+/// report is deterministic.  The candidate set is narrowed by the stored
+/// name before the verified load (the W55 follow-up on deep-audit finding
+/// #24: the verified load costs a full row decode plus the active-count
+/// re-check per candidate, so the enumeration is one name scan plus a
+/// verified load per *match*, not per topic; the W58-2 follow-up pushes the
+/// narrowing through the v10 `topics_topic_name` index — equality for an
+/// exact pattern, prefix range for a trailing `*` — while the Rust-side
+/// [`pattern_matches`] test stays the authoritative filter).
+///
+/// `subscribe_points` maps each matching topic's channel to the
+/// `max_sequence` snapshot taken before the transaction opened (registry
+/// finding #23).  A matching topic whose channel has no snapshot appeared
+/// between that pass and this transaction — a concurrent `create_topic` —
+/// and the caller must restart the whole verify-then-commit sequence
+/// instead of silently dropping it: the enumeration reports that by
+/// returning `None`, with zero durable writes of its own.
 fn attach_pattern_to_existing_topics(
     transaction: &Transaction<'_>,
-    channel: &ChannelAuthority,
+    subscribe_points: &BTreeMap<ChannelId, u64>,
     pattern: &PatternRecord,
     subscribed_at_ms: u64,
-) -> Result<AttachReport, TopicAuthorityError> {
-    let mut statement = transaction.prepare("SELECT topic_id FROM topics ORDER BY topic_id")?;
-    let topic_ids = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+) -> Result<Option<AttachReport>, TopicAuthorityError> {
+    let (sql, params) = topic_name_scan_sql(
+        &topic_name_scan_for(&pattern.pattern),
+        "topic_id, topic_name",
+    );
+    let mut statement = transaction.prepare(&sql)?;
+    let topic_names = statement
+        .query_map(params_from_iter(params.iter()), |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     let mut report = AttachReport::default();
-    for id in topic_ids {
+    for (id, name) in topic_names {
         let topic_id = TopicId::from_bytes(array16(id)?);
-        let topic = load_topic_verified(transaction, topic_id)?;
-        if !pattern_matches(&pattern.pattern, &topic.name) {
+        if !pattern_matches(&pattern.pattern, &name) {
             continue;
         }
-        match attach_one(transaction, channel, &topic, pattern, subscribed_at_ms)? {
+        let topic = load_topic_verified(transaction, topic_id)?;
+        let Some(&subscribe_point) = subscribe_points.get(&topic.channel_id) else {
+            // Snapshot race (finding #23): the topic appeared after the
+            // pre-transaction snapshot pass.  Signal the restart; rolling
+            // the caller's transaction back keeps zero partial state.
+            return Ok(None);
+        };
+        match attach_one(
+            transaction,
+            subscribe_point,
+            &topic,
+            pattern,
+            subscribed_at_ms,
+        )? {
             Ok(subscription) => report.attached.push(AttachedSubscription {
                 topic_id,
                 subscription,
@@ -4117,7 +4708,7 @@ fn attach_pattern_to_existing_topics(
             Err(reason) => report.skipped.push(AttachSkipped { topic_id, reason }),
         }
     }
-    Ok(report)
+    Ok(Some(report))
 }
 
 /// The create-time attach enumeration: every `ACTIVE` pattern row whose
@@ -4126,10 +4717,13 @@ fn attach_pattern_to_existing_topics(
 /// subscriptions' `attached_by` provenance and
 /// [`TopicAuthority::inspect_pattern_attachments`]; create-time skips follow
 /// the same admission rules but are not recorded separately (documented
-/// minimal-observation choice).
+/// minimal-observation choice).  The subscribe point is the creating
+/// call's own pre-transaction channel snapshot (finding #23): the topic is
+/// brand new, so its channel is the only one involved and the snapshot
+/// cannot miss.
 fn attach_topic_to_matching_patterns(
     transaction: &Transaction<'_>,
-    channel: &ChannelAuthority,
+    subscribe_point: u64,
     topic: &TopicRecord,
     attached_at_ms: u64,
 ) -> Result<(), TopicAuthorityError> {
@@ -4140,7 +4734,13 @@ fn attach_topic_to_matching_patterns(
         // Skips follow the same admission rules as the subscribe-time
         // enumeration and are not recorded separately at this time point
         // (documented minimal-observation choice).
-        let _attachment = attach_one(transaction, channel, topic, &pattern, attached_at_ms)?;
+        let _attachment = attach_one(
+            transaction,
+            subscribe_point,
+            topic,
+            &pattern,
+            attached_at_ms,
+        )?;
     }
     Ok(())
 }
@@ -4446,6 +5046,77 @@ fn load_topic_verified(
     Ok(record)
 }
 
+/// Reads only the topic's channel binding — the pre-transaction half of
+/// every verify-then-commit channel snapshot (registry finding #23 /
+/// deep-audit D8): enough to aim a queue read before any write transaction
+/// opens, while the full verified load still runs inside the transaction.
+/// The binding is immutable from creation, so the value cannot drift
+/// between the two reads.
+fn load_topic_channel_id(
+    connection: &Connection,
+    topic_id: TopicId,
+) -> Result<ChannelId, TopicAuthorityError> {
+    let channel_id = connection
+        .query_row(
+            "SELECT channel_id FROM topics WHERE topic_id=?1",
+            [topic_id.as_bytes().as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+        .ok_or(TopicAuthorityError::TopicNotFound(topic_id))?;
+    Ok(ChannelId::from_bytes(array16(channel_id)?))
+}
+
+/// One name scan of the topic table narrowed by the pattern (the same
+/// narrowing as the attach enumeration): the distinct channels hosting a
+/// topic whose name matches, in scan order — the aim list for the
+/// pre-transaction subscribe-point snapshot pass of
+/// [`TopicAuthority::subscribe_pattern`] (registry finding #23: the channel
+/// reads then run with no lock held at all).  The narrowing runs through
+/// the v10 `topics_topic_name` index (equality or prefix range); the
+/// Rust-side [`pattern_matches`] test stays the authoritative filter.
+fn load_matching_channel_ids(
+    connection: &Connection,
+    pattern: &[u8],
+) -> Result<Vec<ChannelId>, TopicAuthorityError> {
+    let (sql, params) = topic_name_scan_sql(
+        &topic_name_scan_for(pattern),
+        "topic_id, topic_name, channel_id",
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement
+        .query_map(params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut channel_ids = Vec::new();
+    for (_id, name, channel_id) in rows {
+        if !pattern_matches(pattern, &name) {
+            continue;
+        }
+        let channel_id = ChannelId::from_bytes(array16(channel_id)?);
+        if !channel_ids.contains(&channel_id) {
+            channel_ids.push(channel_id);
+        }
+    }
+    Ok(channel_ids)
+}
+
+/// How many times a pattern subscribe restarts its whole verify-then-commit
+/// sequence (snapshot pass plus transaction) when a concurrent
+/// `create_topic` lands a matching topic inside the snapshot-to-transaction
+/// race window before the call fails with the typed
+/// [`TopicAuthorityError::PatternAttachSnapshotRace`].  Each restart
+/// re-snapshots, so a persistent race needs a creator winning every round;
+/// three attempts keep the worst case bounded without practically
+/// surfacing the typed exhaustion.
+const PATTERN_ATTACH_SNAPSHOT_ATTEMPTS: usize = 3;
+
 fn decode_topic(stored_id: TopicId, row: TopicRow) -> Result<TopicRecord, TopicAuthorityError> {
     let (
         channel_id,
@@ -4590,18 +5261,33 @@ fn load_subscription_optional(
 }
 
 /// Raw `topic_patterns` row without the `pattern_id` column: pattern text,
-/// binding, subscriber key, active bit, token, generation and the two
-/// timestamps, in that order.
-type PatternRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, i64, i64, i64);
+/// binding, subscriber key, active bit, token, generation, the two
+/// timestamps and the frozen create idempotency key, in that order.
+type PatternRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    i64,
+    i64,
+    i64,
+    Vec<u8>,
+);
 
+/// Loads one pattern row together with its frozen create idempotency key
+/// (the replay-rebinding evidence of deep-audit finding #15: the key stays
+/// consultable next to the decoded record wherever the re-subscribe gates
+/// need it).
 fn load_pattern_optional(
     connection: &Connection,
     pattern_id: PatternId,
-) -> Result<Option<PatternRecord>, TopicAuthorityError> {
+) -> Result<Option<(PatternRecord, IdempotencyKey)>, TopicAuthorityError> {
     let raw = connection
         .query_row(
             "SELECT pattern_text, binding, subscriber_key, active, consume_token,
-                    pattern_generation, subscribed_at_ms, cancelled_at_ms
+                    pattern_generation, subscribed_at_ms, cancelled_at_ms,
+                    create_idempotency_key
              FROM topic_patterns WHERE pattern_id=?1",
             [pattern_id.as_bytes().as_slice()],
             |row| {
@@ -4614,6 +5300,7 @@ fn load_pattern_optional(
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
                 ))
             },
         )
@@ -4633,7 +5320,10 @@ fn load_pattern_by_key(
         )
         .optional()?;
     pattern_id
-        .map(|bytes| load_pattern_optional(connection, PatternId::from_bytes(array16(bytes)?)))
+        .map(|bytes| {
+            load_pattern_optional(connection, PatternId::from_bytes(array16(bytes)?))
+                .map(|row| row.map(|(record, _)| record))
+        })
         .transpose()
         .map(Option::flatten)
 }
@@ -4652,9 +5342,11 @@ fn load_active_patterns(
     ids.into_iter()
         .map(|id| {
             let pattern_id = PatternId::from_bytes(array16(id)?);
-            load_pattern_optional(connection, pattern_id)?.ok_or(
-                TopicAuthorityError::CorruptRecord("active pattern row vanished"),
-            )
+            load_pattern_optional(connection, pattern_id)?
+                .map(|(record, _)| record)
+                .ok_or(TopicAuthorityError::CorruptRecord(
+                    "active pattern row vanished",
+                ))
         })
         .collect()
 }
@@ -4662,11 +5354,13 @@ fn load_active_patterns(
 /// Decodes one pattern row and enforces its structural invariants: the
 /// pattern text is still a legal pattern, the binding is bound, the
 /// authority-derived id and consumption token re-derive from the stored
-/// fields, and the active bit agrees with the cancel timestamp.
+/// fields, and the active bit agrees with the cancel timestamp.  Returns
+/// the decoded record together with the row's frozen create idempotency
+/// key (the replay-rebinding evidence, deep-audit finding #15).
 fn decode_pattern(
     stored_id: PatternId,
     row: PatternRow,
-) -> Result<PatternRecord, TopicAuthorityError> {
+) -> Result<(PatternRecord, IdempotencyKey), TopicAuthorityError> {
     let (
         pattern,
         binding,
@@ -4676,6 +5370,7 @@ fn decode_pattern(
         pattern_generation,
         subscribed_at_ms,
         cancelled_at_ms,
+        create_idempotency_key,
     ) = row;
     if validate_pattern(&pattern).is_err() {
         return Err(TopicAuthorityError::CorruptRecord(
@@ -4715,9 +5410,19 @@ fn decode_pattern(
             "pattern token disagrees with the derived identity",
         ));
     }
-    Ok(record)
+    Ok((
+        record,
+        IdempotencyKey::from_bytes(array16(create_idempotency_key)?),
+    ))
 }
 
+/// The pattern-row admission upsert.  The conflict arm never rewrites
+/// `create_idempotency_key` (the W55 reconciliation of deep-audit finding
+/// #15): the create key is the row's frozen replay evidence — the
+/// re-subscribe gate in [`crate::TopicAuthority::subscribe_pattern`]
+/// rejects foreign keys before any write, and the v9
+/// `topic_patterns_identity_frozen` trigger enforces the same freeze at
+/// the storage layer.
 fn insert_or_resubscribe_pattern(
     transaction: &Transaction<'_>,
     record: &PatternRecord,
@@ -4732,9 +5437,9 @@ fn insert_or_resubscribe_pattern(
          ON CONFLICT(pattern_text, subscriber_key) DO UPDATE SET
             active=1, consume_token=excluded.consume_token,
             pattern_generation=excluded.pattern_generation,
-            subscribed_at_ms=excluded.subscribed_at_ms, cancelled_at_ms=0,
-            create_idempotency_key=excluded.create_idempotency_key
-         WHERE topic_patterns.active=0",
+            subscribed_at_ms=excluded.subscribed_at_ms, cancelled_at_ms=0
+         WHERE topic_patterns.active=0
+            AND topic_patterns.create_idempotency_key=excluded.create_idempotency_key",
         params![
             record.pattern_id.as_bytes().as_slice(),
             record.pattern.as_slice(),
@@ -4929,6 +5634,19 @@ fn validate_name(name: &[u8]) -> Result<(), TopicAuthorityError> {
             "topic name must be non-empty",
         ));
     }
+    // The pattern language's wildcard byte is reserved (the W55
+    // reconciliation of deep-audit finding #20): a name carrying `*` could
+    // never be matched by a same-text exact pattern (that text parses as a
+    // wildcard) and would be unexpectedly matched by `prefix*` patterns —
+    // a silent namespace collision between the two grammars.  Names are
+    // registered once and durably, so create time is the single gate;
+    // rows created before this check keep their name (journal durability
+    // outranks the grammar reservation).
+    if name.contains(&b'*') {
+        return Err(TopicAuthorityError::InvalidPolicy(
+            "topic name must not contain the pattern wildcard `*`",
+        ));
+    }
     Ok(())
 }
 
@@ -5100,4 +5818,679 @@ fn array32(bytes: Vec<u8>) -> Result<[u8; 32], TopicAuthorityError> {
     bytes
         .try_into()
         .map_err(|_| TopicAuthorityError::CorruptRecord("digest length is not 32"))
+}
+
+#[cfg(test)]
+mod verify_then_commit_race_tests {
+    //! Deterministic races for the verify-then-commit channel snapshots
+    //! (registry finding #23 / deep-audit finding D8, the W57-C
+    //! reconciliation): every write path now consumes a queue snapshot read
+    //! *before* its `Immediate` transaction opens, so the interesting
+    //! interleavings are "the channel advanced (enqueue, ack/trim,
+    //! rotation) between the snapshot and the transaction".  These tests
+    //! replay exactly those interleavings by holding a captured snapshot
+    //! across a deliberate channel mutation and driving the decision
+    //! halves against it — the same reach a scheduler would need luck for.
+
+    use super::*;
+    use nlos_channel::{
+        ChannelDecision, ChannelRotationDecision, CreateChannelRequest, RotateChannelRequest,
+    };
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct Sandbox(PathBuf);
+
+    impl Sandbox {
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!(
+                "nlos-topic-vtc-{label}-{}-{nonce}",
+                std::process::id(),
+            )))
+        }
+
+        fn path(&self) -> &Path {
+            self.0.as_path()
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn key(seed: u8) -> IdempotencyKey {
+        IdempotencyKey::from_bytes([seed; 16])
+    }
+
+    fn payer(seed: u8) -> ResourceAccountId {
+        ResourceAccountId::from_bytes([seed; 16])
+    }
+
+    fn subscriber(seed: u8) -> SubscriberKey {
+        SubscriberKey::from_bytes([seed; 16])
+    }
+
+    fn policy(retained_bytes: u64) -> TopicPolicy {
+        TopicPolicy {
+            max_recipients: 4,
+            delivery_attempts: 3,
+            cascade_depth: 2,
+            retained_bytes,
+            retention_ms: 86_400_000,
+            payer: payer(7),
+        }
+    }
+
+    struct Fixture {
+        _sandbox: Sandbox,
+        channel: Arc<ChannelAuthority>,
+        topics: TopicAuthority,
+        topic: TopicRecord,
+    }
+
+    impl Fixture {
+        fn new(label: &str, retained_bytes: u64) -> Self {
+            let sandbox = Sandbox::new(label);
+            let channel = Arc::new(ChannelAuthority::open(sandbox.path()).expect("open channel"));
+            let topics =
+                TopicAuthority::open(sandbox.path(), Arc::clone(&channel)).expect("open topics");
+            let head = match channel
+                .create_channel(CreateChannelRequest {
+                    capacity_bytes: 4_096,
+                    policy_digest: [0x44; 32],
+                    idempotency_key: key(200),
+                    created_at_ms: 1_000,
+                })
+                .expect("create channel")
+            {
+                ChannelDecision::Created(record) => record,
+                ChannelDecision::Replayed(_) => panic!("fresh channel cannot replay"),
+            };
+            let topic = match topics
+                .create_topic(CreateTopicRequest {
+                    channel_id: head.channel_id,
+                    name: b"race".to_vec(),
+                    policy: policy(retained_bytes),
+                    idempotency_key: key(201),
+                    created_at_ms: 2_000,
+                })
+                .expect("create topic")
+            {
+                TopicDecision::Created(record) => record,
+                TopicDecision::Replayed(_) => panic!("fresh topic cannot replay"),
+            };
+            Self {
+                _sandbox: sandbox,
+                channel,
+                topics,
+                topic,
+            }
+        }
+
+        fn publish(&self, seed: u8, payload: &[u8], at_ms: u64) -> PublicationRecord {
+            match self
+                .topics
+                .publish(PublishRequest {
+                    topic_id: self.topic.topic_id,
+                    payload: payload.to_vec(),
+                    idempotency_key: key(seed),
+                    published_at_ms: at_ms,
+                })
+                .expect("publish")
+            {
+                PublishDecision::Published(record) | PublishDecision::Replayed(record) => record,
+            }
+        }
+
+        fn subscribe(&self, seed: u8) -> ConsumeToken {
+            match self
+                .topics
+                .subscribe(SubscribeRequest {
+                    topic_id: self.topic.topic_id,
+                    subscriber_key: subscriber(seed),
+                    subscribed_at_ms: 2_500,
+                })
+                .expect("subscribe")
+            {
+                SubscribeDecision::Subscribed(record) | SubscribeDecision::Replayed(record) => {
+                    record.consume_token
+                }
+            }
+        }
+
+        fn advance(&self, seed: u8, token: &ConsumeToken, up_to: u64) -> u64 {
+            match self
+                .topics
+                .advance_with_token(
+                    AdvanceRequest {
+                        topic_id: self.topic.topic_id,
+                        subscriber_key: subscriber(seed),
+                        up_to_sequence: up_to,
+                        advanced_at_ms: 3_000,
+                    },
+                    token,
+                )
+                .expect("advance")
+            {
+                AdvanceDecision::Advanced(receipt) | AdvanceDecision::Replayed(receipt) => {
+                    receipt.cursor
+                }
+            }
+        }
+
+        /// Opens one Immediate transaction against the authority's own
+        /// connection for driving a private decision half against a crafted
+        /// snapshot; the guard and transaction drop (rollback) at the end of
+        /// the supplied closure.
+        fn with_transaction<T>(
+            &self,
+            body: impl FnOnce(&Transaction<'_>) -> Result<T, TopicAuthorityError>,
+        ) -> Result<T, TopicAuthorityError> {
+            let mut connection = self.topics.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let result = body(&transaction)?;
+            transaction.commit()?;
+            Ok(result)
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One test drives stale vs fresh snapshot plus the retry.
+    fn retention_admission_stale_snapshot_is_conservative_then_retry_converges() {
+        let fixture = Fixture::new("retention-stale", 100);
+        let token = fixture.subscribe(1);
+        // One 60-byte publication; the subscriber then consumes and a
+        // compact advances the channel consume high-water and trims past it.
+        fixture.publish(10, &[7_u8; 60], 3_000);
+        assert_eq!(fixture.advance(1, &token, 1), 1);
+        // The snapshot races the compact: captured before it, so its
+        // consume/trim high-waters stay at 0 (stale-low).
+        let stale = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("stale snapshot");
+        assert_eq!(stale.consume_high_water, 0);
+        assert_eq!(stale.trim_high_water, 0);
+        match fixture
+            .topics
+            .compact(fixture.topic.topic_id, 1)
+            .expect("compact")
+        {
+            TopicCompactDecision::Trimmed(receipt) => {
+                assert_eq!(receipt.channel.trim_high_water, 1);
+            }
+            TopicCompactDecision::Replayed(_) => panic!("fresh compact cannot replay"),
+        }
+        let fresh = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("fresh snapshot");
+        assert_eq!(fresh.consume_high_water, 1);
+        assert_eq!(fresh.trim_high_water, 1);
+
+        // The stale snapshot measures the trimmed publication as backlog
+        // (its summation window never reaches below the stale watermarks):
+        // the admission rejects — conservatively, never under-admitting.
+        let topic_id = fixture.topic.topic_id;
+        let stale_rejection = fixture
+            .with_transaction(|transaction| {
+                let topic = load_topic_verified(transaction, topic_id)?;
+                check_retention_admission(transaction, &stale, &topic, 4_000, 60)
+            })
+            .expect_err("stale snapshot must reject conservatively");
+        let TopicAuthorityError::TopicRetentionExhausted { backlog_bytes, .. } = stale_rejection
+        else {
+            panic!("expected the typed retention rejection, got {stale_rejection:?}");
+        };
+        assert_eq!(backlog_bytes, 60);
+
+        // The fresh snapshot measures the true (post-trim) backlog of zero
+        // and admits, and the real publish path — which snapshots fresh —
+        // converges without consuming anything from the rejected attempt.
+        fixture
+            .with_transaction(|transaction| {
+                let topic = load_topic_verified(transaction, topic_id)?;
+                check_retention_admission(transaction, &fresh, &topic, 4_000, 60)
+            })
+            .expect("fresh snapshot admits");
+        let converged = fixture.publish(11, &[7_u8; 60], 4_000);
+        assert_eq!(converged.status, PublicationStatus::Enqueued);
+        assert_eq!(converged.channel_sequence, 2);
+    }
+
+    #[test]
+    fn retention_admission_snapshot_survives_channel_rotation() {
+        let fixture = Fixture::new("retention-rotate", 4_096);
+        fixture.publish(10, b"payload", 3_000);
+        let snapshot = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("snapshot before rotation");
+        let head = fixture
+            .channel
+            .inspect_channel(fixture.topic.channel_id)
+            .expect("channel head");
+        let rotated = match fixture
+            .channel
+            .rotate_channel(RotateChannelRequest {
+                channel_id: fixture.topic.channel_id,
+                expected_generation: head.generation,
+                expected_fencing_token: head.fencing_token,
+                idempotency_key: key(202),
+                rotated_at_ms: 3_500,
+            })
+            .expect("rotate")
+        {
+            ChannelRotationDecision::Rotated(record) => record,
+            ChannelRotationDecision::Replayed(_) => panic!("fresh rotation cannot replay"),
+        };
+        assert_ne!(rotated.generation, head.generation);
+        // Rotation changes the fence, never the queue watermarks: the
+        // pre-rotation snapshot still measures a valid (stale-low at worst)
+        // backlog and the admission inside the transaction admits.
+        let topic_id = fixture.topic.topic_id;
+        fixture
+            .with_transaction(|transaction| {
+                let topic = load_topic_verified(transaction, topic_id)?;
+                check_retention_admission(transaction, &snapshot, &topic, 4_000, 50)
+            })
+            .expect("pre-rotation snapshot still admits");
+    }
+
+    #[test]
+    fn advance_stale_snapshot_rejects_typed_then_retry_converges() {
+        let fixture = Fixture::new("advance-stale", 4_096);
+        let token = fixture.subscribe(1);
+        fixture.publish(10, b"one", 3_000);
+        // The snapshot races a further enqueue: captured at max_sequence 1,
+        // the channel then advances to 2.
+        let stale = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("stale snapshot");
+        assert_eq!(stale.max_sequence, 1);
+        fixture.publish(11, b"two", 3_100);
+        // The stale high-water bound rejects the advance to the race-window
+        // sequence with the typed InvalidSequence (documented retry), never
+        // silently and never corrupt-record: the cursor itself is still
+        // dominated by the monotonic high-water.
+        let rejection = fixture
+            .topics
+            .advance_with_queue_snapshot(
+                AdvanceRequest {
+                    topic_id: fixture.topic.topic_id,
+                    subscriber_key: subscriber(1),
+                    up_to_sequence: 2,
+                    advanced_at_ms: 3_200,
+                },
+                Some(token),
+                &stale,
+            )
+            .expect_err("stale snapshot must reject typed");
+        assert!(matches!(
+            rejection,
+            TopicAuthorityError::InvalidSequence(
+                "subscriber cursor advance exceeds the channel sequence high-water"
+            )
+        ));
+        // The retry snapshots fresh and converges; the attribution ledger
+        // covers exactly the crossed window.
+        assert_eq!(fixture.advance(1, &token, 2), 2);
+        let report = fixture
+            .topics
+            .inspect_attribution(fixture.topic.topic_id)
+            .expect("ledger reconciles");
+        assert_eq!(report.attributed_bytes, 6);
+        assert!(report.balanced);
+    }
+
+    #[test]
+    fn advance_stale_trim_snapshot_stays_first_wins_consistent() {
+        let fixture = Fixture::new("advance-trim", 4_096);
+        let token = fixture.subscribe(1);
+        fixture.publish(10, &[7_u8; 10], 3_000);
+        let stale = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("stale snapshot");
+        assert_eq!(stale.trim_high_water, 0);
+        // The channel owner acks and trims past the entry while the snapshot
+        // holder is inside its race window (the deep-audit #19 direct-owner
+        // path: no topic-side unallocated pass runs).
+        fixture
+            .channel
+            .ack(AckRequest {
+                channel_id: fixture.topic.channel_id,
+                up_to_sequence: 1,
+                acked_at_ms: 0,
+            })
+            .expect("owner ack");
+        match fixture
+            .channel
+            .compact(fixture.topic.channel_id, 1)
+            .expect("owner trim")
+        {
+            nlos_channel::CompactDecision::Trimmed(receipt) => {
+                assert_eq!(receipt.trim_high_water, 1);
+            }
+            nlos_channel::CompactDecision::Replayed(_) => {
+                panic!("fresh trim cannot replay")
+            }
+        }
+        // The stale trim bound attributes the blind catch-up across the
+        // already-trimmed sequence: first-accounting-event-wins keeps the
+        // ledger immediately consistent (an Unallocated pass would have
+        // been the fresh-snapshot outcome — both cover the sequence once).
+        fixture
+            .topics
+            .advance_with_queue_snapshot(
+                AdvanceRequest {
+                    topic_id: fixture.topic.topic_id,
+                    subscriber_key: subscriber(1),
+                    up_to_sequence: 1,
+                    advanced_at_ms: 3_200,
+                },
+                Some(token),
+                &stale,
+            )
+            .expect("stale trim snapshot still advances");
+        let report = fixture
+            .topics
+            .inspect_attribution(fixture.topic.topic_id)
+            .expect("ledger reconciles");
+        assert_eq!(report.attributed_bytes, 10);
+        assert_eq!(report.unsettled_bytes, 0);
+    }
+
+    #[test]
+    fn advance_snapshot_survives_channel_rotation() {
+        let fixture = Fixture::new("advance-rotate", 4_096);
+        let token = fixture.subscribe(1);
+        fixture.publish(10, b"one", 3_000);
+        let snapshot = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("snapshot before rotation");
+        let head = fixture
+            .channel
+            .inspect_channel(fixture.topic.channel_id)
+            .expect("channel head");
+        fixture
+            .channel
+            .rotate_channel(RotateChannelRequest {
+                channel_id: fixture.topic.channel_id,
+                expected_generation: head.generation,
+                expected_fencing_token: head.fencing_token,
+                idempotency_key: key(203),
+                rotated_at_ms: 3_500,
+            })
+            .expect("rotate");
+        // Sequences and watermarks are per-channel across generations, so
+        // the pre-rotation snapshot remains a valid bound: the advance
+        // commits its cursor CAS and attribution row untouched by the
+        // rotation.
+        fixture
+            .topics
+            .advance_with_queue_snapshot(
+                AdvanceRequest {
+                    topic_id: fixture.topic.topic_id,
+                    subscriber_key: subscriber(1),
+                    up_to_sequence: 1,
+                    advanced_at_ms: 3_600,
+                },
+                Some(token),
+                &snapshot,
+            )
+            .expect("pre-rotation snapshot advances");
+        let record = fixture
+            .topics
+            .inspect_subscription(fixture.topic.topic_id, subscriber(1))
+            .expect("subscription");
+        assert_eq!(record.cursor, 1);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One test drives attach, the race window and the rotation.
+    fn pattern_attach_stale_subscribe_point_overdelivers_and_survives_rotation() {
+        let fixture = Fixture::new("attach-stale", 4_096);
+        // A first pattern owns one matching topic; a second pattern row
+        // (non-matching text, so the public subscribe attached nothing)
+        // provides the attach_one caller for the crafted stale point.
+        let first = match fixture
+            .topics
+            .subscribe_pattern(SubscribePatternRequest {
+                pattern: b"rac*".to_vec(),
+                binding: payer(8),
+                subscriber_key: subscriber(1),
+                idempotency_key: key(30),
+                subscribed_at_ms: 2_500,
+            })
+            .expect("subscribe first pattern")
+        {
+            PatternSubscribeDecision::Subscribed(outcome) => outcome,
+            PatternSubscribeDecision::Replayed(_) => panic!("fresh pattern cannot replay"),
+        };
+        assert_eq!(first.report.attached.len(), 1);
+        assert_eq!(first.report.attached[0].subscription.cursor, 0);
+        // The subscribe point races a further enqueue and a rotation: the
+        // channel advances to sequence 1 and rotates its fence.
+        fixture.publish(10, b"race-window", 3_000);
+        let head = fixture
+            .channel
+            .inspect_channel(fixture.topic.channel_id)
+            .expect("channel head");
+        fixture
+            .channel
+            .rotate_channel(RotateChannelRequest {
+                channel_id: fixture.topic.channel_id,
+                expected_generation: head.generation,
+                expected_fencing_token: head.fencing_token,
+                idempotency_key: key(204),
+                rotated_at_ms: 3_500,
+            })
+            .expect("rotate");
+        let second_pattern_id = pattern_id_for(b"other*", subscriber(2));
+        let _second = fixture
+            .topics
+            .subscribe_pattern(SubscribePatternRequest {
+                pattern: b"other*".to_vec(),
+                binding: payer(9),
+                subscriber_key: subscriber(2),
+                idempotency_key: key(31),
+                subscribed_at_ms: 3_600,
+            })
+            .expect("subscribe second pattern");
+        // attach_one against the stale point (0, while the live high-water
+        // is 1) under the rotated fence: the attached cursor is the stale
+        // point — over-delivery of the race window, never a replay of
+        // history before it.
+        let attached = fixture
+            .with_transaction(|transaction| {
+                let pattern = load_pattern_optional(transaction, second_pattern_id)?
+                    .expect("second pattern row")
+                    .0;
+                attach_one(transaction, 0, &fixture.topic, &pattern, 3_700)
+            })
+            .expect("attach against stale point")
+            .expect("no skip reason");
+        assert_eq!(attached.cursor, 0);
+        assert_eq!(attached.attached_by, Some(second_pattern_id));
+        // The race-window entry is still receivable across the rotation,
+        // so the over-delivering subscriber polls it.
+        let window = fixture
+            .topics
+            .poll(fixture.topic.topic_id, subscriber(2), 10)
+            .expect("poll after attach");
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0].sequence, 1);
+        assert_eq!(window[0].payload, b"race-window".to_vec());
+    }
+
+    #[test]
+    fn pattern_attach_enumeration_signals_restart_on_snapshot_miss() {
+        let fixture = Fixture::new("attach-miss", 4_096);
+        let pattern_id = pattern_id_for(b"rac*", subscriber(3));
+        // The enumeration runs inside the transaction against the snapshot
+        // map; a matching topic whose channel has no snapshot entry (it was
+        // created after the pre-transaction pass) must restart the whole
+        // verify-then-commit sequence — reported as `None`, never a silent
+        // skip and never a channel read under the write lock.
+        let missed = fixture
+            .with_transaction(|transaction| {
+                let pattern = load_pattern_optional(transaction, pattern_id)?.map_or(
+                    PatternRecord {
+                        pattern_id,
+                        pattern: b"rac*".to_vec(),
+                        binding: payer(10),
+                        subscriber_key: subscriber(3),
+                        active: true,
+                        consume_token: derive_pattern_token(pattern_id, 1),
+                        pattern_generation: 1,
+                        subscribed_at_ms: 2_500,
+                        cancelled_at_ms: 0,
+                    },
+                    |(record, _create_key)| record,
+                );
+                attach_pattern_to_existing_topics(transaction, &BTreeMap::new(), &pattern, 2_500)
+            })
+            .expect("enumeration itself must not error");
+        assert!(missed.is_none());
+        // The restarted public call snapshots fresh and attaches — the
+        // convergence path the signal exists for.
+        let converged = match fixture
+            .topics
+            .subscribe_pattern(SubscribePatternRequest {
+                pattern: b"rac*".to_vec(),
+                binding: payer(10),
+                subscriber_key: subscriber(3),
+                idempotency_key: key(32),
+                subscribed_at_ms: 2_600,
+            })
+            .expect("subscribe pattern converges")
+        {
+            PatternSubscribeDecision::Subscribed(outcome) => outcome,
+            PatternSubscribeDecision::Replayed(_) => panic!("fresh pattern cannot replay"),
+        };
+        assert_eq!(converged.report.attached.len(), 1);
+        assert_eq!(converged.report.skipped.len(), 0);
+        assert_eq!(converged.report.attached[0].subscription.cursor, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One test drives the stale point, the race window and the rotation.
+    fn subscribe_stale_snapshot_overdelivers_and_survives_rotation() {
+        let fixture = Fixture::new("subscribe-stale", 4_096);
+        fixture.publish(10, b"before", 3_000);
+        // The subscribe-point snapshot races a further enqueue and a
+        // rotation: captured at max_sequence 1, the channel then advances
+        // to 2 and rotates its fence.
+        let stale = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("stale snapshot");
+        assert_eq!(stale.max_sequence, 1);
+        fixture.publish(11, b"race-window", 3_100);
+        let head = fixture
+            .channel
+            .inspect_channel(fixture.topic.channel_id)
+            .expect("channel head");
+        fixture
+            .channel
+            .rotate_channel(RotateChannelRequest {
+                channel_id: fixture.topic.channel_id,
+                expected_generation: head.generation,
+                expected_fencing_token: head.fencing_token,
+                idempotency_key: key(205),
+                rotated_at_ms: 3_200,
+            })
+            .expect("rotate");
+        // The decision half against the stale point (the interleaving the
+        // pre-transaction snapshot makes representable — the subscribe
+        // cursor initializes from the stale high-water): over-delivery of
+        // the race window, never a replay of the history before the
+        // subscribe point.
+        let subscribed = match fixture
+            .topics
+            .subscribe_with_subscribe_point(
+                SubscribeRequest {
+                    topic_id: fixture.topic.topic_id,
+                    subscriber_key: subscriber(4),
+                    subscribed_at_ms: 3_300,
+                },
+                stale.max_sequence,
+            )
+            .expect("subscribe against stale point")
+        {
+            SubscribeDecision::Subscribed(record) => record,
+            SubscribeDecision::Replayed(_) => panic!("fresh key cannot replay"),
+        };
+        assert_eq!(subscribed.cursor, 1);
+        assert_eq!(subscribed.attached_by, None);
+        // The race-window entry is receivable across the rotation
+        // (sequence 2); the pre-subscribe-point entry (sequence 1) is
+        // never delivered.
+        let window = fixture
+            .topics
+            .poll(fixture.topic.topic_id, subscriber(4), 10)
+            .expect("poll after subscribe");
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0].sequence, 2);
+        assert_eq!(window[0].payload, b"race-window".to_vec());
+        // The live path snapshots fresh: a later direct subscriber starts
+        // at the live high-water and receives nothing older.
+        let live = match fixture
+            .topics
+            .subscribe(SubscribeRequest {
+                topic_id: fixture.topic.topic_id,
+                subscriber_key: subscriber(5),
+                subscribed_at_ms: 3_400,
+            })
+            .expect("live subscribe")
+        {
+            SubscribeDecision::Subscribed(record) => record,
+            SubscribeDecision::Replayed(_) => panic!("fresh key cannot replay"),
+        };
+        assert_eq!(live.cursor, 2);
+        // Repeating that subscribe replays the stored decision verbatim.
+        match fixture
+            .topics
+            .subscribe(SubscribeRequest {
+                topic_id: fixture.topic.topic_id,
+                subscriber_key: subscriber(5),
+                subscribed_at_ms: 3_500,
+            })
+            .expect("replayed subscribe")
+        {
+            SubscribeDecision::Replayed(record) => assert_eq!(record.cursor, 2),
+            SubscribeDecision::Subscribed(_) => panic!("active key must replay"),
+        }
+    }
+
+    #[test]
+    fn successor_prefix_bound_covers_the_memcmp_edge_cases() {
+        // The bare `*` and the all-`0xFF` prefixes have no finite successor.
+        assert_eq!(successor_prefix_bound(&[]), None);
+        assert_eq!(successor_prefix_bound(&[0xFF]), None);
+        assert_eq!(successor_prefix_bound(&[0xFF, 0xFF]), None);
+        // A plain prefix increments its last byte.
+        assert_eq!(
+            successor_prefix_bound(&[0x61, 0x62]),
+            Some(vec![0x61, 0x63])
+        );
+        assert_eq!(successor_prefix_bound(&[0x00]), Some(vec![0x01]));
+        // A `0xFF`-heavy prefix carries: the truncation lands on the last
+        // byte below `0xFF`.
+        assert_eq!(
+            successor_prefix_bound(&[0x61, 0xFF, 0xFF]),
+            Some(vec![0x62])
+        );
+        assert_eq!(successor_prefix_bound(&[0xFE, 0xFF]), Some(vec![0xFF]));
+    }
 }

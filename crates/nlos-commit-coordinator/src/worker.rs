@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -11,9 +12,10 @@ use nlos_resource::ResourceAuthority;
 use nlos_semantic::SemanticAuthority;
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
-    ArtifactRecoveryState, ResourceConvergeDecision, ResourceRecoveryFailureRequest,
-    ResourceRecoveryFailureSource, ResourceRecoveryState, SemanticRecoveryFailureRequest,
-    SemanticRecoveryFailureSource, SemanticRecoveryState, SqliteTaskAuthority, TaskStoreError,
+    ArtifactRecoveryState, ResourceCommitPlanId, ResourceConvergeDecision,
+    ResourceRecoveryFailureRequest, ResourceRecoveryFailureSource, ResourceRecoveryState,
+    SemanticCommitPlanId, SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource,
+    SemanticRecoveryState, SqliteTaskAuthority, TaskStoreError,
 };
 
 use crate::{
@@ -31,6 +33,12 @@ struct DomainCycleOutcome {
     failures: Vec<RecoveryWorkerFailure>,
     retry_delay: Option<Duration>,
     infrastructure_failure: bool,
+    /// Whether this half actually produced data for the cycle. `false` for
+    /// the quiescent `empty()` outcomes (no authority supplied, a domain
+    /// skipped after its fault bit, or a worker-level clock failure that
+    /// blocked every half): such a cycle must neither increment nor reset
+    /// the domain's consecutive-failure counter (registry 48 #12).
+    observed: bool,
     durable_retrying: u64,
     durable_escalated: u64,
     durable_unacknowledged_escalated: u64,
@@ -39,9 +47,11 @@ struct DomainCycleOutcome {
 
 impl DomainCycleOutcome {
     /// Quiescent outcome: nothing inspected, nothing failed, no durable
-    /// gauges. Represents the semantic half of a worker started without a
-    /// semantic authority and any domain half skipped after its per-domain
-    /// fault bit was set.
+    /// gauges, and — crucially — no data. Represents the semantic half of a
+    /// worker started without a semantic authority, a domain half skipped
+    /// after its per-domain fault bit was set, and the semantic/resource
+    /// placeholders of a cycle whose clock read failed. All three leave the
+    /// per-domain failure counters untouched.
     fn empty() -> Self {
         Self {
             inspected: 0,
@@ -49,6 +59,7 @@ impl DomainCycleOutcome {
             failures: Vec::new(),
             retry_delay: None,
             infrastructure_failure: false,
+            observed: false,
             durable_retrying: 0,
             durable_escalated: 0,
             durable_unacknowledged_escalated: 0,
@@ -57,10 +68,13 @@ impl DomainCycleOutcome {
     }
 
     /// Worker-level infrastructure failure that prevented the half from
-    /// running at all (for example an unreadable system clock).
+    /// running at all (for example an unreadable system clock). Counted
+    /// against the artifact-domain budget, which has always terminated the
+    /// worker thread, so the outcome is `observed`.
     fn worker_infrastructure_failure(message: String) -> Self {
         Self {
             infrastructure_failure: true,
+            observed: true,
             failures: vec![RecoveryWorkerFailure {
                 plan_id: None,
                 authority: RecoveryFailureAuthority::Worker,
@@ -80,8 +94,11 @@ pub struct RecoveryWorkerConfig {
     pub poll_interval: Duration,
     /// Maximum delay after consecutive failed scans.
     pub max_backoff: Duration,
-    /// Consecutive cycles containing a scan or plan failure before the worker
-    /// faults and requires its `TaskAuthority` service owner to restart it.
+    /// Consecutive cycles containing an infrastructure failure — a scan,
+    /// ledger, or summary storage failure, or an unreadable system clock —
+    /// before the worker faults and requires its `TaskAuthority` service
+    /// owner to restart it. Plan-level convergence failures never consume
+    /// this budget; they retry on the durable per-plan ledger schedule.
     pub failure_threshold: usize,
 }
 
@@ -118,6 +135,15 @@ pub enum RecoveryFailureAuthority {
 
 /// Health-safe failure summary. Plan identity and authority source remain
 /// typed; the local diagnostic text is not an external SABI contract.
+///
+/// The typed `plan_id` field carries an artifact-domain id only: the SABI
+/// consumers of this surface (nlos-system-control) type plan identity as
+/// `ArtifactCommitPlanId`, so semantic and resource entries leave it `None`
+/// and carry their domain-local plan identity in `message` as
+/// `"semantic plan <hex>"` / `"resource plan <hex>"`; failures that cannot
+/// be attributed to any plan are prefixed `"scan-level: "` (registry 48
+/// #14). Durable per-plan identity for every domain lives in its recovery
+/// ledger.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryWorkerFailure {
     pub plan_id: Option<ArtifactCommitPlanId>,
@@ -248,6 +274,12 @@ impl Error for RecoveryWorkerStartError {
 /// a crash from their durable prefix.
 pub struct TaskAuthorityCommitRecoveryWorker {
     stop_tx: SyncSender<()>,
+    /// Cooperative stop flag shared with the worker thread. `stop()` sets
+    /// it before queueing the channel token so a converge-heavy cycle
+    /// aborts between plans instead of running its whole scan to the end
+    /// (registry 48 #13): `recv_timeout` alone cannot interrupt a cycle
+    /// that is already inside `converge`.
+    stop_flag: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     health: Arc<Mutex<RecoveryWorkerHealth>>,
 }
@@ -311,6 +343,8 @@ impl TaskAuthorityCommitRecoveryWorker {
     ) -> Result<Self, RecoveryWorkerStartError> {
         validate_config(config)?;
         let (stop_tx, stop_rx) = sync_channel(1);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
         let health = Arc::new(Mutex::new(RecoveryWorkerHealth::default()));
         let thread_health = Arc::clone(&health);
         let join = thread::Builder::new()
@@ -324,6 +358,7 @@ impl TaskAuthorityCommitRecoveryWorker {
                         resource.as_deref(),
                         config,
                         &stop_rx,
+                        &thread_stop_flag,
                         &thread_health,
                     );
                 }));
@@ -341,6 +376,7 @@ impl TaskAuthorityCommitRecoveryWorker {
             .map_err(RecoveryWorkerStartError::Spawn)?;
         Ok(Self {
             stop_tx,
+            stop_flag,
             join: Some(join),
             health,
         })
@@ -352,8 +388,12 @@ impl TaskAuthorityCommitRecoveryWorker {
     }
 
     /// Requests shutdown and joins the dedicated thread. Repeated calls are
-    /// harmless.
+    /// harmless. The cooperative stop flag is published first so an
+    /// in-flight cycle aborts between plans (each `converge` is separately
+    /// bounded by [`crate::CONVERGE_MAX_STEPS`]), which keeps the join
+    /// bounded instead of waiting out a full scan.
     pub fn stop(&mut self) {
+        self.stop_flag.store(true, Ordering::Release);
         let _ = self.stop_tx.try_send(());
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -391,6 +431,7 @@ fn validate_config(config: RecoveryWorkerConfig) -> Result<(), RecoveryWorkerSta
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     tasks: &SqliteTaskAuthority,
     artifacts: &ArtifactStore,
@@ -398,6 +439,7 @@ fn run_worker(
     resource: Option<&ResourceAuthority>,
     config: RecoveryWorkerConfig,
     stop_rx: &Receiver<()>,
+    stop_flag: &AtomicBool,
     health: &Mutex<RecoveryWorkerHealth>,
 ) {
     lock(health).state = RecoveryWorkerState::Running;
@@ -412,13 +454,13 @@ fn run_worker(
                 // transition), so the artifact half needs no skip check. A
                 // worker started without an authority for a domain runs no
                 // half for it at all.
-                let artifact = artifact_cycle(tasks, artifacts, config, timestamp);
+                let artifact = artifact_cycle(tasks, artifacts, config, timestamp, stop_flag);
                 let semantic = match semantic {
                     Some(authority) => {
                         if lock(health).semantic_domain_faulted {
                             DomainCycleOutcome::empty()
                         } else {
-                            semantic_cycle(tasks, authority, config, timestamp)
+                            semantic_cycle(tasks, authority, config, timestamp, stop_flag)
                         }
                     }
                     None => DomainCycleOutcome::empty(),
@@ -428,7 +470,7 @@ fn run_worker(
                         if lock(health).resource_domain_faulted {
                             DomainCycleOutcome::empty()
                         } else {
-                            resource_cycle(tasks, authority, config, timestamp)
+                            resource_cycle(tasks, authority, config, timestamp, stop_flag)
                         }
                     }
                     None => DomainCycleOutcome::empty(),
@@ -438,7 +480,12 @@ fn run_worker(
             // An unusable clock blocks all halves before any can run. It
             // is accounted against the artifact-domain failure budget —
             // the budget that has always terminated the worker thread —
-            // and surfaces as exactly one Worker-authority failure.
+            // and surfaces as exactly one Worker-authority failure. The
+            // semantic and resource halves get the quiescent no-data
+            // outcome, which leaves their consecutive-failure counters
+            // untouched (registry 48 #12): resetting them here would let
+            // an alternating clock/domain failure sequence postpone the
+            // sticky domain fault bit forever.
             Err(message) => (
                 DomainCycleOutcome::worker_infrastructure_failure(message),
                 DomainCycleOutcome::empty(),
@@ -480,6 +527,10 @@ fn account_cycle(
     let artifact_infra = artifact.infrastructure_failure;
     let semantic_infra = semantic.infrastructure_failure;
     let resource_infra = resource.infrastructure_failure;
+    // Captured before the failure vectors are moved out below: the
+    // observation decides how each isolated domain's counter is updated.
+    let semantic_observation = domain_observation(&semantic);
+    let resource_observation = domain_observation(&resource);
     let mut failures = artifact.failures;
     failures.extend(semantic.failures);
     failures.extend(resource.failures);
@@ -524,8 +575,9 @@ fn account_cycle(
     // Per-domain consecutive infrastructure-failure accounting. The
     // existing `consecutive_failed_cycles` field is the artifact-domain
     // counter; the semantic and resource domains count independently
-    // against the same threshold. A skipped (faulted) domain neither counts
-    // nor resets.
+    // against the same threshold. A half with no data this cycle (no
+    // authority, skipped after its fault bit, or a worker-level clock
+    // failure) neither counts nor resets.
     //
     // Pinned decision (W26-002, mirrored for the resource domain): setting
     // a domain's fault bit does NOT clear its consecutive counter. The bit
@@ -540,7 +592,7 @@ fn account_cycle(
         current.consecutive_failed_cycles = 0;
     }
     let (semantic_consecutive, semantic_faulted) = account_isolated_domain_failures(
-        semantic_infra,
+        semantic_observation,
         current.semantic_consecutive_failed_cycles,
         current.semantic_domain_faulted,
         config.failure_threshold,
@@ -548,7 +600,7 @@ fn account_cycle(
     current.semantic_consecutive_failed_cycles = semantic_consecutive;
     current.semantic_domain_faulted = semantic_faulted;
     let (resource_consecutive, resource_faulted) = account_isolated_domain_failures(
-        resource_infra,
+        resource_observation,
         current.resource_consecutive_failed_cycles,
         current.resource_domain_faulted,
         config.failure_threshold,
@@ -608,28 +660,61 @@ fn account_cycle(
     }
 }
 
+/// What one domain half's outcome says about its consecutive-failure
+/// counter. `NoData` keeps the counter unchanged: neither progress nor
+/// regression may be inferred from a cycle the half did not run.
+#[derive(Clone, Copy)]
+enum DomainFailureObservation {
+    /// The half ran and its infrastructure failed.
+    InfrastructureFailed,
+    /// The half ran without an infrastructure failure.
+    Clean,
+    /// The half produced no data this cycle (no authority supplied,
+    /// skipped after its fault bit, or a worker-level clock failure).
+    NoData,
+}
+
+fn domain_observation(outcome: &DomainCycleOutcome) -> DomainFailureObservation {
+    if !outcome.observed {
+        DomainFailureObservation::NoData
+    } else if outcome.infrastructure_failure {
+        DomainFailureObservation::InfrastructureFailed
+    } else {
+        DomainFailureObservation::Clean
+    }
+}
+
 /// Per-domain consecutive infrastructure-failure accounting for a domain
 /// whose fault bit is isolated from the thread lifecycle (semantic and
 /// resource). An exhausted budget only sets the domain's sticky fault bit;
 /// the caller holds the pinned W26-002 observability decision that the
-/// counter is not cleared on that transition.
+/// counter is not cleared on that transition. A `NoData` cycle (registry
+/// 48 #12) neither increments nor resets, so an alternating sequence of
+/// clock failures and domain infrastructure failures still reaches the
+/// threshold and trips the sticky bit.
 fn account_isolated_domain_failures(
-    infrastructure_failure: bool,
+    observation: DomainFailureObservation,
     consecutive: usize,
     domain_faulted: bool,
     threshold: usize,
 ) -> (usize, bool) {
-    if infrastructure_failure {
-        let consecutive = consecutive.saturating_add(1);
-        if consecutive >= threshold {
-            (consecutive, true)
-        } else {
-            (consecutive, domain_faulted)
+    match observation {
+        DomainFailureObservation::InfrastructureFailed => {
+            let consecutive = consecutive.saturating_add(1);
+            if consecutive >= threshold {
+                (consecutive, true)
+            } else {
+                (consecutive, domain_faulted)
+            }
         }
-    } else if domain_faulted {
-        (consecutive, domain_faulted)
-    } else {
-        (0, domain_faulted)
+        DomainFailureObservation::NoData => (consecutive, domain_faulted),
+        DomainFailureObservation::Clean => {
+            if domain_faulted {
+                (consecutive, domain_faulted)
+            } else {
+                (0, domain_faulted)
+            }
+        }
     }
 }
 
@@ -649,6 +734,7 @@ fn artifact_cycle(
     artifacts: &ArtifactStore,
     config: RecoveryWorkerConfig,
     now_ms: i64,
+    stop_flag: &AtomicBool,
 ) -> DomainCycleOutcome {
     let plans = match tasks.list_due_artifact_commit_plans(config.scan_limit, now_ms) {
         Ok(plans) => plans,
@@ -659,6 +745,7 @@ fn artifact_cycle(
                 failures: vec![failure_of(None, &CoordinatorError::Task(error))],
                 retry_delay: None,
                 infrastructure_failure: true,
+                observed: true,
                 durable_retrying: 0,
                 durable_escalated: 0,
                 durable_unacknowledged_escalated: 0,
@@ -672,6 +759,7 @@ fn artifact_cycle(
         failures: Vec::new(),
         retry_delay: None,
         infrastructure_failure: false,
+        observed: true,
         durable_retrying: 0,
         durable_escalated: 0,
         durable_unacknowledged_escalated: 0,
@@ -679,6 +767,12 @@ fn artifact_cycle(
     };
     let coordinator = ArtifactCommitCoordinator::new(tasks, artifacts);
     for plan in plans {
+        // Shutdown was requested mid-scan: the remaining plans stay durably
+        // pending for the next worker instance instead of delaying the
+        // joined stop (registry 48 #13).
+        if stop_requested(stop_flag) {
+            break;
+        }
         match coordinator.converge(crate::ConvergeArtifactCommitRequest {
             plan_id: plan.plan_id,
             now_ms,
@@ -704,7 +798,8 @@ fn artifact_cycle(
                     CoordinatorError::Artifact(_) => {
                         ArtifactRecoveryFailureSource::ArtifactAuthority
                     }
-                    CoordinatorError::InvalidTimestamp => {
+                    CoordinatorError::InvalidTimestamp
+                    | CoordinatorError::IterationLimitExceeded { .. } => {
                         ArtifactRecoveryFailureSource::Coordinator
                     }
                     CoordinatorError::Semantic(_) => ArtifactRecoveryFailureSource::Coordinator,
@@ -772,6 +867,7 @@ fn semantic_cycle(
     semantic: &SemanticAuthority,
     config: RecoveryWorkerConfig,
     now_ms: i64,
+    stop_flag: &AtomicBool,
 ) -> DomainCycleOutcome {
     let plans = match tasks.list_due_semantic_commit_plans(config.scan_limit, now_ms) {
         Ok(plans) => plans,
@@ -779,9 +875,10 @@ fn semantic_cycle(
             return DomainCycleOutcome {
                 inspected: 0,
                 finalized: 0,
-                failures: vec![failure_of(None, &CoordinatorError::Task(error))],
+                failures: vec![semantic_failure_of(None, &CoordinatorError::Task(error))],
                 retry_delay: None,
                 infrastructure_failure: true,
+                observed: true,
                 durable_retrying: 0,
                 durable_escalated: 0,
                 durable_unacknowledged_escalated: 0,
@@ -795,6 +892,7 @@ fn semantic_cycle(
         failures: Vec::new(),
         retry_delay: None,
         infrastructure_failure: false,
+        observed: true,
         durable_retrying: 0,
         durable_escalated: 0,
         durable_unacknowledged_escalated: 0,
@@ -802,6 +900,12 @@ fn semantic_cycle(
     };
     let coordinator = SemanticCommitCoordinator::new(tasks, semantic);
     for plan in plans {
+        // Shutdown was requested mid-scan: the remaining plans stay durably
+        // pending for the next worker instance instead of delaying the
+        // joined stop (registry 48 #13).
+        if stop_requested(stop_flag) {
+            break;
+        }
         match coordinator.converge(ConvergeSemanticCommitRequest {
             plan_id: plan.plan_id,
             now_ms,
@@ -810,19 +914,23 @@ fn semantic_cycle(
             Err(error) => {
                 // The health failure surface types plan identity as
                 // `ArtifactCommitPlanId` (pre-dual shape); a Semantic plan id
-                // cannot be laundered into it, so semantic entries carry no
-                // plan id. Durable per-plan identity lives in the semantic
-                // recovery ledger (`inspect_semantic_recovery`); widening the
-                // health failure struct belongs to the semantic alert
-                // surface, which owns its SABI consumers.
-                outcome.failures.push(failure_of(None, &error));
+                // cannot be laundered into it, so the typed field stays
+                // `None` and the message carries the domain-local plan id
+                // (registry 48 #14). Durable per-plan identity lives in the
+                // semantic recovery ledger (`inspect_semantic_recovery`);
+                // widening the health failure struct belongs to the semantic
+                // alert surface, which owns its SABI consumers.
+                outcome
+                    .failures
+                    .push(semantic_failure_of(Some(plan.plan_id), &error));
                 let current = match tasks.inspect_semantic_recovery(plan.plan_id) {
                     Ok(record) => record.map_or(0, |record| record.total_failures),
                     Err(ledger_error) => {
                         outcome.infrastructure_failure = true;
-                        outcome
-                            .failures
-                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                        outcome.failures.push(semantic_failure_of(
+                            Some(plan.plan_id),
+                            &CoordinatorError::Task(ledger_error),
+                        ));
                         continue;
                     }
                 };
@@ -852,9 +960,10 @@ fn semantic_cycle(
                     Ok(_) => {}
                     Err(ledger_error) => {
                         outcome.infrastructure_failure = true;
-                        outcome
-                            .failures
-                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                        outcome.failures.push(semantic_failure_of(
+                            Some(plan.plan_id),
+                            &CoordinatorError::Task(ledger_error),
+                        ));
                     }
                 }
             }
@@ -871,7 +980,7 @@ fn semantic_cycle(
             outcome.infrastructure_failure = true;
             outcome
                 .failures
-                .push(failure_of(None, &CoordinatorError::Task(error)));
+                .push(semantic_failure_of(None, &CoordinatorError::Task(error)));
         }
     }
     outcome
@@ -886,9 +995,9 @@ const fn semantic_recovery_source(error: &CoordinatorError) -> SemanticRecoveryF
     match error {
         CoordinatorError::Task(_) => SemanticRecoveryFailureSource::TaskAuthority,
         CoordinatorError::Semantic(_) => SemanticRecoveryFailureSource::SemanticAuthority,
-        CoordinatorError::InvalidTimestamp | CoordinatorError::Artifact(_) => {
-            SemanticRecoveryFailureSource::Coordinator
-        }
+        CoordinatorError::InvalidTimestamp
+        | CoordinatorError::IterationLimitExceeded { .. }
+        | CoordinatorError::Artifact(_) => SemanticRecoveryFailureSource::Coordinator,
     }
 }
 
@@ -909,6 +1018,7 @@ fn resource_cycle(
     resource: &ResourceAuthority,
     config: RecoveryWorkerConfig,
     now_ms: i64,
+    stop_flag: &AtomicBool,
 ) -> DomainCycleOutcome {
     let plans = match tasks.list_due_resource_commit_plans(config.scan_limit, now_ms) {
         Ok(plans) => plans,
@@ -916,9 +1026,10 @@ fn resource_cycle(
             return DomainCycleOutcome {
                 inspected: 0,
                 finalized: 0,
-                failures: vec![resource_failure_of(&error)],
+                failures: vec![resource_failure_of(None, &error)],
                 retry_delay: None,
                 infrastructure_failure: true,
+                observed: true,
                 durable_retrying: 0,
                 durable_escalated: 0,
                 durable_unacknowledged_escalated: 0,
@@ -932,12 +1043,19 @@ fn resource_cycle(
         failures: Vec::new(),
         retry_delay: None,
         infrastructure_failure: false,
+        observed: true,
         durable_retrying: 0,
         durable_escalated: 0,
         durable_unacknowledged_escalated: 0,
         durable_resolved: 0,
     };
     for plan in plans {
+        // Shutdown was requested mid-scan: the remaining plans stay durably
+        // pending for the next worker instance instead of delaying the
+        // joined stop (registry 48 #13).
+        if stop_requested(stop_flag) {
+            break;
+        }
         match tasks.converge_resource_commit_plan(resource, plan.plan_id, now_ms) {
             Ok(ResourceConvergeDecision::Finalized(_) | ResourceConvergeDecision::Replayed(_)) => {
                 outcome.finalized += 1;
@@ -949,15 +1067,20 @@ fn resource_cycle(
             Err(error) => {
                 // Same typed-id wart as the semantic half: the health
                 // failure surface types plan identity as
-                // `ArtifactCommitPlanId`, so resource entries carry no plan
-                // id. Durable per-plan identity lives in the resource
-                // recovery ledger (`inspect_resource_recovery`).
-                outcome.failures.push(resource_failure_of(&error));
+                // `ArtifactCommitPlanId`, so the typed field stays `None`
+                // and the message carries the domain-local plan id
+                // (registry 48 #14). Durable per-plan identity lives in the
+                // resource recovery ledger (`inspect_resource_recovery`).
+                outcome
+                    .failures
+                    .push(resource_failure_of(Some(plan.plan_id), &error));
                 let current = match tasks.inspect_resource_recovery(plan.plan_id) {
                     Ok(record) => record.map_or(0, |record| record.total_failures),
                     Err(ledger_error) => {
                         outcome.infrastructure_failure = true;
-                        outcome.failures.push(resource_failure_of(&ledger_error));
+                        outcome
+                            .failures
+                            .push(resource_failure_of(Some(plan.plan_id), &ledger_error));
                         continue;
                     }
                 };
@@ -985,7 +1108,9 @@ fn resource_cycle(
                     Ok(_) => {}
                     Err(ledger_error) => {
                         outcome.infrastructure_failure = true;
-                        outcome.failures.push(resource_failure_of(&ledger_error));
+                        outcome
+                            .failures
+                            .push(resource_failure_of(Some(plan.plan_id), &ledger_error));
                     }
                 }
             }
@@ -1000,7 +1125,7 @@ fn resource_cycle(
         }
         Err(error) => {
             outcome.infrastructure_failure = true;
-            outcome.failures.push(resource_failure_of(&error));
+            outcome.failures.push(resource_failure_of(None, &error));
         }
     }
     outcome
@@ -1023,23 +1148,53 @@ fn resource_recovery_source(error: &TaskStoreError) -> ResourceRecoveryFailureSo
 /// enum has no resource-owner variant (its SABI consumers in
 /// nlos-system-control match it exhaustively); mirroring the semantic
 /// precedent, an owner-read failure is reported as `Coordinator` and the
-/// precise Task-vs-owner source lives in the durable resource ledger.
-fn resource_failure_of(error: &TaskStoreError) -> RecoveryWorkerFailure {
+/// precise Task-vs-owner source lives in the durable resource ledger. The
+/// domain-local plan id travels in the message because the typed field is
+/// artifact-shaped; failures without a plan are marked `scan-level`
+/// (registry 48 #14).
+fn resource_failure_of(
+    plan: Option<ResourceCommitPlanId>,
+    error: &TaskStoreError,
+) -> RecoveryWorkerFailure {
     let authority = match error {
         TaskStoreError::ResourceParticipantAuthority(_) => RecoveryFailureAuthority::Coordinator,
         _ => RecoveryFailureAuthority::Task,
     };
+    let message = match plan {
+        Some(plan) => format!("resource plan {}: {error}", hex16(plan.as_bytes())),
+        None => format!("scan-level: {error}"),
+    };
     RecoveryWorkerFailure {
         plan_id: None,
         authority,
-        message: error.to_string(),
+        message,
     }
+}
+
+/// Lowercase hex rendering of one 16-byte plan id for failure messages.
+fn hex16(bytes: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(32), |mut output, byte| {
+            let _ = write!(output, "{byte:02x}");
+            output
+        })
+}
+
+/// Cooperative stop check shared between `stop()` and the domain cycles.
+fn stop_requested(stop_flag: &AtomicBool) -> bool {
+    stop_flag.load(Ordering::Acquire)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Health-safe failure for the artifact domain. Entries without plan
+/// identity (scan or summary storage failures) are marked `scan-level` in
+/// the message so the health surface can tell them apart from
+/// plan-attributed failures (registry 48 #14).
 fn failure_of(
     plan_id: Option<ArtifactCommitPlanId>,
     error: &CoordinatorError,
@@ -1047,15 +1202,35 @@ fn failure_of(
     let authority = match error {
         CoordinatorError::Task(_) => RecoveryFailureAuthority::Task,
         CoordinatorError::Artifact(_) => RecoveryFailureAuthority::Artifact,
-        CoordinatorError::InvalidTimestamp | CoordinatorError::Semantic(_) => {
-            RecoveryFailureAuthority::Coordinator
-        }
+        CoordinatorError::InvalidTimestamp
+        | CoordinatorError::IterationLimitExceeded { .. }
+        | CoordinatorError::Semantic(_) => RecoveryFailureAuthority::Coordinator,
     };
+    let message = error.to_string();
     RecoveryWorkerFailure {
         plan_id,
         authority,
-        message: error.to_string(),
+        message: if plan_id.is_some() {
+            message
+        } else {
+            format!("scan-level: {message}")
+        },
     }
+}
+
+/// Health-safe failure for the semantic domain. The typed `plan_id` field
+/// cannot carry a `SemanticCommitPlanId` (the SABI surface types it as the
+/// artifact plan id), so the domain-local plan identity travels in the
+/// message; failures without a plan stay `scan-level` (registry 48 #14).
+fn semantic_failure_of(
+    plan: Option<SemanticCommitPlanId>,
+    error: &CoordinatorError,
+) -> RecoveryWorkerFailure {
+    let mut failure = failure_of(None, error);
+    if let Some(plan) = plan {
+        failure.message = format!("semantic plan {}: {error}", hex16(plan.as_bytes()));
+    }
+    failure
 }
 
 fn retry_delay(config: RecoveryWorkerConfig, consecutive_failures: usize) -> Duration {
@@ -1080,4 +1255,176 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observed_half(infrastructure_failure: bool) -> DomainCycleOutcome {
+        DomainCycleOutcome {
+            inspected: 1,
+            finalized: 0,
+            failures: Vec::new(),
+            retry_delay: None,
+            infrastructure_failure,
+            observed: true,
+            durable_retrying: 0,
+            durable_escalated: 0,
+            durable_unacknowledged_escalated: 0,
+            durable_resolved: 0,
+        }
+    }
+
+    fn test_config(threshold: usize) -> RecoveryWorkerConfig {
+        RecoveryWorkerConfig {
+            scan_limit: 4,
+            poll_interval: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+            failure_threshold: threshold,
+        }
+    }
+
+    /// Registry 48 #12 regression: a cycle whose clock read failed feeds
+    /// the semantic and resource halves the quiescent no-data outcome.
+    /// Alternating clock failures with semantic infrastructure failures
+    /// must still reach the threshold and trip the sticky fault bit — the
+    /// pre-fix code reset the counter on every clock failure, postponing
+    /// the bit forever.
+    #[test]
+    fn alternating_clock_and_semantic_infra_failures_still_trip_fault_bit() {
+        let health = Mutex::new(RecoveryWorkerHealth::default());
+        let config = test_config(3);
+        for cycle in 0..3 {
+            // Clock-failure cycle: the worker-level infrastructure failure
+            // lands on the artifact budget, semantic/resource are no-data.
+            account_cycle(
+                config,
+                &health,
+                DomainCycleOutcome::worker_infrastructure_failure("clock unreadable".to_string()),
+                DomainCycleOutcome::empty(),
+                DomainCycleOutcome::empty(),
+            )
+            .expect("clock-failure cycle keeps the thread alive");
+            let snapshot = lock(&health);
+            // The interleaved clean artifact half resets the artifact
+            // counter, so each clock failure counts from zero again: the
+            // clock failure is still visible as exactly one increment.
+            assert_eq!(snapshot.consecutive_failed_cycles, 1);
+            // No data: the semantic counter keeps whatever the previous
+            // infra cycle left; nothing is reset.
+            assert_eq!(snapshot.semantic_consecutive_failed_cycles, cycle);
+            assert!(!snapshot.semantic_domain_faulted);
+            assert_eq!(snapshot.resource_consecutive_failed_cycles, 0);
+            drop(snapshot);
+
+            // Semantic infrastructure-failure cycle.
+            account_cycle(
+                config,
+                &health,
+                observed_half(false),
+                observed_half(true),
+                DomainCycleOutcome::empty(),
+            )
+            .expect("semantic infra cycle keeps the thread alive");
+            let snapshot = lock(&health);
+            assert_eq!(snapshot.semantic_consecutive_failed_cycles, cycle + 1);
+            // The sticky bit trips exactly when the interleaved failures
+            // reach the threshold (third iteration here).
+            assert_eq!(snapshot.semantic_domain_faulted, cycle + 1 >= 3);
+            // A clean artifact half resets the artifact counter.
+            assert_eq!(snapshot.consecutive_failed_cycles, 0);
+            drop(snapshot);
+        }
+        // The third semantic infrastructure failure reached the threshold
+        // despite the interleaved clock failures: the sticky bit is set and
+        // the counter stays at the threshold (W26-002 pinning).
+        let snapshot = lock(&health);
+        assert!(snapshot.semantic_domain_faulted);
+        assert_eq!(snapshot.semantic_consecutive_failed_cycles, 3);
+    }
+
+    /// A skipped (already faulted) or authority-less half is the same
+    /// no-data sentinel: neither increments nor resets.
+    #[test]
+    fn isolated_domain_counter_rules_stay_pinned() {
+        let cases = [
+            (
+                DomainFailureObservation::Clean,
+                5_usize,
+                false,
+                3_usize,
+                (0_usize, false),
+            ),
+            (DomainFailureObservation::NoData, 2, false, 3, (2, false)),
+            (DomainFailureObservation::NoData, 3, true, 3, (3, true)),
+            (
+                DomainFailureObservation::InfrastructureFailed,
+                2,
+                false,
+                3,
+                (3, true),
+            ),
+            (
+                DomainFailureObservation::InfrastructureFailed,
+                1,
+                false,
+                3,
+                (2, false),
+            ),
+        ];
+        for (observation, consecutive, faulted, threshold, expected) in cases {
+            assert_eq!(
+                account_isolated_domain_failures(observation, consecutive, faulted, threshold),
+                expected
+            );
+        }
+    }
+
+    /// Registry 48 #14: semantic and resource failures carry their
+    /// domain-local plan identity in the message; failures that cannot be
+    /// attributed to a plan are marked `scan-level`.
+    #[test]
+    fn failure_messages_carry_domain_plan_identity_or_scan_level_marker() {
+        let error = CoordinatorError::InvalidTimestamp;
+        let artifact = failure_of(Some(ArtifactCommitPlanId::from_bytes([0x07; 16])), &error);
+        assert_eq!(
+            artifact.message,
+            "coordinator timestamp must be non-negative"
+        );
+        assert!(failure_of(None, &error).message.starts_with("scan-level: "));
+
+        let semantic =
+            semantic_failure_of(Some(SemanticCommitPlanId::from_bytes([0x09; 16])), &error);
+        assert_eq!(semantic.plan_id, None);
+        assert_eq!(
+            semantic.message,
+            format!(
+                "semantic plan {}: coordinator timestamp must be non-negative",
+                "09".repeat(16)
+            )
+        );
+        assert!(
+            semantic_failure_of(None, &error)
+                .message
+                .starts_with("scan-level: ")
+        );
+
+        let resource_error = TaskStoreError::CorruptRecord("broken");
+        let resource = resource_failure_of(
+            Some(ResourceCommitPlanId::from_bytes([0x03; 16])),
+            &resource_error,
+        );
+        assert_eq!(resource.plan_id, None);
+        assert!(
+            resource
+                .message
+                .starts_with(&format!("resource plan {}:", "03".repeat(16)))
+        );
+        assert!(
+            resource_failure_of(None, &resource_error)
+                .message
+                .starts_with("scan-level: ")
+        );
+    }
 }

@@ -13,9 +13,10 @@
 //!
 //! - spawn / kill are real on Unix and Windows — kill reuses
 //!   [`PosixPlatformKillAdapter`] / [`WindowsPlatformKillAdapter`] over a
-//!   one-entry map taken from the generation-fenced registry entry (not a
-//!   later `pid_map()` snapshot, whose `ProcessId → os_pid` shape drops the
-//!   generation), so the supervisor signal path and the
+//!   one-entry map keyed on the generation-fenced registry entry's full
+//!   `(process_id, generation)` (not a later `pid_map()` snapshot, whose
+//!   `ProcessId → os_pid` shape drops the generation), so the supervisor
+//!   signal path and the
 //!   [`crate::ProcessAuthority::request_platform_kill`] durable path share
 //!   one adapter implementation per host;
 //! - suspend / resume are real on Unix (`SIGSTOP` / `SIGCONT`); Windows has
@@ -30,6 +31,14 @@
 //! integration stays with
 //! [`crate::ProcessAuthority::request_platform_kill`], whose adapter can be
 //! fed by [`SupervisorPidRegistry::pid_map`].
+//!
+//! The discovery face (W47-L1, the `C-APP-CONTROL` #11 pid-discovery half)
+//! stays pure-read on top of the same registry:
+//! [`crate::ProcessSupervisor::scan_pids`] classifies the authority's
+//! non-terminal bindings as fresh / stale / missing against the recorded
+//! pids plus an injected liveness-and-resolution hook, and the explicit
+//! opt-in [`crate::ProcessSupervisor::adopt_fresh_findings`] feeds the
+//! fresh rows back through the unchanged registry gates.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -132,6 +141,10 @@ pub enum SupervisorError {
     UnsupportedOnPlatform { operation: &'static str },
     /// A Unix signal syscall failed for the registered OS pid.
     Signal(&'static str),
+    /// The pid liveness probe could not classify an OS pid (host probe
+    /// syscall or subprocess failure); the discovery scan fails closed
+    /// with zero side effect and produces no report.
+    LivenessProbe(&'static str),
 }
 
 impl fmt::Display for SupervisorError {
@@ -152,6 +165,9 @@ impl fmt::Display for SupervisorError {
                 "supervisor {operation} is unsupported on this host platform"
             ),
             Self::Signal(reason) => write!(formatter, "supervisor signal failure: {reason}"),
+            Self::LivenessProbe(reason) => {
+                write!(formatter, "supervisor pid liveness probe failure: {reason}")
+            }
         }
     }
 }
@@ -162,7 +178,7 @@ impl Error for SupervisorError {
             Self::Registry(error) | Self::SpawnRefused { cause: error, .. } => Some(error),
             Self::Spawn(error) => Some(error),
             Self::PlatformKill(error) => Some(error),
-            Self::UnsupportedOnPlatform { .. } | Self::Signal(_) => None,
+            Self::UnsupportedOnPlatform { .. } | Self::Signal(_) | Self::LivenessProbe(_) => None,
         }
     }
 }
@@ -409,12 +425,15 @@ impl ProcessSupervisor {
     /// Kills the host child registered for
     /// `(process_id, expected_process_generation)` through the host's real
     /// platform kill adapter (SIGTERM on Unix, `taskkill /F /T` on Windows),
-    /// built from a one-entry map of the fenced entry's `os_pid` — the same
-    /// adapter family the durable
+    /// built from a one-entry map keyed on the fenced entry's full
+    /// `(process_id, generation)` fence — the same adapter family the
+    /// durable
     /// [`crate::ProcessAuthority::request_platform_kill`] path accepts. A
     /// later `pid_map()` snapshot is not consulted: that map is
-    /// `ProcessId → os_pid` only, so a `Supersede` between resolve and
-    /// signal would otherwise deliver the G2 child's pid to a G1 kill.
+    /// generation-blind `ProcessId → os_pid`, so a `Supersede` between
+    /// resolve and signal would otherwise deliver the G2 child's pid to a
+    /// G1 kill; the generation-keyed one-entry map keeps the signal bound
+    /// to the generation the fence resolved.
     ///
     /// # Errors
     ///
@@ -462,18 +481,21 @@ impl ProcessSupervisor {
 
 #[cfg(any(unix, windows))]
 impl HostKillAdapter {
-    /// Builds the host adapter from the already-fenced registry entry, not
-    /// from a later `pid_map()` snapshot (generation-blind `ProcessId →
-    /// os_pid`). Same adapter types; no second pid ledger.
+    /// Builds the host adapter from the already-fenced registry entry. The
+    /// one-entry map is keyed on the full `(process_id, generation)` fence
+    /// (W59-2 / evaluation F7), so the adapter resolves the pid through the
+    /// same generation the fence resolved — no second pid ledger, and no
+    /// generation-blind `ProcessId → os_pid` fallback that a later
+    /// `pid_map()` snapshot would reintroduce.
     fn from_fenced_entry(entry: &crate::supervisor_pid::SupervisorPidEntry) -> Self {
-        let map = HashMap::from([(entry.process_id, entry.os_pid)]);
+        let map = HashMap::from([((entry.process_id, entry.process_generation), entry.os_pid)]);
         #[cfg(unix)]
         {
-            Self::Posix(PosixPlatformKillAdapter::new(map))
+            Self::Posix(PosixPlatformKillAdapter::with_generation_pid_map(map))
         }
         #[cfg(windows)]
         {
-            Self::Windows(WindowsPlatformKillAdapter::new(map))
+            Self::Windows(WindowsPlatformKillAdapter::with_generation_pid_map(map))
         }
     }
 }

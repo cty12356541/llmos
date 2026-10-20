@@ -47,7 +47,7 @@ fn missing_blob_is_reported_and_get_fails_typed_with_hint() {
     assert_eq!(report.missing_blobs.len(), 1);
     assert_eq!(report.missing_blobs[0].digest, digest);
     assert_eq!(report.missing_blobs[0].revision, 1);
-    assert!(report.orphan_blobs.is_empty());
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
     // recover reconciles but never fabricates bytes.
     assert!(matches!(
         store.get_revision(artifact_id(0x20), 1, READ_NOW_MS),
@@ -119,7 +119,7 @@ fn orphan_tmp_files_are_cleaned_and_orphan_blobs_only_listed() {
         orphan_path.is_file(),
         "orphan blobs are listed for GC, never deleted in this slice"
     );
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
 
     // Recovery is idempotent: a second run on the reconciled state only
     // re-reports the deliberately-retained orphan blob.
@@ -175,8 +175,8 @@ fn cache_eviction_never_touches_artifact_blobs() {
         shared
     );
     let report = store.recover().expect("recover");
-    assert!(report.missing_blobs.is_empty());
-    assert!(report.orphan_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
 
     // Evicting an unknown key is a no-op.
     assert!(
@@ -213,8 +213,8 @@ fn cache_blob_loss_degrades_to_miss_and_recover_drops_row() {
     let report = store.recover().expect("recover");
     assert_eq!(report.cache_rows_dropped, 1);
     assert_eq!(report.orphan_cache_blobs, vec![orphan]);
-    assert!(report.missing_blobs.is_empty());
-    assert!(report.orphan_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
 
     // After the row drop, the key behaves as a plain miss.
     assert_eq!(store.get_cache_blob("emb/doc/9").expect("miss"), None);

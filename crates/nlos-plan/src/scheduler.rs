@@ -34,11 +34,13 @@
 //! terminal states released their seats). Each admission rejection
 //! shrinks the window by one seat (floor 1, so sustained pressure keeps
 //! a durable one-probe-per-pass rejection trail instead of going
-//! silent); approvals never grow it — the only growth path is the
-//! controller lever [`MaterializationScheduler::set_window`]. Pending
-//! rounds always drive to resolution regardless of budget: they already
-//! hold seats, and resolving them is crash convergence, not a new
-//! materialization.
+//! silent) — but only while the window is running: a controller-set `0`
+//! is a full stop that outlives any rejection trail, so the shrink
+//! path never revives it. Approvals never grow the window — the only
+//! growth path is the controller lever
+//! [`MaterializationScheduler::set_window`]. Pending rounds always
+//! drive to resolution regardless of budget: they already hold seats,
+//! and resolving them is crash convergence, not a new materialization.
 //!
 //! **Inspect surface**: recent decisions (selected/skipped with typed
 //! reasons, approved/rejected, consult failures, typed gate refusals)
@@ -240,7 +242,9 @@ pub const DEFAULT_DECISION_LOG_CAPACITY: usize = 1_024;
 
 /// The shrink floor: sustained rejections keep one selection per pass
 /// so pressure stays observable as a durable probe instead of a silent
-/// full stop (full stop is a controller decision, `set_window(0)`).
+/// full stop (full stop is a controller decision, `set_window(0)` —
+/// and a controller-set zero survives the rejection trail; the shrink
+/// path applies the floor only to a running window).
 const WINDOW_SHRINK_FLOOR: u64 = 1;
 
 fn state_can_await_materialization(state: PlanNodeState) -> bool {
@@ -308,7 +312,9 @@ impl MaterializationScheduler {
 
     /// The controller lever: sets the window. This is the only growth
     /// path — passes never grow it — and may fully stop selection
-    /// (`0`); pending gate rounds still drive to resolution.
+    /// (`0`); a full stop survives the rejection trail (the shrink
+    /// path never revives a controller-set zero), and pending gate
+    /// rounds still drive to resolution.
     pub fn set_window(&mut self, window: u64) {
         self.window = window;
     }
@@ -632,7 +638,15 @@ impl MaterializationScheduler {
                         reason: reason.clone(),
                     },
                 );
-                self.window = self.window.saturating_sub(1).max(WINDOW_SHRINK_FLOOR);
+                // A rejection shrinks a *running* window by one seat,
+                // floored at 1 (the durable probe). A controller-set
+                // `0` is a full stop: reviving it to the floor would
+                // override the controller's stop decision —
+                // `set_window` is the only growth path, in either
+                // direction.
+                if self.window > 0 {
+                    self.window = self.window.saturating_sub(1).max(WINDOW_SHRINK_FLOOR);
+                }
                 summary.rejected += 1;
             }
             Err(PlanStoreError::Sqlite(error)) => return Err(PlanStoreError::Sqlite(error)),

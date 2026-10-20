@@ -134,9 +134,10 @@ fn display_names_every_failure_class() {
             operation: "suspend",
         },
         SupervisorError::Signal("unix signal failed for registered os pid"),
+        SupervisorError::LivenessProbe("unix null-signal existence check failed for os pid"),
     ];
     for case in &cases {
-        assert!(!case.to_string().is_empty());
+        assert_ne!(case.to_string(), "");
     }
 }
 

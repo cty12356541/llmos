@@ -544,11 +544,11 @@ fn foreign_attempt_identity_cannot_hijack_holder_permit_context() {
         .expect("list holder binding");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].registration_id, holder_binding.registration_id);
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x71))
-            .expect("list foreign binding")
-            .is_empty()
+            .expect("list foreign binding"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
     let slot = authority
         .inspect_effect_slot(permit.permit_id, 0)

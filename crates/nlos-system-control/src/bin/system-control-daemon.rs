@@ -1,10 +1,10 @@
 //! `system-control-daemon` — resident `system_control` daemon over one
-//! state root (`daemon` feature, Unix only).
+//! state root (`daemon` feature, cross-platform).
 //!
 //! The binary is a thin shell around [`nlos_system_control::daemon`]: it
 //! parses the options, assembles every real authority under `--root`, starts
 //! the `TaskAuthorityCommitRecoveryWorker`, binds the two endpoints, and
-//! serves them until SIGINT/SIGTERM. The desktop GUI connects to the
+//! serves them until the shutdown signal. The desktop GUI connects to the
 //! authenticated endpoint (ADR-0011 handshake); the `system-control-cli`
 //! binary connects to the plain endpoint. See the library module
 //! documentation for the exact assembly, fail-closed executor posture, and
@@ -13,63 +13,82 @@
 //! # Usage
 //!
 //! ```text
-//! system-control-daemon --root <DIR> [--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>]
+//! system-control-daemon --root <DIR> [--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>] [--operator-key-file <PATH>]
 //! ```
 //!
 //! - `--root` — state root; every authority is opened under it and both
-//!   socket paths default into it (`system-control-auth.sock` /
-//!   `system-control-plain.sock`).
+//!   endpoint paths default into it: `system-control-auth.sock` /
+//!   `system-control-plain.sock` on Unix (owner-only sockets under `<root>`),
+//!   `\\.\pipe\llmos-system-control-{auth|plain}-<root-digest>` named pipes
+//!   on Windows (see the library module for the derivation rules).
+//! - `--auth-socket` / `--plain-socket` — explicit endpoint path override,
+//!   used verbatim in the host OS form (Unix socket path on Unix,
+//!   `\\.\pipe\...` pipe name on Windows).
 //! - `--identity-key-file` — optional 0600 file holding one trimmed line of
 //!   64 hex characters, the Ed25519 seed in the desktop client's key-file
 //!   format. When given, the daemon bootstraps (idempotently, key-derived)
 //!   the matching principal in `<root>/identity` so a client holding the
 //!   same seed can authenticate. Without it the daemon serves whatever
 //!   principals already exist in the identity authority.
+//! - `--operator-key-file` — optional ADR-0022 operator root-issuance key
+//!   file (same 64-hex Ed25519 seed format; on Unix the file must carry
+//!   owner-only `0600` permission bits — anything wider fails closed at
+//!   startup with a typed error). When given, the daemon opens the
+//!   capability authority under `<root>/capability` and issues — or, on a
+//!   restart with the same key, idempotently replays — one root capability
+//!   binding the operator principal over the root namespace. Without it the
+//!   issuance step never runs and the capability face stays closed (the
+//!   fail-closed default).
 //!
 //! # Output and exit contract
 //!
 //! After both endpoints are bound the daemon prints one `READY` line with
-//! both socket paths (and the bootstrapped principal, if any) for script
-//! probing. SIGINT/SIGTERM stop the accept loops (an idle accept window is
-//! bounded by the transport's 5s timeout), stop the recovery worker, remove
-//! the socket files, print `STOPPED`, and exit 0. A startup failure prints
-//! one typed error line and exits 2.
+//! both endpoint paths, the bootstrapped principal (if any), and the
+//! operator root issuance receipt (if the step ran) for script probing. The
+//! shutdown signal (SIGINT/SIGTERM on Unix, Ctrl+C on Windows)
+//! stops the accept loops (an idle accept window is bounded by the
+//! transport's 5s timeout), stops the recovery worker and the
+//! materialization driver, removes the socket
+//! files on Unix (Windows pipe names leave no filesystem artifact), prints
+//! `STOPPED`, and exits 0. A startup failure prints one typed error line
+//! and exits 2.
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 use std::path::PathBuf;
 use std::process::ExitCode;
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 use std::sync::Arc;
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 use nlos_system_control::daemon::{
     DaemonOptions, assemble, serve_authenticated_endpoint, serve_plain_endpoint,
 };
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 const USAGE: &str = "usage: system-control-daemon --root <DIR> \
-[--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>]";
+[--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>] [--operator-key-file <PATH>]";
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 enum ParseFailure {
     Help,
     Error(&'static str),
 }
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 struct ParsedArguments {
     options: DaemonOptions,
 }
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(feature = "daemon")]
 fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
     let mut arguments = std::env::args().skip(1);
     let mut root: Option<PathBuf> = None;
     let mut auth_socket: Option<PathBuf> = None;
     let mut plain_socket: Option<PathBuf> = None;
     let mut identity_key_file: Option<PathBuf> = None;
+    let mut operator_key_file: Option<PathBuf> = None;
     while let Some(flag) = arguments.next() {
         let mut value = || {
             arguments
@@ -82,6 +101,7 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             "--auth-socket" => auth_socket = Some(PathBuf::from(value()?)),
             "--plain-socket" => plain_socket = Some(PathBuf::from(value()?)),
             "--identity-key-file" => identity_key_file = Some(PathBuf::from(value()?)),
+            "--operator-key-file" => operator_key_file = Some(PathBuf::from(value()?)),
             _ => return Err(ParseFailure::Error("unknown flag")),
         }
     }
@@ -94,12 +114,18 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             auth_socket,
             plain_socket,
             identity_key_file,
+            operator_key_file,
+            operator_purpose_digest: None,
             worker_config: nlos_commit_coordinator::RecoveryWorkerConfig::default(),
+            driver_config:
+                nlos_system_control::materialization_driver::MaterializationDriverConfig::default(),
         },
     })
 }
 
-#[cfg(all(unix, feature = "daemon"))]
+/// Waits for SIGINT/SIGTERM on Unix, falling back to Ctrl-C only when a
+/// signal handler cannot be installed.
+#[cfg(unix)]
 async fn wait_for_shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -121,7 +147,15 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-#[cfg(all(unix, feature = "daemon"))]
+/// Waits for Ctrl+C (the Windows console control signal). There is no
+/// SIGTERM analogue to deliver to a console-less service process, so the
+/// console break is the one shutdown source.
+#[cfg(windows)]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(feature = "daemon")]
 #[tokio::main]
 async fn main() -> ExitCode {
     let parsed = match parsed_arguments() {
@@ -144,7 +178,7 @@ async fn main() -> ExitCode {
         }
     };
     println!(
-        "READY service=system_control root={} auth_socket={} plain_socket={} principal={}",
+        "READY service=system_control root={} auth_socket={} plain_socket={} principal={} operator_root_receipt={}",
         daemon.root.display(),
         daemon.auth_socket_path.display(),
         daemon.plain_socket_path.display(),
@@ -152,6 +186,10 @@ async fn main() -> ExitCode {
             .bootstrapped_principal_hex
             .as_deref()
             .unwrap_or("none"),
+        daemon.operator_root.as_ref().map_or_else(
+            || "none".to_owned(),
+            |issuance| { hex(issuance.receipt.receipt_id.as_bytes()) }
+        ),
     );
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -171,17 +209,35 @@ async fn main() -> ExitCode {
     let _ = authenticated.await;
     let _ = plain.await;
     daemon.stop_worker();
-    let _ = std::fs::remove_file(&daemon.auth_socket_path);
-    let _ = std::fs::remove_file(&daemon.plain_socket_path);
+    daemon.stop_materialization();
+    // Unix closes its filesystem lifecycle: remove the socket files the
+    // binds created. Windows named pipes leave no filesystem artifact —
+    // the kernel reclaims the pipe name when the last handle closes.
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file(&daemon.auth_socket_path);
+        let _ = std::fs::remove_file(&daemon.plain_socket_path);
+    }
     println!("STOPPED service=system_control");
     ExitCode::SUCCESS
 }
 
-#[cfg(not(all(unix, feature = "daemon")))]
+#[cfg(feature = "daemon")]
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+#[cfg(not(feature = "daemon"))]
 fn main() -> ExitCode {
     eprintln!(
-        "system-control-daemon: the resident daemon ships Unix socket endpoints only; \
-         build it with --features daemon on a Unix host"
+        "system-control-daemon: build it with --features daemon to get the \
+         resident daemon endpoints"
     );
     ExitCode::from(2)
 }

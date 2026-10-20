@@ -37,7 +37,8 @@
 //! Python clients constructing the generated payload and verifying durable
 //! replay; it is test infrastructure, not a production daemon.
 //!
-//! A separate opt-in feature `authenticated-ipc` (Unix only) exposes
+//! A separate opt-in feature `authenticated-ipc` (Unix sockets and Windows
+//! named pipes) exposes
 //! [`crate::authenticated::AuthenticatedTakeoverControl`], the additive
 //! ADR-0011 authenticated serving variant: it stacks a transport-layer
 //! principal handshake (verified through the identity authority at the
@@ -67,7 +68,7 @@ use nlos_task::{
 };
 use nlos_types::{ControlDomainId, Generation, KeyId, PrincipalId, ReceiptId, TaskParticipantId};
 
-#[cfg(all(unix, feature = "authenticated-ipc"))]
+#[cfg(feature = "authenticated-ipc")]
 pub mod authenticated;
 
 pub const TAKEOVER_CONTROL_SERVICE: &str = "takeover_control";

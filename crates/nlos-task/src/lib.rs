@@ -231,8 +231,9 @@ pub use receipt::TaskCommitReceipt;
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
     AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
-    AuthorityLeaseReconcileRequest, FinalizeRequestV3, FinalizeSpec, FinalizeSpecDecision,
-    ReconcileReplay, ReconcileRequest, effect_history_root_of,
+    AuthorityLeaseLateOperationOutcomeRequest, AuthorityLeaseReconcileRequest, FinalizeRequestV3,
+    FinalizeSpec, FinalizeSpecDecision, LateOperationOutcomeDecision, LateOperationOutcomeRequest,
+    ReconcileReplay, ReconcileRequest, effect_history_root_of, late_operation_closure_digest,
 };
 pub use recovery::{
     ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,

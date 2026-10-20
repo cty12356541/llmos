@@ -1,11 +1,14 @@
-//! Storage-layer edge-declaration guard tests for schema v8: the
-//! corrected `plan_revision_edges_declared_dependency` predicate (the
-//! v2 body probed `NEW.dependent_node_id`, so an edge whose dependency
-//! endpoint was not declared in the same revision survived a raw SQL
-//! insert), the nodes-before-edges apply insert order the corrected
-//! predicate requires, and the v7→v8 trigger-rebuild migration paths
-//! (defective body rebuilt, corrected body idempotently restamped,
-//! durable data untouched).
+//! Storage-layer declaration-guard and gate-binding tests for schema
+//! v8/v9: the corrected `plan_revision_edges_declared_dependency`
+//! predicate (the v2 body probed `NEW.dependent_node_id`, so an edge
+//! whose dependency endpoint was not declared in the same revision
+//! survived a raw SQL insert), the nodes-before-edges apply insert
+//! order the corrected predicate requires, the v7→v8 trigger-rebuild
+//! migration paths (defective body rebuilt, corrected body idempotently
+//! restamped, durable data untouched), and the v8→v9 rebuild of the
+//! materializing gate trigger with voucher binding (unbound body
+//! rebuilt, bound body idempotently restamped, partial state fails
+//! closed).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -158,12 +161,12 @@ END;";
 /// revision — the storage-layer guard the defective v2 body left at
 /// zero enforcement. An edge with both endpoints declared still lands.
 #[test]
-fn fresh_v8_aborts_edges_with_undeclared_endpoints() {
+fn fresh_schema_aborts_edges_with_undeclared_endpoints() {
     let root = Root::new("ddl-abort");
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
-    assert_eq!(user_version(&db_path), 8);
+    assert_eq!(user_version(&db_path), 9);
     let plan_id = authority
         .apply_plan_revision_ungated(revision_request(
             None,
@@ -231,8 +234,8 @@ fn apply_supports_dependency_declared_after_dependent() {
 }
 
 /// A legacy v7 database (its dependency trigger carries the defective
-/// body) upgrades to v8 on open: both edge triggers are rebuilt with
-/// the corrected predicate, `user_version` reaches 8, every durable
+/// body) upgrades on open through v8 (edge triggers rebuilt) to v9
+/// (gate trigger bound): `user_version` reaches 9, every durable
 /// row survives untouched (the probe edge the defective v7 body let
 /// through included — edges are durable), the resolver still resolves
 /// the current head, and the corrected guard now aborts the raw
@@ -296,8 +299,8 @@ fn legacy_v7_defective_triggers_rebuilt_losslessly() {
         scalar(&db_path, "SELECT COUNT(*) FROM plan_revision_edges"),
     );
 
-    let upgraded = SqlitePlanAuthority::open(&db_path).expect("open upgrades v7 to v8");
-    assert_eq!(user_version(&db_path), 8);
+    let upgraded = SqlitePlanAuthority::open(&db_path).expect("open upgrades v7 to v9");
+    assert_eq!(user_version(&db_path), 9);
     assert_eq!(
         (
             scalar(&db_path, "SELECT COUNT(*) FROM plans"),
@@ -325,8 +328,8 @@ fn legacy_v7_defective_triggers_rebuilt_losslessly() {
 }
 
 /// A database restamped to v7 whose triggers already carry the
-/// corrected bodies takes the census fast path: no rebuild, version
-/// restored to 8, data intact (the house idempotent re-migration
+/// corrected bodies takes every census fast path: no rebuild, version
+/// restored to 9, data intact (the house idempotent re-migration
 /// discipline).
 #[test]
 fn v8_restamp_with_corrected_bodies_is_idempotent() {
@@ -351,6 +354,151 @@ fn v8_restamp_with_corrected_bodies_is_idempotent() {
     drop(raw);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("idempotent restamp");
-    assert_eq!(user_version(&db_path), 8);
+    assert_eq!(user_version(&db_path), 9);
     resolve_current(&reopened, plan_id, 0x51);
+}
+
+/// The exact v4 gate trigger as every pre-v9 build shipped it: the
+/// guard probed only "some APPROVED request row exists", without
+/// binding the row to the voucher entering `MATERIALIZING` — the
+/// permanent-re-entry-pass defect v9 rebuilds.
+const V8_UNBOUND_GATE_TRIGGER: &str =
+    "DROP TRIGGER IF EXISTS plan_node_transitions_materializing_gated;
+CREATE TRIGGER plan_node_transitions_materializing_gated
+BEFORE INSERT ON plan_node_transitions
+WHEN NEW.to_state = 6 AND NOT EXISTS (
+    SELECT 1 FROM plan_materialization_requests
+    WHERE plan_id = NEW.plan_id
+      AND task_node_id = NEW.task_node_id
+      AND status = 2
+)
+BEGIN
+    SELECT RAISE(ABORT, 'MATERIALIZING entry requires a gate-approved materialization request');
+END;";
+
+fn gate_trigger_binds_voucher(db_path: &std::path::Path) -> bool {
+    let raw = Connection::open(db_path).expect("raw");
+    let body: String = raw
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='trigger' AND name = 'plan_node_transitions_materializing_gated'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("gate trigger exists");
+    body.contains("approved_voucher_id = NEW.voucher_id")
+}
+
+/// A legacy v8 database (its gate trigger carries the unbound v4 body)
+/// upgrades to v9 on open: the gate trigger is rebuilt with the voucher
+/// binding, `user_version` reaches 9, every durable row survives
+/// untouched, and the v8 edge-declaration guard stays intact through
+/// the v9 migration (the raw undeclared-dependency insert still
+/// aborts).
+#[test]
+fn legacy_v8_unbound_gate_rebuilt_losslessly() {
+    let root = Root::new("v8-gate-rebuild");
+    let db_path = root.0.join("plan.sqlite3");
+    std::fs::create_dir_all(&root.0).expect("create db directory");
+    let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a])],
+            0x01,
+        ))
+        .expect("revision 1")
+        .receipt()
+        .plan_id;
+    let id_a = node_id_of(&authority, plan_id, [0x0a; 16]);
+    drop(authority);
+
+    // Regress the database to v8 exactly as a pre-v9 build left it.
+    let raw = Connection::open(&db_path).expect("raw writer");
+    raw.execute_batch(V8_UNBOUND_GATE_TRIGGER)
+        .expect("install v8 unbound gate");
+    raw.pragma_update(None, "user_version", 8)
+        .expect("stamp v8");
+    drop(raw);
+    assert!(!gate_trigger_binds_voucher(&db_path));
+
+    let upgraded = SqlitePlanAuthority::open(&db_path).expect("open upgrades v8 to v9");
+    drop(upgraded);
+    assert_eq!(user_version(&db_path), 9);
+    assert!(
+        gate_trigger_binds_voucher(&db_path),
+        "the v9 rebuild binds the approved row to the entering voucher"
+    );
+
+    // The v8 edge guard survived the v9 migration untouched: the raw
+    // undeclared-dependency insert still aborts.
+    let undeclared = [0xeeu8; 16];
+    let error = insert_edge(&db_path, plan_id, 1, id_a.as_bytes(), &undeclared)
+        .expect_err("dependency-endpoint guard survives v9");
+    assert!(
+        error
+            .to_string()
+            .contains("dependency edge dependency is not declared in this revision"),
+        "unexpected error: {error}"
+    );
+
+    // The upgraded authority still resolves the current head.
+    let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen upgraded");
+    resolve_current(&reopened, plan_id, 0x51);
+}
+
+/// A database restamped to v8 whose gate trigger already carries the
+/// voucher binding takes the v9 census fast path: no rebuild, version
+/// restored to 9, data intact.
+#[test]
+fn v9_restamp_with_bound_gate_is_idempotent() {
+    let root = Root::new("v9-restamp");
+    let db_path = root.0.join("plan.sqlite3");
+    std::fs::create_dir_all(&root.0).expect("create db directory");
+    let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a])],
+            0x01,
+        ))
+        .expect("revision 1")
+        .receipt()
+        .plan_id;
+    drop(authority);
+
+    let raw = Connection::open(&db_path).expect("raw writer");
+    raw.pragma_update(None, "user_version", 8)
+        .expect("stamp v8");
+    drop(raw);
+
+    let reopened = SqlitePlanAuthority::open(&db_path).expect("idempotent restamp");
+    assert_eq!(user_version(&db_path), 9);
+    resolve_current(&reopened, plan_id, 0x51);
+}
+
+/// A database at v8 whose gate trigger went missing (a torn migration)
+/// fails closed: the v9 census refuses to stamp or rebuild over a
+/// partial schema.
+#[test]
+fn v9_missing_gate_trigger_fails_closed() {
+    let root = Root::new("v9-partial");
+    let db_path = root.0.join("plan.sqlite3");
+    std::fs::create_dir_all(&root.0).expect("create db directory");
+    let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
+    drop(authority);
+
+    let raw = Connection::open(&db_path).expect("raw writer");
+    raw.execute_batch("DROP TRIGGER plan_node_transitions_materializing_gated;")
+        .expect("drop gate trigger");
+    raw.pragma_update(None, "user_version", 8)
+        .expect("stamp v8");
+    drop(raw);
+
+    assert!(matches!(
+        SqlitePlanAuthority::open(&db_path),
+        Err(nlos_plan::PlanStoreError::CorruptRecord(
+            "partial plan authority v9 schema"
+        ))
+    ));
 }

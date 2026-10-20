@@ -872,8 +872,8 @@ fn cancel_pattern_with_wrong_token_writes_nothing() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One test covers the replay matrix and the generation bump cycle.
-fn pattern_replays_return_current_row_and_bump_generation() {
+#[allow(clippy::too_many_lines)] // One test covers the replay matrix and the frozen create-key binding.
+fn pattern_replays_return_current_row_and_foreign_keys_conflict() {
     let harness = Harness::new("replay");
     let head = create_channel(&harness.channel, 1_024, 200);
     let _topic = create_topic(
@@ -908,15 +908,18 @@ fn pattern_replays_return_current_row_and_bump_generation() {
         Ok(PatternSubscribeDecision::Replayed(outcome))
             if outcome.pattern == first && outcome.report.attached.is_empty()
     ));
-    // An already-active (pattern, key) pair replays under any new key too.
+    // A foreign key naming the already-active (pattern, subscriber key)
+    // identity is a typed rebinding conflict (the W55 reconciliation of
+    // deep-audit finding #15: the create key is frozen identity, and the
+    // pre-W55 silent replay under any new key destroyed the original
+    // key's rebinding evidence).
     assert!(matches!(
         harness.topics.subscribe_pattern(SubscribePatternRequest {
             idempotency_key: key(62),
             subscribed_at_ms: 9_999,
             ..request.clone()
         }),
-        Ok(PatternSubscribeDecision::Replayed(outcome))
-            if outcome.pattern == first
+        Err(TopicAuthorityError::IdempotencyConflict)
     ));
 
     // Cancel, then the original key replays the *current* (cancelled) row.
@@ -940,31 +943,28 @@ fn pattern_replays_return_current_row_and_bump_generation() {
         Ok(PatternSubscribeDecision::Replayed(outcome))
             if outcome.pattern == cancelled_row && outcome.report.attached.is_empty()
     ));
-
-    // Re-subscribing re-activates with a bumped generation and fresh token;
-    // the previous generation's token fails closed on cancel.
-    let (second, _report) = subscribe_pattern_at(&harness.topics, b"gen*", 9, 7, 63, 3_600);
-    assert_eq!(second.pattern_id, first.pattern_id);
-    assert_eq!(second.pattern_generation, 2);
-    assert_ne!(second.consume_token, first.consume_token);
+    // A foreign key naming the cancelled identity conflicts as well: the
+    // (pattern, subscriber key) lifecycle stays bound to its first create
+    // key, so a cancelled pair stays cancelled for every later attempt.
     assert!(matches!(
-        harness.topics.cancel_pattern(
-            CancelPatternRequest {
-                pattern_id: first.pattern_id,
-                cancelled_at_ms: 3_700,
-            },
-            &first.consume_token,
-        ),
-        Err(TopicAuthorityError::PatternConsumptionTokenMismatch(_))
+        harness.topics.subscribe_pattern(SubscribePatternRequest {
+            pattern: b"gen*".to_vec(),
+            binding: binding(9),
+            subscriber_key: subscriber(7),
+            idempotency_key: key(63),
+            subscribed_at_ms: 3_600,
+        }),
+        Err(TopicAuthorityError::IdempotencyConflict)
     ));
-    let receipt = cancel_pattern_at(
-        &harness.topics,
-        first.pattern_id,
-        &second.consume_token,
-        3_800,
+    // Nothing was written by the rejected attempts: the durable row still
+    // carries the original generation, token and create-key binding.
+    assert_eq!(
+        harness
+            .topics
+            .inspect_pattern(first.pattern_id)
+            .expect("row unchanged"),
+        cancelled_row
     );
-    assert!(!receipt.pattern.active);
-    assert_eq!(receipt.pattern.pattern_generation, 2);
 }
 
 #[test]
@@ -1141,4 +1141,281 @@ fn schema_v6_migration_downgrade_and_fail_closed_paths() {
         TopicAuthority::open(root.path(), channel),
         Err(TopicAuthorityError::CorruptRecord(_))
     ));
+}
+
+/// The pattern create key is frozen replay evidence (the W55
+/// reconciliation of deep-audit finding #15): a foreign-key re-subscribe
+/// attempt can never overwrite it — active or cancelled — the original
+/// key's rebinding detection survives every lifecycle step, the v9
+/// identity trigger freezes the column against raw rewrites, and the v9
+/// publication indexes are present (deep-audit finding #22) with an
+/// idempotent reopen.
+#[test]
+fn pattern_create_key_is_frozen_replay_evidence() {
+    let root = Root::new("create-key");
+    let channel = Arc::new(ChannelAuthority::open(root.path()).expect("open channel authority"));
+    let topics =
+        TopicAuthority::open(root.path(), Arc::clone(&channel)).expect("open topic authority");
+    let head = create_channel(&channel, 256, 200);
+    let _topic = create_topic(&topics, head.channel_id, b"key.a", policy_for(8), 41);
+
+    let request = SubscribePatternRequest {
+        pattern: b"key*".to_vec(),
+        binding: binding(9),
+        subscriber_key: subscriber(6),
+        idempotency_key: key(71),
+        subscribed_at_ms: 4_000,
+    };
+    let (first, report) = match topics
+        .subscribe_pattern(request.clone())
+        .expect("subscribe pattern")
+    {
+        PatternSubscribeDecision::Subscribed(outcome) => (outcome.pattern, outcome.report),
+        PatternSubscribeDecision::Replayed(_) => panic!("fresh subscribe cannot replay"),
+    };
+    assert_eq!(report.attached.len(), 1);
+
+    // A foreign key naming the active identity conflicts before any write.
+    assert!(matches!(
+        topics.subscribe_pattern(SubscribePatternRequest {
+            idempotency_key: key(72),
+            ..request.clone()
+        }),
+        Err(TopicAuthorityError::IdempotencyConflict)
+    ));
+    // ...and after a cancel too, while the original key keeps replaying
+    // the *current* (cancelled) row: the evidence was never rewritten.
+    cancel_pattern_at(&topics, first.pattern_id, &first.consume_token, 4_100);
+    assert!(matches!(
+        topics.subscribe_pattern(SubscribePatternRequest {
+            idempotency_key: key(73),
+            ..request.clone()
+        }),
+        Err(TopicAuthorityError::IdempotencyConflict)
+    ));
+    assert!(matches!(
+        topics.subscribe_pattern(request.clone()),
+        Ok(PatternSubscribeDecision::Replayed(outcome)) if !outcome.pattern.active
+    ));
+    // The original key rebound to a different binding is the typed
+    // conflict — the pre-W55 key overwrite silently replayed this case.
+    assert!(matches!(
+        topics.subscribe_pattern(SubscribePatternRequest {
+            binding: binding(8),
+            ..request.clone()
+        }),
+        Err(TopicAuthorityError::IdempotencyConflict)
+    ));
+
+    // Storage layer: the stored create key is still the original one, the
+    // v9 trigger freezes it against raw rewrites, and both v9 publication
+    // indexes exist.
+    {
+        let raw = Connection::open(root.topic_db()).expect("open raw topic db");
+        let stored: Vec<u8> = raw
+            .query_row(
+                "SELECT create_idempotency_key FROM topic_patterns WHERE pattern_id=?1",
+                [first.pattern_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .expect("stored create key");
+        assert_eq!(stored, key(71).into_bytes().to_vec());
+        assert!(
+            raw.execute(
+                "UPDATE topic_patterns SET create_idempotency_key=?1 WHERE pattern_id=?2",
+                [
+                    key(72).as_bytes().as_slice(),
+                    first.pattern_id.as_bytes().as_slice()
+                ],
+            )
+            .is_err(),
+            "the create key is frozen by the v9 identity trigger"
+        );
+        let indexes: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+                    'topic_publications_topic_sequence',
+                    'topic_publications_topic_parent')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count v9 indexes");
+        assert_eq!(indexes, 2, "both v9 publication indexes are present");
+    }
+
+    // The reopen is idempotent: the v9 completed-state probe finds its
+    // objects and writes nothing, and the (cancelled) row replays
+    // byte-for-byte.
+    let cancelled_row = topics
+        .inspect_pattern(first.pattern_id)
+        .expect("cancelled row before reopen");
+    drop(topics);
+    drop(channel);
+    let channel = Arc::new(ChannelAuthority::open(root.path()).expect("reopen channel"));
+    let topics = TopicAuthority::open(root.path(), Arc::clone(&channel)).expect("reopen topics");
+    assert_eq!(
+        topics
+            .inspect_pattern(first.pattern_id)
+            .expect("pattern after reopen"),
+        cancelled_row
+    );
+}
+
+/// The v10 step (W58-2, the deep-audit #24 residual W57-C registered): the
+/// subscribe-time attach enumeration narrows its `topics` name scan through
+/// the stored-name index instead of enumerating every row.  The narrowing's
+/// memcmp edges are exercised end to end (exact equality, a plain prefix, a
+/// `0xFF`-heavy prefix whose successor bound carries, an all-`0xFF` prefix
+/// with no finite upper bound, the bare `*`), the storage layer carries the
+/// index with the watermark untouched (object-tracked like v6-v9), the
+/// query plans really go through the index, and the reopen is an
+/// idempotent no-op.
+#[test]
+#[allow(clippy::too_many_lines)] // One test covers the semantics, the storage layer and idempotence.
+fn schema_v10_name_index_narrows_the_attach_enumeration() {
+    let harness = Harness::new("v10-name-index");
+    let head = create_channel(&harness.channel, 4_096, 90);
+    // Names chosen to exercise the narrowing edges: two plain names under
+    // one prefix, a `0xFE 0xFF`-rooted name (the successor bound carries
+    // past the trailing `0xFF`), an all-`0xFF`-rooted name (inside the
+    // unbounded class) and a non-matching neighbour.
+    let plain_a = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"idx.a",
+        policy_for(8),
+        91,
+    );
+    let _plain_b = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"idx.b",
+        policy_for(8),
+        92,
+    );
+    let edge_a = create_topic(
+        &harness.topics,
+        head.channel_id,
+        &[0xFE, 0xFF, 0x01],
+        policy_for(8),
+        93,
+    );
+    let edge_b = create_topic(
+        &harness.topics,
+        head.channel_id,
+        &[0xFF, 0x00],
+        policy_for(8),
+        94,
+    );
+    let _other = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"other",
+        policy_for(8),
+        95,
+    );
+
+    // Exact pattern: an equality seek attaching only the byte-equal topic.
+    let (_exact, exact_report) = subscribe_pattern_at(&harness.topics, b"idx.a", 9, 10, 96, 4_000);
+    assert_eq!(exact_report.attached.len(), 1);
+    assert_eq!(
+        exact_report.attached[0].subscription.topic_id,
+        plain_a.topic_id
+    );
+
+    // Plain prefix: both plain topics, none of the edges.
+    let (_plain, plain_report) = subscribe_pattern_at(&harness.topics, b"idx.*", 9, 11, 97, 4_100);
+    assert_eq!(plain_report.attached.len(), 2);
+
+    // `0xFF`-heavy prefix `[0xFE, 0xFF]*`: the successor bound `[0xFF]`
+    // carries past the trailing `0xFF`, so exactly the one rooted name
+    // attaches (the all-`0xFF`-rooted name sorts at or after the bound).
+    let (_carry, carry_report) =
+        subscribe_pattern_at(&harness.topics, &[0xFE, 0xFF, b'*'], 9, 12, 98, 4_200);
+    assert_eq!(carry_report.attached.len(), 1);
+    assert_eq!(
+        carry_report.attached[0].subscription.topic_id,
+        edge_a.topic_id
+    );
+
+    // All-`0xFF` prefix `[0xFF]*`: no finite upper bound — the range runs
+    // to the end of the index and attaches the rooted name alone.
+    let (_unbounded, unbounded_report) =
+        subscribe_pattern_at(&harness.topics, &[0xFF, b'*'], 9, 13, 99, 4_300);
+    assert_eq!(unbounded_report.attached.len(), 1);
+    assert_eq!(
+        unbounded_report.attached[0].subscription.topic_id,
+        edge_b.topic_id
+    );
+
+    // The bare `*` matches every topic by definition.
+    let (_star, star_report) = subscribe_pattern_at(&harness.topics, b"*", 9, 14, 100, 4_400);
+    assert_eq!(star_report.attached.len(), 5);
+
+    // Storage layer: the index is present, the watermark stays 5 (v10 is
+    // object-tracked, not a watermark bump) and the narrowed scans really
+    // go through the index.
+    {
+        let raw = Connection::open(harness.root.topic_db()).expect("open raw topic db");
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 5, "v10 is object-tracked, the watermark stays 5");
+        let indexes: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='index' AND name='topics_topic_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count v10 index");
+        assert_eq!(indexes, 1, "the v10 name index is present");
+        let seek: String = raw
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT topic_id, topic_name FROM topics
+                  WHERE topic_name = ?1 ORDER BY topic_id",
+                rusqlite::params![b"idx.a".to_vec()],
+                |row| row.get(3),
+            )
+            .expect("equality plan");
+        assert!(
+            seek.contains("topics_topic_name"),
+            "the equality seek goes through the index, plan: {seek}"
+        );
+        let range: String = raw
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT topic_id, topic_name FROM topics
+                  WHERE topic_name >= ?1 AND topic_name < ?2 ORDER BY topic_id",
+                rusqlite::params![b"idx".to_vec(), b"idy".to_vec()],
+                |row| row.get(3),
+            )
+            .expect("range plan");
+        assert!(
+            range.contains("topics_topic_name"),
+            "the prefix range goes through the index, plan: {range}"
+        );
+    }
+
+    // The reopen is idempotent: the v10 completed-state probe finds its
+    // object and writes nothing, and a later pattern subscribe still
+    // attaches through the narrowed scan.
+    let Harness {
+        root,
+        channel,
+        topics,
+    } = harness;
+    drop(topics);
+    drop(channel);
+    let channel = Arc::new(ChannelAuthority::open(root.path()).expect("reopen channel"));
+    let topics = TopicAuthority::open(root.path(), Arc::clone(&channel)).expect("reopen topics");
+    let publications = topics
+        .inspect_publications(plain_a.topic_id)
+        .expect("journal after reopen");
+    assert_eq!(publications.len(), 0);
+    let (_late, late_report) = subscribe_pattern_at(&topics, b"idx.a", 9, 15, 101, 4_500);
+    assert_eq!(late_report.attached.len(), 1);
+    assert_eq!(
+        late_report.attached[0].subscription.topic_id,
+        plain_a.topic_id
+    );
 }

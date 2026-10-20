@@ -586,18 +586,24 @@ dependencies = [
  "ed25519-dalek",
  "nlos-application",
  "nlos-artifact",
+ "nlos-capability",
+ "nlos-channel",
  "nlos-clock",
  "nlos-commit-coordinator",
  "nlos-driver-mock",
  "nlos-identity",
  "nlos-operation",
+ "nlos-outbox",
+ "nlos-plan",
  "nlos-process",
  "nlos-runtime",
  "nlos-runtime-tokio",
  "nlos-schema",
+ "nlos-semantic",
  "nlos-store",
  "nlos-system-control",
  "nlos-task",
+ "nlos-topic",
  "nlos-types",
  "sha2",
  "tokio",
@@ -639,6 +645,16 @@ dependencies = [
  "nlos-resource",
  "nlos-semantic",
  "nlos-store",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
+name = "nlos-topic"
+version = "0.1.0"
+dependencies = [
+ "nlos-channel",
  "nlos-types",
  "rusqlite",
  "sha2",

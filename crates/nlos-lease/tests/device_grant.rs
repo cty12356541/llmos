@@ -17,8 +17,7 @@ use nlos_types::{DeviceId, ExclusiveDeviceLeaseId, Generation, SchedulerDomainId
 
 #[test]
 fn exclusive_device_lease_grant_uses_cell_authority_admit_and_reserves_free_device() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xd1; 16])).expect("claim");
 
     let stale = authority.fence();
     let current = authority.advance_epoch().expect("advance");
@@ -29,7 +28,7 @@ fn exclusive_device_lease_grant_uses_cell_authority_admit_and_reserves_free_devi
     );
 
     let device_id = DeviceId::from_bytes([0xf0; 16]);
-    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority, device_id);
+    let mut grantor = ExclusiveDeviceLeaseGrantor::open(authority.into_shared(), device_id);
     assert!(grantor.is_free());
 
     assert_eq!(

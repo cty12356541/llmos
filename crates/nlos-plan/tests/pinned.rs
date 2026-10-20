@@ -295,5 +295,5 @@ fn schema_v8_fresh_open_is_current_head() {
     let root = Root::new("schema");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
     drop(authority);
-    assert_eq!(user_version(&root.0), 8);
+    assert_eq!(user_version(&root.0), 9);
 }

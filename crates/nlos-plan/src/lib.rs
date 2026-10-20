@@ -112,6 +112,19 @@ pub enum PlanStoreError {
         /// The frozen node's durable declared revision.
         declared_revision: u64,
     },
+    /// A total revision omitted a node that already crossed the
+    /// execution boundary (`MATERIALIZING` or beyond; G1). An
+    /// execution-frozen node is immutable *and mandatory*: revisions
+    /// are total (`[PLAN-DAG-001]`), so omitting one would silently
+    /// drop it from the plan's current shape while its Task-side
+    /// execution footprint persists. Re-declare it with its exact
+    /// frozen shape.
+    FrozenNodeOmitted {
+        plan_id: TaskPlanId,
+        node_id: TaskNodeId,
+        /// The omitted frozen node's durable `node_key`.
+        node_key: [u8; 16],
+    },
     /// The requested node state transition is not a legal §25.2.1 edge.
     IllegalNodeTransition {
         node_id: TaskNodeId,
@@ -274,6 +287,13 @@ pub enum PlanStoreError {
     /// (transport/storage posture). The gated apply fails closed — no
     /// revision is committed without a verified admission (ADR-0013).
     DeclarationConsultUnavailable,
+    /// The declared-population snapshot drifted under concurrent writes
+    /// across every admission attempt (the store-wide `plan_nodes`
+    /// count changed between the consulted snapshot and the pre-commit
+    /// re-verification, twice). Nothing was written; the growth-only
+    /// guarantee never commits against an unverified projection.
+    /// Retry the apply.
+    DeclarationAdmissionContention,
 }
 
 impl fmt::Display for PlanStoreError {
@@ -319,6 +339,14 @@ impl fmt::Display for PlanStoreError {
             } => write!(
                 formatter,
                 "node {node_id:?} of plan {plan_id:?} is execution-frozen at revision {declared_revision} and cannot be reshaped (PLAN-DAG-001)"
+            ),
+            Self::FrozenNodeOmitted {
+                plan_id,
+                node_id,
+                node_key,
+            } => write!(
+                formatter,
+                "node {node_id:?} (key {node_key:?}) of plan {plan_id:?} is execution-frozen and must be re-declared by every total revision (PLAN-DAG-001)"
             ),
             Self::IllegalNodeTransition { node_id, from, to } => write!(
                 formatter,
@@ -454,6 +482,9 @@ impl fmt::Display for PlanStoreError {
             Self::DeclarationConsultUnavailable => {
                 formatter.write_str("plan revision admission consult failed; apply fails closed")
             }
+            Self::DeclarationAdmissionContention => formatter.write_str(
+                "plan revision admission snapshot drifted under concurrent writes; retry the apply",
+            ),
         }
     }
 }

@@ -258,11 +258,9 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
             .expect("head"),
         None
     );
-    assert!(
-        store
-            .list_revisions(artifact_id(0x40))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        store.list_revisions(artifact_id(0x40)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
     assert!(matches!(
         store.get_revision(artifact_id(0x40), 1, READ_NOW_MS),
@@ -270,7 +268,7 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
     ));
     let report = store.recover().expect("recover");
     assert_eq!(report.orphan_blobs, vec![digest]);
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
 
     // After the fault clears the same request commits cleanly; the existing
     // blob makes phase 1 an idempotent no-op.
@@ -284,12 +282,9 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
             .expect("get after recovery"),
         payload
     );
-    assert!(
-        store
-            .recover()
-            .expect("clean recover")
-            .orphan_blobs
-            .is_empty()
+    assert_eq!(
+        store.recover().expect("clean recover").orphan_blobs,
+        [] as [nlos_artifact::ContentDigest; 0]
     );
     assert_integrity(directory.root());
 }
@@ -336,11 +331,9 @@ fn fault_disk_full_during_metadata_commit_fails_closed() {
             .expect("head"),
         None
     );
-    assert!(
-        store
-            .list_revisions(artifact_id(0x41))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        store.list_revisions(artifact_id(0x41)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
 
     let decision = store
@@ -381,11 +374,9 @@ fn fault_blob_write_failure_commits_no_metadata() {
             .expect("head"),
         None
     );
-    assert!(
-        store
-            .list_revisions(artifact_id(0x42))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        store.list_revisions(artifact_id(0x42)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
     assert_eq!(
         fs::read_dir(&tmp).expect("read tmp").count(),
@@ -431,11 +422,9 @@ fn fault_power_loss_phantom_revision_invisible_after_reopen() {
         None,
         "silently dropped metadata must not fabricate a head"
     );
-    assert!(
-        recovered
-            .list_revisions(artifact_id(0x43))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        recovered.list_revisions(artifact_id(0x43)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
     assert!(matches!(
         recovered.get_revision(artifact_id(0x43), 1, READ_NOW_MS),
@@ -443,7 +432,7 @@ fn fault_power_loss_phantom_revision_invisible_after_reopen() {
     ));
     let report = recovered.recover().expect("recover");
     assert_eq!(report.orphan_blobs, vec![digest]);
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
     assert_integrity(directory.root());
 
     // The lost decision is redoable and genuinely durable this time.
@@ -512,11 +501,9 @@ fn fault_kill9_mid_metadata_transaction_rolls_back() {
             .expect("head"),
         None
     );
-    assert!(
-        store
-            .list_revisions(artifact_id(0x31))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        store.list_revisions(artifact_id(0x31)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
     assert_eq!(
         store
@@ -553,15 +540,13 @@ fn fault_kill9_between_rename_and_metadata_commit_lists_orphan_blob() {
             .expect("head"),
         None
     );
-    assert!(
-        store
-            .list_revisions(artifact_id(0x32))
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        store.list_revisions(artifact_id(0x32)).expect("list"),
+        [] as [nlos_artifact::RevisionRecord; 0]
     );
     let report = store.recover().expect("recover");
     assert_eq!(report.orphan_blobs, vec![orphan_digest]);
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
     assert!(
         directory.artifact_blob(orphan_digest).is_file(),
         "orphan blob is listed for GC, not deleted"

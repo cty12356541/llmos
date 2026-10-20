@@ -342,10 +342,9 @@ async fn registration_with_satisfied_high_water_self_flips_to_woken() {
     );
     // A distinct notify key over the same range flips nothing: the row is
     // terminal, so the self-flip notification stays idempotent.
-    assert!(
-        notify(&pair.wait, channel.channel_id, 1, 31)
-            .woken
-            .is_empty()
+    assert_eq!(
+        notify(&pair.wait, channel.channel_id, 1, 31).woken,
+        [] as [nlos_wait::WaitRecord; 0]
     );
     runtime
         .cancel_scope(scope, Generation::INITIAL)

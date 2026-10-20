@@ -22,7 +22,8 @@ use sha2::{Digest, Sha256};
 
 use crate::model::ContentDigest;
 use crate::package::{
-    PackageEntryRole, PackageManifest, PackageManifestEntry, PackageTaskKind, PackageTaskTemplate,
+    MAX_TASK_DEPENDENCIES_PER_TEMPLATE, PackageEntryRole, PackageManifest, PackageManifestEntry,
+    PackageTaskKind, PackageTaskTemplate,
 };
 
 /// Magic prefix of every package file.
@@ -52,6 +53,14 @@ pub enum PackageFileError {
     TrailingBytes { count: usize },
     /// A u64 count does not fit the platform `usize`.
     CountOverflow { what: &'static str },
+    /// A task-template dependency count exceeds the per-template admission
+    /// bound `MAX_TASK_DEPENDENCIES_PER_TEMPLATE` before anything is
+    /// allocated from it. The count is unverified wire data; the admission
+    /// authority (`validate_task_templates`, conformance rule
+    /// `PKG-CONF-016`) caps every template at the same bound, so an
+    /// over-bound count can never verify and fails closed here instead of
+    /// sizing allocations downstream.
+    DependencyCountBound { count: usize },
     /// An entry-name length is zero or exceeds [`MAX_ENTRY_NAME_BYTES`].
     EntryNameLength { len: usize },
     /// An entry name is not UTF-8.
@@ -77,6 +86,11 @@ impl fmt::Display for PackageFileError {
             Self::CountOverflow { what } => {
                 write!(formatter, "{what} count exceeds platform usize")
             }
+            Self::DependencyCountBound { count } => write!(
+                formatter,
+                "task dependency count {count} exceeds the per-template admission bound \
+                 {MAX_TASK_DEPENDENCIES_PER_TEMPLATE}"
+            ),
             Self::EntryNameLength { .. } => {
                 write!(formatter, "entry name length out of bounds")
             }
@@ -341,11 +355,20 @@ pub fn decode_package_file(bytes: &[u8]) -> Result<PackageFile, PackageFileError
         };
         let binding_digest = decoder.take_array("task binding")?;
         let dependency_count = decoder.take_count("task dependency count")?;
-        // Lazy allocation: the count is unverified wire data, so sizing the
-        // Vec from it would let an 8-byte file request an allocation near
-        // usize::MAX (capacity overflow / OOM) instead of a typed error. The
-        // loop's take_array folds the unavoidable EOF into `Truncated`,
-        // matching the entry loop's lazy idiom.
+        // Upper-bound the count before anything sizes an allocation from it
+        // (deep-audit 36, E-6b): the count is unverified wire data, and the
+        // admission authority caps a template at
+        // MAX_TASK_DEPENDENCIES_PER_TEMPLATE dependency keys — anything
+        // above can never verify, so it fails closed as the typed
+        // DependencyCountBound error here. The Vec itself stays lazily
+        // allocated regardless of the count; the loop's take_array folds
+        // an in-bound but truncated list into `Truncated`, matching the
+        // entry loop's lazy idiom.
+        if dependency_count > MAX_TASK_DEPENDENCIES_PER_TEMPLATE {
+            return Err(PackageFileError::DependencyCountBound {
+                count: dependency_count,
+            });
+        }
         let mut dependency_keys = Vec::new();
         for _ in 0..dependency_count {
             dependency_keys.push(decoder.take_array("task dependency")?);
@@ -395,9 +418,9 @@ pub fn derive_artifact_id(package_id: PackageId, version: u64, name: &str) -> [u
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_ENTRY_NAME_BYTES, PACKAGE_FILE_MAGIC, PackageEntryRole, PackageFile, PackageFileEntry,
-        PackageFileError, PackageTaskKind, PackageTaskTemplate, SignerDescriptor,
-        decode_package_file, derive_artifact_id,
+        MAX_ENTRY_NAME_BYTES, MAX_TASK_DEPENDENCIES_PER_TEMPLATE, PACKAGE_FILE_MAGIC,
+        PackageEntryRole, PackageFile, PackageFileEntry, PackageFileError, PackageTaskKind,
+        PackageTaskTemplate, SignerDescriptor, decode_package_file, derive_artifact_id,
     };
     use ed25519_dalek::SigningKey;
     use nlos_types::PackageId;
@@ -463,24 +486,77 @@ mod tests {
     }
 
     #[test]
-    fn huge_dependency_count_folds_into_a_typed_error_instead_of_preallocating() {
+    fn huge_dependency_count_is_a_typed_bound_error_instead_of_an_allocation() {
         // The dependency count is unverified wire data: an 8-byte field must
-        // never size an allocation. Splice u64::MAX into the count of an
-        // otherwise valid file and cut the body right after it — the loop
-        // must hit EOF and return the typed Truncated error, not abort on a
-        // capacity overflow or OOM trying to reserve near usize::MAX.
+        // never size an allocation. Splice a huge count (far over the
+        // per-template admission bound, well within every platform usize)
+        // into the count of an otherwise valid file and cut the body right
+        // after it — the decoder must reject the count up front with the
+        // typed bound error (deep-audit 36, E-6b), never abort on a
+        // capacity overflow or OOM trying to reserve from the count.
+        let hostile_count: u64 = 1_000_000;
         let encoded = package_file(true).encode();
         let needle = [0_u8, 0, 0, 0, 0, 0, 0, 1];
-        let at = encoded
+        let positions: Vec<usize> = encoded
             .windows(8)
-            .position(|window| window == needle)
-            .expect("the dependency-count qword is unique in this fixture");
+            .enumerate()
+            .filter(|(_, window)| *window == needle)
+            .map(|(index, _)| index)
+            .collect();
+        // Two value-1 qwords exist: the task count and the dependency
+        // count (both are 1 in this fixture); the dependency count is the
+        // second — splicing the first would hit the task loop instead.
+        assert_eq!(
+            positions.len(),
+            2,
+            "task count and dependency count must be the only value-1 qwords"
+        );
+        let at = positions[1];
         let mut hostile = encoded[..at + 8].to_vec();
-        hostile[at..at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-        match decode_package_file(&hostile) {
-            Err(PackageFileError::Truncated { .. }) => {}
-            other => panic!("expected typed Truncated, got {other:?}"),
-        }
+        hostile[at..at + 8].copy_from_slice(&hostile_count.to_be_bytes());
+        assert_eq!(
+            decode_package_file(&hostile),
+            Err(PackageFileError::DependencyCountBound {
+                count: usize::try_from(hostile_count).expect("fits usize")
+            })
+        );
+
+        // Even a fully present body above the bound fails closed: the
+        // admission authority (validate_task_templates, PKG-CONF-016)
+        // would reject the template anyway, so decode rejects it first.
+        let one_too_many = MAX_TASK_DEPENDENCIES_PER_TEMPLATE + 1;
+        let mut over_bound = package_file(true);
+        over_bound.tasks[0].dependency_keys = vec![[0x55; 16]; one_too_many];
+        assert_eq!(
+            decode_package_file(&over_bound.encode()),
+            Err(PackageFileError::DependencyCountBound {
+                count: one_too_many
+            })
+        );
+    }
+
+    #[test]
+    fn in_bound_dependency_count_with_a_short_body_folds_into_truncated() {
+        // A count within the bound but with the dependency keys missing is
+        // an ordinary framing failure: the lazy loop stops at EOF with the
+        // typed Truncated error instead of preallocating. The dependency
+        // count is the second value-1 qword (the first is the task count).
+        let encoded = package_file(true).encode();
+        let needle = [0_u8, 0, 0, 0, 0, 0, 0, 1];
+        let positions: Vec<usize> = encoded
+            .windows(8)
+            .enumerate()
+            .filter(|(_, window)| *window == needle)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(positions.len(), 2, "task count then dependency count");
+        let at = positions[1];
+        assert_eq!(
+            decode_package_file(&encoded[..at + 8]),
+            Err(PackageFileError::Truncated {
+                at: "task dependency"
+            })
+        );
     }
 
     #[test]

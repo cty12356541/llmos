@@ -1290,11 +1290,11 @@ fn publish_power_loss_invisible_replay_converges_onto_single_entry() {
     // Topic side wholly invisible; channel side durably enqueued exactly once.
     let recovered = reopen_topics(root.base(), &channel);
     assert_topic_counts(root.base(), [1, 0, 0]);
-    assert!(
+    assert_eq!(
         recovered
             .inspect_publications(topic.topic_id)
-            .expect("no publications after power loss")
-            .is_empty()
+            .expect("no publications after power loss"),
+        [] as [nlos_topic::PublicationRecord; 0]
     );
     assert_eq!(raw_channel_entries(root.base()), 1);
     assert_eq!(raw_entries_for_key(root.base(), 0xD1), 1);

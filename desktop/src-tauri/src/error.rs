@@ -17,9 +17,6 @@ pub enum ErrorCode {
     Ipc,
     /// 命令编译或回执投影违反控制面契约(`ControlError` 的其余形态)。
     Control,
-    /// 当前平台没有认证传输面可用(F3-c2 起 Unix socket 与 Windows named
-    /// pipe 均已接线;仅其余平台触达)。
-    UnsupportedPlatform,
     /// 请求的权威事实不存在(如从未安装的包)——事实读回,不是可重试错误。
     NotFound,
     /// 不应发生的一致性缺口(防御性,不承载业务语义)。
@@ -56,14 +53,6 @@ impl DesktopError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Internal, message)
     }
-
-    #[must_use]
-    pub fn unsupported_platform() -> Self {
-        Self::new(
-            ErrorCode::UnsupportedPlatform,
-            "认证 SystemControl 传输面在当前平台没有接线(Unix socket / Windows named pipe 之外的平台)",
-        )
-    }
 }
 
 impl fmt::Display for DesktopError {
@@ -87,8 +76,8 @@ impl serde::Serialize for DesktopError {
 
 /// 把 `nlos-system-control` 客户端侧 `ControlError` 映射为稳定错误码:
 /// 握手拒绝 → `Handshake`,传输 → `Ipc`,命令/契约 → `Config`/`Control`。
-/// 本 crate 对 `nlos-system-control` 恒启用 `cli` feature,故 `Ipc` 恒存在;
-/// `Handshake` 变体上游仅在 Unix 存在。
+/// 本 crate 对 `nlos-system-control` 恒启用 `cli` feature,故 `Ipc` 与
+/// `Handshake` 变体在所有平台恒存在(认证面已跨平台)。
 pub fn from_control_error(error: &nlos_system_control::control::ControlError) -> DesktopError {
     match error {
         ControlError::InvalidCommand(reason) => {
@@ -103,7 +92,6 @@ pub fn from_control_error(error: &nlos_system_control::control::ControlError) ->
             format!("unexpected control response: {reason}"),
         ),
         ControlError::Ipc(source) => DesktopError::ipc(format!("control transport: {source}")),
-        #[cfg(unix)]
         ControlError::Handshake(source) => DesktopError::new(
             ErrorCode::Handshake,
             format!("control handshake refused: {source}"),

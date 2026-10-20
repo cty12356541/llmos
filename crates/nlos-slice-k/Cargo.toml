@@ -16,22 +16,33 @@ ed25519-dalek.workspace = true
 nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-capability = { path = "../nlos-capability" }
+nlos-cell = { path = "../nlos-cell" }
+nlos-channel = { path = "../nlos-channel" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
+nlos-lease = { path = "../nlos-lease" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-outbox = { path = "../nlos-outbox" }
+nlos-plan = { path = "../nlos-plan" }
 nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }
 nlos-schema = { path = "../nlos-schema" }
+nlos-semantic = { path = "../nlos-semantic" }
 nlos-store = { path = "../nlos-store" }
 nlos-system-control = { path = "../nlos-system-control", default-features = false, features = ["process"] }
 nlos-task = { path = "../nlos-task" }
+nlos-topic = { path = "../nlos-topic" }
 nlos-types = { path = "../nlos-types" }
 sha2.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# Test-only read of the capability ledger's durable consumption rows (the
+# same inspection pattern as `nlos-capability`'s own tests).
+rusqlite.workspace = true
 
 [lints]
 workspace = true

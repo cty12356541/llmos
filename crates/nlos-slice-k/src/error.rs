@@ -8,15 +8,26 @@ use std::fmt;
 use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
 use nlos_capability::CapabilityAuthorityError;
+use nlos_cell::{CellError, FailureDetectorError, FederationError, NameCacheError};
+use nlos_channel::ChannelAuthorityError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
+use nlos_lease::{
+    CapacityLeaseGrantError, CapacityLeaseReturnError, ExclusiveDeviceLeaseGrantError,
+    ExclusiveDeviceLeaseReturnError, QuotaLeaseGrantError, QuotaLeaseLedgerError,
+};
+use nlos_plan::PlanStoreError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::ChannelWaitError;
+use nlos_semantic::SemanticAuthorityError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
+use nlos_topic::TopicAuthorityError;
+
+use crate::cell_host::{CellBroadcastRefusal, CellEpochBroadcastIncomplete};
 
 /// Fail-closed errors of the Slice K assembly.
 #[derive(Debug)]
@@ -33,11 +44,49 @@ pub enum SliceKError {
     Application(ApplicationAuthorityError),
     /// The task authority refused a task/attempt/permit/plan step.
     Task(TaskStoreError),
+    /// The plan authority refused a declaration step of the install→plan
+    /// head segment (W60): a structurally invalid revision (cycle, bound,
+    /// frozen-shape rewrite), an apply-time declaration-admission denial
+    /// or consult failure, an idempotency rebinding, or a storage
+    /// failure. When this surfaces from the templated install path after
+    /// the application authority already committed, the installation fact
+    /// is retained and only the plan revision is missing — see the window
+    /// semantics on the install wiring in [`crate::package`].
+    Plan(PlanStoreError),
+    /// The install→plan wiring refused a durable state it cannot proceed
+    /// on honestly (W60): a verification receipt that does not bind the
+    /// presented signed task-templated package (refused before any
+    /// durable write), or an update-generation install whose application
+    /// has no plan genesis revision in the plan authority (legacy
+    /// install, install-window residue, or a replaced plan store — the
+    /// installation itself is already committed in that case; converge by
+    /// replaying the application's generation-1 templated install).
+    InstallPlanState(&'static str),
     /// The clock authority refused a reading.
     Clock(AuthorityClockError),
     /// The capability authority refused an open, issuance, delegation, or
     /// admission step.
     Capability(CapabilityAuthorityError),
+    /// The semantic authority refused an admission the production write
+    /// bridge attempted (canonical, signature, execution-fence,
+    /// capability, content, or lineage gate), or its store-signing step
+    /// failed. The payload lane treats this as fail-closed: a run whose
+    /// terminal receipt the semantic ledger did not record is reported as
+    /// an error, never as success.
+    Semantic(SemanticAuthorityError),
+    /// The semantic writer's durable key material is unusable (for example
+    /// a `semantic-writer.key` whose width is not the documented 48-byte
+    /// `seed ‖ valid_from ‖ valid_until` layout).
+    SemanticWriter(&'static str),
+    /// The system Channel endpoint authority refused a semantic-stream
+    /// bootstrap step (the durable queue under `<root>/channel`; distinct
+    /// from the runtime's fiber wake `ChannelWaitError` lane).
+    Channel(ChannelAuthorityError),
+    /// The Topic service-layer authority refused a semantic-stream step
+    /// (bootstrap, publish, cursor advance, or compact). Channel
+    /// rejections propagated through the topic layer stay reachable via
+    /// [`std::error::Error::source`].
+    Topic(TopicAuthorityError),
     /// The runtime's Outbox pump lifecycle refused a transition this call
     /// cannot make honestly (for example starting a second pump while one
     /// is still running — its wake lane would silently ack the first
@@ -69,6 +118,62 @@ pub enum SliceKError {
     /// out-of-band crash): the assembly names the refusal instead of
     /// guessing a transition the authorities do not offer.
     TeardownState(&'static str),
+    /// The crash-revival lane refused a durable state this chain never
+    /// produces (e.g. a terminal marker at a generation the caller's
+    /// crashed binding does not name, or a head that is neither the
+    /// crashed generation nor its direct revival): the assembly names the
+    /// refusal instead of guessing a transition the authorities do not
+    /// offer.
+    RevivalState(&'static str),
+    /// The Cell authority refused a claim or an epoch advance of the cell
+    /// host assembly (W48): an in-process second claim, an unusable cell
+    /// data directory, or an exhausted epoch/fencing space.
+    Cell(CellError),
+    /// The cell host's quota lease sub-ledger refused a grant (W48): a
+    /// stale or mismatched presented fence, insufficient `AVAILABLE`, or a
+    /// conflicting replay of the same lease id.
+    Lease(QuotaLeaseGrantError),
+    /// The cell host's quota lease sub-ledger refused a ledger read (W48):
+    /// an unknown lease id.
+    LeaseLedger(QuotaLeaseLedgerError),
+    /// The cell host's capacity lease sub-ledger refused a grant (W49): a
+    /// stale or mismatched presented fence, an insufficient source pool, or
+    /// a conflicting replay of the same capacity lease id.
+    CapacityLeaseGrant(CapacityLeaseGrantError),
+    /// The cell host's capacity lease sub-ledger refused a prepare, attach,
+    /// return, or query (W49): an unknown lease id, an ill-state transition,
+    /// or an attach receipt that does not bind the committed lease.
+    CapacityLeaseReturn(CapacityLeaseReturnError),
+    /// The cell host's exclusive device lease sub-ledger refused a grant
+    /// (W49): a stale or mismatched presented fence, or a
+    /// `DeviceLeaseHead` that is not FREE.
+    DeviceLeaseGrant(ExclusiveDeviceLeaseGrantError),
+    /// The cell host's exclusive device lease sub-ledger refused a reset
+    /// declare, reset receipt, return, or query (W49): an unknown lease id,
+    /// an ill-state transition, or a receipt that does not bind the
+    /// committed lease or head fence.
+    DeviceLeaseReturn(ExclusiveDeviceLeaseReturnError),
+    /// The cell-local failure detector refused a heartbeat or sweep the
+    /// cell host drove (W48): a logical-clock regression, or a heartbeat
+    /// for an incarnation already judged dead.
+    FailureDetector(FailureDetectorError),
+    /// The cell-local capability/name cache refused an insert or
+    /// invalidation through the cell host (W48): a fenced or stale
+    /// generation, a same-generation conflict, or a rollback presentation.
+    NameCache(NameCacheError),
+    /// The cell host refused an assembly state it cannot proceed on
+    /// honestly (W48; currently only heartbeat tick-sequence exhaustion).
+    CellHost(&'static str),
+    /// The opt-in federation face refused a step (W50-L2): the shared root
+    /// was unavailable, a registration publish was not monotone, a corrupt
+    /// state file refused overwriting, or an intent was invalid.
+    Federation(FederationError),
+    /// The Cell epoch advanced but a snapshot consumer's broadcast refused
+    /// (W48): the typed incomplete state naming which consumer already
+    /// received the fence — an advanced-but-partially-broadcast epoch is
+    /// never silently swallowed. Boxed: the report payload is large and
+    /// this arm is the unreachable-by-construction tail of the enum.
+    CellBroadcast(Box<CellEpochBroadcastIncomplete>),
     /// The system-control prefix refused an NL command (out-of-grammar
     /// sentence or dispatch-contract defect); handler rejections surface
     /// as typed receipt failures inside
@@ -91,8 +196,22 @@ impl fmt::Display for SliceKError {
             Self::Artifact(error) => write!(formatter, "artifact authority: {error}"),
             Self::Application(error) => write!(formatter, "application authority: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
+            Self::Plan(error) => write!(formatter, "plan authority: {error}"),
+            Self::InstallPlanState(reason) => {
+                write!(formatter, "install-to-plan wiring state refusal: {reason}")
+            }
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
             Self::Capability(error) => write!(formatter, "capability authority: {error}"),
+            Self::Semantic(error) => write!(formatter, "semantic authority: {error}"),
+            Self::SemanticWriter(reason) => {
+                write!(formatter, "semantic writer key material refusal: {reason}")
+            }
+            Self::Channel(error) => {
+                write!(formatter, "system channel authority: {error}")
+            }
+            Self::Topic(error) => {
+                write!(formatter, "topic service authority: {error}")
+            }
             Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
             Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
@@ -110,6 +229,35 @@ impl fmt::Display for SliceKError {
             Self::TeardownState(reason) => {
                 write!(formatter, "teardown state refusal: {reason}")
             }
+            Self::RevivalState(reason) => {
+                write!(formatter, "crash-revival state refusal: {reason}")
+            }
+            Self::Cell(error) => write!(formatter, "cell authority: {error}"),
+            Self::Lease(error) => write!(formatter, "quota lease grantor: {error}"),
+            Self::LeaseLedger(error) => write!(formatter, "quota lease ledger: {error}"),
+            Self::CapacityLeaseGrant(error) => {
+                write!(formatter, "capacity lease grantor: {error}")
+            }
+            Self::CapacityLeaseReturn(error) => {
+                write!(formatter, "capacity lease ledger: {error}")
+            }
+            Self::DeviceLeaseGrant(error) => {
+                write!(formatter, "device lease grantor: {error}")
+            }
+            Self::DeviceLeaseReturn(error) => {
+                write!(formatter, "device lease ledger: {error}")
+            }
+            Self::FailureDetector(error) => write!(formatter, "cell failure detector: {error}"),
+            Self::NameCache(error) => write!(formatter, "cell name cache: {error}"),
+            Self::CellHost(reason) => write!(formatter, "cell host state refusal: {reason}"),
+            Self::Federation(error) => write!(formatter, "cell federation face: {error}"),
+            Self::CellBroadcast(incomplete) => write!(
+                formatter,
+                "cell epoch advanced to epoch {} token {} but the broadcast refused ({}); incomplete state carried in full",
+                incomplete.advanced_to.epoch().get(),
+                incomplete.advanced_to.fencing_token().get(),
+                incomplete.refusal
+            ),
             Self::Control(error) => write!(formatter, "system-control prefix: {error}"),
             Self::TimestampOverflow(value) => {
                 write!(
@@ -136,20 +284,42 @@ impl Error for SliceKError {
             Self::Artifact(error) => Some(error),
             Self::Application(error) => Some(error),
             Self::Task(error) => Some(error),
+            Self::Plan(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Operation(error) => Some(error),
             Self::Driver(error) => Some(error),
             Self::PayloadState(_)
             | Self::TeardownState(_)
+            | Self::RevivalState(_)
             | Self::TimestampOverflow(_)
             | Self::SizeOverflow(_)
-            | Self::Pump(_) => None,
+            | Self::Pump(_)
+            | Self::SemanticWriter(_)
+            | Self::InstallPlanState(_)
+            | Self::CellHost(_) => None,
             Self::SupervisorPid(error) => Some(error),
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::Capability(error) => Some(error),
+            Self::Semantic(error) => Some(error),
+            Self::Channel(error) => Some(error),
+            Self::Topic(error) => Some(error),
+            Self::Cell(error) => Some(error),
+            Self::Lease(error) => Some(error),
+            Self::LeaseLedger(error) => Some(error),
+            Self::CapacityLeaseGrant(error) => Some(error),
+            Self::CapacityLeaseReturn(error) => Some(error),
+            Self::DeviceLeaseGrant(error) => Some(error),
+            Self::DeviceLeaseReturn(error) => Some(error),
+            Self::FailureDetector(error) => Some(error),
+            Self::NameCache(error) => Some(error),
+            Self::Federation(error) => Some(error),
+            Self::CellBroadcast(incomplete) => match &incomplete.refusal {
+                CellBroadcastRefusal::Detector(error) => Some(error),
+                CellBroadcastRefusal::Cache(error) => Some(error),
+            },
         }
     }
 }
@@ -190,6 +360,12 @@ impl From<TaskStoreError> for SliceKError {
     }
 }
 
+impl From<PlanStoreError> for SliceKError {
+    fn from(error: PlanStoreError) -> Self {
+        Self::Plan(error)
+    }
+}
+
 impl From<AuthorityClockError> for SliceKError {
     fn from(error: AuthorityClockError) -> Self {
         Self::Clock(error)
@@ -199,6 +375,24 @@ impl From<AuthorityClockError> for SliceKError {
 impl From<CapabilityAuthorityError> for SliceKError {
     fn from(error: CapabilityAuthorityError) -> Self {
         Self::Capability(error)
+    }
+}
+
+impl From<SemanticAuthorityError> for SliceKError {
+    fn from(error: SemanticAuthorityError) -> Self {
+        Self::Semantic(error)
+    }
+}
+
+impl From<ChannelAuthorityError> for SliceKError {
+    fn from(error: ChannelAuthorityError) -> Self {
+        Self::Channel(error)
+    }
+}
+
+impl From<TopicAuthorityError> for SliceKError {
+    fn from(error: TopicAuthorityError) -> Self {
+        Self::Topic(error)
     }
 }
 
@@ -235,6 +429,66 @@ impl From<RuntimeError> for SliceKError {
 impl From<CoordinatorError> for SliceKError {
     fn from(error: CoordinatorError) -> Self {
         Self::Coordinator(error)
+    }
+}
+
+impl From<CellError> for SliceKError {
+    fn from(error: CellError) -> Self {
+        Self::Cell(error)
+    }
+}
+
+impl From<QuotaLeaseGrantError> for SliceKError {
+    fn from(error: QuotaLeaseGrantError) -> Self {
+        Self::Lease(error)
+    }
+}
+
+impl From<QuotaLeaseLedgerError> for SliceKError {
+    fn from(error: QuotaLeaseLedgerError) -> Self {
+        Self::LeaseLedger(error)
+    }
+}
+
+impl From<CapacityLeaseGrantError> for SliceKError {
+    fn from(error: CapacityLeaseGrantError) -> Self {
+        Self::CapacityLeaseGrant(error)
+    }
+}
+
+impl From<CapacityLeaseReturnError> for SliceKError {
+    fn from(error: CapacityLeaseReturnError) -> Self {
+        Self::CapacityLeaseReturn(error)
+    }
+}
+
+impl From<ExclusiveDeviceLeaseGrantError> for SliceKError {
+    fn from(error: ExclusiveDeviceLeaseGrantError) -> Self {
+        Self::DeviceLeaseGrant(error)
+    }
+}
+
+impl From<ExclusiveDeviceLeaseReturnError> for SliceKError {
+    fn from(error: ExclusiveDeviceLeaseReturnError) -> Self {
+        Self::DeviceLeaseReturn(error)
+    }
+}
+
+impl From<FailureDetectorError> for SliceKError {
+    fn from(error: FailureDetectorError) -> Self {
+        Self::FailureDetector(error)
+    }
+}
+
+impl From<NameCacheError> for SliceKError {
+    fn from(error: NameCacheError) -> Self {
+        Self::NameCache(error)
+    }
+}
+
+impl From<FederationError> for SliceKError {
+    fn from(error: FederationError) -> Self {
+        Self::Federation(error)
     }
 }
 

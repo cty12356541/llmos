@@ -9,7 +9,27 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
+
+// ---------------------------------------------------------------------------
+// trigger-body probe constants (census/DDL agreement)
+// ---------------------------------------------------------------------------
+
+/// The WHEN-clause predicate fragment a corrected
+/// `plan_revision_edges_declared_dependent` body probes. Shared with the
+/// v8 body census so the probe can never drift from the body it audits
+/// (the v2 defect was exactly a probe/body disagreement class: the
+/// dependency trigger's body probed this — the *dependent* — column).
+pub(crate) const DEPENDENT_ENDPOINT_PROBE: &str = "task_node_id = NEW.dependent_node_id";
+/// The WHEN-clause predicate fragment a corrected
+/// `plan_revision_edges_declared_dependency` body must probe (the v2
+/// defect probed [`DEPENDENT_ENDPOINT_PROBE`] instead).
+pub(crate) const DEPENDENCY_ENDPOINT_PROBE: &str = "task_node_id = NEW.dependency_node_id";
+/// The voucher-binding predicate a v9+ materializing-gate body must
+/// carry: the approved request row must name this voucher. The v4 body
+/// admitted any historical `APPROVED` row, making an old approval a
+/// permanent `MATERIALIZING` re-entry pass.
+pub(crate) const GATE_VOUCHER_BINDING_PROBE: &str = "approved_voucher_id = NEW.voucher_id";
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -201,8 +221,11 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), PlanStoreErr
 /// facts, `REJECTED` rows carrying the typed window-shrink reason. Two
 /// storage-layer invariants close the G3 falsification paths:
 /// - `plan_node_transitions_materializing_gated`: no voucher may enter
-///   `MATERIALIZING` unless the node has an `APPROVED` request — the raw
-///   `record_node_transition` face is closed for that edge;
+///   `MATERIALIZING` unless an `APPROVED` request names that exact
+///   voucher (`approved_voucher_id`) — the raw `record_node_transition`
+///   face is closed for that edge, and each entry consumes its own
+///   approval rather than riding a historical one (v9 tightened the
+///   binding; see [`migrate_v9`]);
 /// - `plan_materialization_requests_one_pending`: at most one in-flight
 ///   request per node, and resolution is one-way (`PENDING` is the only
 ///   updatable status; identity columns are frozen).
@@ -458,16 +481,20 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), PlanStoreErr
     // exactly a dependency trigger whose body probes the *dependent*
     // column, so that defective body must not satisfy this census.
     // Each probe is name-scoped, so the shared textual vocabulary of
-    // the two triggers cannot cross-count.
+    // the two triggers cannot cross-count; the probe strings are the
+    // shared constants so the census can never drift from the DDL it
+    // audits.
     let corrected_bodies: i64 = connection.query_row(
-        "SELECT (SELECT COUNT(*) FROM sqlite_master
+        &format!(
+            "SELECT (SELECT COUNT(*) FROM sqlite_master
                   WHERE type='trigger'
                     AND name = 'plan_revision_edges_declared_dependent'
-                    AND instr(sql, 'task_node_id = NEW.dependent_node_id') > 0)
+                    AND instr(sql, '{DEPENDENT_ENDPOINT_PROBE}') > 0)
               + (SELECT COUNT(*) FROM sqlite_master
                   WHERE type='trigger'
                     AND name = 'plan_revision_edges_declared_dependency'
-                    AND instr(sql, 'task_node_id = NEW.dependency_node_id') > 0)",
+                    AND instr(sql, '{DEPENDENCY_ENDPOINT_PROBE}') > 0)"
+        ),
         [],
         |row| row.get(0),
     )?;
@@ -483,6 +510,65 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V8_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v8 database to v9 (corrective, one `BEGIN IMMEDIATE`
+/// transaction): rebuilds `plan_node_transitions_materializing_gated`
+/// with voucher binding. The v4 trigger accepted a `→ MATERIALIZING`
+/// voucher whenever the node carried **any** `APPROVED` request row, so
+/// a historical approval became a permanent re-entry pass: after
+/// `MATERIALIZING → ACTIVE → CHECKPOINTED → EVICTED → REHYDRATING`, a
+/// raw `record_node_transition` could re-enter `MATERIALIZING` on the
+/// old approval without a fresh gate round — G3's storage layer closed
+/// only the *first* entry. v9 binds the guard to the round: the
+/// approved row must carry `approved_voucher_id = NEW.voucher_id`,
+/// which only the gate's resolve half writes (immediately before the
+/// voucher insert, the v4 write-order dependency), so every entry
+/// consumes its own approval.
+///
+/// Data rows are untouched: the gate's resolve half is the only writer
+/// of `→ MATERIALIZING` vouchers in every shipped build, so no
+/// existing row rides a foreign approval — the rebuilt guard closes
+/// the raw SQL face only.
+///
+/// The census distinguishes trigger *bodies*, not just names: an
+/// unbound gate body is a v8 database that needs the rebuild, never
+/// "already complete"; a missing trigger is a partial schema and fails
+/// closed.
+pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name = 'plan_node_transitions_materializing_gated'",
+        [],
+        |row| row.get(0),
+    )?;
+    // Body probe (name-scoped, shared constant with the DDL): only a
+    // body that binds the approved row to this voucher counts as
+    // corrected — the v4 defect is exactly the missing binding.
+    let bound_bodies: i64 = connection.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='trigger'
+               AND name = 'plan_node_transitions_materializing_gated'
+               AND instr(sql, '{GATE_VOUCHER_BINDING_PROBE}') > 0"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    if trigger_count == 1 && bound_bodies == 1 {
+        connection.pragma_update(None, "user_version", 9)?;
+        return Ok(());
+    }
+    if trigger_count != 1 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v9 schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V9_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -847,6 +933,7 @@ WHEN NEW.to_state = 6 AND NOT EXISTS (
     WHERE plan_id = NEW.plan_id
       AND task_node_id = NEW.task_node_id
       AND status = 2
+      AND approved_voucher_id = NEW.voucher_id
 )
 BEGIN
     SELECT RAISE(ABORT, 'MATERIALIZING entry requires a gate-approved materialization request');
@@ -947,3 +1034,59 @@ BEGIN
 END;
 
 PRAGMA user_version = 8;";
+
+pub(crate) const SCHEMA_V9_SQL: &str =
+    "DROP TRIGGER IF EXISTS plan_node_transitions_materializing_gated;
+
+CREATE TRIGGER plan_node_transitions_materializing_gated
+BEFORE INSERT ON plan_node_transitions
+WHEN NEW.to_state = 6 AND NOT EXISTS (
+    SELECT 1 FROM plan_materialization_requests
+    WHERE plan_id = NEW.plan_id
+      AND task_node_id = NEW.task_node_id
+      AND status = 2
+      AND approved_voucher_id = NEW.voucher_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'MATERIALIZING entry requires a gate-approved materialization request');
+END;
+
+PRAGMA user_version = 9;";
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DEPENDENCY_ENDPOINT_PROBE, DEPENDENT_ENDPOINT_PROBE, GATE_VOUCHER_BINDING_PROBE,
+        SCHEMA_V2_SQL, SCHEMA_V4_SQL, SCHEMA_V8_SQL, SCHEMA_V9_SQL,
+    };
+
+    /// The census probes and the DDL bodies must agree — the v2 defect
+    /// (a dependency trigger whose body probed the dependent column)
+    /// and the v4 defect (an unbound gate) were both probe/body
+    /// disagreements a name-only census could not see. Each baseline
+    /// carries each probe exactly once; the misdirected fragment never
+    /// appears twice, so a copy-paste regression fails here at the
+    /// source level.
+    #[test]
+    fn census_probes_agree_with_the_ddl_bodies() {
+        for sql in [SCHEMA_V2_SQL, SCHEMA_V8_SQL] {
+            assert_eq!(
+                sql.matches(DEPENDENT_ENDPOINT_PROBE).count(),
+                1,
+                "dependent probe must appear exactly once"
+            );
+            assert_eq!(
+                sql.matches(DEPENDENCY_ENDPOINT_PROBE).count(),
+                1,
+                "dependency probe must appear exactly once (a second dependent-style body regressed)"
+            );
+        }
+        for sql in [SCHEMA_V4_SQL, SCHEMA_V9_SQL] {
+            assert_eq!(
+                sql.matches(GATE_VOUCHER_BINDING_PROBE).count(),
+                1,
+                "the materializing gate must bind the approved row to the entering voucher"
+            );
+        }
+    }
+}

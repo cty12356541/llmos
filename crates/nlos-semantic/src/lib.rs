@@ -57,7 +57,7 @@ pub use model::{
     MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
     MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
     OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode, RetractionRecord,
-    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord, SemanticOutboxRow,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
     TaintFlags, TrustViewJudgmentFact, TrustViewJudgmentRole, TrustViewSnapshot,
@@ -76,9 +76,13 @@ pub use typed::{
 };
 
 pub use declassification::declassification_issue_authorization_id;
-pub use durability::{build_durability_receipt_core_digest, durability_receipt_signature_message};
+pub use durability::{
+    DURABILITY_RECEIPT_PREIMAGE_DOMAIN, SIGNATURE_PREIMAGE_CANONICAL, SIGNATURE_PREIMAGE_LEGACY,
+    build_durability_receipt_core_digest, durability_receipt_canonical_preimage,
+    durability_receipt_signature_message,
+};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 /// Typed-link index role: the indexed event is a Judgment and the endpoint
@@ -439,6 +443,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
@@ -448,6 +453,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -456,6 +462,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
@@ -463,23 +470,31 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             5 => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             6 => {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
-            7 => schema::migrate_v8(&mut connection)?,
+            7 => {
+                schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+            }
+            8 => schema::migrate_v9(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1284,6 +1299,57 @@ impl SemanticAuthority {
         }))
     }
 
+    /// Lists the pending (unacknowledged) admission-outbox rows in log
+    /// order, at most `limit` of them.
+    ///
+    /// This is the read-only enumeration surface a transport consumer
+    /// drains: every admitted event contributes exactly one immutable row
+    /// (identity frozen by trigger, deletes forbidden), and a row leaves
+    /// this listing exactly when an owner-bound
+    /// [`acknowledge_outbox`](Self::acknowledge_outbox) recorded its
+    /// transport acknowledgement. The method performs zero writes and never
+    /// infers a checkpoint or publication from the transport state. The scan
+    /// walks the `log_seq` primary key and filters unacknowledged rows in
+    /// memory, which keeps the authority schema untouched at the cost of a
+    /// linear scan — the documented trade for this slice.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with a storage or corrupt-record error when a joined
+    /// event/receipt/outbox triple disagrees with the authority invariants.
+    pub fn list_pending_outbox(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SemanticOutboxRow>, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT o.log_seq, o.event_id, o.receipt_id, r.admitted_at_ms,
+                    e.event_type, e.content_digest, e.spec_body_digest
+             FROM semantic_outbox o
+             JOIN admission_receipts r ON r.event_id = o.event_id
+             JOIN semantic_events e ON e.event_id = o.event_id
+             WHERE o.acknowledged_at_ms IS NULL
+             ORDER BY o.log_seq
+             LIMIT ?1",
+        )?;
+        let limit = i64::try_from(limit)
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("pending list limit"))?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(decode_outbox_row).collect()
+    }
+
     /// Creates the SemanticAuthority-owned publication receipt for one
     /// already-admitted event. The operation is local to this authority and
     /// intentionally does not acknowledge the transport outbox: an ACK is
@@ -1291,7 +1357,10 @@ impl SemanticAuthority {
     /// publication fact consumed by `TaskAuthority`.
     ///
     /// The owner re-reads the event, target, durable `AdmissionReceipt` and
-    /// optional `DurabilityReceipt` in the same transaction. A deterministic
+    /// optional `DurabilityReceipt` in the same transaction. A presented
+    /// `DurabilityReceipt` must bind to the admitted event; a row carrying a
+    /// store identity triple must match the admission's store binding and its
+    /// receipt id must re-derive from the signed core digest. A deterministic
     /// log-prefix digest is stored as `semantic_checkpoint_after`; it is a
     /// local reference checkpoint, not a distributed/global vector clock.
     /// Exact retries replay the original immutable receipt. A different
@@ -1301,6 +1370,7 @@ impl SemanticAuthority {
     ///
     /// Returns typed binding/conflict errors when the caller supplies a stale
     /// or mismatched owner fact, plus storage/corruption errors.
+    #[allow(clippy::too_many_lines)] // One auditable transaction owns the full binding re-check.
     pub fn publish_semantic_publication(
         &self,
         request: PublishSemanticPublicationRequest,
@@ -1346,20 +1416,45 @@ impl SemanticAuthority {
             }
             // A production-issued receipt records the store identity triple
             // that minted it; a triple that disagrees with the admission's
-            // store binding is rejected. Pre-v7 legacy rows carry no triple
-            // and keep the structural binding checks above.
+            // store binding is rejected, and the stored receipt id must
+            // re-derive from the signed core digest (event, admission log
+            // sequence, checkpoint, timestamp, triple), so a tampered or
+            // naively injected row fails closed here. Pre-v7 legacy rows
+            // carry no triple and keep the structural binding checks above.
+            // Authenticating the store signature itself needs the
+            // `IdentityAuthority` and stays on `verify_durability_receipt`.
             if let (Some(principal), Some(domain), Some(key)) = (
                 durability.store_principal,
                 durability.store_control_domain,
                 durability.store_key_id,
-            ) && (principal, domain, key)
-                != (
-                    admission.store_principal,
-                    admission.store_control_domain,
-                    admission.store_key_id,
-                )
-            {
-                return Err(SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch);
+            ) {
+                if (principal, domain, key)
+                    != (
+                        admission.store_principal,
+                        admission.store_control_domain,
+                        admission.store_key_id,
+                    )
+                {
+                    return Err(
+                        SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch,
+                    );
+                }
+                let core_digest = durability::build_durability_receipt_core_digest(
+                    durability.event_id,
+                    admission.log_seq,
+                    durability.durable_checkpoint_id,
+                    durability.durable_at_ms,
+                    principal,
+                    domain,
+                    key,
+                );
+                let mut expected_id_bytes = [0_u8; 16];
+                expected_id_bytes.copy_from_slice(&core_digest[..16]);
+                if durability.receipt_id.as_bytes() != &expected_id_bytes {
+                    return Err(SemanticAuthorityError::CorruptRecord(
+                        "durability receipt id does not derive from its signed core",
+                    ));
+                }
             }
         }
 
@@ -2326,6 +2421,46 @@ fn load_outbox(
             })
         })
         .transpose()
+}
+
+/// Raw joined `(outbox, admission receipt, event)` columns of one pending
+/// row, in the `list_pending_outbox` selection order.
+type PendingOutboxRowRaw = (
+    i64,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
+
+/// Decodes one pending outbox row, re-validating the event-type/payload
+/// identity pairing against the same invariants
+/// [`SemanticAuthority::inspect_event`] enforces on the event record.
+fn decode_outbox_row(
+    row: PendingOutboxRowRaw,
+) -> Result<SemanticOutboxRow, SemanticAuthorityError> {
+    let event_type = u8::try_from(row.4)
+        .map_err(|_| SemanticAuthorityError::CorruptRecord("outbox event type"))?;
+    let content_digest = match (event_type, row.5, row.6) {
+        (1, Some(digest), None) => Some(decode_array(digest, "outbox content digest")?),
+        (5, None, Some(digest)) => Some(decode_array(digest, "outbox spec body digest")?),
+        (2..=4, None, None) => None,
+        _ => {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "outbox payload identity",
+            ));
+        }
+    };
+    Ok(SemanticOutboxRow {
+        log_seq: decode_u64(row.0)?,
+        event_id: decode_id(row.1, SemanticEventId::from_bytes, "outbox event id")?,
+        receipt_id: decode_id(row.2, ReceiptId::from_bytes, "outbox receipt id")?,
+        admitted_at_ms: decode_u64(row.3)?,
+        event_type,
+        content_digest,
+    })
 }
 
 fn publication_matches_request(

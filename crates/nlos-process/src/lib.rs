@@ -10,6 +10,7 @@ mod platform_kill;
 mod schema;
 mod supervisor;
 mod supervisor_pid;
+mod supervisor_pid_scan;
 
 use std::error::Error;
 use std::fmt;
@@ -50,6 +51,10 @@ pub use supervisor_pid::{
     RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
     SupervisorPidRegistryError,
 };
+pub use supervisor_pid_scan::{
+    HostSupervisorPidProbe, SupervisorPidFinding, SupervisorPidLiveness, SupervisorPidProbe,
+    SupervisorPidScanReport, SupervisorPidScanTarget, SupervisorPidStaleReason,
+};
 
 #[derive(Debug)]
 pub enum ProcessAuthorityError {
@@ -86,6 +91,21 @@ pub enum ProcessAuthorityError {
     ProcessBindingTerminal(ProcessLifecycleState),
     PlatformKillAlreadySignaled,
     PlatformKillAdapter(platform_kill::PlatformKillAdapterError),
+    /// W59-2 / evaluation F7 pre-signal pid fence: the supervisor pid
+    /// registry's current mapping generation for the process differs from
+    /// the durable kill receipt's generation — the OS pid may have been
+    /// reused by a newer incarnation. Fail-closed: no signal was issued and
+    /// the durable receipt stays committed.
+    PlatformKillGenerationMismatch {
+        process_id: ProcessId,
+        receipt_generation: Generation,
+        registry_generation: Generation,
+    },
+    /// W59-2 / evaluation F7 pre-signal pid fence: no supervisor pid
+    /// mapping is registered for the process, so the generation fence
+    /// cannot be established. Fail-closed: no signal was issued and the
+    /// durable receipt stays committed.
+    PlatformKillTargetNotRegistered(ProcessId),
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -152,8 +172,27 @@ impl fmt::Display for ProcessAuthorityError {
             Self::PlatformKillAlreadySignaled => formatter
                 .write_str("platform kill was already signaled for this binding generation"),
             Self::PlatformKillAdapter(error) => write!(formatter, "{error}"),
+            Self::PlatformKillGenerationMismatch {
+                process_id,
+                receipt_generation,
+                registry_generation,
+            } => write!(
+                formatter,
+                "platform kill fenced: supervisor pid registry generation {} does not match \
+                 the kill receipt generation {} for process {process_id:?}; the os pid may \
+                 have been reused by a newer incarnation",
+                registry_generation.get(),
+                receipt_generation.get(),
+            ),
+            Self::PlatformKillTargetNotRegistered(process_id) => write!(
+                formatter,
+                "platform kill fenced: no supervisor os pid mapping is registered for \
+                 process {process_id:?}"
+            ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
-            Self::LockPoisoned => formatter.write_str("process authority writer lock is poisoned"),
+            Self::LockPoisoned => formatter.write_str(
+                "process authority writer lock or supervisor pid registry lock is poisoned",
+            ),
         }
     }
 }
@@ -621,6 +660,54 @@ impl ProcessAuthority {
         Ok(record)
     }
 
+    /// Lists every non-terminal (`Active`) Process binding — the discovery
+    /// source for [`ProcessSupervisor::scan_pids`]: one current
+    /// [`ProcessBindingRecord`] per head whose lifecycle state is still
+    /// active, converted to [`SupervisorPidScanTarget`] by the caller, and
+    /// ordered by `process_id` bytes so repeated listings drive
+    /// deterministic scans. Terminal heads (`Terminated` / `Crashed`) are
+    /// excluded: a dead binding has nothing left to discover.
+    ///
+    /// Unlike [`Self::inspect_active_process_binding`], the referenced
+    /// `IsolationDomain` fence is not re-verified here. A rotated domain
+    /// must not hide a live child from the pid scan: the discovery report
+    /// feeds the caller's kill / restore / unregister decisions, and those
+    /// decisions — not this listing — own the domain-staleness gate.
+    ///
+    /// # Errors
+    ///
+    /// Fails when storage cannot be read or a head row disagrees with its
+    /// current immutable binding.
+    pub fn list_active_process_bindings(
+        &self,
+    ) -> Result<Vec<ProcessBindingRecord>, ProcessAuthorityError> {
+        let connection = self.lock()?;
+        let mut statement =
+            connection.prepare("SELECT process_id FROM process_heads WHERE lifecycle_state = 0")?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut records = Vec::new();
+        for row in rows {
+            let process_id = ProcessId::from_bytes(array16(row?)?);
+            let head = load_process_head_optional(&connection, process_id)?.ok_or(
+                ProcessAuthorityError::CorruptRecord(
+                    "process head disappeared during the active listing",
+                ),
+            )?;
+            let record = load_process_binding(&connection, process_id, head.process_generation)?;
+            if record.process_fencing_token != head.process_fencing_token
+                || record.agent_instance_id != head.agent_instance_id
+                || record.agent_instance_generation != head.agent_instance_generation
+            {
+                return Err(ProcessAuthorityError::CorruptRecord(
+                    "process head disagrees with current immutable binding",
+                ));
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| *record.process_id.as_bytes());
+        Ok(records)
+    }
+
     /// Reads the authority-derived participant proof for the current Process
     /// binding. The proof is deterministic from the immutable Process identity
     /// and current generation, but is only authoritative after this readback.
@@ -788,10 +875,73 @@ impl ProcessAuthority {
     /// rejects the signal — including on replay, where the durable receipt
     /// stays committed so the next retry re-enters this path and signals
     /// again instead of losing the kill silently.
+    ///
+    /// # Security warning (W59-2 / evaluation F7)
+    ///
+    /// This entry point performs **no** pid-reuse fence: between the receipt
+    /// committing and the signal firing (and on every replay's supplementary
+    /// resend), it never re-verifies that the OS pid backing the target
+    /// Process still belongs to the receipt's generation. OS signals cannot
+    /// carry generations, so a pid reused by a newer incarnation would be
+    /// signaled on behalf of this kill. Callers that hold (or assemble) the
+    /// supervisor's [`SupervisorPidRegistry`] must use
+    /// [`Self::request_platform_kill_with_registry`] with `Some(registry)`
+    /// instead; a generation-fenced adapter map
+    /// ([`crate::PosixPlatformKillAdapter::with_generation_pid_map`] /
+    /// [`crate::WindowsPlatformKillAdapter::with_generation_pid_map`])
+    /// narrows the same window at the adapter layer.
     pub fn request_platform_kill(
         &self,
         request: RequestPlatformKillRequest,
         adapter: &impl PlatformKillAdapter,
+    ) -> Result<PlatformKillDecision, ProcessAuthorityError> {
+        self.request_platform_kill_with_registry(request, adapter, None)
+    }
+
+    /// [`Self::request_platform_kill`] with the W59-2 / evaluation F7
+    /// pre-signal generation fence: when `pid_registry` is `Some`, every
+    /// adapter invocation — the fresh commit's signal **and** every replay's
+    /// supplementary resend — is preceded by a fenced registry lookup of the
+    /// receipt's `(process_id, process_generation)`:
+    ///
+    /// - the registry's current mapping generation equals the receipt's
+    ///   generation → the signal issues (the registry guarantees one
+    ///   generation owns exactly one OS pid, so the generation match is the
+    ///   pid identity match);
+    /// - the mapping advanced to another generation
+    ///   ([`ProcessAuthorityError::PlatformKillGenerationMismatch`]) or no
+    ///   mapping is registered
+    ///   ([`ProcessAuthorityError::PlatformKillTargetNotRegistered`]) → the
+    ///   signal is **not** issued.
+    ///
+    /// `None` reproduces [`Self::request_platform_kill`] exactly, including
+    /// its documented lack of a pid-reuse fence.
+    ///
+    /// At-least-once semantics are unchanged, and a fenced rejection is not
+    /// a swallowed signal: the durable receipt commits before the fence runs
+    /// (the receipt's shape is an immutable intent record with no
+    /// delivery-status column, so delivery outcomes flow through the
+    /// decision/error channel exactly like adapter failures already do), and
+    /// the typed error reports why no signal fired. A retry of the same kill
+    /// replays the receipt and re-runs the fence: while the registry's
+    /// mapping disagrees (a newer generation holds the pid, or the mapping is
+    /// absent) the resend stays rejected — a pid reused by a newer incarnation
+    /// is never signaled on behalf of this receipt — and a registry whose
+    /// mapping for the receipt's generation is merely absent (unregistered,
+    /// not superseded) lifts the fence again once the supervisor re-registers
+    /// that exact generation.
+    ///
+    /// # Errors
+    ///
+    /// Fails with every [`Self::request_platform_kill`] condition, plus the
+    /// two fence rejections above (receipt committed, zero signals issued)
+    /// and [`ProcessAuthorityError::LockPoisoned`] when the registry lock is
+    /// poisoned.
+    pub fn request_platform_kill_with_registry(
+        &self,
+        request: RequestPlatformKillRequest,
+        adapter: &impl PlatformKillAdapter,
+        pid_registry: Option<&SupervisorPidRegistry>,
     ) -> Result<PlatformKillDecision, ProcessAuthorityError> {
         // `(receipt, replayed)`: the committed receipt plus whether it was
         // freshly inserted (`false`) or loaded from an exact idempotent
@@ -846,6 +996,46 @@ impl ProcessAuthority {
                 }
             }
         };
+
+        // W59-2 / evaluation F7 pre-signal fence: re-verify, at signal time
+        // and on every replay's supplementary resend, that the supervisor
+        // pid registry still maps the receipt's (process_id, generation).
+        // The registry guarantees one generation owns exactly one OS pid,
+        // so the generation match is the pid identity match; a mismatch
+        // means the OS pid may have been reused by a newer incarnation and
+        // must not be signaled on behalf of this receipt. The receipt stays
+        // committed — the typed rejection is the truthful report, not a
+        // swallowed signal.
+        if let Some(pid_registry) = pid_registry {
+            let entry = pid_registry.lookup(receipt.process_id).map_err(|error| {
+                match error {
+                    supervisor_pid::SupervisorPidRegistryError::ProcessNotRegistered(
+                        process_id,
+                    ) => ProcessAuthorityError::PlatformKillTargetNotRegistered(process_id),
+                    // `lookup` holds the registry read lock and reads one
+                    // row; the stale/rebind write-path rejections are
+                    // unreachable here but must not panic the mapping.
+                    supervisor_pid::SupervisorPidRegistryError::LockPoisoned => {
+                        ProcessAuthorityError::LockPoisoned
+                    }
+                    supervisor_pid::SupervisorPidRegistryError::StaleProcessGeneration {
+                        ..
+                    }
+                    | supervisor_pid::SupervisorPidRegistryError::OsPidRebind { .. } => {
+                        ProcessAuthorityError::CorruptRecord(
+                            "supervisor pid registry lookup returned a write-path rejection",
+                        )
+                    }
+                }
+            })?;
+            if entry.process_generation != receipt.process_generation {
+                return Err(ProcessAuthorityError::PlatformKillGenerationMismatch {
+                    process_id: receipt.process_id,
+                    receipt_generation: receipt.process_generation,
+                    registry_generation: entry.process_generation,
+                });
+            }
+        }
 
         // At-least-once tail: fresh commits AND replays re-drive the adapter,
         // so a signal lost after the receipt committed is re-issued by the

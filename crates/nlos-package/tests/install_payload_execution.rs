@@ -206,6 +206,72 @@ fn signature_rejected_package_leaves_a_persistent_verify_store_untouched() {
     );
 }
 
+/// Verify-before-materialize, full gate (audit 27 D1, E-6b): a
+/// payload-tampered package carries a VALID signature (the signature
+/// covers manifest digests, not payload bytes), so only the full
+/// pipeline — content binding — rejects it. `install` must gate the
+/// whole pipeline in a throwaway store first: the persistent state root
+/// receives zero tampered payload bytes, instead of durably materializing
+/// the unverified payload before the binding failure with no rollback
+/// and no orphan-GC reachability.
+#[test]
+fn payload_tampered_install_leaves_zero_payload_bytes_in_the_state_root() {
+    let scratch = ScratchDir::new("install-gate");
+    let tree = scratch.path("tree");
+    write_fixture_tree(&tree);
+    let package_path = build_fixture_package(&scratch, &tree);
+
+    let mut tampered = fs::read(&package_path).expect("read package");
+    let positions: Vec<usize> = tampered
+        .windows(EXECUTABLE_PAYLOAD.len())
+        .enumerate()
+        .filter(|(_, window)| *window == EXECUTABLE_PAYLOAD)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        positions.len(),
+        1,
+        "payload needle must occur exactly once in the package file"
+    );
+    tampered[positions[0]] ^= 0xff;
+    let tampered_path = scratch.path("tampered.nlospkg");
+    fs::write(&tampered_path, &tampered).expect("write tampered package");
+
+    let state = scratch.path("state");
+    let install = run_cli(&[
+        "install",
+        &tampered_path.to_string_lossy(),
+        "--root",
+        &state.to_string_lossy(),
+    ]);
+    assert_eq!(
+        install.status.code(),
+        Some(EXIT_BINDING),
+        "payload tamper must stay a typed binding failure:\n{}",
+        stderr_text(&install)
+    );
+
+    let mut tampered_needle = EXECUTABLE_PAYLOAD.to_vec();
+    tampered_needle[0] ^= 0xff;
+    let mut durable: Vec<PathBuf> = Vec::new();
+    collect_files(&state, &mut durable);
+    let offenders: Vec<PathBuf> = durable
+        .into_iter()
+        .filter(|path| {
+            fs::read(path).is_ok_and(|content| {
+                content
+                    .windows(tampered_needle.len())
+                    .any(|window| window == tampered_needle)
+            })
+        })
+        .collect();
+    assert_eq!(
+        offenders,
+        Vec::<PathBuf>::new(),
+        "a gate-rejected package must leave zero payload bytes in the state root"
+    );
+}
+
 fn collect_files(directory: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;

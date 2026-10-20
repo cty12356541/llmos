@@ -343,7 +343,11 @@ impl WaitAuthority {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
+            0 => {
+                schema::migrate_v1(&mut connection)?;
+                schema::migrate_v2(&mut connection)?;
+            }
+            1 => schema::migrate_v2(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(WaitAuthorityError::SchemaVersionUnsupported(other)),
         }

@@ -4,6 +4,13 @@
 //! Protobuf `ExchangeRequest` or `ExchangeResponse`. Platform endpoint names
 //! are supplied by a service resolver and never become schema identity.
 
+// unsafe 审计说明：本 crate 刻意不继承 workspace 的 `unsafe_code = "forbid"`
+// （见 Cargo.toml [lints] 注释）：唯一的 unsafe 面是 `windows` 模块对
+// `GetNamedPipeClientProcessId` 的单点 FFI 桥——服务端 OS 级客户端 pid 凭据
+// 只能经该系统调用获得（与 `nlos-store-fault` 的 VFS 垫片同族的指定审计
+// 单元）。unsafe 全部收敛于 `src/windows.rs`，逐块附 SAFETY 论证；其余模块
+// 不含任何 unsafe 代码。
+
 use std::error::Error;
 use std::fmt;
 use std::future::Future;

@@ -111,10 +111,10 @@ mod mixed {
                 .expect("inspect mixed finalize envelope")
                 .is_some()
         );
-        assert!(
+        assert_eq!(
             task.list_incomplete_semantic_commit_plans(1)
-                .expect("scan incomplete mixed plans")
-                .is_empty()
+                .expect("scan incomplete mixed plans"),
+            [] as [nlos_task::SemanticCommitPlanRecord; 0]
         );
         assert_eq!(publication_count(semantic_root), 1);
     }

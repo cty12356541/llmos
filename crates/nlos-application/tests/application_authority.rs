@@ -189,11 +189,11 @@ fn install_fresh_package_creates_application_generation_one() {
             .expect("inspect unknown")
             .is_none()
     );
-    assert!(
+    assert_eq!(
         authority
             .list_installations(nlos_types::ApplicationId::from_bytes([0xEE; 16]))
-            .expect("list unknown")
-            .is_empty()
+            .expect("list unknown"),
+        [] as [nlos_application::InstallationReceipt; 0]
     );
     assert!(matches!(
         authority.inspect_installation(nlos_types::InstallationId::from_bytes([0xEE; 16])),

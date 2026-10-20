@@ -857,8 +857,9 @@ pub enum ControlError {
     #[cfg(feature = "cli")]
     Ipc(nlos_ipc::IpcError),
     /// ADR-0011 handshake refusal on the authenticated dispatch path
-    /// (Unix + `cli` only, via [`crate::auth`]).
-    #[cfg(all(unix, feature = "cli"))]
+    /// (`cli` feature, via [`crate::auth`]; platform-dispatched like the
+    /// `nlos-ipc` handshake transport it consumes).
+    #[cfg(feature = "cli")]
     Handshake(nlos_ipc::handshake::HandshakeError),
 }
 
@@ -872,7 +873,7 @@ impl fmt::Display for ControlError {
             }
             #[cfg(feature = "cli")]
             Self::Ipc(error) => write!(formatter, "control transport: {error}"),
-            #[cfg(all(unix, feature = "cli"))]
+            #[cfg(feature = "cli")]
             Self::Handshake(error) => write!(formatter, "control handshake refused: {error}"),
         }
     }
@@ -885,7 +886,7 @@ impl Error for ControlError {
             Self::InvalidCommand(_) | Self::UnexpectedResponse(_) => None,
             #[cfg(feature = "cli")]
             Self::Ipc(error) => Some(error),
-            #[cfg(all(unix, feature = "cli"))]
+            #[cfg(feature = "cli")]
             Self::Handshake(error) => Some(error),
         }
     }
@@ -1878,6 +1879,32 @@ fn not_found_failure(message: &'static str) -> SabiFailure {
     }
 }
 
+/// Typed refusal for a plan-scoped read whose evidence window was cut: the
+/// aggregate snapshot carried `alerts_truncated` and no retained alert
+/// matched the plan, so the plan may still hold an escalated alert beyond
+/// the window and a synthesized `NOT_FOUND` would be a false negative
+/// (W43-E3, audit 14 D1; E-3 moves the refusal into the receipt's typed
+/// failure channel).
+///
+/// The class is chosen against the bounded failure conventions of the
+/// crate's `SystemControlError::to_sabi_failure` table: `DRIVER` is the
+/// class that mapping already uses when a backing authority cannot produce
+/// a bounded answer (wall-clock refusal, invalid recovery alert), and
+/// `DO_NOT_RETRY` is honest because the window bound is pinned by the
+/// frozen schema — retrying the same read truncates identically.
+/// `UNCERTAIN`/`RETRY`/`PARTIAL` stay reserved for effect-uncertain
+/// mutations that carry reconciliation evidence, which a synthesized read
+/// refusal has none of.
+fn truncated_alert_window_failure() -> SabiFailure {
+    SabiFailure {
+        code: SabiErrorCode::Driver.into(),
+        retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+        safe_message: "escalated alert window was truncated before the \
+                       requested plan; the plan may exist beyond the window"
+            .to_owned(),
+    }
+}
+
 fn compose_process_inspection(
     process: Option<&dyn ProcessInspector>,
     process_id: [u8; 16],
@@ -2031,12 +2058,12 @@ impl ControlReceipt {
                         // escalated set was returned: the plan may still
                         // hold an escalated alert beyond the window, so a
                         // synthesized NotFound would be a false negative.
-                        // Fail as an unanswerable projection instead.
-                        return Err(ControlError::UnexpectedResponse(
-                            "the escalated alert window was truncated before the requested plan",
-                        ));
-                    }
-                    if inspected.alerts.is_empty() {
+                        // The refusal stays in the receipt's typed-failure
+                        // channel — an unanswerable read over bounded
+                        // evidence, not a projection defect — so the CLI
+                        // renders it through the existing failure path.
+                        Err(truncated_alert_window_failure())
+                    } else if inspected.alerts.is_empty() {
                         Err(not_found_failure(
                             "requested recovery task was not found in the operations snapshot",
                         ))
@@ -2527,8 +2554,8 @@ mod tests {
             i32::from(SystemControlView::ArtifactCommitRecovery)
         );
         assert_eq!(request.alert_limit, INSPECT_TASK_ALERT_LIMIT);
-        assert!(request.target_id.is_empty());
-        assert!(request.plan_id.is_empty());
+        assert_eq!(request.target_id, [] as [u8; 0]);
+        assert_eq!(request.plan_id, [] as [u8; 0]);
 
         let aggregate = build_request_envelope(&ControlCommand::InspectHealth).unwrap();
         let aggregate_request = decode_get_system_control_request(&aggregate.payload).unwrap();
@@ -2625,16 +2652,18 @@ mod tests {
         assert!(!inspected.alerts_truncated);
     }
 
-    /// Regression (W43-E3, audit 14 D1): when the window was truncated the
-    /// plan may hold an alert beyond it — the projection must refuse to
-    /// answer instead of manufacturing a false `NotFound`.
+    /// Regression (W43-E3, audit 14 D1; E-3 typed refusal): when the window
+    /// was truncated the plan may hold an alert beyond it — the projection
+    /// must refuse to answer instead of manufacturing a false `NotFound`,
+    /// and the refusal is a typed receipt failure (`DRIVER` +
+    /// `DO_NOT_RETRY`, bounded message), not a projection defect.
     #[test]
     fn compose_inspect_task_reports_truncation_instead_of_false_not_found() {
         let alerts: Vec<_> = (1_u8..=8)
             .map(|tag| synthetic_alert([tag; 16], 10_000 + i64::from(tag)))
             .collect();
         let response = synthetic_artifact_response(alerts, true);
-        let composed = ControlReceipt::compose(
+        let receipt = ControlReceipt::compose(
             &ControlCommand::InspectTask {
                 plan_id: [0xA9; 16],
             },
@@ -2642,13 +2671,16 @@ mod tests {
             None,
             None,
             None,
+        )
+        .unwrap();
+        let failure = receipt.outcome.unwrap_err();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::Driver));
+        assert_eq!(
+            failure.retry,
+            i32::from(nlos_schema::sabi::v1::RetryDirective::DoNotRetry)
         );
-        assert!(matches!(
-            composed,
-            Err(ControlError::UnexpectedResponse(
-                "the escalated alert window was truncated before the requested plan"
-            ))
-        ));
+        assert!(failure.safe_message.contains("truncated"));
+        assert!(failure.safe_message.contains("may exist"));
     }
 
     /// The definitive miss stays a `NotFound` failure: an untruncated window
@@ -3425,7 +3457,7 @@ mod tests {
             i32::from(nlos_schema::sabi::v1::SystemControlView::TaskGroup)
         );
         assert_eq!(group_payload.target_id, vec![0x91; 16]);
-        assert!(group_payload.plan_id.is_empty());
+        assert_eq!(group_payload.plan_id, [] as [u8; 0]);
 
         let node = build_request_envelope(&ControlCommand::InspectTaskNode {
             plan_id: [0xA1; 16],

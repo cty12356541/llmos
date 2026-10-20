@@ -456,11 +456,9 @@ async fn competing_attempts_cas_issues_exactly_one_permit_requester_a_first() {
     // No double commit anywhere: a second drain finds nothing, the head
     // stays at 1, and the winner's commit receipt remains the only one.
     let later = runtime.wall_now_i64(seeded_key(seed, 62)).expect("wall");
-    assert!(
-        runtime
-            .converge_pending(16, later)
-            .expect("second drain")
-            .is_empty()
+    assert_eq!(
+        runtime.converge_pending(16, later).expect("second drain"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
     assert_eq!(
         runtime
@@ -570,11 +568,9 @@ async fn competing_attempts_cas_issues_exactly_one_permit_requester_b_first() {
     // The A loser's retry boundary is the same typed fail-closed fence.
     loser_retry_is_fenced(&runtime, task_id, seed, &party_a);
     let later = runtime.wall_now_i64(seeded_key(seed, 62)).expect("wall");
-    assert!(
-        runtime
-            .converge_pending(16, later)
-            .expect("second drain")
-            .is_empty()
+    assert_eq!(
+        runtime.converge_pending(16, later).expect("second drain"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
     assert_eq!(
         runtime
@@ -747,11 +743,9 @@ async fn cancel_racing_a_live_permit_linearizes_permit_first_with_single_commit(
     let later = runtime
         .wall_now_i64(seeded_key(seed, 73))
         .expect("drain wall reading");
-    assert!(
-        runtime
-            .converge_pending(16, later)
-            .expect("second drain")
-            .is_empty()
+    assert_eq!(
+        runtime.converge_pending(16, later).expect("second drain"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
     let replay = runtime
         .tasks
@@ -855,11 +849,9 @@ async fn cancel_before_any_permit_request_fails_closed_both_attempts() {
     let now_ms = runtime
         .wall_now_i64(seeded_key(seed, 72))
         .expect("converge wall reading");
-    assert!(
-        runtime
-            .converge_pending(16, now_ms)
-            .expect("converge")
-            .is_empty()
+    assert_eq!(
+        runtime.converge_pending(16, now_ms).expect("converge"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
     let task = runtime.tasks.inspect_task(task_id).expect("task");
     assert_eq!(task.head_commit_seq, 0);

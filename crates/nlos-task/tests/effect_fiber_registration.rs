@@ -326,11 +326,11 @@ fn effect_binding_registration_precedes_effect_and_replays() {
         .expect("list registrations");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0], first);
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x71))
-            .expect("list other binding")
-            .is_empty()
+            .expect("list other binding"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 
     // Registration precedes the effect: the slot is still free to issue its
@@ -377,11 +377,11 @@ fn effect_binding_gates_fail_closed_without_side_effects() {
     ));
 
     // Registration and slot binding stay absent after the failed gates.
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x70))
-            .expect("list after failures")
-            .is_empty()
+            .expect("list after failures"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 
     // The closed window: once the slot dispatched, registration is too late.
@@ -406,11 +406,11 @@ fn effect_binding_gates_fail_closed_without_side_effects() {
             state: SlotState::Dispatched
         })
     ));
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x70))
-            .expect("list after closed window")
-            .is_empty()
+            .expect("list after closed window"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 }
 
@@ -492,11 +492,11 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
         let authority = database.open();
 
         // W1 crash before the write: nothing durable, redo registers fresh.
-        assert!(
+        assert_eq!(
             authority
                 .list_effect_registrations_for_binding(fiber(0x70))
-                .expect("absent before any write")
-                .is_empty()
+                .expect("absent before any write"),
+            [] as [nlos_task::EffectFiberRegistrationRecord; 0]
         );
         let record = registered(
             authority
@@ -550,13 +550,13 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
     assert_eq!(listed, vec![expected.clone()]);
 
     // The reopened authority opens cleanly at the current schema version
-    // (44) and the migrated registrations survive re-open again.
+    // and the migrated registrations survive re-open again.
     {
         let raw = Connection::open(&database.path).expect("open raw connection");
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            45
+            46
         );
     }
     let reopened = database.open();
@@ -784,16 +784,16 @@ fn v45_migration_scopes_fiber_idempotency_keys_per_task_and_preserves_rows() {
     drop(authority);
     regress_fiber_registrations_to_v44(&database.path);
 
-    // Reopen: v44 → v45 runs, stamping the version and rebuilding the
-    // uniqueness scope while carrying the row verbatim.
+    // Reopen: v44 → v45 → … → current runs, stamping the version and
+    // rebuilding the uniqueness scope while carrying the row verbatim.
     let authority = database.open();
     {
         let raw = Connection::open(&database.path).expect("open raw connection");
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            45,
-            "v45 migration stamped"
+            46,
+            "migration chain stamps the current schema version"
         );
         let mut statement = raw
             .prepare("SELECT name FROM pragma_index_info('effect_fiber_registrations_idempotency_key') ORDER BY seqno")

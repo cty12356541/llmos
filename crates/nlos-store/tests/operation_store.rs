@@ -402,7 +402,10 @@ fn dispatched_cancel_control_advances_epoch_once() {
         )
         .expect("retry cancel");
     assert!(matches!(replay, CancelRequestDecision::Replayed(_)));
-    assert!(store.pending_outbox(10).expect("outbox").is_empty());
+    assert_eq!(
+        store.pending_outbox(10).expect("outbox"),
+        [] as [nlos_store::OutboxEntry; 0]
+    );
 }
 
 #[test]
@@ -530,7 +533,10 @@ fn completion_and_wake_outbox_survive_reopen_and_duplicate_callback() {
     store
         .acknowledge_outbox(pending[0].sequence)
         .expect("idempotent acknowledge");
-    assert!(store.pending_outbox(10).expect("pending").is_empty());
+    assert_eq!(
+        store.pending_outbox(10).expect("pending"),
+        [] as [nlos_store::OutboxEntry; 0]
+    );
 }
 
 #[test]
@@ -604,7 +610,10 @@ fn forged_callback_rolls_back_without_outbox_or_state_change() {
         store.inspect(handle).expect("inspect").state,
         OperationState::Dispatched
     );
-    assert!(store.pending_outbox(10).expect("pending").is_empty());
+    assert_eq!(
+        store.pending_outbox(10).expect("pending"),
+        [] as [nlos_store::OutboxEntry; 0]
+    );
 }
 
 #[test]

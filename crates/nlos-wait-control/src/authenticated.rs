@@ -4,16 +4,22 @@
 //! front of the plain [`WaitControlService`] without touching it: the local
 //! trust-domain path, its authorization posture, and the conformance server
 //! keep their exact behavior and byte surface. Nothing here is on any default
-//! feature path; the whole module requires the `authenticated-server` feature
-//! and a Unix host.
+//! feature path; the whole module requires the `authenticated-server` feature.
+//! The serving surface is platform-dispatched exactly like the `nlos-ipc`
+//! handshake transport facility it consumes: the Unix-domain socket on Unix
+//! and the named pipe on Windows frame the identical handshake and request
+//! bytes, and only transport acquisition (bind/accept/connect) plus the
+//! endpoint-path byte encoding fed into the channel binding differ per
+//! platform.
 //!
 //! # Composition (one connection)
 //!
 //! [`AuthenticatedWaitControlServer::serve_one`] composes the `nlos-ipc`
 //! handshake transport facility in the facility's fail-closed order:
 //!
-//! 1. `UnixListenerAdapter::accept` plus the caller's [`PeerAuthorizer`]
-//!    pre-gate — before any handshake side effect;
+//! 1. the platform listener's `accept` — `UnixListenerAdapter` on Unix,
+//!    `NamedPipeListenerAdapter` on Windows — plus the caller's
+//!    [`PeerAuthorizer`] pre-gate, before any handshake side effect;
 //! 2. one challenge issued from the [`ServerHandshakeContext`]'s one-time
 //!    nonce registry and bound to its locally derived channel binding;
 //! 3. attestation verification through the [`IdentityAuthority`] with
@@ -58,13 +64,19 @@ use nlos_ipc::handshake::{
     HandshakeError, VerifiedPrincipalHandshake, decode_attestation_wire, encode_challenge_wire,
     issue_challenge, verify_attestation,
 };
+#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
-use nlos_ipc::{FramedIo, IpcError, OutboundResponse, PeerAuthorizer, TransportConfig, serve_one};
+#[cfg(windows)]
+use nlos_ipc::windows::NamedPipeListenerAdapter;
+use nlos_ipc::{
+    FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
+};
 use nlos_schema::HANDSHAKE_NONCE_BYTES;
 use nlos_schema::sabi::v1::{Envelope, ExchangeResponse, SabiRequestContext, envelope};
 use nlos_types::PrincipalId;
 use nlos_wait::WaitAuthority;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     CANCEL_WAIT_METHOD, NOTIFY_COMMITS_METHOD, REGISTER_WAIT_METHOD, WaitControlAuthorizer,
@@ -344,14 +356,15 @@ impl<A> AuthenticatedWaitControlServer<A>
 where
     A: WaitControlAuthorizer,
 {
-    /// Accepts exactly one connection and serves it under ADR-0011
-    /// authentication, in the handshake facility's fail-closed order: OS
-    /// pre-gate, challenge, attestation, then the plain one-request
-    /// [`serve_one`] semantics with the verified principal bound into the
-    /// request path. `verified_at_ms` is the clock authority's durable wall
-    /// reading; a host that wants real-time key-expiry checks advances the
-    /// wall domain (`AuthorityClock::wall_now`) during its own bootstrap —
-    /// this server never takes a durable side effect on the read path.
+    /// Accepts exactly one connection from the Unix-domain socket listener
+    /// and serves it under ADR-0011 authentication, in the handshake
+    /// facility's fail-closed order: OS pre-gate, challenge, attestation,
+    /// then the plain one-request [`serve_one`] semantics with the verified
+    /// principal bound into the request path. `verified_at_ms` is the clock
+    /// authority's durable wall reading; a host that wants real-time
+    /// key-expiry checks advances the wall domain (`AuthorityClock::wall_now`)
+    /// during its own bootstrap — this server never takes a durable side
+    /// effect on the read path.
     ///
     /// # Errors
     ///
@@ -361,6 +374,7 @@ where
     /// and bad signatures — in every such case before any request byte is
     /// dispatched. A failed or unavailable wall reading is a typed clock
     /// error; the burned nonce stays consumed.
+    #[cfg(unix)]
     pub async fn serve_one<P, N>(
         &self,
         listener: &UnixListenerAdapter,
@@ -377,6 +391,87 @@ where
             .accept(config)
             .await
             .map_err(HandshakeError::Transport)?;
+        self.serve_authenticated(
+            stream,
+            peer,
+            config,
+            peer_gate,
+            now_monotonic_ns,
+            next_nonce,
+        )
+        .await
+    }
+
+    /// Accepts exactly one connection from the named-pipe listener and serves
+    /// it under ADR-0011 authentication, in the handshake facility's
+    /// fail-closed order: OS pre-gate, challenge, attestation, then the plain
+    /// one-request [`serve_one`] semantics with the verified principal bound
+    /// into the request path. `verified_at_ms` is the clock authority's
+    /// durable wall reading; a host that wants real-time key-expiry checks
+    /// advances the wall domain (`AuthorityClock::wall_now`) during its own
+    /// bootstrap — this server never takes a durable side effect on the read
+    /// path.
+    ///
+    /// The listener is taken by mutable reference because one named-pipe
+    /// accept consumes the current listening instance and creates the next
+    /// one before handing the connected stream to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with a typed handshake error for pre-gate denial,
+    /// transport failures, schema violations, wrong or replayed nonces,
+    /// channel-binding drift, unknown principals, revoked or invalid keys,
+    /// and bad signatures — in every such case before any request byte is
+    /// dispatched. A failed or unavailable wall reading is a typed clock
+    /// error; the burned nonce stays consumed.
+    #[cfg(windows)]
+    pub async fn serve_one<P, N>(
+        &self,
+        listener: &mut NamedPipeListenerAdapter,
+        config: TransportConfig,
+        peer_gate: &P,
+        now_monotonic_ns: u64,
+        next_nonce: N,
+    ) -> Result<AuthenticatedWaitOutcome, AuthenticatedWaitControlError>
+    where
+        P: PeerAuthorizer,
+        N: FnOnce() -> [u8; HANDSHAKE_NONCE_BYTES],
+    {
+        let (stream, peer) = listener
+            .accept(config)
+            .await
+            .map_err(HandshakeError::Transport)?;
+        self.serve_authenticated(
+            stream,
+            peer,
+            config,
+            peer_gate,
+            now_monotonic_ns,
+            next_nonce,
+        )
+        .await
+    }
+
+    /// Platform-neutral authenticated serving core: the OS-credential
+    /// pre-gate, the challenge-response handshake, and the plain
+    /// one-request [`serve_one`] semantics, in exactly that order. Both
+    /// platform wrappers delegate here after their platform-specific accept,
+    /// so the handshake bytes and the failure order are identical on every
+    /// platform.
+    async fn serve_authenticated<S, P, N>(
+        &self,
+        stream: S,
+        peer: PeerIdentity,
+        config: TransportConfig,
+        peer_gate: &P,
+        now_monotonic_ns: u64,
+        next_nonce: N,
+    ) -> Result<AuthenticatedWaitOutcome, AuthenticatedWaitControlError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+        P: PeerAuthorizer,
+        N: FnOnce() -> [u8; HANDSHAKE_NONCE_BYTES],
+    {
         peer_gate
             .authorize(&peer)
             .map_err(HandshakeError::PeerAuthorization)?;

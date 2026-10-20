@@ -29,6 +29,7 @@ dev-fixture = [
     "dep:nlos-clock",
     "dep:nlos-commit-coordinator",
     "dep:nlos-identity",
+    "dep:nlos-ipc",
     "dep:nlos-task",
     "dep:tokio",
 ]
@@ -41,19 +42,12 @@ required-features = ["dev-fixture"]
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 # W32-F:UI Surface 呈现的本地应用权威直读(ApplicationAuthority inspect 面)。
 nlos-application = { path = "../../crates/nlos-application" }
-# F3-c2:named pipe 传输面(FramedIo/LocalRpcClient/ADR-0011 握手原语/Windows
-# named pipe 适配器)。此前仅 dev-fixture 可选依赖;Windows 认证派发是生产
-# 代码路径,转硬依赖(依赖树不变:nlos-system-control 的 cli feature 已带入)。
-nlos-ipc = { path = "../../crates/nlos-ipc" }
 nlos-resource = { path = "../../crates/nlos-resource" }
 nlos-schema = { path = "../../crates/nlos-schema" }
 nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource", "application"] }
 nlos-types = { path = "../../crates/nlos-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# F3-c2:Windows 通道绑定派生(SHA-256;同上游 nlos-ipc 域分隔派生)。
-# 已是 nlos-system-control 的硬依赖,入树不新增 crate。
-sha2 = { version = "0.11.0", default-features = false }
 tauri = { version = "2", features = [] }
 
 # dev-fixture 可选依赖(与示例/测试共享,默认不启用)。
@@ -61,23 +55,10 @@ nlos-artifact = { path = "../../crates/nlos-artifact", optional = true }
 nlos-clock = { path = "../../crates/nlos-clock", optional = true }
 nlos-commit-coordinator = { path = "../../crates/nlos-commit-coordinator", optional = true }
 nlos-identity = { path = "../../crates/nlos-identity", optional = true }
+nlos-ipc = { path = "../../crates/nlos-ipc", optional = true }
 nlos-task = { path = "../../crates/nlos-task", optional = true }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"], optional = true }
 
+# Windows 命令 id 的 OS 随机源(BCrypt CSPRNG);Unix 侧沿用 /dev/urandom。
 [target.'cfg(windows)'.dependencies]
-# F3-c2:Windows 侧 §25.3 命令身份生成用 OS 级随机源(Unix 分支保持
-# /dev/urandom 不变)。getrandom 已在依赖树内(传递依赖),不新增 crate。
-getrandom = "0.4"
-# F3-c2:Windows named pipe 传输面(tokio::net::windows::named_pipe;
-# tauri 已带入 tokio,此处只补 net feature,不新增 crate)。
-tokio = { version = "1.48", features = ["net"] }
-# F3-c3:dev-fixture 密钥文件的 owner-only DACL(0600 等价物)需直调
-# Win32 安全 API。windows-sys 与根 workspace 同版本(经 nlos-ipc 传递
-# 依赖已在 desktop 树内),不新增第三方 crate。
-windows-sys = { version = "0.61.2", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-    "Win32_Storage_FileSystem",
-    "Win32_System_SystemServices",
-] }
+getrandom = "0.3"

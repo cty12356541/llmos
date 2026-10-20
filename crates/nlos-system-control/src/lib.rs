@@ -132,19 +132,34 @@ mod executor_receipt;
 /// documentation for the renderer contract and remaining B-TASK-006M scope.
 pub mod openmetrics;
 
-/// ADR-0011 opt-in authenticated control-plane entry points (Unix, `cli`
+/// ADR-0011 opt-in authenticated control-plane entry points (`cli`
 /// feature). Strictly additive: the local trust-domain paths above keep
 /// their exact semantics; this module adds one authenticated serve variant
-/// and one authenticated dispatch client.
-#[cfg(all(unix, feature = "cli"))]
+/// and one authenticated dispatch client. Platform-dispatched like the
+/// `nlos-ipc` handshake transport it consumes — Unix-domain socket on Unix,
+/// named pipe on Windows; handshake and exchange wire bytes are identical
+/// on every platform.
+#[cfg(feature = "cli")]
 pub mod auth;
 
-/// Resident `system_control` daemon (`daemon` feature, Unix only): owns one
-/// state root with every real authority, runs the commit-recovery worker,
-/// and serves the authenticated (GUI) and plain (CLI) endpoints side by
-/// side. See the module documentation for the assembly and exit contract.
-#[cfg(all(unix, feature = "daemon"))]
+/// Resident `system_control` daemon (`daemon` feature): owns one state root
+/// with every real authority, runs the commit-recovery worker, and serves the
+/// authenticated (GUI) and plain (CLI) endpoints side by side.
+/// Platform-dispatched like the `nlos-ipc` transport and [`crate::auth`]
+/// entry points it consumes — Unix-domain sockets on Unix, named pipes on
+/// Windows; handshake and exchange wire bytes are identical on every
+/// platform. See the module documentation for the assembly and exit contract.
+#[cfg(feature = "daemon")]
 pub mod daemon;
+
+/// Materialization drive worker for the resident daemon (`daemon`
+/// feature): powers the W31-F two-tier scheduler over the plan authority
+/// the daemon owns — periodic scheduler passes (select → gate drive) per
+/// durable plan, with the Task authority's admission consult wired in.
+/// Lifecycle-shaped like the commit-recovery worker (named thread,
+/// idempotent stop, health face, backoff, terminal Fault).
+#[cfg(feature = "daemon")]
+pub mod materialization_driver;
 
 /// Discriminates the operation-level arms routed through
 /// [`RecoverySystemControl::execute_operation_control`].

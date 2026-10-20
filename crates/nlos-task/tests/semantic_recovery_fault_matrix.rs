@@ -810,11 +810,11 @@ fn fault_kill9_after_record_commit_keeps_durable_total_and_fences_stale_replay()
     assert_eq!(durable.resolved_at_ms, None);
 
     // The durable backoff schedule drives the restarted scan.
-    assert!(
+    assert_eq!(
         authority
             .list_due_semantic_commit_plans(10, 1_000)
-            .expect("scan before due")
-            .is_empty()
+            .expect("scan before due"),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     let due = authority
         .list_due_semantic_commit_plans(10, 1_100)
@@ -995,17 +995,17 @@ fn fault_silent_write_loss_converges_to_unique_terminal_state() {
     assert_eq!(resolved.state, SemanticRecoveryState::Resolved);
     assert_eq!(resolved.total_failures, 1);
     assert_eq!(resolved.resolved_at_ms, Some(20_000));
-    assert!(
+    assert_eq!(
         verified
             .list_semantic_recovery_alerts()
-            .expect("alerts after converge")
-            .is_empty()
+            .expect("alerts after converge"),
+        [] as [nlos_task::SemanticRecoveryAlert; 0]
     );
-    assert!(
+    assert_eq!(
         verified
             .list_due_semantic_commit_plans(10, i64::MAX)
-            .expect("scan after converge")
-            .is_empty()
+            .expect("scan after converge"),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
 
     // Finalize replay is idempotent: same receipt, no phantom ledger

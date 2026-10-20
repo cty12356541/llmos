@@ -1028,3 +1028,183 @@ fn fenced_pending_round_closes_on_every_verdict_and_releases_one_pending() {
     assert_eq!(history[0].status, MaterializationRequestStatus::Rejected);
     assert_eq!(history[1].status, MaterializationRequestStatus::Pending);
 }
+
+/// G3 layer 3 (the storage gate) closes *re-entry*, not just first
+/// entry: an historical `APPROVED` request is not a permanent
+/// `MATERIALIZING` pass (deep-audit/30 #5). After the eviction
+/// round-trip the raw `record_node_transition` face is refused — the
+/// old approval's `approved_voucher_id` does not bind this voucher —
+/// and the only way back in is a fresh gated round whose approval
+/// names its own voucher.
+#[test]
+fn historical_approval_is_not_a_permanent_reentry_pass() {
+    let root = Root::new("reentry-pass");
+    let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let wide = open_task(&root, &TASK_PROFILE_10K);
+    let plan_id = plan
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_a = node_id_of(&plan, plan_id, [0x0a; 16]);
+
+    // Round 1: approved, executed, evicted, rehydrated.
+    gate_into_materializing(&plan, &wide, plan_id, node_a, 0x21);
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Materializing,
+        PlanNodeState::Active,
+        0x22,
+    );
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Active,
+        PlanNodeState::Checkpointed,
+        0x23,
+    );
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Checkpointed,
+        PlanNodeState::Evicted,
+        0x24,
+    );
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Evicted,
+        PlanNodeState::Rehydrating,
+        0x25,
+    );
+
+    // The raw face cannot ride round 1's APPROVED row anymore.
+    let refused = plan
+        .record_node_transition(NodeTransitionRequest {
+            plan_id,
+            node_id: node_a,
+            from_state: PlanNodeState::Rehydrating,
+            to_state: PlanNodeState::Materializing,
+            expected_declared_revision: 1,
+            idempotency_key: IdempotencyKey::from_bytes([0xa1; 16]),
+            transitioned_at_ms: 4_000,
+        })
+        .expect_err("an historical approval must not re-open MATERIALIZING");
+    assert!(
+        refused
+            .to_string()
+            .contains("MATERIALIZING entry requires a gate-approved materialization request"),
+        "unexpected error: {refused}"
+    );
+    let row = plan
+        .inspect_node(plan_id, node_a)
+        .expect("inspect node")
+        .expect("node exists");
+    assert_eq!(row.state, PlanNodeState::Rehydrating);
+
+    // The only way back in is a fresh gated round.
+    let reentry = gate_into_materializing(&plan, &wide, plan_id, node_a, 0x26);
+    assert!(matches!(
+        reentry,
+        MaterializationResolutionDecision::Approved(_)
+    ));
+    let row = plan
+        .inspect_node(plan_id, node_a)
+        .expect("inspect node")
+        .expect("node exists");
+    assert_eq!(row.state, PlanNodeState::Materializing);
+}
+
+/// A dependencies-not-ready round consumes its blocked voucher
+/// *outside* the readiness drive-key ladder: once the dependencies
+/// complete, the very same request key must still open the round and
+/// materialize (the original defect consumed `drive_key(key, 1)` for
+/// the blocked fact without recording a request row, so the retry's
+/// `BLOCKED_DEPENDENCY → ELIGIBLE` voucher collided on the global
+/// idempotency-key UNIQUE constraint and the node could never
+/// materialize — deep-audit/30, registry #6).
+#[test]
+fn blocked_round_same_key_retry_materializes_once_dependencies_complete() {
+    let root = Root::new("blocked-retry");
+    let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let wide = open_task(&root, &TASK_PROFILE_10K);
+    let plan_id = plan
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x01), node_with_dependency(0x0b, 0x02, 0x0a)],
+            0x11,
+        ))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_a = node_id_of(&plan, plan_id, [0x0a; 16]);
+    let node_b = node_id_of(&plan, plan_id, [0x0b; 16]);
+    let request_key = IdempotencyKey::from_bytes([0x71; 16]);
+
+    // A is not COMPLETED: the round fails typed and durably blocks B.
+    let refused = plan
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id: node_b,
+            idempotency_key: request_key,
+            requested_at_ms: 2_000,
+        })
+        .expect_err("dependencies not ready");
+    assert!(matches!(
+        refused,
+        PlanStoreError::DependenciesNotReady { .. }
+    ));
+    let b_row = plan
+        .inspect_node(plan_id, node_b)
+        .expect("inspect b")
+        .expect("b exists");
+    assert_eq!(b_row.state, PlanNodeState::BlockedDependency);
+
+    // Complete A through the gate to its terminal state.
+    gate_into_materializing(&plan, &wide, plan_id, node_a, 0x21);
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Materializing,
+        PlanNodeState::Active,
+        0x22,
+    );
+    transition(
+        &plan,
+        plan_id,
+        node_a,
+        PlanNodeState::Active,
+        PlanNodeState::Completed,
+        0x23,
+    );
+
+    // Same-key retry: opens, drives, and approves — no UNIQUE collision.
+    let decision = plan
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id: node_b,
+            idempotency_key: request_key,
+            requested_at_ms: 2_500,
+        })
+        .expect("same-key retry after readiness");
+    assert!(matches!(
+        decision,
+        MaterializationRequestDecision::Requested(_)
+    ));
+    let approved = consult_and_resolve(&plan, &wide, request_key, 3_000);
+    assert!(matches!(
+        approved,
+        MaterializationResolutionDecision::Approved(_)
+    ));
+    let b_row = plan
+        .inspect_node(plan_id, node_b)
+        .expect("inspect b")
+        .expect("b exists");
+    assert_eq!(b_row.state, PlanNodeState::Materializing);
+}

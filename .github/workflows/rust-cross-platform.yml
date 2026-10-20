@@ -132,10 +132,13 @@ jobs:
   # F2（next-phase-plan §7）：desktop 面进矩阵——TS 类型检查 + src-tauri
   # dev-fixture 全量测试与 clippy。边界如实登记：①Tauri GUI 打包
   # （tauri build）需各 OS 系统依赖（ubuntu 的 webkit2gtk 等），本 job
-  # 不含；cargo 侧编译已由 clippy/test 覆盖。②Windows 腿 F3 落地后回补
-  # （W44-F2c 承诺兑现）：W45-C2 named pipe 传输面 + W45-C3 凭据面
-  # （对端 pid 解析/同用户令牌门/密钥文件 owner-only DACL）已合入，
-  # windows-latest 加回矩阵（W45-C3）。
+  # 不含；cargo 侧编译已由 clippy/test 覆盖。②Windows 腿已落地（W52，
+  # F3 收口）：认证派发核心（ipc 密钥读取/dispatch_control/ADR-0011
+  # 握手）与 SC auth 面已跨平台（unix socket / named pipe 平台分派，
+  # wire 字节同源）。unix 门内的 dev-fixture 测试在 windows 腿自然为
+  # 空集（其 harness 硬编码 Unix socket 路径，后续车道迁移）；新增的
+  # windows_authenticated_pipe_side（命名管道端到端 InspectHealth）由
+  # 同一 cargo test 步骤拾取。
   desktop:
     name: desktop (${{ matrix.os }})
     strategy:
@@ -178,6 +181,13 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+        working-directory: desktop
+
+      # 前端产物打包面（F2 边界收窄的落地面）: vite 产物哈希指纹与 CSS/JS
+      # 分包可在三平台核对; tauri GUI 安装包打包(bundler)仍按 W44-F2c
+      # 注释维持边界外。
+      - name: Frontend bundle build (vite)
+        run: npx vite build
         working-directory: desktop
 
       - name: Clippy (dev-fixture)
@@ -285,7 +295,41 @@ jobs:
           # 独立 key 前缀，避免与 stable 工具链缓存键冲突
           key: msrv-${{ runner.os }}
 
-      # rust-toolchain.toml 会把裸 cargo 钉在 stable 上，
+      # rust-toolchain.toml 会把裸 cargo 钉在文件声明的精确版本上，
       # 必须用 +1.97 显式工具链选择器覆盖，否则 MSRV 校验形同虚设
       - name: Check workspace on Rust 1.97
         run: cargo +1.97 check --workspace --all-targets
+
+  # W53：daemon feature 非 default，主 verify job 的 --workspace 从不编译它；
+  # 此 job 补上编译+测试覆盖，windows 腿同时承担 daemon 跨平台（W53-A）的
+  # MSVC 实机验证（此前仅本地 windows-gnu 交叉检查）。
+  daemon-feature:
+    name: daemon feature (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 与 rust-toolchain.toml 的钉值同步升（roll 仪式见该文件头注释）
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
+          components: clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: daemon-${{ runner.os }}
+
+      - name: Test system-control with daemon feature
+        run: cargo test -p nlos-system-control --features daemon
+
+      - name: Clippy with daemon feature
+        run: cargo clippy -p nlos-system-control --features daemon --all-targets -- -D warnings

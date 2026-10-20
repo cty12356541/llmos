@@ -12,15 +12,17 @@
 //! completion and successor-registry reopen; remote cleanup attestation and
 //! cross-authority endpoint revalidation remain out of scope.
 
+use nlos_operation::{OperationHandle, OperationState};
 use nlos_types::{
-    CommitPermitId, IdempotencyKey, ProcessId, ReceiptId, TaskAuthorityAssignmentId, TaskId,
-    TaskParticipantId,
+    CommitPermitId, Generation, IdempotencyKey, OperationId, ProcessId, ReceiptId,
+    TaskAuthorityAssignmentId, TaskId, TaskParticipantId,
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::effect::{
-    self, SlotRecord, SlotState, insert_effect_receipt, list_slots, load_slot, refresh_summary,
+    self, EffectReceipt, ReceiptKind, SlotRecord, SlotState, cas_slot, derive_effect_receipt_id,
+    insert_effect_receipt, list_slots, load_effect_receipt, load_slot, refresh_summary,
 };
 use crate::lease::{
     AuthorityAssignmentState, AuthorityLeaseBinding, AuthorityTakeoverReceiptRecord,
@@ -88,6 +90,84 @@ pub enum ReconcileReplay {
     /// Same slot, same adoption, same outcome, same proof: the original
     /// receipt (no double reconcile).
     Replayed(Box<ReconciliationReceiptRecord>),
+}
+
+/// One late Operation outcome offered to the task effect plane (W48-2,
+/// `ReconcileEffect` outbox lane).
+///
+/// The caller is the durable-Outbox consumer replaying a fact the Operation
+/// authority already committed: an operation whose wake permission was
+/// fenced by a cancel, then terminalized anyway
+/// (`CanonicalizedForReconciliation`). The request therefore carries the
+/// outbox entry's facts verbatim — the fenced handle, the canonical
+/// terminal state (whose terminal receipt id is the authoritative evidence
+/// the effect closed), and the routing timestamp — and nothing the sink
+/// would have to invent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LateOperationOutcomeRequest {
+    /// The `(operation_id, generation)` handle the outbox entry fenced.
+    pub operation: OperationHandle,
+    /// The canonical terminal Operation state carried by the entry. Only
+    /// `Completed { receipt_id }` is consumable as effect-closure evidence;
+    /// every other terminal shape fails closed below
+    /// (`[TASK-CANCEL-003]`: an effect must be reconciled by its real
+    /// outcome, never renamed).
+    pub terminal_state: OperationState,
+    pub reconciled_at_ms: i64,
+}
+
+/// Opt-in late-outcome request carrying the live lease bound into the
+/// fenced dispatch's parent permit. Replay remains readable without
+/// presenting the lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseLateOperationOutcomeRequest {
+    pub outcome: LateOperationOutcomeRequest,
+    pub lease: AuthorityLeaseRecord,
+}
+
+/// Linearized decision of a late-outcome routing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LateOperationOutcomeDecision {
+    /// The uniquely bound `Dispatched` slot converged to `EffectClosed` on
+    /// the terminal receipt's evidence: effect receipt, cross-attempt
+    /// history entry (citing the Operation), refreshed set summary, and
+    /// control-epoch bump, all in one transaction.
+    Closed(Box<EffectReceipt>),
+    /// Byte-equal redelivery of an already-converged closure: the original
+    /// receipt (no double write).
+    Replayed(Box<EffectReceipt>),
+    /// No effect slot is bound to this operation handle. A typed no-route
+    /// answer, not an error: nothing was written and no fact was invented —
+    /// the operation simply never sealed an `OperationBinding` endpoint into
+    /// an outstanding permit (a wake-only operation, a pre-permit dispatch,
+    /// or a foreign authority's operation).
+    NoBoundSlot {
+        operation_id: OperationId,
+        generation: Generation,
+    },
+}
+
+/// `SHA-256("llmos/task-late-operation-closure/v1" || operation_id(16) ||
+/// generation(8) || terminal_receipt_id(16))`.
+///
+/// Deterministic from the outbox facts alone, so an at-least-once consumer
+/// redelivering the same entry derives the same closure proof the original
+/// routing wrote — the replay branch of
+/// [`SqliteTaskAuthority::reconcile_late_operation_outcome`] compares
+/// exactly this digest.
+#[must_use]
+pub fn late_operation_closure_digest(
+    operation: OperationHandle,
+    terminal_receipt_id: ReceiptId,
+) -> [u8; 32] {
+    sha256(
+        "llmos/task-late-operation-closure/v1",
+        &[
+            operation.operation_id.as_bytes().as_slice(),
+            encode_u64(operation.generation.get()).as_slice(),
+            terminal_receipt_id.as_bytes().as_slice(),
+        ],
+    )
 }
 
 /// Full `[TASK-COMMIT-002]` finalize request (schema v3).
@@ -499,6 +579,11 @@ pub(crate) struct HistoryAppend<'a> {
     pub(crate) slot: &'a SlotRecord,
     pub(crate) outcome: EffectHistoryOutcome,
     pub(crate) authoritative_effect_receipt_id: ReceiptId,
+    /// The Operation the closure evidence arrived through, when the append
+    /// was routed by an `OperationBinding` endpoint (the late-outcome lane
+    /// of W48-2). Holder-registered outcomes and reconcile closures have
+    /// no Operation fact to cite and append `None`.
+    pub(crate) operation_id: Option<OperationId>,
     pub(crate) now_ms: i64,
 }
 
@@ -517,7 +602,7 @@ pub(crate) fn append_history_entry(
         retry_fence_epoch: append.retry_fence_epoch,
         action_proposal_digest: append.slot.action_proposal_digest,
         idempotency_identity_digest: append.slot.idempotency_identity_digest,
-        operation_id: None,
+        operation_id: append.operation_id.map(OperationId::into_bytes),
         outcome: append.outcome,
         authoritative_effect_receipt_id: append.authoritative_effect_receipt_id,
         compensation_receipt_id: None,
@@ -1412,6 +1497,162 @@ fn count_unknown_slots(
     u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative slot count"))
 }
 
+/// One reverse-lookup hit of the late-outcome lane: the outstanding permit
+/// whose sealed write set binds the Operation handle, and the exact effect
+/// slot the endpoint names.
+struct LateOperationBinding {
+    permit: PermitRecord,
+    slot: SlotRecord,
+}
+
+/// The write half of one late-outcome routing (W48-2), in the caller's
+/// transaction: the `EffectClosed` receipt whose proof digest binds the
+/// outbox facts, the `Dispatched → EffectClosed` slot CAS, the cross-attempt
+/// history append citing the Operation (`[TASK-EFFECT-ID-001]`), the
+/// set-summary refresh, and the control-epoch bump — the same write
+/// sequence `record_effect_outcome_inner` applies for a holder-registered
+/// closure, with the lane's own receipt domain for auditability.
+fn apply_late_operation_closure(
+    transaction: &Transaction<'_>,
+    task: &StoredTask,
+    permit: &PermitRecord,
+    slot: &SlotRecord,
+    operation: OperationHandle,
+    proof_digest: [u8; 32],
+    reconciled_at_ms: i64,
+) -> Result<EffectReceipt, TaskStoreError> {
+    let receipt_id = derive_effect_receipt_id(
+        "llmos/task-effect-late-operation-closure/v1",
+        slot.effect_slot_id,
+        slot.state_seq + 1,
+    );
+    let receipt = EffectReceipt {
+        receipt_id,
+        task_id: task.record.task_id,
+        permit_id: permit.permit_id,
+        effect_slot_id: slot.effect_slot_id,
+        effect_seq: slot.effect_seq,
+        logical_effect_id: slot.logical_effect_id,
+        kind: ReceiptKind::EffectClosed,
+        prior_slot_state: SlotState::Dispatched,
+        no_effect_reason: None,
+        proof_digest,
+        created_at_ms: reconciled_at_ms,
+    };
+    insert_effect_receipt(transaction, &receipt)?;
+    let control_epoch = task
+        .record
+        .control_epoch
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let updated = cas_slot(
+        transaction,
+        slot,
+        SlotState::EffectClosed,
+        None,
+        None,
+        Some(receipt_id),
+        reconciled_at_ms,
+    )?;
+    append_history_entry(
+        transaction,
+        &HistoryAppend {
+            task_id: task.record.task_id,
+            retry_fence_epoch: task.record.retry_fence_epoch,
+            slot: &updated,
+            outcome: EffectHistoryOutcome::EffectClosed,
+            authoritative_effect_receipt_id: receipt_id,
+            operation_id: Some(operation.operation_id),
+            now_ms: reconciled_at_ms,
+        },
+    )?;
+    refresh_summary(transaction, permit.permit_id, reconciled_at_ms)?;
+    update_task(transaction, task, reconciled_at_ms, |record| {
+        record.control_epoch = control_epoch;
+    })?;
+    Ok(receipt)
+}
+
+/// Reverse lookup of the late-outcome lane (W48-2): from one
+/// `(operation_id, generation)` handle to every effect slot it is sealed
+/// into. The walk follows the durable binding chain endpoint → write set →
+/// outstanding permit → slot: the v46 partial index
+/// `task_write_set_effect_endpoints_by_operation` serves the first hop, and
+/// a write set that never reached an outstanding permit (or whose permit
+/// already closed over a different root) is simply not routable.
+fn load_late_operation_bindings(
+    source: &impl SqlRead,
+    operation: OperationHandle,
+) -> Result<Vec<LateOperationBinding>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT task_id, idempotency_key, effect_seq FROM task_write_set_effect_endpoints
+         WHERE endpoint_kind = ?1 AND object_id = ?2 AND participant_generation = ?3",
+    )?;
+    let generation = encode_u64(operation.generation.get());
+    let mut rows = statement.query(params![
+        i64::from(crate::model::TaskWriteSetEffectEndpointKind::OperationBinding.code()),
+        operation.operation_id.as_bytes().as_slice(),
+        generation.as_slice(),
+    ])?;
+    let mut sealed: Vec<(TaskId, IdempotencyKey, u64)> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let effect_seq = u64::try_from(row.get::<_, i64>(2)?)
+            .map_err(|_| TaskStoreError::CorruptRecord("negative effect endpoint sequence"))?;
+        sealed.push((
+            TaskId::from_bytes(blob16(row, 0)?),
+            IdempotencyKey::from_bytes(blob16(row, 1)?),
+            effect_seq,
+        ));
+    }
+    drop(rows);
+    drop(statement);
+    let mut bindings = Vec::with_capacity(sealed.len());
+    for (task_id, idempotency_key, effect_seq) in sealed {
+        let mut root_statement = source.prepare_statement(
+            "SELECT write_set_root FROM task_write_sets
+             WHERE task_id = ?1 AND idempotency_key = ?2",
+        )?;
+        let write_set_root = root_statement
+            .query_row(
+                params![
+                    task_id.as_bytes().as_slice(),
+                    idempotency_key.as_bytes().as_slice()
+                ],
+                |row| {
+                    let value: Vec<u8> = row.get(0)?;
+                    <[u8; 32]>::try_from(value.as_slice()).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Blob,
+                            Box::new(std::io::Error::other("expected 32-byte write set root")),
+                        )
+                    })
+                },
+            )
+            .optional()?;
+        drop(root_statement);
+        let Some(write_set_root) = write_set_root else {
+            // A sealed endpoint row without its write-set control row is
+            // corruption of the immutability chain, not a no-route.
+            return Err(TaskStoreError::CorruptRecord(
+                "effect endpoint references a missing write set",
+            ));
+        };
+        let Some(permit) = store::load_outstanding_permit(source, task_id)? else {
+            continue;
+        };
+        if permit.write_set_root != write_set_root {
+            // The endpoint belongs to a write set this task's outstanding
+            // permit no longer carries (pre-permit seal or a closed permit's
+            // history): no live slot to route to.
+            continue;
+        }
+        let slot = load_slot(source, permit.permit_id, effect_seq)?;
+        bindings.push(LateOperationBinding { permit, slot });
+    }
+    Ok(bindings)
+}
+
 fn finalize_proof_digest(request: &FinalizeRequestV3) -> [u8; 32] {
     finalize_proof_digest_of(&request.required_satisfaction)
 }
@@ -1570,6 +1811,7 @@ fn apply_reconcile_outcome(
                 slot: &updated,
                 outcome: history_outcome,
                 authoritative_effect_receipt_id: receipt_id,
+                operation_id: None,
                 now_ms: request.reconciled_at_ms,
             },
         )?;
@@ -3545,6 +3787,152 @@ impl SqliteTaskAuthority {
         Ok(ReconcileReplay::Reconciled(Box::new(record)))
     }
 
+    /// Routes one late Operation outcome from the durable outbox into the
+    /// task effect plane (W48-2, `ReconcileEffect` lane).
+    ///
+    /// The reverse lookup resolves the unique effect slot whose sealed
+    /// `OperationBinding` endpoint binds the entry's
+    /// `(operation_id, generation)` handle (schema v46 index); a handle
+    /// with no bound slot returns the typed
+    /// [`LateOperationOutcomeDecision::NoBoundSlot`] — nothing written, no
+    /// fact invented — and a handle bound to more than one outstanding slot
+    /// fails closed rather than picking a winner.
+    ///
+    /// For the bound slot, the terminal state's authoritative receipt is
+    /// real outcome evidence (`[TASK-CANCEL-003]`: a consumed dispatch is
+    /// reconciled by its real effect, never renamed): only
+    /// `Completed { receipt_id }` is consumable, and it converges a
+    /// `Dispatched` slot to `EffectClosed` with the same CAS discipline as
+    /// [`Self::record_effect_outcome`] / [`Self::reconcile_effect`] —
+    /// receipt write, slot CAS, cross-attempt history append (citing the
+    /// Operation), set-summary refresh, and control-epoch bump, all in one
+    /// transaction. Unlike the holder-named entries this lane has no
+    /// attempt/holder identity to check (its authority is the durable
+    /// Operation binding plus the outbox facts), so the guards are the
+    /// system-lane fences instead: adopted permits are refused (their
+    /// resolution belongs to the adoption reconcile lane), an active
+    /// takeover fence is refused, and the issuance-time authority lease is
+    /// validated exactly like every other effect-plane write. Replaying an
+    /// already-converged closure with the same outbox facts returns the
+    /// original receipt; a divergent closure fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reconcile-state (non-consumable terminal state, ambiguous
+    /// binding), slot-state, adoption-scope, replay-conflict, lease, or
+    /// storage error. `NoBoundSlot` is an `Ok` decision, not an error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn reconcile_late_operation_outcome(
+        &self,
+        request: LateOperationOutcomeRequest,
+    ) -> Result<LateOperationOutcomeDecision, TaskStoreError> {
+        self.reconcile_late_operation_outcome_inner(request, None)
+    }
+    /// Routes a late Operation outcome behind the authority-lease fence
+    /// (`TK-B2`): a permit whose issuance bound a durable authority lease
+    /// must present that exact live lease, exactly as the other effect-plane
+    /// write entries require it. Exact replay stays first — a redelivered
+    /// entry against an already-converged slot replays the original receipt
+    /// without consulting the lease. Unbound permits (the issuance opt-in
+    /// default) keep the unfenced behavior of
+    /// [`Self::reconcile_late_operation_outcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::reconcile_late_operation_outcome`],
+    /// plus a typed lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn reconcile_late_operation_outcome_with_authority_lease(
+        &self,
+        request: AuthorityLeaseLateOperationOutcomeRequest,
+    ) -> Result<LateOperationOutcomeDecision, TaskStoreError> {
+        self.reconcile_late_operation_outcome_inner(request.outcome, Some(request.lease))
+    }
+
+    fn reconcile_late_operation_outcome_inner(
+        &self,
+        request: LateOperationOutcomeRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<LateOperationOutcomeDecision, TaskStoreError> {
+        // Classify the terminal evidence before touching any row: only a
+        // `Completed` terminal state carries consumable effect-closure
+        // evidence. `Failed` / `PartialEffect` / `EffectUnknown` /
+        // `CancelledBeforeEffect` outbox facts are durable truth about the
+        // Operation, but none of them proves the task-plane effect closed —
+        // mapping any of them to `EffectClosed` would invent semantics.
+        let OperationState::Completed {
+            receipt_id: terminal_receipt_id,
+        } = request.terminal_state
+        else {
+            return Err(TaskStoreError::InvalidReconcileState {
+                reason: "terminal operation state carries no consumable effect-closure evidence",
+            });
+        };
+        let proof_digest = late_operation_closure_digest(request.operation, terminal_receipt_id);
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let bindings = load_late_operation_bindings(&transaction, request.operation)?;
+        let binding = match bindings.as_slice() {
+            [] => {
+                // Typed no-route: commit the read-only transaction so the
+                // connection returns to the pool cleanly.
+                transaction.commit()?;
+                return Ok(LateOperationOutcomeDecision::NoBoundSlot {
+                    operation_id: request.operation.operation_id,
+                    generation: request.operation.generation,
+                });
+            }
+            [binding] => binding,
+            _ => {
+                return Err(TaskStoreError::InvalidReconcileState {
+                    reason: "operation handle binds more than one outstanding effect slot",
+                });
+            }
+        };
+        let slot = &binding.slot;
+        if slot.state != SlotState::Dispatched {
+            if slot.state == SlotState::EffectClosed {
+                let receipt_id = slot.effect_receipt_id.ok_or(TaskStoreError::CorruptRecord(
+                    "closed slot lacks its effect receipt",
+                ))?;
+                let receipt = load_effect_receipt(&transaction, receipt_id)?;
+                if receipt.proof_digest == proof_digest {
+                    transaction.commit()?;
+                    return Ok(LateOperationOutcomeDecision::Replayed(Box::new(receipt)));
+                }
+                return Err(TaskStoreError::IdempotencyConflict);
+            }
+            return Err(TaskStoreError::InvalidEffectSlotState { state: slot.state });
+        }
+        let task = store::load_task(&transaction, binding.permit.task_id)?;
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — the adoption reconcile lane
+        // owns resolution there.
+        if has_adoption(&transaction, binding.permit.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
+        }
+        crate::participant::reject_takeover_fence(&transaction, task.record.task_id)?;
+        // `TK-B2`: the same live-lease fence as every effect-plane write,
+        // after the replay branch (which stays first).
+        validate_permit_authority_lease(
+            &transaction,
+            &binding.permit,
+            request.reconciled_at_ms,
+            authority_lease,
+        )?;
+        let receipt = apply_late_operation_closure(
+            &transaction,
+            &task,
+            &binding.permit,
+            slot,
+            request.operation,
+            proof_digest,
+            request.reconciled_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(LateOperationOutcomeDecision::Closed(Box::new(receipt)))
+    }
+
     /// Reads back a cross-attempt effect-history entry plus the original
     /// authoritative effect receipt (`[TASK-RETRY-EFFECT-001]`).
     ///
@@ -3766,6 +4154,7 @@ fn partial_outcome_and_entries(
                 slot,
                 outcome: EffectHistoryOutcome::PartialEffect,
                 authoritative_effect_receipt_id: receipt_id,
+                operation_id: None,
                 now_ms,
             },
         )?;

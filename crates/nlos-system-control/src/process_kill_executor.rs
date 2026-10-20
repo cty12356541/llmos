@@ -100,7 +100,7 @@ impl<A: PlatformKillAdapter + Sync> OperationCommandExecutor
         })?;
         let decision = self
             .authority
-            .request_platform_kill(
+            .request_platform_kill_with_registry(
                 RequestPlatformKillRequest {
                     process_id,
                     expected_process_generation: binding.process_generation,
@@ -109,6 +109,7 @@ impl<A: PlatformKillAdapter + Sync> OperationCommandExecutor
                     killed_at_ms,
                 },
                 self.adapter,
+                Some(self.supervisor),
             )
             .map_err(|error| map_process_kill_error(&error))?;
         let receipt = decision.receipt();

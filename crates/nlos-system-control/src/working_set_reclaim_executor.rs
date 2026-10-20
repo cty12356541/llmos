@@ -4,8 +4,12 @@
 //! Execution path of one `reclaim_operation`:
 //!
 //! 1. the wired [`WorkingSetOccupancySource`] supplies the observed active
-//!    working-set count (nlos-task publishes no store-wide live counter for
-//!    external callers — recorded gap — so the host owns the observation);
+//!    working-set count. Hosts that own a live task authority wire the
+//!    real [`TaskAuthorityWorkingSetOccupancy`] adapter over
+//!    [`nlos_task::SqliteTaskAuthority::inspect_working_set_pressure`]
+//!    (the store-wide issued-permit count — the same observation face the
+//!    authority's own admission gates consult); hosts without one re-wire
+//!    per observation window with [`FixedWorkingSetOccupancy`];
 //! 2. [`nlos_task::inspect_working_set_pressure`] computes the pressure
 //!    snapshot against the configured [`nlos_task::ScaleProfile`]; the
 //!    wire's `expected_generation_or_revision` is the CAS on that observed
@@ -27,8 +31,9 @@
 
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
 use nlos_task::{
-    ReclaimPhase, ScaleProfile, execute_working_set_reclaim_execution,
-    inspect_working_set_pressure, plan_working_set_reclaim_execution,
+    ReclaimPhase, ScaleProfile, SqliteTaskAuthority, TaskStoreError,
+    execute_working_set_reclaim_execution, inspect_working_set_pressure,
+    plan_working_set_reclaim_execution,
 };
 use nlos_types::ReceiptId;
 
@@ -40,9 +45,20 @@ const RECLAIM_RECEIPT_DOMAIN: &[u8] = b"nlos/system-control/reclaim-receipt/v1";
 /// Live source of the active working-set count the reclaim executor
 /// consults at dispatch time. The count is the host's observation of the
 /// configured tier's outstanding units.
+///
+/// The read is fallible by contract: a host whose observation crosses a
+/// durable store surfaces that failure as a typed [`SabiFailure`]
+/// (`DURABILITY`) instead of under-reporting a synthetic count, so a
+/// broken observation face refuses the arm instead of fabricating
+/// pressure facts.
 pub trait WorkingSetOccupancySource: Send + Sync {
     /// Current active working-set count under the configured profile.
-    fn active_working_set_count(&self) -> u64;
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] when the observation face cannot
+    /// be read.
+    fn active_working_set_count(&self) -> Result<u64, SabiFailure>;
 }
 
 /// Fixed occupancy for hosts that re-wire the executor per observation
@@ -51,23 +67,72 @@ pub trait WorkingSetOccupancySource: Send + Sync {
 pub struct FixedWorkingSetOccupancy(pub u64);
 
 impl WorkingSetOccupancySource for FixedWorkingSetOccupancy {
-    fn active_working_set_count(&self) -> u64 {
-        self.0
+    fn active_working_set_count(&self) -> Result<u64, SabiFailure> {
+        Ok(self.0)
+    }
+}
+
+/// Real [`WorkingSetOccupancySource`] over one live task authority: the
+/// store-wide issued-`CommitPermit` count, read through the authority's
+/// own public pressure face
+/// ([`SqliteTaskAuthority::inspect_working_set_pressure`]) — the same
+/// observation the authority's working-set admission gate consults, so a
+/// host wired to this adapter and the authority it observes cannot
+/// disagree about the tier's occupancy. Minimal real adapter by design:
+/// the host still owns the [`ScaleProfile`] the executor judges pressure
+/// against (bind it to the tier the authority was opened with).
+pub struct TaskAuthorityWorkingSetOccupancy<'a> {
+    tasks: &'a SqliteTaskAuthority,
+}
+
+impl<'a> TaskAuthorityWorkingSetOccupancy<'a> {
+    /// Wires the occupancy observation to one live task authority.
+    #[must_use]
+    pub const fn new(tasks: &'a SqliteTaskAuthority) -> Self {
+        Self { tasks }
+    }
+}
+
+impl WorkingSetOccupancySource for TaskAuthorityWorkingSetOccupancy<'_> {
+    fn active_working_set_count(&self) -> Result<u64, SabiFailure> {
+        self.tasks
+            .inspect_working_set_pressure()
+            .map(|snapshot| snapshot.active_count)
+            .map_err(|error| map_task_occupancy_error(&error))
+    }
+}
+
+fn map_task_occupancy_error(error: &TaskStoreError) -> SabiFailure {
+    let code = match error {
+        TaskStoreError::CorruptRecord(_) | TaskStoreError::UnsupportedSchema(_) => {
+            SabiErrorCode::Driver
+        }
+        _ => SabiErrorCode::Durability,
+    };
+    SabiFailure {
+        code: code.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "task authority working-set occupancy read failed".to_owned(),
     }
 }
 
 /// Reclaims one operational target's working set through the nlos-task
-/// reclaim entry.
+/// reclaim entry. The executor owns its occupancy source; hosts hand one
+/// in by value ([`TaskAuthorityWorkingSetOccupancy`] for a live authority,
+/// [`FixedWorkingSetOccupancy`] for per-window re-wiring).
 pub struct WorkingSetReclaimExecutor<'a> {
     profile: ScaleProfile,
-    occupancy: &'a dyn WorkingSetOccupancySource,
+    occupancy: Box<dyn WorkingSetOccupancySource + 'a>,
 }
 
 impl<'a> WorkingSetReclaimExecutor<'a> {
-    /// Wires the executor to one scale tier and occupancy source.
+    /// Wires the executor to one scale tier and one owned occupancy source.
     #[must_use]
-    pub const fn new(profile: ScaleProfile, occupancy: &'a dyn WorkingSetOccupancySource) -> Self {
-        Self { profile, occupancy }
+    pub fn new(profile: ScaleProfile, occupancy: impl WorkingSetOccupancySource + 'a) -> Self {
+        Self {
+            profile,
+            occupancy: Box::new(occupancy),
+        }
     }
 }
 
@@ -76,7 +141,7 @@ impl OperationCommandExecutor for WorkingSetReclaimExecutor<'_> {
         &self,
         request: OperationControlRequest,
     ) -> Result<ReceiptId, SabiFailure> {
-        let active_count = self.occupancy.active_working_set_count();
+        let active_count = self.occupancy.active_working_set_count()?;
         let snapshot = inspect_working_set_pressure(&self.profile, active_count);
         if snapshot.active_count != request.expected_generation_or_revision {
             return Err(bounded_failure(

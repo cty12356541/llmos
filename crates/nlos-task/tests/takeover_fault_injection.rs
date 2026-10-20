@@ -812,7 +812,10 @@ fn fault_kill9_mid_takeover_tx_leaves_no_half_state() {
         .expect("fence receipt");
     assert!(fence.exact_fence_set_root.is_some());
     assert_eq!(fence.outstanding_operation_participant_root, Some([0; 32]));
-    assert!(!fence_members(&authority, registry_binding).is_empty());
+    assert_ne!(
+        fence_members(&authority, registry_binding),
+        [] as [nlos_task::AuthorityTakeoverFenceMemberRecord; 0]
+    );
     let takeover = authority
         .inspect_authority_takeover_receipt(task_id(), fence.receipt_id)
         .expect("takeover receipt");
@@ -939,7 +942,10 @@ fn fault_kill9_after_takeover_commit_preserves_everything() {
     assert!(fence.exact_fence_set_root.is_some());
     assert_eq!(fence.outstanding_operation_participant_root, Some([0; 32]));
     let members = fence_members(&authority, registry_binding);
-    assert!(!members.is_empty());
+    assert_ne!(
+        members,
+        [] as [nlos_task::AuthorityTakeoverFenceMemberRecord; 0]
+    );
     let takeover = authority
         .inspect_authority_takeover_receipt(task_id(), fence.receipt_id)
         .expect("takeover receipt durable");

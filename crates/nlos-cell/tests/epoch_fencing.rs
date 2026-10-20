@@ -9,8 +9,7 @@ use nlos_types::{Generation, SchedulerDomainId};
 
 #[test]
 fn epoch_and_fencing_reject_stale_or_mismatched_presentations() {
-    let mut authority =
-        CellAuthority::claim(SchedulerDomainId::from_bytes([0xa1; 16])).expect("claim");
+    let authority = CellAuthority::claim(SchedulerDomainId::from_bytes([0xa1; 16])).expect("claim");
 
     authority
         .admit(&authority.fence())

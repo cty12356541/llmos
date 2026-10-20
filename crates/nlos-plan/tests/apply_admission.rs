@@ -19,7 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
     ApplyPlanRevisionRequest, DeclarationAdmissionConsult, DeclarationAdmissionOutcome,
-    PlanNodeDeclaration, PlanNodeKind, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
+    MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationRequest,
+    MaterializationResolution, NodeTransitionRequest, PlanNodeDeclaration, PlanNodeKind,
+    PlanNodeState, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
 };
 use nlos_task::{ScaleProfile, SqliteTaskAuthority, TaskStoreError};
 use nlos_types::IdempotencyKey;
@@ -500,4 +502,251 @@ fn gated_apply_admits_reshape_and_denies_growth() {
             ..
         }
     ));
+}
+
+/// A consult that parks until released, reporting each projection it
+/// was consulted with: the concurrency-test seam for the consult's
+/// lock-freedom and the drift CAS.
+struct ParkingConsult {
+    entered: std::sync::mpsc::Sender<u64>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    calls: AtomicU64,
+}
+
+impl DeclarationAdmissionConsult for ParkingConsult {
+    type Error = ConsultBroken;
+
+    fn consult_plan_declaration(
+        &self,
+        projected_task_nodes: u64,
+    ) -> Result<DeclarationAdmissionOutcome, ConsultBroken> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered
+            .send(projected_task_nodes)
+            .expect("signal consult entered");
+        self.release
+            .lock()
+            .expect("release lock")
+            .recv()
+            .expect("release consult");
+        Ok(DeclarationAdmissionOutcome::Admits)
+    }
+}
+
+/// The admission consult runs outside the writer critical section
+/// (deep-audit/29 #3): a parked consult does not hold the plan
+/// authority's writer — another thread's revision applies and commits
+/// while the consult is in flight — and the parked apply still lands
+/// (its drifted snapshot restarts the consult round, see the next
+/// test).
+#[test]
+fn slow_consult_does_not_hold_the_plan_writer() {
+    let root = Root::new("slow-consult");
+    let plan = root.plan();
+    let (entered, entered_rx) = std::sync::mpsc::channel::<u64>();
+    let (release_tx, release) = std::sync::mpsc::channel::<()>();
+    let consult = ParkingConsult {
+        entered,
+        release: std::sync::Mutex::new(release),
+        calls: AtomicU64::new(0),
+    };
+
+    std::thread::scope(|scope| {
+        let applier = scope.spawn(|| {
+            plan.apply_plan_revision_with_admission(
+                request(None, vec![node(0x0a, 1)], 0x11, 1_000),
+                &consult,
+            )
+        });
+        let first_projection = entered_rx.recv().expect("consult entered");
+        assert_eq!(first_projection, 1);
+
+        // The writer is free: another plan's revision applies and
+        // commits while the consult is parked.
+        let (writer_done, writer_rx) = std::sync::mpsc::channel::<()>();
+        let writer_done_tx = writer_done.clone();
+        let plan_ref = &plan;
+        scope.spawn(move || {
+            plan_ref
+                .apply_plan_revision_ungated(request(None, vec![node(0x2a, 2)], 0x21, 1_000))
+                .expect("the parked consult must not hold the writer");
+            writer_done_tx.send(()).expect("signal writer done");
+        });
+        writer_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the writer completes while the consult is parked");
+
+        // Release; the drifted snapshot restarts the consult round once
+        // (the concurrent revision grew the store-wide population).
+        release_tx.send(()).expect("first release");
+        let second_projection = entered_rx.recv().expect("second consult round");
+        assert_eq!(second_projection, 2);
+        release_tx.send(()).expect("second release");
+
+        let decision = applier
+            .join()
+            .expect("applier thread")
+            .expect("gated apply lands after the consult answers");
+        assert!(matches!(decision, PlanRevisionDecision::Applied(_)));
+    });
+    assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 2);
+}
+
+/// The consult-window drift is closed by the CAS re-verification: the
+/// apply re-consults with the fresh projection and only commits against
+/// the number the Task tier actually admitted — growth-only is
+/// preserved without holding the writer across the external callback
+/// (deep-audit/29 #3).
+#[test]
+fn drifted_population_snapshot_is_reconsulted_with_fresh_projection() {
+    let root = Root::new("drift-cas");
+    let plan = root.plan();
+    let (entered, entered_rx) = std::sync::mpsc::channel::<u64>();
+    let (release_tx, release) = std::sync::mpsc::channel::<()>();
+    let consult = ParkingConsult {
+        entered,
+        release: std::sync::Mutex::new(release),
+        calls: AtomicU64::new(0),
+    };
+
+    std::thread::scope(|scope| {
+        let applier = scope.spawn(|| {
+            plan.apply_plan_revision_with_admission(
+                request(None, vec![node(0x0a, 1)], 0x11, 1_000),
+                &consult,
+            )
+        });
+
+        // Round 1 consults the stale snapshot (1 node); a concurrent
+        // writer grows the store to 2 behind the consult's back.
+        assert_eq!(entered_rx.recv().expect("round 1"), 1);
+        plan.apply_plan_revision_ungated(request(None, vec![node(0x2a, 2)], 0x21, 1_000))
+            .expect("concurrent growth during the consult window");
+        release_tx.send(()).expect("release round 1");
+
+        // Round 2 consults the fresh projection and commits against it.
+        assert_eq!(entered_rx.recv().expect("round 2"), 2);
+        release_tx.send(()).expect("release round 2");
+
+        let decision = applier
+            .join()
+            .expect("applier thread")
+            .expect("apply commits after the drift restart");
+        assert!(matches!(decision, PlanRevisionDecision::Applied(_)));
+    });
+    assert_eq!(consult.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 2);
+}
+
+/// W57-A #8: the declared-TaskNode admission dimension excludes terminal
+/// tombstone rows, so the population is reusable — a full tier whose
+/// node fails does not hold its declaration seat forever. A growth
+/// revision denied while the tier is full admits after one node reaches
+/// a terminal state (`MATERIALIZING → FAILED`, the W57-A #4 edge), the
+/// projection drops by exactly the tombstone, and the physical row
+/// stays (`plan_nodes_no_delete` — excluded, never deleted).
+#[test]
+fn terminal_tombstone_frees_the_declared_population_seat_for_new_keys() {
+    let root = Root::new("tombstone-seat");
+    let plan = root.plan();
+    let task = root.task();
+    let consult = TaskDeclarationConsult(&task);
+
+    let first = plan
+        .apply_plan_revision_with_admission(
+            request(None, vec![node(0x0a, 1), node(0x0b, 2)], 0x11, 1_000),
+            &consult,
+        )
+        .expect("revision 1 fills the tier exactly");
+    let plan_id = first.receipt().plan_id;
+    let node_a = plan
+        .list_plan_nodes(plan_id)
+        .expect("list nodes")
+        .into_iter()
+        .find(|record| record.node_key == [0x0a; 16])
+        .expect("node a")
+        .node_id;
+
+    // Baseline: growth past the full tier is denied while both nodes
+    // are alive.
+    let denied = plan
+        .apply_plan_revision_with_admission(
+            request(
+                Some(plan_id),
+                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
+                0x12,
+                2_000,
+            ),
+            &consult,
+        )
+        .expect_err("growth over the full tier is denied");
+    assert!(matches!(
+        denied,
+        PlanStoreError::DeclarationAdmissionDenied {
+            projected_task_nodes: 3,
+            max_task_nodes: 2,
+            ..
+        }
+    ));
+
+    // Node a fails: DECLARED → (gate) MATERIALIZING → FAILED.
+    plan.request_materialization(MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0x31; 16]),
+        requested_at_ms: 2_500,
+    })
+    .expect("gate request drives a to WAITING_RESOURCE");
+    plan.resolve_materialization(MaterializationResolution {
+        request_key: IdempotencyKey::from_bytes([0x31; 16]),
+        verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+            profile_id: "task-apply-node-cap-two".to_string(),
+            projected_task_nodes: 2,
+            projected_active_working_set: 2,
+        }),
+        resolved_at_ms: 2_501,
+    })
+    .expect("gate approval drives a to MATERIALIZING");
+    plan.record_node_transition(NodeTransitionRequest {
+        plan_id,
+        node_id: node_a,
+        from_state: PlanNodeState::Materializing,
+        to_state: PlanNodeState::Failed,
+        expected_declared_revision: 1,
+        idempotency_key: IdempotencyKey::from_bytes([0x32; 16]),
+        transitioned_at_ms: 2_600,
+    })
+    .expect("MATERIALIZING → FAILED (W57-A #4 edge)");
+    assert_eq!(
+        plan.inspect_declared_task_node_count()
+            .expect("declared count"),
+        1,
+        "the FAILED tombstone left the declared population"
+    );
+
+    // The freed seat admits the previously denied growth: the frozen
+    // node re-declares bit-identically and the new key counts.
+    let admitted = plan
+        .apply_plan_revision_with_admission(
+            request(
+                Some(plan_id),
+                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
+                0x13,
+                3_000,
+            ),
+            &consult,
+        )
+        .expect("the tombstone's seat admits the new key");
+    assert_eq!(admitted.receipt().revision, 2);
+    assert_eq!(
+        plan.inspect_declared_task_node_count()
+            .expect("declared count"),
+        2,
+        "only live nodes occupy the dimension"
+    );
+    assert_eq!(
+        plan_node_rows(&root.0.join("plan.sqlite3")),
+        3,
+        "the tombstone row is durable metadata, never deleted"
+    );
 }

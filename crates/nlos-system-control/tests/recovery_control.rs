@@ -768,7 +768,7 @@ async fn denied_submit_crosses_real_ipc_as_bounded_failure() {
 
     let response_envelope = response.envelope();
     validate_sabi_response_context(response_envelope, MethodSemantics::MUTATION).unwrap();
-    assert!(response_envelope.payload.is_empty());
+    assert_eq!(response_envelope.payload, [] as [u8; 0]);
     let envelope::CommonContext::ResponseContext(context) = response_envelope
         .common_context
         .as_ref()
@@ -780,7 +780,10 @@ async fn denied_submit_crosses_real_ipc_as_bounded_failure() {
     assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
     assert!(context.operation.is_none());
-    assert!(context.receipts.is_empty());
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
     assert_eq!(
         authority
             .list_artifact_recovery_alerts(8)
@@ -1056,7 +1059,10 @@ fn operation_commands_refuse_fail_closed_without_an_executor() {
             failure.safe_message,
             "operation control execution backend is not wired"
         );
-        assert!(context.receipts.is_empty());
+        assert_eq!(
+            context.receipts,
+            [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+        );
     }
 }
 
@@ -1112,8 +1118,11 @@ fn operation_commands_route_to_the_wired_executor_with_typed_receipts() {
     assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
     assert_eq!(failure.safe_message, "stub executor rejects cancels");
-    assert!(cancel.payload.is_empty());
-    assert!(context.receipts.is_empty());
+    assert_eq!(cancel.payload, [] as [u8; 0]);
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
 
     let requests = executor.requests.lock().unwrap();
     assert_eq!(
@@ -1315,7 +1324,10 @@ fn application_commands_refuse_fail_closed_without_an_executor() {
             failure.safe_message,
             "application control execution backend is not wired"
         );
-        assert!(context.receipts.is_empty());
+        assert_eq!(
+            context.receipts,
+            [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+        );
     }
 }
 
@@ -1368,8 +1380,11 @@ fn w35p11_application_arms_route_to_the_wired_executor_with_typed_receipts() {
     assert_eq!(failure.code, i32::from(SabiErrorCode::State));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
     assert_eq!(failure.safe_message, "stub executor refuses uninstalls");
-    assert!(uninstall.payload.is_empty());
-    assert!(context.receipts.is_empty());
+    assert_eq!(uninstall.payload, [] as [u8; 0]);
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
 
     let requests = executor.requests.lock().unwrap();
     assert_eq!(
@@ -1985,7 +2000,10 @@ fn resource_get_routes_by_view_and_reports_authoritative_ledger_facts() {
         .unwrap();
     let semantic_snapshot = decode_semantic_recovery_operations_snapshot(&semantic.payload)
         .expect("resource view must not leak into the semantic view");
-    assert!(semantic_snapshot.alerts.is_empty());
+    assert_eq!(
+        semantic_snapshot.alerts,
+        [] as [nlos_schema::sabi::v1::SemanticRecoveryAlertStatus; 0]
+    );
 }
 
 #[test]
@@ -2480,7 +2498,10 @@ fn w32g_layer_views_refuse_fail_closed_without_sources() {
             failure.safe_message,
             "layer inspection backend is not wired"
         );
-        assert!(context.receipts.is_empty());
+        assert_eq!(
+            context.receipts,
+            [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+        );
     }
 }
 

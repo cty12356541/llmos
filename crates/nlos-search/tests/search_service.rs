@@ -648,7 +648,7 @@ fn selector_queries_match_authority_readback() {
             ..all_selector()
         })
         .unwrap();
-    assert!(unknown_issuer.is_empty());
+    assert_eq!(unknown_issuer, [] as [nlos_search::AssertionHit; 0]);
     let unknown_scope = workload
         .search
         .search_assertions(&AssertionSelector {
@@ -656,7 +656,7 @@ fn selector_queries_match_authority_readback() {
             ..all_selector()
         })
         .unwrap();
-    assert!(unknown_scope.is_empty());
+    assert_eq!(unknown_scope, [] as [nlos_search::AssertionHit; 0]);
 
     // Retraction facet straight from the authority's durable rows.
     let only_retracted = workload
@@ -712,7 +712,7 @@ fn verification_joined_search_matches_authority_trust_views() {
         .search
         .search_assertions(&verification_selector(TrustViewVerificationStatus::Fail))
         .unwrap();
-    assert!(fail.is_empty());
+    assert_eq!(fail, [] as [nlos_search::AssertionHit; 0]);
 
     // Limit applies after the verification join, never before it: a small
     // limit over Unverified (4, 5 in admission order) still surfaces the
@@ -757,6 +757,78 @@ fn verification_joined_search_matches_authority_trust_views() {
         TrustViewVerificationStatus::Pass
     );
     assert!(!one_view.retracted);
+}
+
+#[test]
+fn limit_aware_windows_page_until_post_filter_survivors_are_collected() {
+    let root = Root::new("windowed");
+    let fixture = fixture(&root, 60);
+    let append_cap = append_capability(&fixture, 0xd1);
+
+    // 80 assertions: 79 Inference rows then one Directive row at the very
+    // end of the log.  The SQL fetch window (limit*4 + 64, so 68..72 rows
+    // for the small limits below) cannot hold the whole log, so the tail
+    // survivors can only be reached by advancing the keyset cursor across
+    // windows — the post-filter `limit` semantics must survive that.
+    let ids: Vec<SemanticEventId> = (0u16..80)
+        .map(|index| {
+            let mode = if index == 79 {
+                AssertionMode::Directive
+            } else {
+                AssertionMode::Inference
+            };
+            append_assertion(
+                &fixture,
+                &append_cap,
+                u8::try_from(index + 1).expect("seed fits u8"),
+                mode,
+                "text/plain",
+                &format!("row{index}"),
+            )
+        })
+        .collect();
+    let last = ids[79];
+    append_verification(&fixture, &append_cap, 0xd2, last, VerificationOutcome::Pass);
+    let search =
+        SearchService::open(root.path(), Arc::clone(&fixture.semantic)).expect("open search face");
+
+    // Mode filter (post-SQL decode): window 4*2+64 = 72 < 80, so the only
+    // Directive row lives past the first window.
+    let directive = search
+        .search_assertions(&AssertionSelector {
+            assertion_mode: Some(AssertionMode::Directive),
+            limit: 2,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&directive), vec![last]);
+
+    // Verification join (post-SQL authority lookup): window 4*1+64 = 68 <
+    // 80; the only Pass row is the last one, behind 79 unverified hits.
+    let verified = search
+        .search_assertions(&AssertionSelector {
+            verification: VerificationFilter::Status(TrustViewVerificationStatus::Pass),
+            limit: 1,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&verified), vec![last]);
+
+    // Early termination at the exact post-filter limit, in log order.
+    let early = search
+        .search_assertions(&AssertionSelector {
+            assertion_mode: Some(AssertionMode::Inference),
+            limit: 20,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&early), ids[..20].to_vec());
+
+    // Exhaustion: a limit above the population returns every row in order.
+    let all = search
+        .search_assertions(&AssertionSelector::new(200))
+        .unwrap();
+    assert_eq!(hit_ids(&all), ids);
 }
 
 #[test]
@@ -939,20 +1011,21 @@ fn typed_failures_for_empty_state_and_invalid_inputs() {
         SearchService::open(root.path(), Arc::clone(&fixture.semantic)).expect("open search face");
 
     // Empty authority: typed-empty results, not errors.
-    assert!(
-        search
-            .search_assertions(&all_selector())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        search.search_assertions(&all_selector()).unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
     );
     let index = search.build_index().unwrap();
     assert_eq!(index.assertion_count(), 0);
-    assert!(index.query(&all_selector()).unwrap().is_empty());
-    assert!(
+    assert_eq!(
+        index.query(&all_selector()).unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
+    );
+    assert_eq!(
         search
             .search_assertions(&verification_selector(TrustViewVerificationStatus::Pass))
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
     );
 
     // Zero limit fails closed on both faces.

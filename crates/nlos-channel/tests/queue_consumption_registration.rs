@@ -277,11 +277,11 @@ fn registration_gates_fail_closed_without_side_effects() {
 
     // Zero side effect: no registration row exists for the binding, and the
     // rejected keys stay free (the retry under the same key succeeds).
-    assert!(
+    assert_eq!(
         authority
             .list_consumptions_for_binding(binding(0x44))
-            .expect("empty listing")
-            .is_empty()
+            .expect("empty listing"),
+        [] as [nlos_channel::QueueConsumptionRecord; 0]
     );
     registered(
         authority

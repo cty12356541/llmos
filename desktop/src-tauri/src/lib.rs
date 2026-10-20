@@ -9,17 +9,14 @@ pub mod dto;
 pub mod error;
 pub mod ipc;
 pub mod surfaces;
-pub mod transport;
 pub mod window_lifecycle;
 
-/// 开发夹具:仅在 `dev-fixture` feature 下编译(dev_server 示例与集成测试)。
-#[cfg(feature = "dev-fixture")]
+/// 开发夹具:仅在 Unix + `dev-fixture` feature 下编译(dev_server 示例与
+/// unix 侧集成测试)。夹具 harness 硬编码 Unix socket 路径与
+/// `/dev/urandom`,Windows 移植属后续车道;Windows 侧认证面证据走
+/// `tests/windows_authenticated_pipe_side.rs`(命名管道端到端)。
+#[cfg(all(unix, feature = "dev-fixture"))]
 pub mod devfixture;
-
-/// Windows 安全原语(dev-fixture 凭据面,F3-c3:密钥文件 owner-only DACL)。
-/// 仅 dev-fixture 使用;生产凭据面属后续 Windows daemon 车道。
-#[cfg(all(windows, feature = "dev-fixture"))]
-pub mod winsec;
 
 pub fn run() {
     if let Err(error) = tauri::Builder::default()

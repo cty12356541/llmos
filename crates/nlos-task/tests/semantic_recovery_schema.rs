@@ -77,7 +77,7 @@ fn schema_v42_creates_semantic_recovery_tables_idempotently() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(version, 45);
+    assert_eq!(version, 46);
     drop(raw);
 
     // Reopening at the current version skips migration dispatch
@@ -88,7 +88,7 @@ fn schema_v42_creates_semantic_recovery_tables_idempotently() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("reread user_version");
-    assert_eq!(version, 45);
+    assert_eq!(version, 46);
 }
 
 #[test]

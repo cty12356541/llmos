@@ -456,12 +456,12 @@ fn publish_charges_bytes_and_insufficiency_rejects_with_zero_state() {
         }
         other => panic!("zero balance must reject typed, saw {other:?}"),
     }
-    assert!(
+    assert_eq!(
         harness
             .topics
             .inspect_publications(gated.topic_id)
-            .expect("no publications")
-            .is_empty()
+            .expect("no publications"),
+        [] as [nlos_topic::PublicationRecord; 0]
     );
 }
 

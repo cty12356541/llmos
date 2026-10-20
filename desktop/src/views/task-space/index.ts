@@ -60,23 +60,37 @@ const TASK_SPACE_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
   },
 ];
 
-/** 详情卡里提供的 Task Manager 视图跳转(侧栏既有 tab,零主壳改动)。 */
-const TASK_MANAGER_TABS: ReadonlyArray<{ label: string; hint: string }> = [
-  { label: "恢复总览", hint: "artifact 域巡检(InspectHealth)" },
-  { label: "语义恢复", hint: "semantic 域巡检" },
-  { label: "任务查询", hint: "单计划 InspectTask" },
-  { label: "进程查询", hint: "进程绑定 InspectProcess" },
-  { label: "资源查询", hint: "资源预留 InspectResource" },
-  { label: "一致性自检", hint: "GUI↔CLI receipt 字节比对" },
+/** 详情卡里提供的 Task Manager 视图跳转(主壳侧栏既有 tab)。
+ *
+ * 跨文件契约(W56-b #29):id 必须与 desktop/src/main.ts bootstrap 内
+ * register(id, label, node) 的第一个参数一致——主壳构造 tab 时挂
+ * dataset.viewId=id,本视图 openSidebarTab 按 data-view-id 属性匹配,
+ * 不再依赖中文文案(标签改字/追加计数后缀不会静默失效)。主壳新增/
+ * 改名 viewId 时需同步本表。 */
+const TASK_MANAGER_TABS: ReadonlyArray<{ id: string; label: string; hint: string }> = [
+  { id: "health", label: "恢复总览", hint: "artifact 域巡检(InspectHealth)" },
+  { id: "semantic", label: "语义恢复", hint: "semantic 域巡检" },
+  { id: "task", label: "任务查询", hint: "单计划 InspectTask" },
+  { id: "process", label: "进程查询", hint: "进程绑定 InspectProcess" },
+  { id: "resource", label: "资源查询", hint: "资源预留 InspectResource" },
+  { id: "parity", label: "一致性自检", hint: "GUI↔CLI receipt 字节比对" },
 ];
 
-function openSidebarTab(label: string): boolean {
+/** 跳转主壳侧栏 tab(#29):按稳定 data-view-id 属性匹配(契约见
+ * TASK_MANAGER_TABS 注释;主壳在 register 时挂 dataset.viewId=id)。
+ * 返回 false = 未找到对应 tab(主壳注册表变更或侧栏未挂载),调用点
+ * 必须消费该结果并给出可见提示,不得静默吞掉。 */
+function openSidebarTab(viewId: string): boolean {
   const sidebar = document.querySelector(".sidebar");
   if (sidebar === null) {
     return false;
   }
   for (const child of sidebar.children) {
-    if (child instanceof HTMLElement && child.classList.contains("tab") && child.textContent === label) {
+    if (
+      child instanceof HTMLElement &&
+      child.classList.contains("tab") &&
+      child.dataset.viewId === viewId
+    ) {
       child.click();
       return true;
     }
@@ -135,7 +149,18 @@ interface TaskSpaceState {
   selected: string | null;
 }
 
-function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult: HTMLElement | null } {
+/** 详情卡的渲染入参(#28 renderTable 纯渲染化):纯渲染不派发 IPC——
+ * 已缓存且与当前选中一致的 InspectTask 回执经 initialReceipt 直渲染;
+ * 「查询/刷新」按钮经 onQuery 回调走 refreshSelectedDetail(带防竞态)。 */
+interface TaskDetailHooks {
+  initialReceipt: ReceiptDto | null;
+  onQuery: () => void;
+}
+
+function taskDetailPane(
+  state: TaskSpaceState,
+  hooks: TaskDetailHooks,
+): { node: HTMLElement; taskResult: HTMLElement | null } {
   const wrap = el("div");
   const selected = state.selected === null ? null : state.rows.get(state.selected) ?? null;
   if (selected === null) {
@@ -162,14 +187,24 @@ function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult:
     );
   }
   const navRow = el("p", { className: "muted", text: "跳转 Task Manager 视图:" });
+  // #29:小型状态行——openSidebarTab 返回 false(主壳 tab 缺失)时在本
+  // 视图给可见提示并落 console,不静默吞结果;成功则清空提示。
+  const navStatus = el("span", { className: "muted" });
   for (const tab of TASK_MANAGER_TABS) {
     const button = el("button", { text: tab.label });
     button.title = tab.hint;
     button.addEventListener("click", () => {
-      openSidebarTab(tab.label);
+      if (openSidebarTab(tab.id)) {
+        navStatus.textContent = "";
+        return;
+      }
+      navStatus.textContent =
+        `未找到侧栏 tab「${tab.label}」(data-view-id=${tab.id});主壳注册表可能已变更,详见 console。`;
+      console.warn(`[task-space] openSidebarTab: no sidebar tab with data-view-id=${tab.id}`);
     });
     navRow.append(button);
   }
+  navRow.append(navStatus);
   header.append(navRow);
   wrap.append(header);
 
@@ -177,10 +212,18 @@ function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult:
   taskReceipt.append(el("h3", { text: "任务回执(InspectTask,经认证 IPC)" }));
   const taskResult = el("div");
   const refresh = el("button", { text: "查询/刷新任务回执" });
-  refresh.addEventListener("click", () => {
-    runReceiptAction(taskResult, () => inspectTask(selected.planIdHex));
-  });
+  refresh.addEventListener("click", hooks.onQuery);
   taskReceipt.append(refresh, taskResult);
+  if (hooks.initialReceipt !== null) {
+    taskResult.append(renderReceipt(hooks.initialReceipt));
+  } else {
+    taskResult.append(
+      el("p", {
+        className: "muted",
+        text: "尚未查询:选中任务或完成扫描后自动派发,亦可点击上方按钮手动查询。",
+      }),
+    );
+  }
   wrap.append(taskReceipt);
 
   const entities = el("section", { className: "card" });
@@ -409,14 +452,75 @@ export function taskSpaceView(): HTMLElement {
 
   const detailBox = el("div");
 
+  // #28:选中任务详情 InspectTask 派发的唯一入口。renderTable 保持纯
+  // 渲染(不再内嵌认证 IPC);真正需要刷新详情的调用点(选中变更/扫描
+  // 完成/手动查询按钮)显式调用本函数。
+  // - in-flight 守卫:同一 plan_id 已有派发未回时跳过重复派发;
+  // - 序号防竞态:后到的派发使更早的响应过期——旧响应直接丢弃不入屏
+  //   (旧实现是后到者覆盖先到者,渲染风暴下并发派发结果不可预测)。
+  let detailSeq = 0;
+  let detailInFlightFor: string | null = null;
+  // renderTable 每次重渲染会重建详情卡;这里是当前选中详情的回执落点。
+  let currentTaskResult: HTMLElement | null = null;
+  // 最近一次被接受的选中详情回执(plan_id 键控),供纯渲染复用——
+  // 无关重渲染(如取消关注别的行)不再反复拉取同一事实。
+  let detailReceipt: ReceiptDto | null = null;
+  let detailReceiptFor: string | null = null;
+
+  const refreshSelectedDetail = (options?: { force?: boolean }): void => {
+    const selectedId = state.selected;
+    if (selectedId === null) {
+      return;
+    }
+    if (!options?.force && detailInFlightFor === selectedId) {
+      return;
+    }
+    detailInFlightFor = selectedId;
+    const seq = ++detailSeq;
+    if (currentTaskResult !== null) {
+      currentTaskResult.replaceChildren(
+        el("p", { className: "muted", text: "派发中(InspectTask,经认证 IPC)……" }),
+      );
+    }
+    inspectTask(selectedId)
+      .then((receipt) => {
+        if (seq !== detailSeq) {
+          return;
+        }
+        detailReceipt = receipt;
+        detailReceiptFor = selectedId;
+        if (state.selected === selectedId && currentTaskResult !== null) {
+          currentTaskResult.replaceChildren(renderReceipt(receipt));
+        }
+      })
+      .catch((error: unknown) => {
+        if (seq !== detailSeq) {
+          return;
+        }
+        if (state.selected === selectedId && currentTaskResult !== null) {
+          showError(currentTaskResult, error);
+        }
+      })
+      .finally(() => {
+        if (seq === detailSeq) {
+          detailInFlightFor = null;
+        }
+      });
+  };
+
   const renderTable = (): void => {
     tableBox.replaceChildren();
-    const detail = taskDetailPane(state);
-    detailBox.replaceChildren(detail.node);
     const selectedId = state.selected;
-    if (detail.taskResult !== null && selectedId !== null) {
-      runReceiptAction(detail.taskResult, () => inspectTask(selectedId));
-    }
+    const cachedReceipt =
+      selectedId !== null && detailReceiptFor === selectedId ? detailReceipt : null;
+    const detail = taskDetailPane(state, {
+      initialReceipt: cachedReceipt,
+      onQuery: () => refreshSelectedDetail({ force: true }),
+    });
+    detailBox.replaceChildren(detail.node);
+    currentTaskResult = detail.taskResult;
+    // #28:此处不派发 inspectTask——渲染只消费缓存回执/占位;刷新由
+    // 调用点显式走 refreshSelectedDetail()。
     if (state.rows.size === 0) {
       tableBox.append(
         el("p", { className: "muted", text: "(空)三域台账当前无 escalated 计划行,且无手动关注任务。" }),
@@ -449,6 +553,8 @@ export function taskSpaceView(): HTMLElement {
       detail.addEventListener("click", () => {
         state.selected = row.planIdHex;
         renderTable();
+        // 选中变更:显式刷新新选中的详情(#28;纯渲染不再自动派发)。
+        refreshSelectedDetail();
       });
       actions.append(detail);
       if (row.source === "follow") {
@@ -459,6 +565,9 @@ export function taskSpaceView(): HTMLElement {
           if (state.selected === row.planIdHex) {
             state.selected = null;
           }
+          // 纯渲染路径(#28):取消关注不改变任何任务的 InspectTask 事实,
+          // 不再触发详情派发;被取消者若正是选中项,详情回落到占位提示,
+          // 其他选中任务继续显示缓存回执。
           renderTable();
         });
         actions.append(unfollow);
@@ -516,6 +625,9 @@ export function taskSpaceView(): HTMLElement {
         summary.replaceChildren(scanSummaryRows(state.scans));
         renderScanFooter();
         renderTable();
+        // 扫描完成:escalated 台账可能已变,选中详情显式刷新(#28;
+        // in-flight 守卫下同选中不会重复派发)。
+        refreshSelectedDetail();
         status.textContent =
           failures.length > 0
             ? `最近扫描:${new Date().toLocaleTimeString()}(${failures.join("/")} 域派发失败,见「一致性自检」排查)`
@@ -544,6 +656,13 @@ export function taskSpaceView(): HTMLElement {
         state.followed.add(id);
         state.selected = id;
         state.rows = rebuildRows(state.followed, state.scans);
+        // 关注验证用的这张回执就是选中详情的 InspectTask 回执:直接作为
+        // 最新详情事实入缓存供纯渲染复用,不为同一事实重复派发第二次;
+        // 序号推进使仍在途的旧派发(此前选中)作废(#28 防竞态)。
+        detailSeq += 1;
+        detailInFlightFor = null;
+        detailReceipt = receipt;
+        detailReceiptFor = id;
         renderTable();
         followResult.replaceChildren(
           el("p", { className: "muted", text: `已关注 ${id}(存在于恢复快照);详情见下方。` }),
@@ -555,6 +674,8 @@ export function taskSpaceView(): HTMLElement {
 
   listCard.append(status, refresh, summary, tableBox, follow.row, followButton, followResult, scanFooter);
   wrap.append(listCard, detailBox, planNodesCard(), gapRegisterCard());
+  // 首挂载(#28):此时无选中(state.selected === null),纯渲染零派发,
+  // 与旧实现的空选中豁免行为一致;详情只在选中变更/扫描完成后拉取。
   renderTable();
   return wrap;
 }

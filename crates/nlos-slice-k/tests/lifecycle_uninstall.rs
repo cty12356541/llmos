@@ -272,5 +272,8 @@ fn refused_reinstall_with_gc_disabled_keeps_planted_orphans_for_manual_gc() {
         matches!(install_scoped, CollectOrphanBlobsDecision::Collected(_)),
         "the Disabled refusal must not have consumed the install-scoped key"
     );
-    assert!(install_scoped.receipt().collected_digests.is_empty());
+    assert_eq!(
+        install_scoped.receipt().collected_digests,
+        [] as [nlos_artifact::ContentDigest; 0]
+    );
 }

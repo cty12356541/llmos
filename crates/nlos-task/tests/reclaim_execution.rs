@@ -426,7 +426,10 @@ fn drive_after_relief_is_the_legal_noop() {
             &UnlinkedReclaimResidency,
         )
         .expect("second drive");
-    assert!(second.evictions.is_empty());
+    assert_eq!(
+        second.evictions,
+        [] as [nlos_task::WorkingSetReclaimEviction; 0]
+    );
     assert_eq!(second.post_active_count, 2);
     assert!(second.pressure_relieved);
     assert_eq!(second.phases.len(), 4);
@@ -471,7 +474,10 @@ fn drive_reports_honest_shortfall_when_nothing_is_evictable() {
         .expect("drive with nothing evictable");
     assert_eq!(report.pre_active_count, 3);
     assert_eq!(report.post_active_count, 3);
-    assert!(report.evictions.is_empty());
+    assert_eq!(
+        report.evictions,
+        [] as [nlos_task::WorkingSetReclaimEviction; 0]
+    );
     assert!(!report.pressure_relieved);
     let checkpoint_evict = report
         .phases

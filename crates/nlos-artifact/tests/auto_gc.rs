@@ -278,9 +278,12 @@ fn tick_threshold_counts_true_orphans_and_never_fires_on_referenced_blobs() {
         p2
     );
     let report = store.recover().expect("recover");
-    assert!(report.orphan_blobs.is_empty());
-    assert!(report.missing_blobs.is_empty());
-    assert!(report.missing_staged_blobs.is_empty());
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
+    assert_eq!(
+        report.missing_staged_blobs,
+        [] as [nlos_artifact::MissingStagedBlob; 0]
+    );
     assert_eq!(
         store
             .inspect_auto_gc_health()

@@ -33,9 +33,9 @@
 //! different binding bytes, so client-supplied binding values cannot weaken
 //! the pin.
 //!
-//! On Unix, the [`transport`] submodule composes these primitives with the
-//! framed Unix-socket transport into ready-to-use authenticated
-//! serve/connect entry points.
+//! The [`transport`] submodule composes these primitives with the framed
+//! platform transport — the Unix-domain socket on Unix, the named pipe on
+//! Windows — into ready-to-use authenticated serve/connect entry points.
 
 use std::collections::VecDeque;
 use std::error::Error;
@@ -458,5 +458,4 @@ pub fn decode_attestation_wire(
     decode_principal_handshake_attestation(wire).map_err(HandshakeError::Schema)
 }
 
-#[cfg(unix)]
 pub mod transport;

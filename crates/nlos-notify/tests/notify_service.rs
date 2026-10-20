@@ -315,12 +315,12 @@ fn subscribe_wait_publish_deliver_ack_full_chain() {
 
     // A re-poll after the cursor advance observes nothing new: the face
     // has no buffer of its own to replay.
-    assert!(
+    assert_eq!(
         harness
             .notify
             .poll(subscription.notification_id, 8)
-            .expect("re-poll")
-            .is_empty()
+            .expect("re-poll"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
 }
 
@@ -450,11 +450,11 @@ fn subscription_reference_records_replay_across_restart() {
         .expect("poll after restart");
     assert_eq!(delivered.len(), 1);
     assert_eq!(delivered[0].payload, b"before-restart");
-    assert!(
+    assert_eq!(
         notify
             .poll(second.notification_id, 4)
-            .expect("acked subscription observes nothing")
-            .is_empty()
+            .expect("acked subscription observes nothing"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
     match notify
         .subscribe(SubscribeNotificationRequest {
@@ -585,7 +585,10 @@ fn cancel_routes_through_topic_authority_and_removes_the_reference() {
     assert!(!authority_record.active);
 
     // The face reference is gone; routing through it fails typed.
-    assert!(live_views(&harness.notify).is_empty());
+    assert_eq!(
+        live_views(&harness.notify),
+        [] as [nlos_notify::NotificationSubscription; 0]
+    );
     assert!(matches!(
         harness.notify.poll(subscription.notification_id, 4),
         Err(NotifyError::NotificationNotFound(id)) if id == subscription.notification_id
@@ -752,12 +755,9 @@ fn typed_failures_for_unknown_topic_and_unknown_notification() {
     ));
 
     // The rejected subscribe left zero face state.
-    assert!(
-        harness
-            .notify
-            .list_subscriptions()
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        harness.notify.list_subscriptions().expect("list"),
+        [] as [nlos_notify::NotificationSubscriptionView; 0]
     );
 }
 

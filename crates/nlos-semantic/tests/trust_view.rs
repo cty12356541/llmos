@@ -536,7 +536,10 @@ fn trust_view_inherits_union_taint_without_declassification() {
         view.verification_status,
         TrustViewVerificationStatus::Unverified
     );
-    assert!(view.judgment_facts.is_empty());
+    assert_eq!(
+        view.judgment_facts,
+        [] as [nlos_semantic::TrustViewJudgmentFact; 0]
+    );
     assert!(!view.retracted);
     assert!(view.retraction.is_none());
 }

@@ -350,11 +350,11 @@ fn surface_registration_refuses_typed_failures_with_zero_durable_state() {
     ));
 
     // Every refusal above left zero durable state.
-    assert!(
+    assert_eq!(
         authority
             .inspect_surfaces(receipt.package_id)
-            .expect("inspect after refusals")
-            .is_empty()
+            .expect("inspect after refusals"),
+        [] as [nlos_application::SurfaceRegistrationReceipt; 0]
     );
 
     // First valid registration, then the same-generation duplicate guard.
@@ -612,10 +612,10 @@ fn disabled_application_refuses_surface_registration() {
 fn inspect_surfaces_of_unknown_package_lists_empty() {
     let stack = TestStack::new("w32f-unknown", 0xA6);
     let authority = open_authority(stack.root.root());
-    assert!(
+    assert_eq!(
         authority
             .inspect_surfaces(PackageId::from_bytes([0xEF; 16]))
-            .expect("inspect unknown package")
-            .is_empty()
+            .expect("inspect unknown package"),
+        [] as [nlos_application::SurfaceRegistrationReceipt; 0]
     );
 }

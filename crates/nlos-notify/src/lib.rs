@@ -1,4 +1,10 @@
 //! Notification minimal service: a thin subscription face over the
+//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
+//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
+//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
+//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
+
+//! 接线前提：语义事件/告警面出现订阅方（topic/channel 已活，本订阅面当前无调用方）。
 //! Topic/Channel/Wait authorities (B-NOTIFY-001, W33-D / X-1 first half).
 //!
 //! Stage-B decision point 2 (stage-b-progress §6.5.4) fixed the boundary:

@@ -3,8 +3,11 @@
 //! 每条命令——inspect 读或授权控制写——都通过
 //! [`nlos_system_control::auth::dispatch_over_authenticated_socket`]
 //! ——ADR-0011 challenge-response 认证入口——到达真实 SystemControl 服务,
-//! 没有 plain socket 捷径。principal 私钥不入仓库:会话配置来自环境变量或
-//! GUI 会话内设置,签名密钥始终从 operator 提供的 `0600` 密钥文件在派发时读取。
+//! 没有 plain socket 捷径。端点路径按平台解释:Unix 下为 Unix socket
+//! 路径,Windows 下为命名管道路径,字符串自会话配置透传。principal 私钥
+//! 不入仓库:会话配置来自环境变量或 GUI 会话内设置,签名密钥始终从
+//! operator 提供的密钥文件(64 hex Ed25519 种子;Unix 侧 0600 权限位)
+//! 在派发时读取。
 //!
 //! 写入半(W32-B):`submit_control` 把 GUI 的授权动作编译为真实
 //! `ControlCommand`(§25.3 idempotency 身份在派发时新生成;CAS 预期由
@@ -128,6 +131,7 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
         resource_root: config.resource_root.clone(),
         application_root: config.application_root.clone(),
         source: config.source,
+        // 认证派发核心已跨平台(Unix socket / Windows 命名管道)。
         platform_supported: cfg!(any(unix, windows)),
     }
 }
@@ -179,11 +183,9 @@ fn required(config: &SessionConfig) -> Result<(String, String, String), DesktopE
 }
 
 /// 经 ADR-0011 认证入口派发一条命令(inspect 读与 W32-B 授权写共用)并
-/// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。
-///
-/// F3-c2:传输面经 [`crate::transport::dispatch_authenticated`] 平台分派
-/// (Unix domain socket / Windows named pipe),凭据准备(principal 解析、
-/// 密钥文件读取、Ed25519 签名)两平台同一份代码。
+/// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。端点路径按
+/// 平台解释——Unix 下为 Unix socket 路径,Windows 下为命名管道路径,
+/// 字符串透传给跨平台认证传输(nlos-ipc handshake transport)。
 pub async fn dispatch_control(
     socket: &str,
     principal_hex: &str,
@@ -205,10 +207,12 @@ pub async fn dispatch_control_with_resource(
     command: ControlCommand,
     resource: Option<&dyn ResourceInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
+    use nlos_system_control::auth::dispatch_over_authenticated_socket;
+
     let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
     let seed = key_seed(key_file)?;
     let key = SigningKey::from_bytes(&seed);
-    let receipt = crate::transport::dispatch_authenticated(
+    let receipt = dispatch_over_authenticated_socket(
         socket,
         principal,
         |digest| Ok(key.sign(digest).to_bytes()),
@@ -217,7 +221,8 @@ pub async fn dispatch_control_with_resource(
         resource,
         None,
     )
-    .await?;
+    .await
+    .map_err(|error| from_control_error(&error))?;
     Ok(receipt_dto(&receipt))
 }
 
@@ -232,10 +237,12 @@ pub async fn dispatch_control_with_application(
     command: ControlCommand,
     application: Option<&dyn ApplicationInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
+    use nlos_system_control::auth::dispatch_over_authenticated_socket;
+
     let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
     let seed = key_seed(key_file)?;
     let key = SigningKey::from_bytes(&seed);
-    let receipt = crate::transport::dispatch_authenticated(
+    let receipt = dispatch_over_authenticated_socket(
         socket,
         principal,
         |digest| Ok(key.sign(digest).to_bytes()),
@@ -244,7 +251,8 @@ pub async fn dispatch_control_with_application(
         None,
         application,
     )
-    .await?;
+    .await
+    .map_err(|error| from_control_error(&error))?;
     Ok(receipt_dto(&receipt))
 }
 
@@ -703,9 +711,9 @@ pub fn control_plane_facts() -> ControlPlaneFactsDto {
     }
 }
 
-/// §25.3 idempotency 身份:每次提交新生成 16 字节 OS 级随机
-/// (Unix: /dev/urandom,历史路径不变;Windows: getrandom,经
-/// ProcessPrng/BCrypt;其余平台 fail-closed)。
+/// §25.3 idempotency 身份:每次提交新生成 16 字节 OS 随机(Unix 读
+/// `/dev/urandom`;Windows 经 `getrandom` 走 BCrypt CSPRNG)。认证派发
+/// 已跨平台,命令 id 的生成不再有平台桩。
 #[cfg(unix)]
 fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     use std::io::Read;
@@ -724,11 +732,6 @@ fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     getrandom::fill(&mut id)
         .map_err(|error| DesktopError::internal(format!("读取命令 id 失败: {error}")))?;
     Ok(id)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
-    Err(DesktopError::unsupported_platform())
 }
 
 /// GUI 授权动作(SABI v1.4 命令面;serde tag 与 CLI operation 名一致)。
@@ -1083,15 +1086,29 @@ fn run_cli_with_timeout(
         .cli_path
         .clone()
         .unwrap_or_else(|| DEFAULT_CLI_PATH.to_owned());
-    let mut child = Command::new(&cli_path)
-        .arg(&cli_socket)
-        .args(cli_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            DesktopError::ipc(format!("启动 system-control-cli({cli_path})失败: {error}"))
-        })?;
+    // ETXTBSY(26) 是"写后即执"的内核侧竞态: 脚本已 fs::write 关闭, 但慢速
+    // runner 的写回/扫描仍短暂持有写打开。有界重试吸收, 其余错误照常上抛。
+    let mut spawn_attempts = 0;
+    let mut child = loop {
+        match Command::new(&cli_path)
+            .arg(&cli_socket)
+            .args(cli_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => break child,
+            Err(error) if error.raw_os_error() == Some(26) && spawn_attempts < 5 => {
+                spawn_attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => {
+                return Err(DesktopError::ipc(format!(
+                    "启动 system-control-cli({cli_path})失败: {error}"
+                )));
+            }
+        }
+    };
     // 读线程排空两路管道:否则子进程写满管道缓冲后会阻塞在 write 上,
     // 等待方永远等不到退出(经典 output() 死锁面)。
     fn drain_pipe<R>(pipe: Option<R>) -> Option<std::thread::JoinHandle<Vec<u8>>>
@@ -1382,7 +1399,7 @@ mod tests {
         assert_eq!(throttle_percent, 50);
     }
 
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     #[test]
     fn fresh_command_id_is_unique_per_call() {
         let first = fresh_command_id().unwrap();

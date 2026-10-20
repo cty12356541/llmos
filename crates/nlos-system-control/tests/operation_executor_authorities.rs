@@ -604,7 +604,7 @@ mod reclaim {
     fn reclaim_drives_the_nlos_task_reclaim_entry() {
         let profile: ScaleProfile = TASK_PROFILE_10K;
         let occupancy = FixedWorkingSetOccupancy(500);
-        let executor = WorkingSetReclaimExecutor::new(profile, &occupancy);
+        let executor = WorkingSetReclaimExecutor::new(profile, occupancy);
         let receipt_id = executor
             .reclaim_operation(operation_request([0x71; 16], 500))
             .unwrap();
@@ -618,7 +618,7 @@ mod reclaim {
         // A different observed occupancy is a different authority-driven
         // execution (different advisory and evicted-unit overshoot).
         let shifted = FixedWorkingSetOccupancy(501);
-        let shifted_executor = WorkingSetReclaimExecutor::new(profile, &shifted);
+        let shifted_executor = WorkingSetReclaimExecutor::new(profile, shifted);
         assert_ne!(
             shifted_executor
                 .reclaim_operation(operation_request([0x71; 16], 501))
@@ -631,7 +631,7 @@ mod reclaim {
     fn reclaim_refuses_below_the_soft_threshold_and_on_a_moved_occupancy() {
         let profile: ScaleProfile = TASK_PROFILE_10K;
         let below = FixedWorkingSetOccupancy(100);
-        let executor = WorkingSetReclaimExecutor::new(profile, &below);
+        let executor = WorkingSetReclaimExecutor::new(profile, below);
         let failure = executor
             .reclaim_operation(operation_request([0x71; 16], 100))
             .unwrap_err();
@@ -643,7 +643,7 @@ mod reclaim {
         );
 
         let moved = FixedWorkingSetOccupancy(500);
-        let executor = WorkingSetReclaimExecutor::new(profile, &moved);
+        let executor = WorkingSetReclaimExecutor::new(profile, moved);
         let failure = executor
             .reclaim_operation(operation_request([0x71; 16], 499))
             .unwrap_err();
@@ -658,7 +658,7 @@ mod reclaim {
     fn reclaim_end_to_end_through_the_shared_handler() {
         let profile: ScaleProfile = TASK_PROFILE_10K;
         let occupancy = FixedWorkingSetOccupancy(500);
-        let executor = WorkingSetReclaimExecutor::new(profile, &occupancy);
+        let executor = WorkingSetReclaimExecutor::new(profile, occupancy);
         let direct = executor
             .reclaim_operation(operation_request([0x71; 16], 500))
             .unwrap();

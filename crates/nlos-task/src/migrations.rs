@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v45) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v46) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -3150,3 +3150,39 @@ const SCHEMA_V45_SQL: &str = "CREATE TABLE effect_fiber_registrations_v45 (
     BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
 
     PRAGMA user_version = 45;";
+
+/// v45 → v46 adds the reverse-lookup index of the late Operation-outcome
+/// lane (W48-2): `reconcile_late_operation_outcome` locates the unique
+/// effect slot bound to one `(operation_id, generation)` handle by scanning
+/// the sealed `OperationBinding` endpoints first, and without an index that
+/// first hop was a full-table scan over every endpoint ever sealed. The
+/// partial index covers exactly the rows the lookup predicates
+/// (`endpoint_kind = 6` = `OperationBinding`), keyed by the handle pair the
+/// query probes. Purely additive: no table is altered and no row moves, so
+/// the single-statement migration commits atomically; the idempotent
+/// re-run check detects the index by its stable name.
+pub(crate) fn migrate_v46(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let operation_index_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='index'
+              AND name='task_write_set_effect_endpoints_by_operation'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if operation_index_present {
+        connection.pragma_update(None, "user_version", 46)?;
+        return Ok(());
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V46_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V46_SQL: &str = "CREATE INDEX task_write_set_effect_endpoints_by_operation
+        ON task_write_set_effect_endpoints(object_id, participant_generation)
+        WHERE endpoint_kind = 6;
+
+    PRAGMA user_version = 46;";

@@ -357,8 +357,14 @@ fn disjoint_events_union_sorted_by_event_id() {
     let item_b = export_item(&domain_b, request_b.claimed_event_id);
 
     let report = merge_signed_event_sets(&[item_a], &[item_b]);
-    assert!(report.rejections.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(
+        report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.merged.len(), 2);
     assert!(report.merged[0].event_id < report.merged[1].event_id);
     assert_eq!(report.merged[0].admissions.len(), 1);
@@ -373,8 +379,14 @@ fn identical_items_across_sets_dedup_idempotently() {
     let item = export_item(&domain_a, request.claimed_event_id);
 
     let report = merge_signed_event_sets(std::slice::from_ref(&item), std::slice::from_ref(&item));
-    assert!(report.rejections.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(
+        report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.merged.len(), 1);
     assert_eq!(report.merged[0].admissions.len(), 1);
     assert_eq!(
@@ -393,8 +405,11 @@ fn rejects_event_id_canonical_mismatch() {
     tampered.event.canonical_unsigned_event[0] ^= 0xFF;
 
     let report = merge_signed_event_sets(&[tampered], &[]);
-    assert!(report.merged.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.rejections.len(), 1);
     match &report.rejections[0] {
         SignedEventSetRejection::EventIdMismatch {
@@ -422,8 +437,11 @@ fn rejects_admission_event_binding_mismatch() {
     mismatched.admission.event_id = second.claimed_event_id;
 
     let report = merge_signed_event_sets(&[mismatched], &[]);
-    assert!(report.merged.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.rejections.len(), 1);
     match &report.rejections[0] {
         SignedEventSetRejection::AdmissionEventBinding {
@@ -458,8 +476,11 @@ fn rejects_admission_log_seq_binding_mismatch() {
     };
 
     let report = merge_signed_event_sets(&[mismatched], &[]);
-    assert!(report.merged.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.rejections.len(), 1);
     match &report.rejections[0] {
         SignedEventSetRejection::AdmissionLogSeqBinding {
@@ -487,8 +508,11 @@ fn rejects_admission_receipt_id_derivation_mismatch() {
     mismatched.admission.receipt_id = ReceiptId::from_bytes([0xC3; 16]);
 
     let report = merge_signed_event_sets(&[mismatched], &[]);
-    assert!(report.merged.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     assert_eq!(report.rejections.len(), 1);
     match &report.rejections[0] {
         SignedEventSetRejection::AdmissionReceiptIdDerivation {
@@ -527,7 +551,7 @@ fn receipt_content_conflict_excludes_event_without_other_admission() {
         std::slice::from_ref(&item_a),
         std::slice::from_ref(&forged_b),
     );
-    assert!(report.merged.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
     assert_eq!(report.conflicts.len(), 1);
     match &report.conflicts[0] {
         SignedEventSetConflict::AdmissionReceiptContent {
@@ -577,7 +601,10 @@ fn duplicate_store_admission_conflict_keeps_other_stores() {
     assert_eq!(merged.event_id, event_id);
     assert_eq!(merged.admissions.len(), 1);
     assert_eq!(merged.admissions[0].receipt_id, item_b.admission.receipt_id);
-    assert!(report.rejections.is_empty());
+    assert_eq!(
+        report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
     assert_eq!(report.conflicts.len(), 1);
     match &report.conflicts[0] {
         SignedEventSetConflict::DuplicateStoreAdmission {
@@ -607,8 +634,14 @@ fn same_content_different_nonce_events_merge_separately() {
     let item_second = export_item(&domain_a, second.claimed_event_id);
 
     let report = merge_signed_event_sets(&[item_first], &[item_second]);
-    assert!(report.rejections.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(
+        report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
     // No content-level dedup: distinct signed events stay distinct
     // (`DIST-EVENT-001` forbids CRDT-style semantic collapse).
     assert_eq!(report.merged.len(), 2);
@@ -618,9 +651,15 @@ fn same_content_different_nonce_events_merge_separately() {
 fn empty_inputs_and_argument_order_independence() {
     let (_root_a, domain_a, domain_b) = twin_domains();
     let report = merge_signed_event_sets(&[], &[]);
-    assert!(report.merged.is_empty());
-    assert!(report.rejections.is_empty());
-    assert!(report.conflicts.is_empty());
+    assert_eq!(report.merged, [] as [nlos_semantic::MergedSignedEvent; 0]);
+    assert_eq!(
+        report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
 
     let request = request(&domain_a, 7);
     append(&domain_a, &request);

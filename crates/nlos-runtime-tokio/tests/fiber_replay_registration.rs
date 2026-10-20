@@ -688,8 +688,8 @@ async fn resume_binding_gates_incarnation_and_reports_new_events() {
     assert_eq!(report.replay.events.len(), 3);
     assert!(report.rearmed_satisfied.is_empty());
     assert_eq!(report.rearmed_pending.len(), 1);
-    assert!(report.already_woken.is_empty());
-    assert!(report.cancelled.is_empty());
+    assert_eq!(report.already_woken, [] as [nlos_wait::WaitRecord; 0]);
+    assert_eq!(report.cancelled, [] as [nlos_wait::WaitRecord; 0]);
     assert_eq!(report.effect_events.len(), 1);
     assert_eq!(report.queue_events.len(), 1);
     // Report-only effect fact: the effect initiation window converged — the
@@ -973,12 +973,12 @@ async fn snapshot_path_restores_crash_window_and_gcs_on_terminal() {
         adapter2.resume_from_snapshot(handle2, &authorities.process, &stale_handler),
         Err(ChannelWaitError::StaleFiberIncarnation)
     ));
-    assert!(
+    assert_eq!(
         authorities
             .wait
             .list_waits_for_binding(binding(1))
-            .expect("no wait row after stale restore")
-            .is_empty()
+            .expect("no wait row after stale restore"),
+        [] as [nlos_wait::WaitRecord; 0]
     );
 
     // Restore: the handler re-executes from its entry input and registers

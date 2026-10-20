@@ -434,11 +434,9 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
     let later = reopened
         .wall_now_i64(seeded_key(0xC0, 96))
         .expect("wall reading");
-    assert!(
-        reopened
-            .converge_pending(16, later)
-            .expect("second drain")
-            .is_empty()
+    assert_eq!(
+        reopened.converge_pending(16, later).expect("second drain"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
 
     // The package verification receipt is the durable authority after the
@@ -895,11 +893,11 @@ async fn second_process_kill_chain_body(
     let now_ms = reopened
         .wall_now_i64(seeded_key(seed, 150))
         .expect("post-reopen wall reading");
-    assert!(
+    assert_eq!(
         reopened
             .converge_pending(16, now_ms)
-            .expect("drain after reopen")
-            .is_empty()
+            .expect("drain after reopen"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
 }
 

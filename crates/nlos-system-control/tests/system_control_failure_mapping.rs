@@ -24,7 +24,7 @@ fn assert_mapping(
     let failure = error.to_sabi_failure();
     assert_eq!(failure.code, i32::from(expected_code));
     assert_eq!(failure.retry, i32::from(expected_retry));
-    assert!(!failure.safe_message.is_empty());
+    assert_ne!(failure.safe_message, "");
     assert!(failure.safe_message.len() <= 256);
     assert!(!failure.safe_message.contains('\0'));
 }
@@ -242,7 +242,7 @@ fn failure_envelope_retains_correlation_and_carries_no_receipts() {
     assert_eq!(response.request_id, request_id);
     assert_eq!(response.service, SYSTEM_CONTROL_SERVICE);
     assert_eq!(response.method, "submit");
-    assert!(response.payload.is_empty());
+    assert_eq!(response.payload, [] as [u8; 0]);
     let envelope::CommonContext::ResponseContext(context) =
         response.common_context.expect("failure response context")
     else {
@@ -250,7 +250,10 @@ fn failure_envelope_retains_correlation_and_carries_no_receipts() {
     };
     assert_eq!(context.correlation_id, correlation_id);
     assert!(context.operation.is_none());
-    assert!(context.receipts.is_empty());
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
     let failure = context.failure.expect("typed failure");
     assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));

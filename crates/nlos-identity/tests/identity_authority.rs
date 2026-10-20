@@ -1014,6 +1014,138 @@ fn session_register_rejects_invalid_validity_window() {
     ));
 }
 
+/// The custody replay channel that resolves an already registered
+/// `(key_id, key_generation)` must only hand out a receipt to the exact
+/// idempotency key that recorded it: a materially identical request under a
+/// different key is a typed `IdempotencyConflict`, never a cross-key
+/// `Replayed` receipt.
+#[test]
+fn custody_generation_replay_never_hands_receipts_across_idempotency_keys() {
+    let root = Root::new("custody-cross-key");
+    let key = signing_key(83);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(83, &key))
+        .unwrap()
+        .binding();
+    let request = RegisterCustodyBindingRequest {
+        key_id: binding.key_id,
+        expected_key_generation: binding.key_generation,
+        custody_profile: CustodyProfile::TrustedLocalSoftware,
+        idempotency_key: IdempotencyKey::from_bytes([0xE0; 16]),
+        registered_at_ms: 2_000,
+    };
+    let first = authority
+        .register_custody_binding(request)
+        .unwrap()
+        .record();
+    // Same business identity and byte-equal fields, but a different
+    // idempotency key: the second replay channel must fail closed instead of
+    // returning the first key's receipt.
+    assert!(matches!(
+        authority.register_custody_binding(RegisterCustodyBindingRequest {
+            idempotency_key: IdempotencyKey::from_bytes([0xE1; 16]),
+            ..request
+        }),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+    // The original key still replays byte-equal.
+    assert_eq!(
+        authority
+            .register_custody_binding(request)
+            .unwrap()
+            .record(),
+        first
+    );
+}
+
+/// The session replay channel that resolves an already registered
+/// `session_id` must only hand out a receipt to the exact idempotency key
+/// that recorded it: a materially identical request under a different key is
+/// a typed `IdempotencyConflict`, never a cross-key `Replayed` receipt.
+#[test]
+fn session_id_replay_never_hands_receipts_across_idempotency_keys() {
+    let root = Root::new("session-cross-key");
+    let key = signing_key(84);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(84, &key))
+        .unwrap()
+        .binding();
+    let request = RegisterSessionRequest {
+        session_id: SessionId::from_bytes([0xA4; 16]),
+        session_token_digest: [0xB4; 32],
+        key_id: binding.key_id,
+        expected_key_generation: binding.key_generation,
+        idempotency_key: IdempotencyKey::from_bytes([0xE2; 16]),
+        registered_at_ms: 2_100,
+        expires_at_ms: 8_800,
+    };
+    let first = authority.register_session(request).unwrap().record();
+    assert!(matches!(
+        authority.register_session(RegisterSessionRequest {
+            idempotency_key: IdempotencyKey::from_bytes([0xE3; 16]),
+            ..request
+        }),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+    // The original key still replays byte-equal, and no phantom session row
+    // was created for the rejected cross-key attempt.
+    assert_eq!(authority.register_session(request).unwrap().record(), first);
+    assert_eq!(authority.count_trusted_local_sessions().unwrap(), 1);
+}
+
+/// Custody registration is symmetric with session registration on revoked
+/// key generations: after a revocation advanced the key, a new custody
+/// binding for the revoked current generation fails closed as `KeyRevoked`.
+#[test]
+fn custody_registration_fails_closed_on_revoked_key_generation() {
+    let root = Root::new("custody-revoke");
+    let key = signing_key(85);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(85, &key))
+        .unwrap()
+        .binding();
+    let revocation = authority
+        .revoke_key(RevokeKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xE4; 16]),
+            revoked_at_ms: 4_000,
+        })
+        .unwrap()
+        .receipt();
+    // The pre-revocation generation is fenced off first...
+    assert!(matches!(
+        authority.register_custody_binding(RegisterCustodyBindingRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            custody_profile: CustodyProfile::TrustedLocalSoftware,
+            idempotency_key: IdempotencyKey::from_bytes([0xE5; 16]),
+            registered_at_ms: 4_100,
+        }),
+        Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
+    // ...and the revoked resulting generation refuses new custody bindings,
+    // exactly like `register_session`.
+    assert!(matches!(
+        authority.register_custody_binding(RegisterCustodyBindingRequest {
+            key_id: binding.key_id,
+            expected_key_generation: revocation.resulting_key_generation,
+            custody_profile: CustodyProfile::TrustedLocalSoftware,
+            idempotency_key: IdempotencyKey::from_bytes([0xE6; 16]),
+            registered_at_ms: 4_100,
+        }),
+        Err(IdentityAuthorityError::KeyRevoked)
+    ));
+    assert!(matches!(
+        authority.inspect_current_custody(binding.key_id),
+        Err(IdentityAuthorityError::CustodyBindingNotFound(_))
+    ));
+}
+
 /// The hand-written v1 schema exactly as `migrate_v1` created it, so
 /// migration tests can reopen a database that predates every later
 /// schema version.

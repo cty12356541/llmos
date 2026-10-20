@@ -173,7 +173,10 @@ fn throttle_decision_records_replays_and_merges_the_effective_demand() {
         .unwrap();
     assert_eq!(empty.declared_demand, DEMAND);
     assert_eq!(empty.effective_demand, DEMAND);
-    assert!(empty.decisions.is_empty());
+    assert_eq!(
+        empty.decisions,
+        [] as [nlos_resource::ThrottleDecisionReceipt; 0]
+    );
 
     // First link: before = declared demand, after = authoritative 50% scale.
     let request = throttle_request(10, reservation.reservation_id, 50);
@@ -352,11 +355,11 @@ fn throttle_replay_conflict_fails_closed_on_any_content_mismatch() {
             .len(),
         1
     );
-    assert!(
+    assert_eq!(
         authority
             .inspect_throttle_decisions(other.reservation_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_resource::ThrottleDecisionReceipt; 0]
     );
 }
 
@@ -426,11 +429,11 @@ fn throttle_percent_domain_and_unknown_reservation_fail_closed() {
         authority.record_throttle_decision(huge),
         Err(ResourceAuthorityError::InvalidThrottlePercent)
     ));
-    assert!(
+    assert_eq!(
         authority
             .inspect_throttle_decisions(reservation.reservation_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_resource::ThrottleDecisionReceipt; 0]
     );
     assert!(matches!(
         authority.record_throttle_decision(throttle_request(
@@ -686,11 +689,11 @@ fn legacy_v6_database_with_data_upgrades_in_place() {
     // The migrated ledger starts empty (the v6 database had none), the
     // effective demand falls back to the declared demand, and new decisions
     // are recordable over the migrated rows.
-    assert!(
+    assert_eq!(
         authority
             .inspect_throttle_decisions(reservation.reservation_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_resource::ThrottleDecisionReceipt; 0]
     );
     assert_eq!(
         authority

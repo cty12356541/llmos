@@ -40,6 +40,7 @@
 //! b-slice-k-001-end-to-end.md`) as a known limitation or gap, not patched
 //! over here.
 
+mod cell_host;
 mod chain;
 mod error;
 mod fiber;
@@ -47,9 +48,18 @@ mod nl;
 mod package;
 mod payload;
 mod pump;
+mod reconciliation;
+mod restore;
 mod runtime;
+mod semantic_stream;
+mod semantic_writer;
+mod takeover_drive;
 mod teardown;
 
+pub use cell_host::{
+    CellAssemblyInspect, CellBroadcastRefusal, CellEpochAdvance, CellEpochBroadcastIncomplete,
+    CellHost, CellHostConfig,
+};
 pub use chain::{
     CancelFacts, HappyChain, RecoveryPrefix, SECOND_BACKGROUND_TASK_SEED_OFFSET,
     SECOND_BINDING_SEED_OFFSET, SECOND_MATERIALIZE_SEED_OFFSET, SECOND_TASK_SEED_OFFSET,
@@ -60,16 +70,37 @@ pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
 pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
-    AutoOrphanGc, PublishedPackage, Publisher, artifact_blob_path, fixture_bytes,
-    plant_orphan_artifact_blob, provenance_triple,
+    AutoOrphanGc, PublishedPackage, Publisher, TemplatedInstallReceipt, artifact_blob_path,
+    fixture_bytes, install_plan_revision_key, plant_orphan_artifact_blob, provenance_triple,
 };
 pub use payload::{
     PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
     payload_execution_seed,
 };
-pub use pump::{FailClosedReconcileSink, ReconcileRefusalSnapshot};
+pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
+pub use reconciliation::{
+    AdoptedEntry, ConvergenceInvariants, DurableCommitPrefix, FinalAuthorityState,
+    PrefixVisibility, ReconciliationError, ReconciliationOutcome, ReconciliationRequest,
+    TrailCover, TrailReview, VerifiedAnchor, converge_commit_prefix_gap, durable_commit_prefix,
+};
+pub use restore::{ProcessRevival, RevivalDispatch, run_process_revival};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
+};
+pub use semantic_stream::{
+    SEMANTIC_STREAM_DOMAIN, SEMANTIC_STREAM_ENVELOPE_BYTES, SEMANTIC_STREAM_TOPIC_NAME,
+    SemanticStreamBinding, SemanticStreamConfig, SemanticStreamHealth, SemanticStreamState,
+    semantic_stream_envelope, semantic_stream_publish_key, system_subscriber_key,
+};
+pub use semantic_writer::{
+    OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact,
+    SEMANTIC_WRITER_ROOT_CALL_LIMIT, SemanticWriter, SemanticWriterBudgetRaise, SemanticWriterKey,
+    application_namespace,
+};
+pub use takeover_drive::{
+    BarrierObservationDemand, BarrierObservationSource, CrossCellTakeoverOutcome,
+    CrossCellTakeoverRequest, SignedBarrierObservation, TakeoverDriveError,
+    drive_cross_cell_takeover,
 };
 pub use teardown::{ApplicationTeardown, run_application_teardown};

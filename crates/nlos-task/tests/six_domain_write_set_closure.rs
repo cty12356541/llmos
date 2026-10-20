@@ -1078,12 +1078,12 @@ fn six_domain_write_set_seals_permits_and_finalizes_with_unified_receipt() {
     // and nothing of the Artifact face can ride a terminal transaction
     // of this write set (the owner-side publication is durable evidence
     // only).
-    assert!(
+    assert_eq!(
         mixed
             .authority
             .list_incomplete_artifact_commit_plans(10)
-            .expect("incomplete artifact plans")
-            .is_empty()
+            .expect("incomplete artifact plans"),
+        [] as [nlos_task::ArtifactCommitPlanRecord; 0]
     );
 
     // Then the Combined rung commits all of it in one terminal

@@ -863,11 +863,8 @@ fn verify_command(arguments: &[String]) -> Result<(), ToolError> {
         .map_err(|error| ToolError::input("package file", &error.to_string()))?;
 
     let mut temporary: Vec<TempDir> = Vec::new();
-    let store_directory = ensure_root(store.as_deref(), "verify-store", &mut temporary)?;
     let identity_directory = ensure_root(identity.as_deref(), "verify-identity", &mut temporary)?;
 
-    let artifact_store = ArtifactStore::open(&store_directory)
-        .map_err(|error| ToolError::Internal(format!("open artifact store: {error}")))?;
     let authority = IdentityAuthority::open(&identity_directory)
         .map_err(|error| ToolError::Internal(format!("open identity authority: {error}")))?;
 
@@ -877,18 +874,60 @@ fn verify_command(arguments: &[String]) -> Result<(), ToolError> {
         .binding()
         .principal_id;
 
-    // Signature precheck before materializing (audit 27 D1): the signature
-    // is a pure function of the package fields and the identity authority,
-    // so a package whose signature does not verify is rejected with zero
-    // durable writes to the store — which may be a caller-supplied
-    // persistent root. The full verify still runs after materialization to
-    // bind store heads against the signed digests (kernel verify contract).
-    precheck_signature(&authority, &package, signer, at_ms)?;
-    for entry in &package.entries {
-        materialize_entry(&artifact_store, &package, entry, at_ms)?;
-    }
-    let decision = verify_signed(&artifact_store, &authority, &package, signer, at_ms)?;
+    let decision = if store.is_some() {
+        // Verify-before-materialize, full gate (audit 27 D1, E-6b): a
+        // caller-supplied `--store` root must not receive a single byte of
+        // an unverified package. The whole pipeline — materialize plus the
+        // authoritative verify (signature AND content binding) — runs in a
+        // throwaway store first; only a fully verified package is
+        // re-materialized and re-verified against the target root.
+        verify_in_fresh_store("verify-gate", &authority, &package, signer, at_ms)?;
+        let artifact_store = ArtifactStore::open(store.as_deref().expect("caller store root"))
+            .map_err(|error| ToolError::Internal(format!("open artifact store: {error}")))?;
+        verify_materialized(&artifact_store, &authority, &package, signer, at_ms)?
+    } else {
+        // No `--store`: the resolved root is itself a throwaway temp dir,
+        // so one direct pass keeps the original single-materialize path.
+        let store_directory = ensure_root(None, "verify-store", &mut temporary)?;
+        let artifact_store = ArtifactStore::open(&store_directory)
+            .map_err(|error| ToolError::Internal(format!("open artifact store: {error}")))?;
+        verify_materialized(&artifact_store, &authority, &package, signer, at_ms)?
+    };
     print_decision(&decision);
+    Ok(())
+}
+
+/// The per-store unit of the verify lane: materialize every entry, then
+/// run the authoritative verify pipeline (signature plus content binding
+/// of store heads against the signed digests).
+fn verify_materialized(
+    store: &ArtifactStore,
+    authority: &IdentityAuthority,
+    package: &PackageFile,
+    signer: nlos_types::PrincipalId,
+    at_ms: u64,
+) -> Result<PackageVerificationDecision, ToolError> {
+    for entry in &package.entries {
+        materialize_entry(store, package, entry, at_ms)?;
+    }
+    verify_signed(store, authority, package, signer, at_ms)
+}
+
+/// Full pipeline in a throwaway store (audit 27 D1, E-6b): materialize
+/// plus verify with zero durable writes to any caller-supplied root. The
+/// temp root is deleted on drop; a failure here is typed exactly as the
+/// durable pass would classify it.
+fn verify_in_fresh_store(
+    tag: &str,
+    authority: &IdentityAuthority,
+    package: &PackageFile,
+    signer: nlos_types::PrincipalId,
+    at_ms: u64,
+) -> Result<(), ToolError> {
+    let temporary = TempDir::new(tag).map_err(ToolError::Internal)?;
+    let gate_store = ArtifactStore::open(temporary.root())
+        .map_err(|error| ToolError::Internal(format!("open gate store: {error}")))?;
+    let _ = verify_materialized(&gate_store, authority, package, signer, at_ms)?;
     Ok(())
 }
 
@@ -959,43 +998,8 @@ fn verify_signed(
     }
 }
 
-/// Pure signature precheck (audit 27 D1): the same manifest reconstruction
-/// and face selection as [`verify_signed`], routed to the artifact crate's
-/// precheck associated functions — no store access, so a rejected package
-/// costs zero durable writes.
-fn precheck_signature(
-    authority: &IdentityAuthority,
-    package: &PackageFile,
-    signer: nlos_types::PrincipalId,
-    at_ms: u64,
-) -> Result<(), ToolError> {
-    let manifest = manifest_of(&package.package_id, package.version, &package.entries);
-    if package.tasks.is_empty() {
-        ArtifactStore::precheck_signed_package(
-            authority,
-            &SignedPackage {
-                manifest,
-                signer,
-                signature: package.signature,
-            },
-            at_ms,
-        )
-        .map_err(from_artifact_error)
-    } else {
-        ArtifactStore::precheck_signed_package_with_tasks(
-            authority,
-            &SignedPackageWithTasks {
-                manifest,
-                tasks: package.tasks.clone(),
-                signer,
-                signature: package.signature,
-            },
-            at_ms,
-        )
-        .map_err(from_artifact_error)
-    }
-}
-
+/// Prints the durable verification decision of the store the verify lane
+/// committed against.
 fn print_decision(decision: &PackageVerificationDecision) {
     let outcome = if matches!(decision, PackageVerificationDecision::Verified(_)) {
         "VERIFIED"
@@ -1104,10 +1108,11 @@ fn conformance_command(arguments: &[String]) -> Result<(), ToolError> {
 // ---------------------------------------------------------------------------
 
 /// Installs one package file into a persistent state root: decode →
-/// materialize entries into the root's real `ArtifactStore` → run the
-/// authoritative verify pipeline → install-scoped orphan-GC pass → the
-/// application authority's verify-then-commit install (receipt
-/// digest-binding, generation-advancing CAS). The durable verification
+/// bootstrap the signer → full materialize+verify in a throwaway gate
+/// store → materialize + re-verify into the root's real `ArtifactStore` →
+/// install-scoped orphan-GC pass → the application authority's
+/// verify-then-commit install (receipt digest-binding,
+/// generation-advancing CAS). The durable verification
 /// receipt is the only thing handed to the install authority — the same
 /// authority-first path the slice-k library demo drives, now from the
 /// CLI. Every idempotency/clock key derives from the manifest digest or
@@ -1174,13 +1179,14 @@ fn install_command(arguments: &[String]) -> Result<(), ToolError> {
 }
 
 /// The install lane proper: bootstrap the signer into the root's identity
-/// authority, materialize the entries, run the authoritative verify
-/// pipeline, execute the install-scoped orphan-GC pass, and hand the
-/// durable verification receipt to the application authority's
-/// verify-then-commit install — the same authority-first path the
-/// slice-k library demo drives. Returns the verification decision, the
-/// immutable installation receipt, and whether this call advanced the
-/// generation (`true`) or replayed the durable receipt (`false`).
+/// authority, fully verify the package in a throwaway store, then
+/// materialize + re-verify into the root, execute the install-scoped
+/// orphan-GC pass, and hand the durable verification receipt to the
+/// application authority's verify-then-commit install — the same
+/// authority-first path the slice-k library demo drives. Returns the
+/// verification decision, the immutable installation receipt, and whether
+/// this call advanced the generation (`true`) or replayed the durable
+/// receipt (`false`).
 fn install_into_root(
     runtime: &SliceKRuntime,
     package: &PackageFile,
@@ -1221,11 +1227,12 @@ fn install_into_root(
     }
 }
 
-/// Shared verify → materialize → GC path used by both `install` and
-/// `update`: bootstrap the signer, land every entry, run the authoritative
-/// verify pipeline, then the install-scoped orphan-GC pass. The durable
-/// verification receipt is the only fact handed onward to the application
-/// authority.
+/// Shared verify gate → materialize → GC path used by both `install` and
+/// `update`: bootstrap the signer, run the full materialize+verify
+/// pipeline once in a throwaway gate store, then run the identical
+/// materialize+verify against the root, and finally the install-scoped
+/// orphan-GC pass. The durable verification receipt is the only fact
+/// handed onward to the application authority.
 fn prepare_verified_package(
     runtime: &SliceKRuntime,
     package: &PackageFile,
@@ -1250,17 +1257,24 @@ fn prepare_verified_package(
         )))
         .map_err(|error| ToolError::Internal(format!("verify clock: {error}")))?;
 
-    // Signature precheck before materializing (audit 27 D1): an
-    // install/update against a persistent root must not commit the payloads
-    // of a package whose signature does not verify; the precheck-rejected
-    // package costs zero durable writes and the orphan GC below stays
-    // unreachable. The full verify runs after materialization to bind store
-    // heads against the signed digests (kernel verify contract).
-    precheck_signature(&runtime.identity, package, signer, verified_at_ms)?;
-    for entry in &package.entries {
-        materialize_entry(&runtime.artifacts, package, entry, verified_at_ms)?;
-    }
-    let decision = verify_signed(
+    // Verify-before-materialize, full gate (audit 27 D1, E-6b): an
+    // install/update against a persistent root must not commit a single
+    // byte of a package that is not FULLY verified — signature AND content
+    // binding. The whole pipeline runs first in a throwaway store; a gate
+    // failure costs the root zero payload writes and keeps the orphan GC
+    // below unreachable. The identical materialize+verify then runs against
+    // the root itself: no trust is placed in the gate's result (the root
+    // re-verifies everything it commits), and the idempotency keys derive
+    // from the manifest digest and receipt id, so re-installing the same
+    // package replays the same durable receipts.
+    verify_in_fresh_store(
+        "install-verify-gate",
+        &runtime.identity,
+        package,
+        signer,
+        verified_at_ms,
+    )?;
+    let decision = verify_materialized(
         &runtime.artifacts,
         &runtime.identity,
         package,

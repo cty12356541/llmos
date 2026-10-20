@@ -467,9 +467,48 @@ mod runtime_fiber {
         let direct: ExecutionFiberInspection = source
             .inspect_execution_fiber(*handle.fiber_id.as_bytes(), handle.generation.get())
             .expect("direct read");
-        assert_eq!(handler_inspection, direct);
+        assert_live_fiber_parity(&handler_inspection, &direct);
 
         let _ = sender.send(());
+    }
+
+    /// Handler-path vs direct-path parity for a live fiber. The fiber keeps
+    /// burning CPU between the two reads, so the accumulating time fields
+    /// can advance (observed 1541→1542ms on a slow windows runner): equality
+    /// is asserted on the stable projection, monotonicity on the rest.
+    fn assert_live_fiber_parity(
+        handler: &ExecutionFiberInspection,
+        direct: &ExecutionFiberInspection,
+    ) {
+        assert_eq!(
+            (
+                handler.fiber_id,
+                handler.generation,
+                handler.state,
+                handler.lifecycle_phase,
+                handler.scheduler_wait_ms,
+                handler.external_wait_ms,
+                handler.backpressure_wait_ms,
+                handler.suspended_ms,
+            ),
+            (
+                direct.fiber_id,
+                direct.generation,
+                direct.state,
+                direct.lifecycle_phase,
+                direct.scheduler_wait_ms,
+                direct.external_wait_ms,
+                direct.backpressure_wait_ms,
+                direct.suspended_ms,
+            )
+        );
+        assert!(
+            direct.active_cpu_ms >= handler.active_cpu_ms
+                && direct.elapsed_wall_ms >= handler.elapsed_wall_ms,
+            "accumulating fiber time fields must not run backwards: handler {:?} vs direct {:?}",
+            (handler.active_cpu_ms, handler.elapsed_wall_ms),
+            (direct.active_cpu_ms, direct.elapsed_wall_ms),
+        );
     }
 }
 

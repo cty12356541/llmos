@@ -11,28 +11,41 @@ use nlos_application::{
 };
 use nlos_artifact::{ArtifactStore, HeadState};
 use nlos_capability::CapabilityAuthority;
+use nlos_channel::ChannelAuthority;
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
 use nlos_operation::{OperationHandle, OperationSnapshot};
 use nlos_outbox::{ConsumerConfig, OutboxConsumer};
+use nlos_plan::SqlitePlanAuthority;
 use nlos_process::{ProcessAuthority, ProcessBindingRecord};
 use nlos_runtime_tokio::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, StoreOutboxSource,
     TokioRuntimeAdapter,
 };
+use nlos_semantic::SemanticAuthority;
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
+use nlos_topic::TopicAuthority;
 use nlos_types::{
-    CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId, ProcessId,
-    TaskAttemptId, TaskId,
+    ApplicationId, CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId,
+    ProcessId, TaskAttemptId, TaskId,
 };
 
 use crate::error::{SliceKError, SliceKResult};
-use crate::pump::{PumpLane, ReconcileRefusalSnapshot, stop_pump_bounded};
+use crate::pump::{PumpLane, ReconcileLaneSnapshot, stop_pump_bounded};
+use crate::semantic_stream::{
+    SemanticStreamBinding, SemanticStreamConfig, SemanticStreamDeps, SemanticStreamHealth,
+    SemanticStreamPump, SemanticStreamPumpStartError, SemanticStreamState,
+    bootstrap_semantic_stream, stop_semantic_stream_bounded,
+};
+use crate::semantic_writer::{SemanticWriter, SemanticWriterBudgetRaise, WriterRootRegistry};
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
+
+/// Poison-tolerant guard over the runtime's semantic stream pump slot.
+type SemanticStreamGuard<'a> = MutexGuard<'a, Option<SemanticStreamPump>>;
 
 /// One assembler holding every authority of the first longitudinal slice.
 ///
@@ -57,9 +70,24 @@ pub struct SliceKRuntime {
     /// Application/installation authority (verify-then-install).
     pub applications: ApplicationAuthority,
     /// Task authority (tasks, attempts, permits, commit plans, receipts).
-    pub tasks: SqliteTaskAuthority,
-    /// Authority clock (durable monotonic tick + wall high-water).
-    pub clock: AuthorityClock,
+    /// Held behind an `Arc` so the pump's reconcile sink can route late
+    /// Operation outcomes into the same durable authority without opening a
+    /// second connection to the same database.
+    pub tasks: Arc<SqliteTaskAuthority>,
+    /// Durable plan authority (`<root>/plans.sqlite3`, ADR-0016 决定 2) —
+    /// the same path the daemon's `SqlitePlanAuthority` opens, so a slice-k
+    /// runtime and a daemon over one root share one plan store under the
+    /// authority's own single-writer discipline (`BEGIN IMMEDIATE` writer
+    /// fence behind a process-local mutex, 5s busy timeout, WAL/FULL
+    /// durability verified on open). Opened read-exposed: the production
+    /// declaration face through this runtime is the install/update wiring
+    /// of [`crate::package`] (manifest task templates → plan revision);
+    /// [`Self::plans`] is the read-only handle for inspect surfaces.
+    plans: SqlitePlanAuthority,
+    /// Authority clock (durable monotonic tick + wall high-water). Shared
+    /// behind an `Arc` with the pump's reconcile sink, whose per-entry
+    /// idempotency keys take replay-stable wall readings.
+    pub clock: Arc<AuthorityClock>,
     /// Durable operation store (driver operations owned by fibers). Shared
     /// behind an `Arc` so the payload-execution lane can bind the same
     /// durable authority into the `nlos-driver-mock` provider face
@@ -71,14 +99,51 @@ pub struct SliceKRuntime {
     /// `authorize_semantic` is production-reachable through this runtime,
     /// but adds no wrapper semantics.
     capability: CapabilityAuthority,
+    /// Semantic assertion authority (`<root>/semantic/semantic-authority.db`,
+    /// the daemon W46-L3 path style), opened read-exposed: the production
+    /// write side lives in [`crate::semantic_writer`], which appends through
+    /// this authority's admission gates. Held behind an `Arc` so the
+    /// semantic stream pump lane can drain the admission outbox through the
+    /// same connection without opening a second one.
+    semantic: Arc<SemanticAuthority>,
+    /// Durable system Channel endpoint authority (`<root>/channel`), the
+    /// daemon W46 path style — opened for the semantic notification stream
+    /// lane (see [`crate::semantic_stream`]) and shared with the topic
+    /// authority below.
+    pub channel: Arc<ChannelAuthority>,
+    /// Durable Topic service-layer authority (`<root>/topics`) over the
+    /// system channel — the semantic notification stream's fanout owner
+    /// (see [`crate::semantic_stream`]).
+    pub topics: Arc<TopicAuthority>,
+    /// The dedicated semantic writer principal this runtime bootstrapped
+    /// (key file `<root>/keys/semantic-writer.key`, see
+    /// [`crate::semantic_writer`]). Held so the payload lane's terminal
+    /// receipts reach the semantic ledger without any caller-side setup.
+    semantic_writer: SemanticWriter,
+    /// The durable raise registry (W53-B, file
+    /// `<root>/semantic-writer-roots`): the current root-capability handle
+    /// per (writer key, application) that
+    /// [`SliceKRuntime::raise_semantic_writer_budget`] wrote and every
+    /// active-root resolution reads. Guarded by a `Mutex` so a raise
+    /// serializes its revoke→issue→register orchestration against bridge
+    /// resolutions within this runtime.
+    writer_roots: Mutex<WriterRootRegistry>,
+    /// The semantic notification stream pump lane (see
+    /// [`crate::semantic_stream`]): `None` until
+    /// [`SliceKRuntime::start_semantic_stream`] bootstraps the well-known
+    /// system channel/topic/subscription and binds a pump to it. Guarded by
+    /// a `Mutex` so `Drop` and explicit stops can take the pump out from
+    /// behind an `Arc`-shared runtime.
+    semantic_stream: Mutex<Option<SemanticStreamPump>>,
     /// The durable-Outbox pump lane: `None` until
     /// [`SliceKRuntime::start_pump`] binds a pump to a runtime adapter.
     /// Guarded by a `Mutex` so `Drop` and explicit stops can take the pump
     /// out from behind an `Arc`-shared runtime.
     pump: Mutex<Option<OutboxPump>>,
-    /// Refusal surface of the fail-closed reconcile sink (see
-    /// [`crate::pump`]). Created once per runtime and shared with every
-    /// pump generation, so the counters survive pump restarts.
+    /// Health surface of the reconcile lane (see [`crate::pump`]): routed
+    /// and refused counts of the task-routing sink. Created once per runtime
+    /// and shared with every pump generation, so the counters survive pump
+    /// restarts.
     pump_lane: PumpLane,
 }
 
@@ -97,10 +162,23 @@ impl SliceKRuntime {
         let process = ProcessAuthority::open(root.join("process"))?;
         let artifacts = ArtifactStore::open(root.join("artifacts"))?;
         let applications = ApplicationAuthority::open(root.join("applications"))?;
-        let tasks = SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?;
-        let clock = AuthorityClock::open(root.join("clock"))?;
+        let tasks = Arc::new(SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?);
+        let plans = SqlitePlanAuthority::open(root.join("plans.sqlite3"))?;
+        let clock = Arc::new(AuthorityClock::open(root.join("clock"))?);
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
+        let channel = Arc::new(ChannelAuthority::open(root.join("channel"))?);
+        let topics = Arc::new(TopicAuthority::open(
+            root.join("topics"),
+            Arc::clone(&channel),
+        )?);
+        let semantic = Arc::new(SemanticAuthority::open(root.join("semantic"))?);
+        let semantic_writer = SemanticWriter::assemble(
+            &identity,
+            &process,
+            &crate::semantic_writer::load_runtime_writer_key(&clock, &root.join("keys"))?,
+        )?;
+        let writer_roots = WriterRootRegistry::load(root.join("semantic-writer-roots"))?;
         Ok(Self {
             root,
             identity,
@@ -108,11 +186,18 @@ impl SliceKRuntime {
             artifacts,
             applications,
             tasks,
+            plans,
             clock,
             operations,
             capability,
+            semantic,
+            channel,
+            topics,
+            semantic_writer,
+            writer_roots: Mutex::new(writer_roots),
             pump: Mutex::new(None),
             pump_lane: PumpLane::new(),
+            semantic_stream: Mutex::new(None),
         })
     }
 
@@ -149,6 +234,17 @@ impl SliceKRuntime {
         i64::try_from(ms).map_err(|_| SliceKError::TimestampOverflow(ms))
     }
 
+    /// Read-only handle on the durable plan authority this runtime opened
+    /// (`<root>/plans.sqlite3`, the daemon's plan store path): plan, node,
+    /// revision, and resolution reads for everything the install/update
+    /// wiring declared. The production declaration face is the templated
+    /// install path ([`crate::package`]); this handle exists for inspect
+    /// surfaces and the plan authority's own idempotent replay.
+    #[must_use]
+    pub fn plans(&self) -> &SqlitePlanAuthority {
+        &self.plans
+    }
+
     /// The cross-authority verify-then-commit coordinator bound to this
     /// runtime's task and artifact authorities.
     #[must_use]
@@ -164,6 +260,125 @@ impl SliceKRuntime {
         &self.capability
     }
 
+    /// Read-only handle on the semantic authority this runtime opened
+    /// (`<root>/semantic/semantic-authority.db`): event, receipt, outbox,
+    /// and trust-view reads for everything the write bridge admitted.
+    #[must_use]
+    pub fn semantic(&self) -> &SemanticAuthority {
+        &self.semantic
+    }
+
+    /// The runtime's dedicated semantic writer principal (see
+    /// [`crate::semantic_writer`]): the only production writer of semantic
+    /// assertions in this slice.
+    #[must_use]
+    pub fn semantic_writer(&self) -> &SemanticWriter {
+        &self.semantic_writer
+    }
+
+    /// The remaining semantic-write budget of one application's root
+    /// capability (W51): `call_limit_remaining` read through the runtime's
+    /// writer — the per-application quota every bridged admission charges
+    /// exactly once (see [`crate::semantic_writer`]). The read-only face
+    /// for CLI/daemon presentation; an exhausted budget surfaces as `Some(0)`.
+    ///
+    /// Since W53-B the read resolves the application's *current active
+    /// root* (the durable raise registry first, the writer's
+    /// deterministic, idempotent original-issuance replay as fallback):
+    /// after [`Self::raise_semantic_writer_budget`] the reported budget is
+    /// the new root's — a fresh `new_limit` that subsequent admissions
+    /// draw down (the authority meters per capability, so a raised root
+    /// never inherits the old root's spent charges). Before any raise, the
+    /// first observation of an application still materializes exactly the
+    /// one replay-stable original capability row and no other state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates capability-authority refusals typed. A no-active-root
+    /// state (the raise window of
+    /// [`Self::raise_semantic_writer_budget`], or an out-of-band
+    /// revocation of the original root) fails closed with the authority's
+    /// generation-fence refusal instead of reporting a number.
+    pub fn semantic_writer_budget(
+        &self,
+        application_id: ApplicationId,
+    ) -> SliceKResult<Option<u64>> {
+        let capability = self
+            .semantic_writer
+            .active_application_capability(self, application_id)?;
+        Ok(self.capability.call_limit_remaining(capability.handle)?)
+    }
+
+    /// Raises (or lowers — an operations decision, no monotonicity is
+    /// enforced) the application's per-writer semantic-write budget to
+    /// exactly `new_limit` (`>= 1`), closing the W51 exhaustion residual
+    /// (W53-B). No single transaction spans the needed authority effects,
+    /// so this is an orchestrated sequence of the capability authority's
+    /// own signed commands, in a fixed order:
+    ///
+    /// 1. resolve the (writer, application)'s current active root (the
+    ///    raise registry, falling back to the untouched original
+    ///    issuance);
+    /// 2. when that root's `call_limit` already equals `new_limit`, this
+    ///    call is the typed no-op replay (`issued == false`) — nothing is
+    ///    revoked or issued;
+    /// 3. otherwise revoke the current root through `revoke_signed`
+    ///    (writer-signed; the writer is both issuer and holder), which
+    ///    advances its generation and leaves the old handle
+    ///    generation-fenced;
+    /// 4. issue a fresh root through `issue_root_signed` — the identical
+    ///    target namespace, rights, purpose, and validity window, with
+    ///    `call_limit = new_limit`;
+    /// 5. durably register the new root in `<root>/semantic-writer-roots`
+    ///    (atomic temp-file replace), which every bridge admission, budget
+    ///    read, and later raise resolves through.
+    ///
+    /// The new root is a fresh budget: the authority meters consumption
+    /// per capability, so the raised root starts at `new_limit` remaining
+    /// and does not inherit the revoked root's spent charges. The raise's
+    /// authority time and command idempotency keys derive from
+    /// `(writer key, application, "raise", new_limit)` on the durable
+    /// clock, so replaying the same raise replays the same revocation and
+    /// issuance receipts and converges without double effects; a raise to
+    /// a *different* limit after a completed one is simply another raise.
+    ///
+    /// **Window semantics (honest, not atomic):** if the process dies — or
+    /// the issue or registry persist refuses — after step 3's revoke
+    /// committed but before step 5 registered a live new root, the
+    /// application has *no active root*: bridge admissions and
+    /// [`Self::semantic_writer_budget`] fail closed with the capability
+    /// authority's generation-fence refusal. Any later raise converges the
+    /// state (with nothing active there is nothing to revoke; the issue
+    /// proceeds and the registry is written) — including a raise to a
+    /// different limit. A root issued but never registered (a crash
+    /// between steps 4 and 5) stays live but unreachable through this
+    /// runtime: same writer, same namespace, same rights, and only the
+    /// registry-named root is ever consumed.
+    ///
+    /// # Errors
+    ///
+    /// Fails typed on `new_limit == 0`, clock or capability-authority
+    /// refusals (signature, identity, revocation authorization), or a
+    /// registry persistence failure — see the window semantics above for
+    /// the states those failures can leave behind.
+    pub fn raise_semantic_writer_budget(
+        &self,
+        application_id: ApplicationId,
+        new_limit: u64,
+    ) -> SliceKResult<SemanticWriterBudgetRaise> {
+        self.semantic_writer
+            .raise_application_capability(self, application_id, new_limit)
+    }
+
+    /// The raise registry lock shared by the writer's resolution and raise
+    /// orchestration (see [`Self::writer_roots`]); poison-tolerant like
+    /// every other runtime mutex.
+    pub(crate) fn lock_writer_roots(&self) -> std::sync::MutexGuard<'_, WriterRootRegistry> {
+        self.writer_roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Starts the durable-Outbox pump for this runtime, bound to `adapter`'s
     /// wake lane.
     ///
@@ -177,10 +392,18 @@ impl SliceKRuntime {
     ///
     /// Routing: `WakeFiber` entries go to the adapter's wake sink (the
     /// closed durable-wake loop); `ReconcileEffect` entries go to the
-    /// fail-closed sink documented in [`crate::pump`] — refused with a
-    /// typed error, retried with backoff, never acknowledged away, and
-    /// counted on [`Self::reconcile_refusals`]. The pump uses the landed
-    /// default tuning (25ms fallback poll, 16-failure threshold).
+    /// task-routing sink documented in [`crate::pump`] — offered to this
+    /// runtime's task authority as real late-outcome routing, with the
+    /// typed no-route decision and every routing failure kept fail-closed
+    /// (not acknowledged, retried with backoff, counted per lane on
+    /// [`Self::reconcile_lane`]). A persistently refused head entry (W57-B
+    /// poison head) is parked one-way after
+    /// [`DEFAULT_PARK_THRESHOLD`](crate::pump::DEFAULT_PARK_THRESHOLD)
+    /// consecutive same-sequence failures: the queue head unlocks, and the
+    /// parked entry stays durable and unacknowledged for manual
+    /// adjudication — parking is explicit operational debt with no
+    /// automatic un-park. The pump uses the landed default tuning (25ms
+    /// fallback poll, 16-failure pump-fault threshold).
     ///
     /// Starting again while a pump is `Running` fails closed — a second
     /// lane silently stealing the pump would ack wakes for its fibers as
@@ -208,7 +431,11 @@ impl SliceKRuntime {
         let consumer = OutboxConsumer {
             source: StoreOutboxSource::new(Arc::clone(&self.operations)),
             wake_sink: adapter.wake_sink(),
-            reconcile_sink: self.pump_lane.sink(),
+            reconcile_sink: self.pump_lane.sink(
+                Arc::clone(&self.operations),
+                Arc::clone(&self.tasks),
+                Arc::clone(&self.clock),
+            ),
             config: ConsumerConfig { batch_limit: 8 },
         };
         // `PumpConfig::default()` keeps a non-zero poll interval, so the
@@ -238,12 +465,60 @@ impl SliceKRuntime {
         self.lock_pump().as_ref().map(OutboxPump::health)
     }
 
-    /// The fail-closed reconcile lane's refusal surface: how many
-    /// `ReconcileEffect` entries this runtime refused (they stay durable in
-    /// the outbox) and the most recent typed reason.
+    /// The reconcile lane's health surface: how many `ReconcileEffect`
+    /// entries routed into the task authority, how many were refused per
+    /// fail-closed lane (typed no-route vs routing failure) with the most
+    /// recent typed reason, and the W57-B dead-letter state — how many
+    /// entries this lane parked after repeated same-sequence failures and
+    /// the durable reason of the most recent park — plus the W58-1
+    /// adjudication state: how many manual unparks this runtime performed
+    /// (with the most recent reason) and how many formerly parked entries
+    /// re-applied through the lane after their recovery. Refused and parked
+    /// entries stay durable in the outbox; parked ones are visible through
+    /// [`SqliteOperationStore::inspect_parked_outbox`] on
+    /// [`Self::operations`] and recover only through
+    /// [`Self::unpark_outbox_entry`] (there is no automatic un-park).
     #[must_use]
-    pub fn reconcile_refusals(&self) -> ReconcileRefusalSnapshot {
+    pub fn reconcile_lane(&self) -> ReconcileLaneSnapshot {
         self.pump_lane.snapshot()
+    }
+
+    /// Manual adjudication recovery of one parked outbox entry (W58-1):
+    /// the thin operational entry over the store's schema-v6 controlled
+    /// unpark reverse.
+    ///
+    /// The unpark timestamp is a durable clock reading under a
+    /// deterministic per-sequence idempotency key (replays reuse the same
+    /// reading), the store commits the reverse — both parking columns back
+    /// to `NULL` plus the unpark evidence — and the entry then rejoins
+    /// `pending_outbox` at its durable sequence position, so a running
+    /// pump redelivers it (this call drops a delivery hint; the fallback
+    /// poll bounds delivery either way). The adjudication is counted on
+    /// [`Self::reconcile_lane`] (`unparked` and the most recent reason).
+    /// Unparking never acknowledges and never restarts a pump.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`SliceKError::Clock`] /
+    /// [`SliceKError::TimestampOverflow`] when the adjudication reading
+    /// cannot be taken, and [`SliceKError::Operation`] with the store's
+    /// typed refusal — an unknown sequence, an entry that was never
+    /// parked, an unpark replay carrying a different reason, or an
+    /// invalid reason shape.
+    pub fn unpark_outbox_entry(
+        &self,
+        sequence: i64,
+        reason: &str,
+    ) -> SliceKResult<nlos_store::OutboxUnparkDecision> {
+        let now_ms = self.wall_now_i64(crate::pump::unpark_clock_key(sequence))?;
+        let decision = self
+            .operations
+            .unpark_outbox_entry(sequence, reason, now_ms)?;
+        self.pump_lane.record_unpark(reason.to_owned());
+        // Best-effort prompt redelivery; the pump's fallback poll bounds
+        // delivery either way, so the hint's result is deliberately ignored.
+        let _ = self.hint_pump();
+        Ok(decision)
     }
 
     /// Stops the pump and joins its thread. Idempotent: a runtime without
@@ -258,6 +533,132 @@ impl SliceKRuntime {
 
     fn lock_pump(&self) -> PumpGuard<'_> {
         self.pump
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Idempotently bootstraps the semantic notification stream's
+    /// well-known system channel, system topic, and system subscription
+    /// (see [`crate::semantic_stream`]) under the default
+    /// [`SemanticStreamConfig`]. Repeating the call replays the durable
+    /// binding; the durable-identity fields of the config are frozen per
+    /// root.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`SliceKError::Channel`], [`SliceKError::Topic`], and
+    /// [`SliceKError::Clock`] refusals typed.
+    pub fn bootstrap_semantic_stream(&self) -> SliceKResult<SemanticStreamBinding> {
+        bootstrap_semantic_stream(
+            &self.channel,
+            &self.topics,
+            &self.clock,
+            &SemanticStreamConfig::default(),
+        )
+    }
+
+    /// Starts the semantic notification stream pump with the default
+    /// [`SemanticStreamConfig`] (see [`crate::semantic_stream`]): one
+    /// dedicated OS thread that drains the pending semantic admission
+    /// outbox prefix into 73-byte topic envelopes, acknowledges the outbox,
+    /// and follows/compacts the system subscriber cursor so the bounded
+    /// channel capacity is released.
+    ///
+    /// Why a separate lifecycle from [`Self::start_pump`]: the durable
+    /// Outbox pump is bound to a caller's tokio adapter because its wake
+    /// lane routes into that adapter's fiber registry; the semantic stream
+    /// has no wake sink to route — its failure domain, tuning, and stop
+    /// semantics are its own, so coupling the two lanes would let one
+    /// lane's fault take the other down.
+    ///
+    /// Starting again while a stream pump is running fails closed; a
+    /// `Faulted`/`Stopped` leftover is joined first and replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SliceKError::Channel`]/[`SliceKError::Topic`]/
+    /// [`SliceKError::Clock`] when the bootstrap refuses,
+    /// [`SliceKError::Pump`] when a stream pump already runs or the config
+    /// is unusable, and [`SliceKError::Io`] when the OS refuses the thread.
+    pub fn start_semantic_stream(&self) -> SliceKResult<SemanticStreamBinding> {
+        self.start_semantic_stream_with(SemanticStreamConfig::default())
+    }
+
+    /// [`Self::start_semantic_stream`] under an explicit (possibly
+    /// non-default) [`SemanticStreamConfig`] — the lane's documented tuning
+    /// and durable-policy surface. The config's durable-identity fields are
+    /// frozen per root: a different value against an already-bootstrapped
+    /// root fails closed with the authorities' typed idempotency conflict.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_semantic_stream`].
+    pub fn start_semantic_stream_with(
+        &self,
+        config: SemanticStreamConfig,
+    ) -> SliceKResult<SemanticStreamBinding> {
+        let mut stream = self.lock_semantic_stream();
+        if let Some(existing) = stream.as_ref() {
+            if existing.health().state == SemanticStreamState::Running {
+                return Err(SliceKError::Pump(
+                    "semantic stream pump already running; stop_semantic_stream() before starting another",
+                ));
+            }
+            // Not running: join the dead thread so only one stream pump
+            // generation ever owns the lane.
+            if let Some(dead) = stream.take() {
+                stop_semantic_stream_bounded(dead);
+            }
+        }
+        let binding = bootstrap_semantic_stream(&self.channel, &self.topics, &self.clock, &config)?;
+        let started = SemanticStreamPump::start(
+            SemanticStreamDeps {
+                semantic: Arc::clone(&self.semantic),
+                topics: Arc::clone(&self.topics),
+                clock: Arc::clone(&self.clock),
+                binding: binding.clone(),
+            },
+            config,
+        )
+        .map_err(|error: SemanticStreamPumpStartError| match error {
+            SemanticStreamPumpStartError::Spawn(io) => SliceKError::Io(io),
+            SemanticStreamPumpStartError::InvalidConfig(reason) => SliceKError::Pump(reason),
+        })?;
+        *stream = Some(started);
+        Ok(binding)
+    }
+
+    /// Bounded, non-blocking wake-up hint into a running semantic stream
+    /// pump. `false` when no pump runs (or a hint is already pending); the
+    /// fallback poll interval bounds delivery either way, so callers may
+    /// ignore the result.
+    #[must_use]
+    pub fn hint_semantic_stream(&self) -> bool {
+        self.lock_semantic_stream()
+            .as_ref()
+            .is_some_and(SemanticStreamPump::hint)
+    }
+
+    /// Current semantic stream pump health, or `None` while no pump runs.
+    #[must_use]
+    pub fn semantic_stream_health(&self) -> Option<SemanticStreamHealth> {
+        self.lock_semantic_stream()
+            .as_ref()
+            .map(SemanticStreamPump::health)
+    }
+
+    /// Stops the semantic stream pump and joins its thread. Idempotent: a
+    /// runtime without a running stream pump is a no-op. Unacknowledged
+    /// outbox rows stay durable for a future pump, exactly as the
+    /// at-least-once contract requires.
+    pub fn stop_semantic_stream(&self) {
+        if let Some(pump) = self.lock_semantic_stream().take() {
+            stop_semantic_stream_bounded(pump);
+        }
+    }
+
+    fn lock_semantic_stream(&self) -> SemanticStreamGuard<'_> {
+        self.semantic_stream
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -286,6 +687,15 @@ impl SliceKRuntime {
     /// not errors.
     pub fn inspect_chain(&self, query: ChainQuery) -> SliceKResult<ChainInspect> {
         let application = self.applications.inspect_application(query.package_id)?;
+        // The application row names the principal whose semantic-write
+        // budget the inspect surfaces (W51): resolved only when the
+        // application exists, through the same idempotent replay the
+        // bridge performs.
+        let semantic_writer_budget = application
+            .as_ref()
+            .map(|view| self.semantic_writer_budget(view.application_id))
+            .transpose()?
+            .flatten();
         let installation = query
             .installation_id
             .map(|installation_id| self.applications.inspect_installation(installation_id))
@@ -312,6 +722,7 @@ impl SliceKRuntime {
             .transpose()?;
         Ok(ChainInspect {
             application,
+            semantic_writer_budget,
             installation,
             process,
             task,
@@ -346,9 +757,9 @@ impl Drop for SliceKRuntime {
     /// Stops a still-running pump with a bounded join (see
     /// [`crate::pump`]): the stop flag and wake-up hint are delivered
     /// first, the join itself waits at most a deadline so teardown cannot
-    /// hang on a stuck consumer lane. With no pump running this is a
-    /// no-op — dropping a runtime that never started one has no threads to
-    /// reap.
+    /// hang on a stuck consumer lane. The semantic stream pump lane gets
+    /// the same bounded stop. With neither pump running this is a no-op —
+    /// dropping a runtime that never started one has no threads to reap.
     fn drop(&mut self) {
         if let Some(pump) = self
             .pump
@@ -357,6 +768,14 @@ impl Drop for SliceKRuntime {
             .take()
         {
             stop_pump_bounded(pump);
+        }
+        if let Some(stream) = self
+            .semantic_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            stop_semantic_stream_bounded(stream);
         }
     }
 }
@@ -383,6 +802,10 @@ pub struct ChainQuery {
 #[derive(Clone, Debug)]
 pub struct ChainInspect {
     pub application: Option<ApplicationView>,
+    /// Remaining semantic-write budget of the inspected application's
+    /// writer root capability (`call_limit_remaining`, W51): `None` only
+    /// while the application itself is absent (never installed).
+    pub semantic_writer_budget: Option<u64>,
     pub installation: Option<InstallationReceipt>,
     /// The authority-current process binding, readback-validated.
     pub process: Option<ProcessBindingRecord>,
@@ -450,6 +873,11 @@ impl ChainInspect {
             None => "absent".to_string(),
         };
         lines.push(format!("application={application_state}"));
+        let budget = match self.semantic_writer_budget {
+            Some(units) => units.to_string(),
+            None => "absent".to_string(),
+        };
+        lines.push(format!("semantic_writer_budget={budget}"));
         let installation = match &self.installation {
             Some(receipt) => crate::short_hex(receipt.installation_id.as_bytes()),
             None => "absent".to_string(),
