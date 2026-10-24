@@ -293,12 +293,7 @@ hex 一致。
   ProcessAuthority/ResourceAuthority 属后续接线;操作控制(pause/kill 族)
   的 `OperationCommandExecutor` 宿主接线同理,未接线时的回执形态与
   inspector 一致(类型化 NOT_FOUND,不伪造成功)。
-- **平台**:认证入口按平台分派——Unix 走上游
-  `nlos-system-control::auth`(W32 起路径);Windows 走 named pipe 传输面
-  (F3-c2)+ 同一 ADR-0011 challenge-response 协议 + OS 凭据面(F3-c3:
-  `nlos-ipc` 解析对端 pid,dev-fixture 服务端以同用户令牌门准入,密钥文件
-  owner-only DACL 收窄;named pipe 4 条集成测试 + 凭据面测试钉死)。
-  生产 Windows SystemControl daemon(上游 daemon.rs 为 cfg(unix))移植、
-  bundle/图标/签名、多窗口为后续波次。
+- **平台**:认证入口(`nlos-system-control::auth`)目前仅 Unix;Windows
+  named-pipe 认证接线、bundle/图标/签名、多窗口为后续波次。
 - **tauri.conf.json** `bundle.active=false`:`cargo build` 可全量编译链接,
   完整 `tauri build` 打包(bundler/签名)未纳入本波次验证。

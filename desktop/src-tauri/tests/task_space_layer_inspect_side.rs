@@ -8,7 +8,7 @@
 //! backend is not wired」)——与 InspectProcess 未接线先例同形,诚实失败
 //! 面,不发明成功事实。
 
-#![cfg(feature = "dev-fixture")]
+#![cfg(all(unix, feature = "dev-fixture"))]
 
 use llmos_desktop_lib::devfixture::DevFixture;
 use llmos_desktop_lib::dto::OutcomeDto;
@@ -16,7 +16,7 @@ use llmos_desktop_lib::ipc::{
     dispatch_control, layer_inspect_execution_fiber, layer_inspect_operation,
     layer_inspect_task_group, layer_inspect_task_node, layer_inspect_topic,
 };
-use nlos_system_control::control::{ControlCommand, receipt_to_hex};
+use nlos_system_control::control::{ControlCommand, ControlReceipt, receipt_to_hex};
 
 fn write_key_file(fixture: &DevFixture, label: &str) -> String {
     let path = std::env::temp_dir().join(format!(
@@ -100,7 +100,11 @@ async fn dispatch_auth(
     command: ControlCommand,
 ) -> llmos_desktop_lib::dto::ReceiptDto {
     dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         key_file,
         command,
@@ -167,10 +171,15 @@ async fn five_layer_inspect_receipts_match_plain_entry_bytes() {
     ];
     for command in commands {
         let gui = dispatch_auth(&fixture, &key_file, command.clone()).await;
-        let plain = fixture
-            .dispatch_plain(&command, None, None, None)
-            .await
-            .expect("plain dispatch");
+        let plain: ControlReceipt = nlos_system_control::control::dispatch_over_socket(
+            fixture.socket_plain(),
+            &command,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("plain dispatch");
         assert_eq!(gui.receipt_hex, receipt_to_hex(&plain));
     }
 

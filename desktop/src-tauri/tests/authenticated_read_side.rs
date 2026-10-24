@@ -3,18 +3,14 @@
 //! 入口同命令 receipt 字节一致(B-TASK-006L 契约的桌面侧活体复验);
 //! (3) 未接线 inspector 的类型化 NotFound 失败面;(4) 不存在端点的
 //! 类型化 Handshake 错误码。
-//!
-//! 传输面经 F3-c2 平台分派:Unix domain socket / Windows named pipe;
-//! plain 入口在 Unix 委托上游 `dispatch_over_socket`(真实 CLI 同路),
-//! Windows 由 devfixture 的 named pipe 等价助手承担(CLI 二进制仍 Unix-only)。
 
-#![cfg(feature = "dev-fixture")]
+#![cfg(all(unix, feature = "dev-fixture"))]
 
 use llmos_desktop_lib::devfixture::DevFixture;
 use llmos_desktop_lib::dto::OutcomeDto;
 use llmos_desktop_lib::error::ErrorCode;
 use llmos_desktop_lib::ipc::dispatch_control;
-use nlos_system_control::control::{ControlCommand, receipt_to_hex};
+use nlos_system_control::control::{ControlCommand, ControlReceipt, receipt_to_hex};
 
 fn write_key_file(fixture: &DevFixture, label: &str) -> String {
     let path = std::env::temp_dir().join(format!(
@@ -34,7 +30,11 @@ async fn authenticated_inspect_health_matches_plain_entry_bytes() {
 
     // 1) GUI 后端:认证入口 dispatch。
     let gui = dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectHealth,
@@ -59,12 +59,17 @@ async fn authenticated_inspect_health_matches_plain_entry_bytes() {
     assert_eq!(alerts[0].plan_id_hex, fixture.plan_id_hex());
     assert!(!gui.receipt_hex.is_empty());
 
-    // 2) 同命令经 plain 入口(Unix:dispatch_over_socket 与 CLI 同一路径;
-    //    Windows:named pipe plain 助手):receipt 字节一致。
-    let plain = fixture
-        .dispatch_plain(&ControlCommand::InspectHealth, None, None, None)
-        .await
-        .expect("plain dispatch");
+    // 2) 同命令经 plain 入口(dispatch_over_socket,与 CLI 同一路径):
+    //    receipt 字节一致。
+    let plain: ControlReceipt = nlos_system_control::control::dispatch_over_socket(
+        fixture.socket_plain(),
+        &ControlCommand::InspectHealth,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("plain dispatch");
     assert_eq!(gui.receipt_hex, receipt_to_hex(&plain));
 
     let _ = std::fs::remove_file(&key_file);
@@ -79,7 +84,11 @@ async fn inspect_task_by_plan_id_round_trips_the_escalated_alert() {
     let plan_id =
         nlos_system_control::control::parse_hex_id(fixture.plan_id_hex()).expect("fixture plan id");
     let receipt = dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectTask { plan_id },
@@ -102,7 +111,11 @@ async fn unwired_inspectors_surface_typed_not_found_failures() {
     let _loops = fixture.serve_forever();
 
     let receipt = dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectProcess {
@@ -131,15 +144,9 @@ async fn missing_endpoint_maps_to_typed_handshake_error() {
     let key_file = write_key_file(&fixture, "t4");
     let _loops = fixture.serve_forever();
 
-    #[cfg(unix)]
-    let missing = std::env::temp_dir()
-        .join("llmosdt-missing-endpoint.sock")
-        .display()
-        .to_string();
-    #[cfg(windows)]
-    let missing = format!(r"\\.\pipe\llmosdt-missing-endpoint-{}", std::process::id());
+    let missing = std::env::temp_dir().join("llmosdt-missing-endpoint.sock");
     let error = dispatch_control(
-        missing.as_str(),
+        missing.display().to_string().as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectHealth,
@@ -155,9 +162,7 @@ async fn missing_endpoint_maps_to_typed_handshake_error() {
 /// `system-control-cli` 二进制(plain 入口)stdout 的 `RECEIPT <hex>` 逐字节
 /// 相等。`#[ignore]`:需要预先 `cargo build -p nlos-system-control` 并以
 /// `LLMOS_SYSTEM_CONTROL_CLI=<二进制路径>` 提供路径(本机验证方式见
-/// b-gui-001 证据;W32-C 将把它钉进仓库级测试)。CLI 二进制仍 Unix-only
-/// (上游 plain 入口 dispatch_over_socket 为 cfg(unix))。
-#[cfg(unix)]
+/// b-gui-001 证据;W32-C 将把它钉进仓库级测试)。
 #[tokio::test]
 #[ignore = "set LLMOS_SYSTEM_CONTROL_CLI to the prebuilt system-control-cli binary"]
 async fn cli_binary_receipt_matches_authenticated_entry() {
@@ -167,7 +172,11 @@ async fn cli_binary_receipt_matches_authenticated_entry() {
     let _loops = fixture.serve_forever();
 
     let gui = dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectHealth,
@@ -177,7 +186,7 @@ async fn cli_binary_receipt_matches_authenticated_entry() {
 
     // spawn_blocking:current_thread 测试运行时不能被同步 output() 阻塞,
     // 否则 plain accept 循环停摆、CLI connect 超时。
-    let cli_socket = fixture.endpoint_plain();
+    let cli_socket = fixture.socket_plain().to_path_buf();
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new(&cli)
             .arg(&cli_socket)

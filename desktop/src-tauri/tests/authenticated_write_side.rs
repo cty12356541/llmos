@@ -9,7 +9,7 @@
 //! (4) 语义/资源域动作路由到各自 ledger(夹具只有 artifact escalated
 //!     计划 → 类型化 NOT_FOUND)。
 
-#![cfg(feature = "dev-fixture")]
+#![cfg(all(unix, feature = "dev-fixture"))]
 
 use llmos_desktop_lib::devfixture::DevFixture;
 use llmos_desktop_lib::dto::OutcomeDto;
@@ -36,7 +36,11 @@ async fn submit(
     // 与 Tauri `submit_control` 命令同一构造路径;固定 id 便于断言回显。
     let command = build_control_command(action, [0xD1; 16])?;
     dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         key_file,
         command,
@@ -71,7 +75,11 @@ async fn ack_recovery_alert_mutates_authority_and_echoes_receipt_reference() {
 
     // 真实生效观察:durable_unacknowledged_escalated 归零,告警带上回执引用。
     let inspected = dispatch_control(
-        fixture.endpoint_authenticated().as_str(),
+        fixture
+            .socket_authenticated()
+            .display()
+            .to_string()
+            .as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectHealth,
@@ -174,9 +182,8 @@ async fn operation_commands_dispatch_real_submits_with_typed_unwired_failures() 
     }
 
     // 写路径 parity 前驱(W32-C 钉死的最小形态):同一条 pause-operation
-    // 命令(字节同一)经认证入口与 plain 入口(Unix:CLI 同路;Windows:
-    // named pipe plain 助手)各派发一次,失败回执字节一致——与读侧
-    // B-TASK-006L 契约同源。
+    // 命令(字节同一)经认证入口与 plain 入口(CLI 同路)各派发一次,
+    // 失败回执字节一致——与读侧 B-TASK-006L 契约同源。
     let pause = ControlAction::PauseOperation {
         target_id_hex: "41".repeat(16),
         expected_revision: 3,
@@ -185,15 +192,15 @@ async fn operation_commands_dispatch_real_submits_with_typed_unwired_failures() 
     let gui = submit(&fixture, &key_file, pause.clone())
         .await
         .expect("authenticated pause");
-    let plain = fixture
-        .dispatch_plain(
-            &build_control_command(pause, [0xD1; 16]).expect("build pause"),
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("plain pause");
+    let plain = nlos_system_control::control::dispatch_over_socket(
+        fixture.socket_plain(),
+        &build_control_command(pause, [0xD1; 16]).expect("build pause"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("plain pause");
     assert_eq!(gui.receipt_hex, receipt_to_hex(&plain));
 
     let _ = std::fs::remove_file(&key_file);
