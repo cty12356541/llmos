@@ -8,11 +8,12 @@
 //! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-lease 依赖边）——解冻条件达成；生产调用方为 `CellHost` 的 quota 面。
 //! 2026-10-05 W49：ADR-0021——三族 grantor 改持共享权威 `Arc<CellAuthority>`（`CellAuthority::into_shared`），
 //! capacity/device 族随 W49 进入单进程装配；quota 族仍是唯一 epoch 推进入口。
+//! 2026-10-24 W62：三族租约 `SQLite WAL + FULL` 持久化与崩溃恢复（`SqliteLeaseStore` / `open_durable`）。
 //! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
 //! - `QuotaLease` (`LEASE-GRANT-001`): `AVAILABLE` → node `LEASE`; face value
-//!   deducted from the in-memory available pool before issue.
+//!   deducted from the available pool before issue.
 //! - `CapacityLease` (`LEASE-CAPACITY-001` prefix): source pool →
 //!   `GLOBAL_RESERVED`; `amount` deducted before issue.
 //! - `ExclusiveDeviceLease` (`LEASE-DEVICE-001`): FREE `DeviceLeaseHead` →
@@ -53,14 +54,17 @@
 //! `QUARANTINED` without returning their face value to `AVAILABLE`. `CLOSED`
 //! and `CANCELLED` stay put.
 //!
-//! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
-//! transport, Raft, gateway fence-barrier, TTL-as-reuse, durable second
-//! ledger, Capacity reclaim states, and the Device `HOLDER_PREPARED` /
-//! `ACTIVE` chain.
+//! Each grantor may be opened in-memory ([`QuotaLeaseGrantor::open`]) or bound
+//! to a durable `SQLite` `WAL + FULL` store ([`QuotaLeaseGrantor::open_durable`],
+//! [`CapacityLeaseGrantor::open_durable`],
+//! [`ExclusiveDeviceLeaseGrantor::open_durable`]).
+
+mod store;
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 
 use nlos_cell::{
@@ -69,6 +73,8 @@ use nlos_cell::{
 use nlos_types::{
     CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId, ReceiptId,
 };
+
+pub use store::{LeaseStoreError, SCHEMA_VERSION, SqliteLeaseStore};
 
 /// Fence scope for a single-Cell grant: the Cell identity itself.
 ///
@@ -143,18 +149,18 @@ pub enum QuotaLeaseState {
 /// used by this slice, plus the `LEASE-TTL-001` deadline).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QuotaLeaseGrant {
-    lease_id: QuotaLeaseId,
-    cell: CellIdentity,
-    node_boot_generation: Generation,
-    face_value: u64,
-    remaining: u64,
-    spent: u64,
-    returned: u64,
-    epoch: CellEpoch,
-    fencing_token: CellFencingToken,
-    fence_scope: FenceScope,
-    expires_at: Option<LeaseInstant>,
-    state: QuotaLeaseState,
+    pub(crate) lease_id: QuotaLeaseId,
+    pub(crate) cell: CellIdentity,
+    pub(crate) node_boot_generation: Generation,
+    pub(crate) face_value: u64,
+    pub(crate) remaining: u64,
+    pub(crate) spent: u64,
+    pub(crate) returned: u64,
+    pub(crate) epoch: CellEpoch,
+    pub(crate) fencing_token: CellFencingToken,
+    pub(crate) fence_scope: FenceScope,
+    pub(crate) expires_at: Option<LeaseInstant>,
+    pub(crate) state: QuotaLeaseState,
 }
 
 impl QuotaLeaseGrant {
@@ -233,22 +239,22 @@ impl QuotaLeaseGrant {
     }
 }
 
-/// In-memory single-Cell `QuotaLease` grantor.
+/// Single-Cell `QuotaLease` grantor (in-memory or durable `SQLite`).
 ///
 /// Holds the control-plane AVAILABLE pool and the shared Cell authority
-/// used for fence admit. Not a durable ledger and not a second authority
-/// store. This family remains the epoch-advance entry of the assembly
-/// (`advance_epoch_and_quarantine`): sharing the authority (ADR-0021)
+/// used for fence admit. This family remains the epoch-advance entry of the
+/// assembly (`advance_epoch_and_quarantine`): sharing the authority (ADR-0021)
 /// mints readers, not a second writer.
 #[derive(Debug)]
 pub struct QuotaLeaseGrantor {
     authority: Arc<CellAuthority>,
     available: u64,
     leases: HashMap<QuotaLeaseId, QuotaLeaseGrant>,
+    store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl QuotaLeaseGrantor {
-    /// Opens a grantor bound to the process's shared Cell authority
+    /// Opens an in-memory grantor bound to the process's shared Cell authority
     /// ([`CellAuthority::into_shared`], ADR-0021) with an initial AVAILABLE
     /// pool.
     #[must_use]
@@ -257,7 +263,51 @@ impl QuotaLeaseGrantor {
             authority,
             available,
             leases: HashMap::new(),
+            store: None,
         }
+    }
+
+    /// Alias for [`Self::open`].
+    #[must_use]
+    pub fn new(authority: Arc<CellAuthority>, available: u64) -> Self {
+        Self::open(authority, available)
+    }
+
+    /// Opens a durable `QuotaLeaseGrantor` backed by `SQLite` (`WAL + FULL`)
+    /// at `path`, seeding `available` on first creation or rehydrating full
+    /// pool/lease state on reopen.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on storage failure, unsupported schema version, or
+    /// corrupted/tampered pool/lease records.
+    pub fn open_durable(
+        path: impl AsRef<Path>,
+        authority: Arc<CellAuthority>,
+        available: u64,
+    ) -> Result<Self, LeaseStoreError> {
+        let store = Arc::new(SqliteLeaseStore::open(path)?);
+        Self::open_with_store(store, authority, available)
+    }
+
+    /// Opens a durable `QuotaLeaseGrantor` over a shared [`SqliteLeaseStore`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_durable`].
+    pub fn open_with_store(
+        store: Arc<SqliteLeaseStore>,
+        authority: Arc<CellAuthority>,
+        available: u64,
+    ) -> Result<Self, LeaseStoreError> {
+        let (rehydrated_available, leases) =
+            store.open_or_rehydrate_quota(&authority, available)?;
+        Ok(Self {
+            authority,
+            available: rehydrated_available,
+            leases,
+            store: Some(store),
+        })
     }
 
     /// Remaining control-plane AVAILABLE for this Cell.
@@ -311,7 +361,7 @@ impl QuotaLeaseGrantor {
                 available: self.available,
             });
         }
-        self.available -= face_value;
+        let next_available = self.available - face_value;
         let cell = self.authority.identity();
         let grant = QuotaLeaseGrant {
             lease_id,
@@ -327,6 +377,10 @@ impl QuotaLeaseGrantor {
             expires_at,
             state: QuotaLeaseState::Issued,
         };
+        if let Some(store) = &self.store {
+            store.persist_quota_grant(&grant, self.available, next_available)?;
+        }
+        self.available = next_available;
         self.leases.insert(lease_id, grant);
         Ok(grant)
     }
@@ -354,15 +408,40 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(lease_id)?;
-        match lease.state {
+        let existing = self.query(lease_id)?;
+        match existing.state {
             QuotaLeaseState::Issued => {
-                lease.state = QuotaLeaseState::Active;
-                Ok(*lease)
+                let next = QuotaLeaseGrant {
+                    state: QuotaLeaseState::Active,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(
+                        lease_id,
+                        QuotaLeaseState::Issued,
+                        &next,
+                        None,
+                    )?;
+                }
+                self.leases.insert(lease_id, next);
+                Ok(next)
             }
-            QuotaLeaseState::Active => Ok(*lease),
+            QuotaLeaseState::Active => Ok(existing),
             state => Err(QuotaLeaseLedgerError::ActivateRequiresIssued { state }),
         }
+    }
+
+    /// Alias for [`Self::activate`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::activate`].
+    pub fn admit_operation(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.activate(presented, lease_id)
     }
 
     /// Advances the monotonic usage high-water inside the issued face value.
@@ -382,12 +461,36 @@ impl QuotaLeaseGrantor {
         high_water: u64,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(lease_id)?;
-        match lease.state {
-            QuotaLeaseState::Active => apply_quota_high_water(lease, high_water),
-            QuotaLeaseState::Closing => closing_high_water(lease, high_water),
+        let existing = self.query(lease_id)?;
+        match existing.state {
+            QuotaLeaseState::Active => {
+                let mut next = existing;
+                apply_quota_high_water(&mut next, high_water)?;
+                if next.spent != existing.spent {
+                    if let Some(store) = &self.store {
+                        store.persist_quota_usage(&existing, &next)?;
+                    }
+                    self.leases.insert(lease_id, next);
+                }
+                Ok(next)
+            }
+            QuotaLeaseState::Closing => closing_high_water(&existing, high_water),
             state => Err(QuotaLeaseLedgerError::NotActive { state }),
         }
+    }
+
+    /// Alias for [`Self::report_usage`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::report_usage`].
+    pub fn report_spend(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+        high_water: u64,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.report_usage(presented, lease_id, high_water)
     }
 
     /// `ACTIVE → CLOSING`. Does not return remainder to `AVAILABLE`.
@@ -401,13 +504,25 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(lease_id)?;
-        match lease.state {
+        let existing = self.query(lease_id)?;
+        match existing.state {
             QuotaLeaseState::Active => {
-                lease.state = QuotaLeaseState::Closing;
-                Ok(*lease)
+                let next = QuotaLeaseGrant {
+                    state: QuotaLeaseState::Closing,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(
+                        lease_id,
+                        QuotaLeaseState::Active,
+                        &next,
+                        None,
+                    )?;
+                }
+                self.leases.insert(lease_id, next);
+                Ok(next)
             }
-            QuotaLeaseState::Closing => Ok(*lease),
+            QuotaLeaseState::Closing => Ok(existing),
             state => Err(QuotaLeaseLedgerError::NotActive { state }),
         }
     }
@@ -425,22 +540,45 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let (snapshot, refund) = {
-            let lease = self.lease_mut(lease_id)?;
-            match lease.state {
-                QuotaLeaseState::Closing => {
-                    let refund = lease.remaining;
-                    lease.returned += refund;
-                    lease.remaining = 0;
-                    lease.state = QuotaLeaseState::Closed;
-                    (*lease, refund)
+        let existing = self.query(lease_id)?;
+        match existing.state {
+            QuotaLeaseState::Closing => {
+                let refund = existing.remaining;
+                let next_available = self.available + refund;
+                let next = QuotaLeaseGrant {
+                    returned: existing.returned + refund,
+                    remaining: 0,
+                    state: QuotaLeaseState::Closed,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(
+                        lease_id,
+                        QuotaLeaseState::Closing,
+                        &next,
+                        Some((self.available, next_available)),
+                    )?;
                 }
-                QuotaLeaseState::Closed => (*lease, 0),
-                state => return Err(QuotaLeaseLedgerError::NotClosing { state }),
+                self.leases.insert(lease_id, next);
+                self.available = next_available;
+                Ok(next)
             }
-        };
-        self.available += refund;
-        Ok(snapshot)
+            QuotaLeaseState::Closed => Ok(existing),
+            state => Err(QuotaLeaseLedgerError::NotClosing { state }),
+        }
+    }
+
+    /// Alias for [`Self::ack_close`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::ack_close`].
+    pub fn finalize_close(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.ack_close(presented, lease_id)
     }
 
     /// Idempotent `ISSUED → CANCELLED`. Refunds the full face value once.
@@ -457,25 +595,46 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let (snapshot, refund) = {
-            let lease = self.lease_mut(lease_id)?;
-            match lease.state {
-                QuotaLeaseState::Issued => {
-                    let refund = lease.face_value;
-                    lease.remaining = 0;
-                    lease.returned = refund;
-                    lease.spent = 0;
-                    lease.state = QuotaLeaseState::Cancelled;
-                    (*lease, refund)
+        let existing = self.query(lease_id)?;
+        match existing.state {
+            QuotaLeaseState::Issued => {
+                let refund = existing.face_value;
+                let next_available = self.available + refund;
+                let next = QuotaLeaseGrant {
+                    remaining: 0,
+                    returned: refund,
+                    spent: 0,
+                    state: QuotaLeaseState::Cancelled,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(
+                        lease_id,
+                        QuotaLeaseState::Issued,
+                        &next,
+                        Some((self.available, next_available)),
+                    )?;
                 }
-                QuotaLeaseState::Cancelled => (*lease, 0),
-                state => {
-                    return Err(QuotaLeaseLedgerError::CancelRequiresNeverActive { state });
-                }
+                self.leases.insert(lease_id, next);
+                self.available = next_available;
+                Ok(next)
             }
-        };
-        self.available += refund;
-        Ok(snapshot)
+            QuotaLeaseState::Cancelled => Ok(existing),
+            state => Err(QuotaLeaseLedgerError::CancelRequiresNeverActive { state }),
+        }
+    }
+
+    /// Alias for [`Self::cancel`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::cancel`].
+    pub fn cancel_issued(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.cancel(presented, lease_id)
     }
 
     /// Sweeps TTL-expired leases into `FENCED` (`LEASE-TTL-001`).
@@ -490,23 +649,36 @@ impl QuotaLeaseGrantor {
     /// This is a grantor-local compaction pass on the caller's logical clock:
     /// no fence is presented and no refund happens here.
     pub fn sweep_expired(&mut self, now: LeaseInstant) -> Vec<QuotaLeaseId> {
-        let mut fenced = Vec::new();
-        for lease in self.leases.values_mut() {
-            if lease.expires_at.is_none_or(|deadline| deadline > now) {
-                continue;
-            }
-            match lease.state {
+        let mut to_fence: Vec<(QuotaLeaseId, QuotaLeaseState)> = self
+            .leases
+            .values()
+            .filter(|lease| lease.expires_at.is_some_and(|deadline| deadline <= now))
+            .filter_map(|lease| match lease.state {
                 QuotaLeaseState::Issued | QuotaLeaseState::Active | QuotaLeaseState::Closing => {
-                    lease.state = QuotaLeaseState::Fenced;
-                    fenced.push(lease.lease_id);
+                    Some((lease.lease_id, lease.state))
                 }
                 QuotaLeaseState::Closed
                 | QuotaLeaseState::Cancelled
                 | QuotaLeaseState::Fenced
-                | QuotaLeaseState::Quarantined => {}
+                | QuotaLeaseState::Quarantined => None,
+            })
+            .collect();
+        to_fence.sort_unstable_by_key(|(id, _)| *id);
+        if to_fence.is_empty() {
+            return Vec::new();
+        }
+        if let Some(store) = &self.store
+            && store.persist_quota_sweep(&to_fence).is_err()
+        {
+            return Vec::new();
+        }
+        let mut fenced = Vec::with_capacity(to_fence.len());
+        for (lease_id, _) in to_fence {
+            if let Some(lease) = self.leases.get_mut(&lease_id) {
+                lease.state = QuotaLeaseState::Fenced;
+                fenced.push(lease_id);
             }
         }
-        fenced.sort_unstable();
         fenced
     }
 
@@ -528,22 +700,32 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
         self.authority.admit(presented)?;
-        let (snapshot, refund) = {
-            let lease = self.lease_mut(lease_id)?;
-            match lease.state {
-                QuotaLeaseState::Fenced => {
-                    let refund = lease.remaining;
-                    lease.returned += refund;
-                    lease.remaining = 0;
-                    lease.state = QuotaLeaseState::Closed;
-                    (*lease, refund)
+        let existing = self.query(lease_id)?;
+        match existing.state {
+            QuotaLeaseState::Fenced => {
+                let refund = existing.remaining;
+                let next_available = self.available + refund;
+                let next = QuotaLeaseGrant {
+                    returned: existing.returned + refund,
+                    remaining: 0,
+                    state: QuotaLeaseState::Closed,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(
+                        lease_id,
+                        QuotaLeaseState::Fenced,
+                        &next,
+                        Some((self.available, next_available)),
+                    )?;
                 }
-                QuotaLeaseState::Closed => (*lease, 0),
-                state => return Err(QuotaLeaseLedgerError::NotFenced { state }),
+                self.leases.insert(lease_id, next);
+                self.available = next_available;
+                Ok(next)
             }
-        };
-        self.available += refund;
-        Ok(snapshot)
+            QuotaLeaseState::Closed => Ok(existing),
+            state => Err(QuotaLeaseLedgerError::NotFenced { state }),
+        }
     }
 
     /// Advances the Cell epoch and quarantines unreconciled leases.
@@ -555,35 +737,50 @@ impl QuotaLeaseGrantor {
     ///
     /// # Errors
     ///
-    /// [`CellError::GenerationExhausted`] when the epoch cannot advance.
+    /// [`CellError::GenerationExhausted`] when the epoch cannot advance, or
+    /// [`CellError::DataDirUnavailable`] / [`CellError::DataDirCorrupt`] when
+    /// the durable store fails to persist the quarantine.
     pub fn advance_epoch_and_quarantine(&mut self) -> Result<CellFence, CellError> {
-        let fence = self.authority.advance_epoch()?;
-        for lease in self.leases.values_mut() {
-            if lease.epoch >= fence.epoch() {
-                continue;
-            }
-            match lease.state {
+        let next_epoch = self
+            .authority
+            .epoch()
+            .checked_next()
+            .ok_or(CellError::GenerationExhausted)?;
+        let next_token = self
+            .authority
+            .fencing_token()
+            .checked_next()
+            .ok_or(CellError::GenerationExhausted)?;
+
+        let mut to_quarantine: Vec<(QuotaLeaseId, QuotaLeaseState)> = self
+            .leases
+            .values()
+            .filter(|lease| lease.epoch < next_epoch)
+            .filter_map(|lease| match lease.state {
                 QuotaLeaseState::Issued
                 | QuotaLeaseState::Active
                 | QuotaLeaseState::Closing
-                | QuotaLeaseState::Fenced => {
-                    lease.state = QuotaLeaseState::Quarantined;
-                }
+                | QuotaLeaseState::Fenced => Some((lease.lease_id, lease.state)),
                 QuotaLeaseState::Closed
                 | QuotaLeaseState::Cancelled
-                | QuotaLeaseState::Quarantined => {}
+                | QuotaLeaseState::Quarantined => None,
+            })
+            .collect();
+        to_quarantine.sort_unstable_by_key(|(id, _)| *id);
+
+        if let Some(store) = &self.store {
+            store
+                .persist_quota_epoch_advance(next_epoch, next_token, &to_quarantine)
+                .map_err(LeaseStoreError::into_cell_error)?;
+        }
+
+        let fence = self.authority.advance_epoch()?;
+        for (lease_id, _) in to_quarantine {
+            if let Some(lease) = self.leases.get_mut(&lease_id) {
+                lease.state = QuotaLeaseState::Quarantined;
             }
         }
         Ok(fence)
-    }
-
-    fn lease_mut(
-        &mut self,
-        lease_id: QuotaLeaseId,
-    ) -> Result<&mut QuotaLeaseGrant, QuotaLeaseLedgerError> {
-        self.leases
-            .get_mut(&lease_id)
-            .ok_or(QuotaLeaseLedgerError::UnknownLease)
     }
 }
 
@@ -683,6 +880,8 @@ pub enum QuotaLeaseGrantError {
         /// Deadline on this grant attempt (`None` never expires).
         requested: Option<LeaseInstant>,
     },
+    /// Durable `SQLite` store rejected or failed to persist the grant.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for QuotaLeaseGrantError {
@@ -704,6 +903,12 @@ impl From<CellAdmitError> for QuotaLeaseGrantError {
                 Self::FencingTokenMismatch { presented, current }
             }
         }
+    }
+}
+
+impl From<LeaseStoreError> for QuotaLeaseGrantError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -759,6 +964,9 @@ impl fmt::Display for QuotaLeaseGrantError {
                 formatter,
                 "conflicting QuotaLease TTL deadline: existing {existing:?} != requested {requested:?}"
             ),
+            Self::Storage(reason) => {
+                write!(formatter, "QuotaLease durable store failure: {reason}")
+            }
         }
     }
 }
@@ -815,11 +1023,19 @@ pub enum QuotaLeaseLedgerError {
         /// State of the committed lease.
         state: QuotaLeaseState,
     },
+    /// Durable `SQLite` store rejected or failed to persist the transition.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for QuotaLeaseLedgerError {
     fn from(error: CellAdmitError) -> Self {
         Self::Fence(QuotaLeaseGrantError::from(error))
+    }
+}
+
+impl From<LeaseStoreError> for QuotaLeaseLedgerError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -863,15 +1079,20 @@ impl fmt::Display for QuotaLeaseLedgerError {
                     "QuotaLease close ACK requires CLOSING, found {state:?}"
                 )
             }
-            Self::CancelRequiresNeverActive { state } => write!(
-                formatter,
-                "QuotaLease cancel requires a lease that was never ACTIVE, found {state:?}"
-            ),
+            Self::CancelRequiresNeverActive { state } => {
+                write!(
+                    formatter,
+                    "QuotaLease cancel requires a lease that was never ACTIVE, found {state:?}"
+                )
+            }
             Self::NotFenced { state } => {
                 write!(
                     formatter,
                     "QuotaLease settle requires FENCED, found {state:?}"
                 )
+            }
+            Self::Storage(reason) => {
+                write!(formatter, "QuotaLease durable store failure: {reason}")
             }
         }
     }
@@ -886,8 +1107,8 @@ impl Error for QuotaLeaseLedgerError {}
 /// RETURNING → RETURNED`. Reclaim stays out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CapacityLeaseState {
-    /// Issued after durable (here: in-memory) `amount` deduct from the source
-    /// pool (`LEASE-CAPACITY-001` `GLOBAL_RESERVED`).
+    /// Issued after `amount` deduct from the source pool
+    /// (`LEASE-CAPACITY-001` `GLOBAL_RESERVED`).
     GlobalReserved,
     /// Pre-active prepare. Source pool is unchanged (`TARGET_PREPARED`).
     TargetPrepared,
@@ -905,14 +1126,14 @@ pub enum CapacityLeaseState {
 /// slice: id, amount, target node/boot, capacity epoch, fencing token, state).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CapacityLeaseGrant {
-    capacity_lease_id: CapacityLeaseId,
-    target_node: CellIdentity,
-    target_node_boot_generation: Generation,
-    amount: u64,
-    capacity_epoch: CellEpoch,
-    fencing_token: CellFencingToken,
-    fence_scope: FenceScope,
-    state: CapacityLeaseState,
+    pub(crate) capacity_lease_id: CapacityLeaseId,
+    pub(crate) target_node: CellIdentity,
+    pub(crate) target_node_boot_generation: Generation,
+    pub(crate) amount: u64,
+    pub(crate) capacity_epoch: CellEpoch,
+    pub(crate) fencing_token: CellFencingToken,
+    pub(crate) fence_scope: FenceScope,
+    pub(crate) state: CapacityLeaseState,
 }
 
 impl CapacityLeaseGrant {
@@ -966,21 +1187,22 @@ impl CapacityLeaseGrant {
     }
 }
 
-/// In-memory single-Cell `CapacityLease` grantor.
+/// Single-Cell `CapacityLease` grantor (in-memory or durable `SQLite`).
 ///
 /// Holds the source capacity pool remaining, the committed lease records
 /// with their host attach receipts, and the shared Cell authority used for
-/// fence admit. Not a durable ledger and not a second authority store.
+/// fence admit.
 #[derive(Debug)]
 pub struct CapacityLeaseGrantor {
     authority: Arc<CellAuthority>,
     pool_remaining: u64,
     leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
     attach_receipts: HashMap<CapacityLeaseId, HostAttachReceipt>,
+    store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl CapacityLeaseGrantor {
-    /// Opens a grantor bound to the process's shared Cell authority
+    /// Opens an in-memory grantor bound to the process's shared Cell authority
     /// ([`CellAuthority::into_shared`], ADR-0021) with an initial source
     /// capacity pool.
     #[must_use]
@@ -990,7 +1212,52 @@ impl CapacityLeaseGrantor {
             pool_remaining,
             leases: HashMap::new(),
             attach_receipts: HashMap::new(),
+            store: None,
         }
+    }
+
+    /// Alias for [`Self::open`].
+    #[must_use]
+    pub fn new(authority: Arc<CellAuthority>, pool_remaining: u64) -> Self {
+        Self::open(authority, pool_remaining)
+    }
+
+    /// Opens a durable `CapacityLeaseGrantor` backed by `SQLite` (`WAL + FULL`)
+    /// at `path`, seeding `pool_remaining` on first creation or rehydrating
+    /// full pool/lease/attach-receipt state on reopen.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on storage failure, unsupported schema version, or
+    /// corrupted/tampered pool/lease records.
+    pub fn open_durable(
+        path: impl AsRef<Path>,
+        authority: Arc<CellAuthority>,
+        pool_remaining: u64,
+    ) -> Result<Self, LeaseStoreError> {
+        let store = Arc::new(SqliteLeaseStore::open(path)?);
+        Self::open_with_store(store, authority, pool_remaining)
+    }
+
+    /// Opens a durable `CapacityLeaseGrantor` over a shared [`SqliteLeaseStore`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_durable`].
+    pub fn open_with_store(
+        store: Arc<SqliteLeaseStore>,
+        authority: Arc<CellAuthority>,
+        pool_remaining: u64,
+    ) -> Result<Self, LeaseStoreError> {
+        let (rehydrated_pool, leases, attach_receipts) =
+            store.open_or_rehydrate_capacity(&authority, pool_remaining)?;
+        Ok(Self {
+            authority,
+            pool_remaining: rehydrated_pool,
+            leases,
+            attach_receipts,
+            store: Some(store),
+        })
     }
 
     /// Remaining source capacity pool for this Cell.
@@ -1032,7 +1299,7 @@ impl CapacityLeaseGrantor {
                 available: self.pool_remaining,
             });
         }
-        self.pool_remaining -= amount;
+        let next_pool = self.pool_remaining - amount;
         let target_node = self.authority.identity();
         let grant = CapacityLeaseGrant {
             capacity_lease_id,
@@ -1044,6 +1311,10 @@ impl CapacityLeaseGrantor {
             fence_scope: FenceScope::cell(target_node),
             state: CapacityLeaseState::GlobalReserved,
         };
+        if let Some(store) = &self.store {
+            store.persist_capacity_grant(&grant, self.pool_remaining, next_pool)?;
+        }
+        self.pool_remaining = next_pool;
         self.leases.insert(capacity_lease_id, grant);
         Ok(grant)
     }
@@ -1076,15 +1347,40 @@ impl CapacityLeaseGrantor {
         capacity_lease_id: CapacityLeaseId,
     ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(capacity_lease_id)?;
-        match lease.state {
+        let existing = self.query(capacity_lease_id)?;
+        match existing.state {
             CapacityLeaseState::GlobalReserved => {
-                lease.state = CapacityLeaseState::TargetPrepared;
-                Ok(*lease)
+                let next = CapacityLeaseGrant {
+                    state: CapacityLeaseState::TargetPrepared,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_capacity_state_transition(
+                        capacity_lease_id,
+                        CapacityLeaseState::GlobalReserved,
+                        CapacityLeaseState::TargetPrepared,
+                        None,
+                    )?;
+                }
+                self.leases.insert(capacity_lease_id, next);
+                Ok(next)
             }
-            CapacityLeaseState::TargetPrepared => Ok(*lease),
+            CapacityLeaseState::TargetPrepared => Ok(existing),
             state => Err(CapacityLeaseReturnError::NotGlobalReserved { state }),
         }
+    }
+
+    /// Alias for [`Self::prepare`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::prepare`].
+    pub fn prepare_target(
+        &mut self,
+        presented: &CellFence,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.prepare(presented, capacity_lease_id)
     }
 
     /// `TARGET_PREPARED → ACTIVE`: accepts the host attach receipt.
@@ -1119,6 +1415,9 @@ impl CapacityLeaseGrantor {
                     state: CapacityLeaseState::Active,
                     ..lease
                 };
+                if let Some(store) = &self.store {
+                    store.persist_capacity_activate(receipt.capacity_lease_id, &receipt)?;
+                }
                 self.leases.insert(receipt.capacity_lease_id, committed);
                 self.attach_receipts
                     .insert(receipt.capacity_lease_id, receipt);
@@ -1140,6 +1439,19 @@ impl CapacityLeaseGrantor {
             }
             state => Err(CapacityLeaseReturnError::AttachRequiresTargetPrepared { state }),
         }
+    }
+
+    /// Alias for [`Self::activate`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::activate`].
+    pub fn activate_host(
+        &mut self,
+        presented: &CellFence,
+        receipt: HostAttachReceipt,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.activate(presented, receipt)
     }
 
     /// Committed host attach receipt for `capacity_lease_id`, when the lease
@@ -1167,15 +1479,27 @@ impl CapacityLeaseGrantor {
         capacity_lease_id: CapacityLeaseId,
     ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(capacity_lease_id)?;
-        match lease.state {
-            CapacityLeaseState::GlobalReserved
+        let existing = self.query(capacity_lease_id)?;
+        match existing.state {
+            prev @ (CapacityLeaseState::GlobalReserved
             | CapacityLeaseState::TargetPrepared
-            | CapacityLeaseState::Active => {
-                lease.state = CapacityLeaseState::Returning;
-                Ok(*lease)
+            | CapacityLeaseState::Active) => {
+                let next = CapacityLeaseGrant {
+                    state: CapacityLeaseState::Returning,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_capacity_state_transition(
+                        capacity_lease_id,
+                        prev,
+                        CapacityLeaseState::Returning,
+                        None,
+                    )?;
+                }
+                self.leases.insert(capacity_lease_id, next);
+                Ok(next)
             }
-            CapacityLeaseState::Returning => Ok(*lease),
+            CapacityLeaseState::Returning => Ok(existing),
             state @ CapacityLeaseState::Returned => {
                 Err(CapacityLeaseReturnError::NotReserved { state })
             }
@@ -1194,36 +1518,51 @@ impl CapacityLeaseGrantor {
         capacity_lease_id: CapacityLeaseId,
     ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
         self.authority.admit(presented)?;
-        let (snapshot, refund) = {
-            let lease = self.lease_mut(capacity_lease_id)?;
-            match lease.state {
-                CapacityLeaseState::Returning => {
-                    lease.state = CapacityLeaseState::Returned;
-                    (*lease, lease.amount)
+        let existing = self.query(capacity_lease_id)?;
+        match existing.state {
+            CapacityLeaseState::Returning => {
+                let next_pool = self.pool_remaining + existing.amount;
+                let next = CapacityLeaseGrant {
+                    state: CapacityLeaseState::Returned,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_capacity_state_transition(
+                        capacity_lease_id,
+                        CapacityLeaseState::Returning,
+                        CapacityLeaseState::Returned,
+                        Some((self.pool_remaining, next_pool)),
+                    )?;
                 }
-                CapacityLeaseState::Returned => (*lease, 0),
-                state @ (CapacityLeaseState::GlobalReserved
-                | CapacityLeaseState::TargetPrepared
-                | CapacityLeaseState::Active) => {
-                    return Err(CapacityLeaseReturnError::NotReturning { state });
-                }
+                self.leases.insert(capacity_lease_id, next);
+                self.pool_remaining = next_pool;
+                Ok(next)
             }
-        };
-        self.pool_remaining += refund;
-        Ok(snapshot)
+            CapacityLeaseState::Returned => Ok(existing),
+            state @ (CapacityLeaseState::GlobalReserved
+            | CapacityLeaseState::TargetPrepared
+            | CapacityLeaseState::Active) => Err(CapacityLeaseReturnError::NotReturning { state }),
+        }
     }
 
-    fn lease_mut(
+    /// Alias for [`Self::ack_return`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::ack_return`].
+    pub fn finalize_return(
         &mut self,
+        presented: &CellFence,
         capacity_lease_id: CapacityLeaseId,
-    ) -> Result<&mut CapacityLeaseGrant, CapacityLeaseReturnError> {
-        self.leases
-            .get_mut(&capacity_lease_id)
-            .ok_or(CapacityLeaseReturnError::UnknownLease)
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.ack_return(presented, capacity_lease_id)
     }
 }
 
-fn attach_receipt_binds_lease(receipt: &HostAttachReceipt, lease: &CapacityLeaseGrant) -> bool {
+pub(crate) fn attach_receipt_binds_lease(
+    receipt: &HostAttachReceipt,
+    lease: &CapacityLeaseGrant,
+) -> bool {
     receipt.capacity_lease_id == lease.capacity_lease_id
         && receipt.target_node == lease.target_node
         && receipt.target_node_boot_generation == lease.target_node_boot_generation
@@ -1248,13 +1587,13 @@ fn attach_receipt_binds_lease(receipt: &HostAttachReceipt, lease: &CapacityLease
 /// value the grantor mints.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostAttachReceipt {
-    receipt_id: ReceiptId,
-    capacity_lease_id: CapacityLeaseId,
-    target_node: CellIdentity,
-    target_node_boot_generation: Generation,
-    capacity_epoch: CellEpoch,
-    fencing_token: CellFencingToken,
-    attached_amount: u64,
+    pub(crate) receipt_id: ReceiptId,
+    pub(crate) capacity_lease_id: CapacityLeaseId,
+    pub(crate) target_node: CellIdentity,
+    pub(crate) target_node_boot_generation: Generation,
+    pub(crate) capacity_epoch: CellEpoch,
+    pub(crate) fencing_token: CellFencingToken,
+    pub(crate) attached_amount: u64,
 }
 
 impl HostAttachReceipt {
@@ -1378,6 +1717,8 @@ pub enum CapacityLeaseGrantError {
         /// Amount on this grant attempt.
         requested: u64,
     },
+    /// Durable `SQLite` store rejected or failed to persist the grant.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for CapacityLeaseGrantError {
@@ -1399,6 +1740,12 @@ impl From<CellAdmitError> for CapacityLeaseGrantError {
                 Self::FencingTokenMismatch { presented, current }
             }
         }
+    }
+}
+
+impl From<LeaseStoreError> for CapacityLeaseGrantError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -1447,6 +1794,9 @@ impl fmt::Display for CapacityLeaseGrantError {
                 formatter,
                 "conflicting CapacityLease amount: existing {existing} != requested {requested}"
             ),
+            Self::Storage(reason) => {
+                write!(formatter, "CapacityLease durable store failure: {reason}")
+            }
         }
     }
 }
@@ -1498,11 +1848,19 @@ pub enum CapacityLeaseReturnError {
         /// Idempotency key on this attempt.
         requested: ReceiptId,
     },
+    /// Durable `SQLite` store rejected or failed to persist the transition.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for CapacityLeaseReturnError {
     fn from(error: CellAdmitError) -> Self {
         Self::Fence(CapacityLeaseGrantError::from(error))
+    }
+}
+
+impl From<LeaseStoreError> for CapacityLeaseReturnError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -1538,6 +1896,9 @@ impl fmt::Display for CapacityLeaseReturnError {
                 formatter,
                 "CapacityLease attach receipt conflict: committed {existing:?} != requested {requested:?}"
             ),
+            Self::Storage(reason) => {
+                write!(formatter, "CapacityLease durable store failure: {reason}")
+            }
         }
     }
 }
@@ -1551,8 +1912,8 @@ impl Error for CapacityLeaseReturnError {}
 /// `HOLDER_PREPARED` / `ACTIVE` chain stays deferred.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ExclusiveDeviceLeaseState {
-    /// Issued after durable (here: in-memory) FREE→reserved claim on the
-    /// `DeviceLeaseHead` (`LEASE-DEVICE-001` `DEVICE_RESERVED`).
+    /// Issued after FREE→reserved claim on the `DeviceLeaseHead`
+    /// (`LEASE-DEVICE-001` `DEVICE_RESERVED`).
     DeviceReserved,
     /// Reset+zeroization declared; the receipt is not accepted yet. The head
     /// is not FREE (`RESETTING`).
@@ -1567,15 +1928,15 @@ pub enum ExclusiveDeviceLeaseState {
 /// state; plus the slice-local `reset_generation` head fence).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExclusiveDeviceLeaseGrant {
-    device_lease_id: ExclusiveDeviceLeaseId,
-    device_id: DeviceId,
-    holder_node: CellIdentity,
-    holder_node_boot_generation: Generation,
-    exclusivity_epoch: CellEpoch,
-    fencing_token: CellFencingToken,
-    fence_scope: FenceScope,
-    reset_generation: Generation,
-    state: ExclusiveDeviceLeaseState,
+    pub(crate) device_lease_id: ExclusiveDeviceLeaseId,
+    pub(crate) device_id: DeviceId,
+    pub(crate) holder_node: CellIdentity,
+    pub(crate) holder_node_boot_generation: Generation,
+    pub(crate) exclusivity_epoch: CellEpoch,
+    pub(crate) fencing_token: CellFencingToken,
+    pub(crate) fence_scope: FenceScope,
+    pub(crate) reset_generation: Generation,
+    pub(crate) state: ExclusiveDeviceLeaseState,
 }
 
 impl ExclusiveDeviceLeaseGrant {
@@ -1637,12 +1998,11 @@ impl ExclusiveDeviceLeaseGrant {
     }
 }
 
-/// In-memory single-Cell `ExclusiveDeviceLease` grantor.
+/// Single-Cell `ExclusiveDeviceLease` grantor (in-memory or durable `SQLite`).
 ///
 /// Holds one `DeviceLeaseHead` (FREE or reserved) with its monotonic reset
 /// generation, the committed lease history, and the immutable reset receipt
-/// log, plus the shared Cell authority used for fence admit. Not a durable
-/// ledger and not a second authority store.
+/// log, plus the shared Cell authority used for fence admit.
 #[derive(Debug)]
 pub struct ExclusiveDeviceLeaseGrantor {
     authority: Arc<CellAuthority>,
@@ -1651,10 +2011,11 @@ pub struct ExclusiveDeviceLeaseGrantor {
     reset_generation: Generation,
     leases: HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
     reset_receipts: Vec<DeviceResetReceipt>,
+    store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl ExclusiveDeviceLeaseGrantor {
-    /// Opens a grantor bound to the process's shared Cell authority
+    /// Opens an in-memory grantor bound to the process's shared Cell authority
     /// ([`CellAuthority::into_shared`], ADR-0021) with a FREE device head
     /// for `device_id` at reset generation [`Generation::INITIAL`].
     #[must_use]
@@ -1666,7 +2027,56 @@ impl ExclusiveDeviceLeaseGrantor {
             reset_generation: Generation::INITIAL,
             leases: HashMap::new(),
             reset_receipts: Vec::new(),
+            store: None,
         }
+    }
+
+    /// Alias for [`Self::open`].
+    #[must_use]
+    pub fn new(authority: Arc<CellAuthority>, device_id: DeviceId) -> Self {
+        Self::open(authority, device_id)
+    }
+
+    /// Opens a durable `ExclusiveDeviceLeaseGrantor` backed by `SQLite`
+    /// (`WAL + FULL`) at `path`, seeding a `FREE` head for `device_id` on
+    /// first creation or rehydrating full head/lease/reset-receipt state on
+    /// reopen.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on storage failure, unsupported schema version, or
+    /// corrupted/tampered head/lease/receipt records.
+    pub fn open_durable(
+        path: impl AsRef<Path>,
+        authority: Arc<CellAuthority>,
+        device_id: DeviceId,
+    ) -> Result<Self, LeaseStoreError> {
+        let store = Arc::new(SqliteLeaseStore::open(path)?);
+        Self::open_with_store(store, authority, device_id)
+    }
+
+    /// Opens a durable `ExclusiveDeviceLeaseGrantor` over a shared
+    /// [`SqliteLeaseStore`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_durable`].
+    pub fn open_with_store(
+        store: Arc<SqliteLeaseStore>,
+        authority: Arc<CellAuthority>,
+        device_id: DeviceId,
+    ) -> Result<Self, LeaseStoreError> {
+        let (free, reset_generation, leases, reset_receipts) =
+            store.open_or_rehydrate_device(&authority, device_id)?;
+        Ok(Self {
+            authority,
+            device_id,
+            free,
+            reset_generation,
+            leases,
+            reset_receipts,
+            store: Some(store),
+        })
     }
 
     /// Device identity this grantor manages.
@@ -1675,7 +2085,7 @@ impl ExclusiveDeviceLeaseGrantor {
         self.device_id
     }
 
-    /// Whether the in-memory `DeviceLeaseHead` is still FREE.
+    /// Whether the `DeviceLeaseHead` is still FREE.
     #[must_use]
     pub const fn is_free(&self) -> bool {
         self.free
@@ -1723,7 +2133,6 @@ impl ExclusiveDeviceLeaseGrantor {
                 device_id: self.device_id,
             });
         }
-        self.free = false;
         let holder_node = self.authority.identity();
         let grant = ExclusiveDeviceLeaseGrant {
             device_lease_id,
@@ -1736,6 +2145,10 @@ impl ExclusiveDeviceLeaseGrantor {
             reset_generation: self.reset_generation,
             state: ExclusiveDeviceLeaseState::DeviceReserved,
         };
+        if let Some(store) = &self.store {
+            store.persist_device_grant(&grant)?;
+        }
+        self.free = false;
         self.leases.insert(device_lease_id, grant);
         Ok(grant)
     }
@@ -1770,17 +2183,37 @@ impl ExclusiveDeviceLeaseGrantor {
         device_lease_id: ExclusiveDeviceLeaseId,
     ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
         self.authority.admit(presented)?;
-        let lease = self.lease_mut(device_lease_id)?;
-        match lease.state {
+        let existing = self.query(device_lease_id)?;
+        match existing.state {
             ExclusiveDeviceLeaseState::DeviceReserved => {
-                lease.state = ExclusiveDeviceLeaseState::Resetting;
-                Ok(*lease)
+                let next = ExclusiveDeviceLeaseGrant {
+                    state: ExclusiveDeviceLeaseState::Resetting,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_device_declare_reset(device_lease_id)?;
+                }
+                self.leases.insert(device_lease_id, next);
+                Ok(next)
             }
-            ExclusiveDeviceLeaseState::Resetting => Ok(*lease),
+            ExclusiveDeviceLeaseState::Resetting => Ok(existing),
             state @ ExclusiveDeviceLeaseState::Returned => {
                 Err(ExclusiveDeviceLeaseReturnError::DeclareRequiresReserved { state })
             }
         }
+    }
+
+    /// Alias for [`Self::declare_reset`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::declare_reset`].
+    pub fn begin_device_reset(
+        &mut self,
+        presented: &CellFence,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.declare_reset(presented, device_lease_id)
     }
 
     /// Accepts the reset+zeroization receipt and unblocks the return
@@ -1841,6 +2274,14 @@ impl ExclusiveDeviceLeaseGrantor {
                     state: ExclusiveDeviceLeaseState::Returned,
                     ..lease
                 };
+                if let Some(store) = &self.store {
+                    store.persist_device_reset_receipt(
+                        self.device_id,
+                        &receipt,
+                        self.reset_generation,
+                        next,
+                    )?;
+                }
                 self.leases.insert(receipt.device_lease_id, returned);
                 self.reset_receipts.push(receipt);
                 self.reset_generation = next;
@@ -1865,17 +2306,24 @@ impl ExclusiveDeviceLeaseGrantor {
         }
     }
 
-    fn lease_mut(
+    /// Alias for [`Self::submit_reset_receipt`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::submit_reset_receipt`].
+    pub fn finalize_device_reset(
         &mut self,
-        device_lease_id: ExclusiveDeviceLeaseId,
-    ) -> Result<&mut ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
-        self.leases
-            .get_mut(&device_lease_id)
-            .ok_or(ExclusiveDeviceLeaseReturnError::UnknownLease)
+        presented: &CellFence,
+        receipt: DeviceResetReceipt,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseReturnError> {
+        self.submit_reset_receipt(presented, receipt)
     }
 }
 
-fn receipt_binds_lease(receipt: &DeviceResetReceipt, lease: &ExclusiveDeviceLeaseGrant) -> bool {
+pub(crate) fn receipt_binds_lease(
+    receipt: &DeviceResetReceipt,
+    lease: &ExclusiveDeviceLeaseGrant,
+) -> bool {
     receipt.device_lease_id == lease.device_lease_id
         && receipt.holder_node == lease.holder_node
         && receipt.holder_node_boot_generation == lease.holder_node_boot_generation
@@ -1901,13 +2349,13 @@ fn receipt_binds_lease(receipt: &DeviceResetReceipt, lease: &ExclusiveDeviceLeas
 /// grantor mints.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceResetReceipt {
-    receipt_id: ReceiptId,
-    device_lease_id: ExclusiveDeviceLeaseId,
-    holder_node: CellIdentity,
-    holder_node_boot_generation: Generation,
-    exclusivity_epoch: CellEpoch,
-    fencing_token: CellFencingToken,
-    reset_generation: Generation,
+    pub(crate) receipt_id: ReceiptId,
+    pub(crate) device_lease_id: ExclusiveDeviceLeaseId,
+    pub(crate) holder_node: CellIdentity,
+    pub(crate) holder_node_boot_generation: Generation,
+    pub(crate) exclusivity_epoch: CellEpoch,
+    pub(crate) fencing_token: CellFencingToken,
+    pub(crate) reset_generation: Generation,
 }
 
 impl DeviceResetReceipt {
@@ -2022,6 +2470,8 @@ pub enum ExclusiveDeviceLeaseGrantError {
         /// Device whose head is already reserved.
         device_id: DeviceId,
     },
+    /// Durable `SQLite` store rejected or failed to persist the grant.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for ExclusiveDeviceLeaseGrantError {
@@ -2043,6 +2493,12 @@ impl From<CellAdmitError> for ExclusiveDeviceLeaseGrantError {
                 Self::FencingTokenMismatch { presented, current }
             }
         }
+    }
+}
+
+impl From<LeaseStoreError> for ExclusiveDeviceLeaseGrantError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -2081,6 +2537,12 @@ impl fmt::Display for ExclusiveDeviceLeaseGrantError {
                 formatter,
                 "ExclusiveDeviceLease DeviceLeaseHead not FREE for device {device_id:?}"
             ),
+            Self::Storage(reason) => {
+                write!(
+                    formatter,
+                    "ExclusiveDeviceLease durable store failure: {reason}"
+                )
+            }
         }
     }
 }
@@ -2131,11 +2593,19 @@ pub enum ExclusiveDeviceLeaseReturnError {
     /// Reset generation space exhausted; the head cannot fence another
     /// return.
     ResetGenerationExhausted,
+    /// Durable `SQLite` store rejected or failed to persist the transition.
+    Storage(&'static str),
 }
 
 impl From<CellAdmitError> for ExclusiveDeviceLeaseReturnError {
     fn from(error: CellAdmitError) -> Self {
         Self::Fence(ExclusiveDeviceLeaseGrantError::from(error))
+    }
+}
+
+impl From<LeaseStoreError> for ExclusiveDeviceLeaseReturnError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::Storage(error.reason())
     }
 }
 
@@ -2173,6 +2643,12 @@ impl fmt::Display for ExclusiveDeviceLeaseReturnError {
                 formatter,
                 "ExclusiveDeviceLease DeviceLeaseHead reset generation space exhausted"
             ),
+            Self::Storage(reason) => {
+                write!(
+                    formatter,
+                    "ExclusiveDeviceLease durable store failure: {reason}"
+                )
+            }
         }
     }
 }

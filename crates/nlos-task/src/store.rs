@@ -35,8 +35,9 @@ use crate::lease::{
     insert_takeover_fence_member, insert_takeover_fence_receipt, insert_takeover_receipt,
     load_assignment_by_id, load_current_assignment, load_takeover_barrier_receipt_by_participant,
     load_takeover_barrier_receipts, load_takeover_fence_members, load_takeover_fence_receipt,
-    load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_fenced,
-    mark_assignment_takeover_pending, refresh_active_assignment,
+    load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_expired,
+    mark_assignment_fenced, mark_assignment_quarantined, mark_assignment_takeover_pending,
+    refresh_active_assignment, update_takeover_receipt_extensions,
     validate_authority_lease_binding_in_transaction,
 };
 use crate::migrations::{
@@ -46,7 +47,7 @@ use crate::migrations::{
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
     migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41, migrate_v42, migrate_v43,
-    migrate_v44, migrate_v45, migrate_v46,
+    migrate_v44, migrate_v45, migrate_v46, migrate_v47,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
@@ -72,7 +73,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 46;
+const SCHEMA_VERSION: i64 = 47;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -366,6 +367,7 @@ impl SqliteTaskAuthority {
             migrate_v44(&mut connection)?;
             migrate_v45(&mut connection)?;
             migrate_v46(&mut connection)?;
+            migrate_v47(&mut connection)?;
         }
 
         Ok(Self {
@@ -2082,6 +2084,46 @@ impl SqliteTaskAuthority {
         crate::participant::inspect_registry(&connection, &task.record)
     }
 
+    /// Records the §26.1 authority identity (`[u8; 16]`) and signature
+    /// (`[u8; 64]`) on the current durable participant registry generation.
+    ///
+    /// Once set, `authority` and `signature` are immutable: replaying the
+    /// exact same `(authority, signature)` returns the existing record
+    /// idempotently, while supplying different bytes fails closed with
+    /// [`TaskStoreError::ParticipantRegistryBindingMismatch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `TaskNotFound`, `ParticipantRegistryBindingMismatch`,
+    /// `ParticipantRegistryCasMismatch`, `CorruptRecord`, or a storage error.
+    pub fn record_participant_registry_signature(
+        &self,
+        task_id: TaskId,
+        expected_binding: crate::ParticipantRegistryBinding,
+        authority: [u8; 16],
+        signature: [u8; 64],
+        signed_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistryRecord, TaskStoreError> {
+        if signed_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord(
+                "participant registry signature timestamp",
+            ));
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, task_id)?;
+        let registry = crate::participant::record_registry_signature(
+            &transaction,
+            &task.record,
+            expected_binding,
+            authority,
+            signature,
+            signed_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(registry)
+    }
+
     /// Prepares the local participant registry for a lease takeover.
     ///
     /// The current registry generation/root is CAS-frozen as
@@ -2097,10 +2139,32 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a task, lease, registry binding, CAS, or storage error.
-    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn prepare_authority_takeover_fence(
         &self,
         request: AuthorityLeaseTakeoverFenceRequest,
+    ) -> Result<crate::ParticipantRegistryRecord, TaskStoreError> {
+        self.prepare_authority_takeover_fence_with_receipt_extensions(request, None, None)
+    }
+
+    /// Prepares the local participant registry for a lease takeover while
+    /// optionally recording the §26.1 `outstanding_effect_quarantine_root`
+    /// and/or `consensus_commit_index` metadata slot on the pending
+    /// `TaskAuthorityTakeoverReceipt`.
+    ///
+    /// **Semantic boundary (ADR-0018 Decision 5 & ADR-0020)**:
+    /// `consensus_commit_index` is a passive metadata slot only and carries
+    /// **zero** Raft / multi-node consensus protocol semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::prepare_authority_takeover_fence`].
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn prepare_authority_takeover_fence_with_receipt_extensions(
+        &self,
+        request: AuthorityLeaseTakeoverFenceRequest,
+        outstanding_effect_quarantine_root: Option<[u8; 32]>,
+        consensus_commit_index: Option<u64>,
     ) -> Result<crate::ParticipantRegistryRecord, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2120,7 +2184,7 @@ impl SqliteTaskAuthority {
             if assignment.participant_registry_binding != request.expected_registry_binding {
                 return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
             }
-            if assignment.state == AuthorityAssignmentState::Fenced {
+            if assignment.state.is_terminal() {
                 return Err(TaskStoreError::AuthorityLeaseFenced);
             }
         }
@@ -2218,6 +2282,8 @@ impl SqliteTaskAuthority {
                 &task.record,
                 assignment,
                 &record,
+                outstanding_effect_quarantine_root,
+                consensus_commit_index,
                 request.requested_at_ms,
             )?;
         }
@@ -2306,6 +2372,43 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         load_takeover_receipt(&*connection, task_id, fence_receipt_id)?
             .ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Records the optional §26.1 `outstanding_effect_quarantine_root`
+    /// (`[u8; 32]`) and/or `consensus_commit_index` (`u64`) metadata fields
+    /// on a pending `TaskAuthorityTakeoverReceipt`.
+    ///
+    /// **Semantic boundary (ADR-0018 Decision 5 & ADR-0020)**:
+    /// `consensus_commit_index` is a passive metadata slot only and carries
+    /// **zero** Raft / multi-node consensus protocol semantics.
+    ///
+    /// Once either optional field is set, it is immutable: replaying the
+    /// exact same value returns the durable receipt idempotently, while
+    /// supplying a conflicting value or mutating a completed receipt fails
+    /// closed with [`TaskStoreError::AuthorityLeaseBindingMismatch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, `AuthorityLeaseBindingMismatch`,
+    /// `EpochExhausted`, `CorruptRecord`, or a storage error.
+    pub fn record_authority_takeover_receipt_extensions(
+        &self,
+        takeover_receipt_id: ReceiptId,
+        outstanding_effect_quarantine_root: Option<[u8; 32]>,
+        consensus_commit_index: Option<u64>,
+    ) -> Result<AuthorityTakeoverReceiptRecord, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let receipt = load_takeover_receipt_by_id(&transaction, takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        let updated = update_takeover_receipt_extensions(
+            &transaction,
+            &receipt,
+            outstanding_effect_quarantine_root,
+            consensus_commit_index,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
     }
 
     /// Records one endpoint's immutable takeover-barrier observation.
@@ -2975,6 +3078,127 @@ impl SqliteTaskAuthority {
     ) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
         let connection = self.lock_connection()?;
         load_current_assignment(&*connection, task_id)?.ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Reads one specific durable `TaskAuthorityAssignment` by its
+    /// `(task_id, assignment_id)` pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` when no matching assignment exists, or a
+    /// storage / corruption error.
+    pub fn inspect_authority_assignment_by_id(
+        &self,
+        task_id: TaskId,
+        assignment_id: nlos_types::TaskAuthorityAssignmentId,
+    ) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_assignment_by_id(&*connection, task_id, assignment_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Transitions an `Active` or `TakeoverPending` assignment to the
+    /// terminal §26.1 `Expired` (`4`) status.
+    ///
+    /// Replaying on an assignment already in `Expired` returns the durable
+    /// record idempotently without mutating `updated_at_ms`. Attempting to
+    /// transition a `Fenced` or `Quarantined` assignment fails closed with
+    /// [`TaskStoreError::AuthorityLeaseFenced`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `TaskNotFound`, `ReceiptNotFound`,
+    /// `InvalidAuthorityLease`, `AuthorityLeaseFenced`,
+    /// `CorruptRecord`, or a storage error.
+    pub fn expire_authority_assignment(
+        &self,
+        task_id: TaskId,
+        assignment_id: nlos_types::TaskAuthorityAssignmentId,
+        expired_at_ms: i64,
+    ) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+        if expired_at_ms < 0 {
+            return Err(TaskStoreError::InvalidAuthorityLease {
+                reason: "assignment expiration timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, task_id)?;
+        let assignment = load_assignment_by_id(&transaction, task_id, assignment_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if assignment.task_generation != task.record.task_generation {
+            return Err(TaskStoreError::CorruptRecord(
+                "assignment task generation mismatch",
+            ));
+        }
+        match assignment.state {
+            AuthorityAssignmentState::Expired => return Ok(assignment),
+            AuthorityAssignmentState::Fenced | AuthorityAssignmentState::Quarantined => {
+                return Err(TaskStoreError::AuthorityLeaseFenced);
+            }
+            AuthorityAssignmentState::Active | AuthorityAssignmentState::TakeoverPending => {}
+        }
+        if expired_at_ms < assignment.created_at_ms || expired_at_ms < assignment.updated_at_ms {
+            return Err(TaskStoreError::InvalidAuthorityLease {
+                reason: "assignment expiration timestamp precedes durable assignment timestamp",
+            });
+        }
+        let updated = mark_assignment_expired(&transaction, &assignment, expired_at_ms)?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    /// Transitions an `Active` or `TakeoverPending` assignment to the
+    /// terminal §26.1 `Quarantined` (`5`) status.
+    ///
+    /// Replaying on an assignment already in `Quarantined` returns the
+    /// durable record idempotently without mutating `updated_at_ms`.
+    /// Attempting to transition a `Fenced` or `Expired` assignment fails
+    /// closed with [`TaskStoreError::AuthorityLeaseFenced`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `TaskNotFound`, `ReceiptNotFound`,
+    /// `InvalidAuthorityLease`, `AuthorityLeaseFenced`,
+    /// `CorruptRecord`, or a storage error.
+    pub fn quarantine_authority_assignment(
+        &self,
+        task_id: TaskId,
+        assignment_id: nlos_types::TaskAuthorityAssignmentId,
+        quarantined_at_ms: i64,
+    ) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+        if quarantined_at_ms < 0 {
+            return Err(TaskStoreError::InvalidAuthorityLease {
+                reason: "assignment quarantine timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, task_id)?;
+        let assignment = load_assignment_by_id(&transaction, task_id, assignment_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if assignment.task_generation != task.record.task_generation {
+            return Err(TaskStoreError::CorruptRecord(
+                "assignment task generation mismatch",
+            ));
+        }
+        match assignment.state {
+            AuthorityAssignmentState::Quarantined => return Ok(assignment),
+            AuthorityAssignmentState::Fenced | AuthorityAssignmentState::Expired => {
+                return Err(TaskStoreError::AuthorityLeaseFenced);
+            }
+            AuthorityAssignmentState::Active | AuthorityAssignmentState::TakeoverPending => {}
+        }
+        if quarantined_at_ms < assignment.created_at_ms
+            || quarantined_at_ms < assignment.updated_at_ms
+        {
+            return Err(TaskStoreError::InvalidAuthorityLease {
+                reason: "assignment quarantine timestamp precedes durable assignment timestamp",
+            });
+        }
+        let updated = mark_assignment_quarantined(&transaction, &assignment, quarantined_at_ms)?;
+        transaction.commit()?;
+        Ok(updated)
     }
 
     /// Registers an Artifact head after direct proof readback from its owner.
@@ -4427,6 +4651,8 @@ fn persist_takeover_pending_receipt(
     task: &TaskRecord,
     assignment: AuthorityAssignmentRecord,
     fence: &AuthorityLeaseTakeoverFenceRecord,
+    outstanding_effect_quarantine_root: Option<[u8; 32]>,
+    consensus_commit_index: Option<u64>,
     now_ms: i64,
 ) -> Result<(), TaskStoreError> {
     if assignment.task_id != task.task_id
@@ -4453,7 +4679,11 @@ fn persist_takeover_pending_receipt(
             mark_assignment_takeover_pending(transaction, &current, now_ms)?
         }
         AuthorityAssignmentState::TakeoverPending => current,
-        AuthorityAssignmentState::Fenced => return Err(TaskStoreError::AuthorityLeaseFenced),
+        AuthorityAssignmentState::Fenced
+        | AuthorityAssignmentState::Expired
+        | AuthorityAssignmentState::Quarantined => {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
     };
     let expected = AuthorityTakeoverReceiptRecord {
         receipt_id: derive_takeover_receipt_id(
@@ -4476,14 +4706,29 @@ fn persist_takeover_pending_receipt(
         frozen_registry_binding: fence.frozen_registry_binding,
         exact_fence_set_root: fence.exact_fence_set_root,
         outstanding_operation_participant_root: fence.outstanding_operation_participant_root,
+        outstanding_effect_quarantine_root,
+        consensus_commit_index,
         barrier_state: AuthorityTakeoverReceiptState::Pending,
         created_at_ms: fence.created_at_ms,
     };
     if let Some(existing) = load_takeover_receipt(transaction, task.task_id, fence.receipt_id)? {
-        if existing != expected {
+        let expected_existing = AuthorityTakeoverReceiptRecord {
+            outstanding_effect_quarantine_root: existing.outstanding_effect_quarantine_root,
+            consensus_commit_index: existing.consensus_commit_index,
+            ..expected
+        };
+        if existing != expected_existing {
             return Err(TaskStoreError::CorruptRecord(
                 "takeover receipt changed during replay",
             ));
+        }
+        if outstanding_effect_quarantine_root.is_some() || consensus_commit_index.is_some() {
+            update_takeover_receipt_extensions(
+                transaction,
+                &existing,
+                outstanding_effect_quarantine_root,
+                consensus_commit_index,
+            )?;
         }
         return Ok(());
     }

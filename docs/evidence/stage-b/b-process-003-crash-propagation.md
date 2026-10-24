@@ -1,6 +1,6 @@
 # B-PROCESS-003：process crash propagation / terminal lifecycle 最小前缀
 
-- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 kill receipt 消费联动、Activation meter 未做；Windows live-child 实杀测试已落地（§12）、CI 实证 PENDING）
+- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 kill receipt 消费联动、Activation meter 未做；Windows live-child 真实子进程树实杀与 B2-1 双树隔离已在 Windows 实机验证通过（§12/§13））
 - 日期：2026-09-05
 - 设计依据：v0.5 §28.2 ROAD-B-006「Process crash propagation」；`[FIBER-FAIL-001]` Fiber 共享 Process 故障域
 - 关联：`B-PROCESS-001` durable binding authority；W12-P 波次 13 车道
@@ -145,6 +145,35 @@ cargo check -p nlos-process --all-targets --target x86_64-pc-windows-msvc
 - **Windows CI 预期矩阵（腿更新）**：W28-F 步骤 `Test platform kill contract on Windows` 现应 **8 passed / 0 failed**（§11 的 7 项 + 本实杀 1 项）；workflow 零改动，新测试自动搭乘既有步骤。
 - **Windows run 链接**：**PENDING**——控制器屏障 push 后回填 `https://github.com/cty12356541/llmos/actions/runs/<run_id>`（workflow `Rust cross-platform verification` 的 `verify (windows-latest)` 腿）。
 - **边界（如实登记）**：run 绿回填前，「Windows 真 OS kill 集成测试」维持测试已写、实证 PENDING——本 § 不据此把 §9/§10 的 PARTIAL 边界改写为已收窄；U-2 全口径中的权限边界/孤儿场景矩阵与 B2-1 双活三层场景的 Windows 臂（b-slice-k-001 §15.4）不在本车道；`AlreadyTerminated` 断言依赖 en-US runner locale 的 taskkill stderr 语义（适配器 exit-code 128 主判据同源；GitHub hosted runner 为 en-US）。
+
+## 13. Windows live-child 真实子进程树实杀与 B2-1 双树隔离实机验证（2026-10-24 追加，W62-CWINKILL，阶段 C 移交#4 / C-WIN-KILL / RISK-B-10 / U-2）
+
+- Owner：`crates/nlos-process/tests/platform_kill.rs`（新增 `#[cfg(windows)]` `LiveProcessTree` / `poll_pid_liveness` / `scan_target` 辅助与 `windows_platform_kill_terminates_live_parent_and_child_process_tree`、`windows_platform_kill_b2_1_dual_live_trees_kills_target_tree_without_harming_sibling` 两项集成测试）+ 本证据文件；产品代码零改动。base HEAD `5a04be6d319143ce7280a64630cce2045bbf60d8`。
+- **定位**：在真实 Windows 宿主上直接补齐 §12 遗留的三大实证缺口（`C-WIN-KILL` / 移交项 `#4` / `RISK-B-10` / `U-2`）：① 真实 Windows 宿主机实跑 `platform_kill` 全量测试；② 验证 `WindowsPlatformKillAdapter`（`taskkill /PID <pid> /F /T`）对真实双层子进程树（`parent -> grandchild`）整树终止与回收，而非仅杀单层父进程留孤儿；③ 验证 B2-1 双活进程树场景下故障/强杀域隔离（杀 `proc_a` 的父子进程树不影响同 `SupervisorPidRegistry` / `WindowsPlatformKillAdapter` 映射中的兄弟 `proc_b` 父子进程树）。
+- **测试设计与断言链**：
+  1. `windows_platform_kill_terminates_live_parent_and_child_process_tree`：
+     - 由 `powershell -NoProfile` 父进程（`parent_pid`）通过 `Start-Process -FilePath ping.exe -ArgumentList '-n','600','127.0.0.1' -WindowStyle Hidden -PassThru` 拉起长眠子进程（`grandchild_pid`），向 stdout 输出 `grandchild_pid` 后进入 600s 睡眠，`Drop` 守卫兜底双 PID `taskkill /F /T` 防止测试异常泄漏孤儿进程。
+     - 经 `HostSupervisorPidProbe`（Windows 下 `tasklist /FI "PID eq <pid>" /FO CSV /NH` 精确字段匹配）有界轮询确认 `parent_pid` 与 `grandchild_pid` 均为 `SupervisorPidLiveness::Alive`（且 `parent_pid != grandchild_pid`）。
+     - 将 `parent_pid` 注册入 `SupervisorPidRegistry` 并构造 generation-fenced `WindowsPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map())`，调用 `ProcessAuthority::request_platform_kill_with_registry(..., &adapter, Some(&registry))`。
+     - 断言返回 `PlatformKillDecision::Signaled(receipt)` 且 `inspect_platform_kill_receipt` 读回一致；父进程非 0 退出码终止；`HostSupervisorPidProbe` 有界轮询断言 **`parent_pid` 与 `grandchild_pid` 双双达到 `SupervisorPidLiveness::Dead`**，实证 `/T` 级联终止整棵进程树而非留下孤儿 `ping.exe`。
+     - 断言同 idempotency key 重放返回 `PlatformKillDecision::Replayed(receipt)`（at-least-once 重发信号并在已死树上观测 `AlreadyTerminated` 后成功返回原回执）；直接调用 `adapter.signal_platform_kill` 返回 `Ok(PlatformKillAdapterOutcome::AlreadyTerminated)`；经 `restore_process` 推进至 G2 绑定已死 `grandchild_pid` 后以新 idempotency key 发起 `request_platform_kill_with_registry` 返回 `Ok(PlatformKillDecision::AlreadyTerminated(_))`。
+  2. `windows_platform_kill_b2_1_dual_live_trees_kills_target_tree_without_harming_sibling`：
+     - 同库注册两个独立 `ProcessId`（`proc_a`、`proc_b`），各自拉起独立双层真实进程树 `tree_a`（`parent_a + grandchild_a`）与 `tree_b`（`parent_b + grandchild_b`），断言 4 个 OS PID 互异且经 `HostSupervisorPidProbe` 全数确认为 `SupervisorPidLiveness::Alive`，`ProcessSupervisor::scan_pids` 扫描两 target 均为 `SupervisorPidFinding::Fresh`。
+     - 经 `request_platform_kill_with_registry` 强杀 `proc_a`：断言 `tree_a` 的 `parent_a` 与 `grandchild_a` 均变为 `SupervisorPidLiveness::Dead`，而兄弟 `tree_b` 的 `parent_b` 与 `grandchild_b` 均保持 `SupervisorPidLiveness::Alive`、`proc_b` durable binding 保持 active，`scan_pids` 精确分类 `proc_a` 为 `Stale { reason: RecordedPidDead }`、`proc_b` 仍为 `Fresh`。
+     - 测试尾声经 `proc_b` 自身 binding 执行 `request_platform_kill_with_registry` 清场，确认 `parent_b` 与 `grandchild_b` 亦达到 `SupervisorPidLiveness::Dead`，零残留进程。
+- **验证（Windows 实机宿主实跑）**：
+
+```text
+cargo fmt --all -- --check → exit 0
+cargo clippy -p nlos-process --all-targets -- -D warnings → exit 0（0 warning）
+cargo test -p nlos-process --no-fail-fast → exit 0
+  → 67 passed / 0 failed（lib 2 + fiber_cancel_propagation 3 + fiber_incarnation 3
+    + platform_kill 17（含新增 Windows 真实子进程树实杀与 B2-1 双树隔离 2 项）
+    + process_authority 7 + process_crash_propagation 5 + supervisor 7
+    + supervisor_pid_registry 9 + supervisor_pid_scan 14；2026-10-24 W62-CWINKILL）
+```
+
+- **边界（如实登记）**：Windows 宿主下同权限真实父子进程树（`parent -> grandchild`）的 `taskkill /F /T` 级联强杀、`AlreadyTerminated` 二次收敛与 B2-1 双活进程树隔离已在实机闭环；跨权限边界（高完整性级/异 principal 子进程拒绝终止）与 Windows Job Object 级内核脱离进程（`CREATE_BREAKAWAY_FROM_JOB`）仍属宿主权限/沙箱隔离扩展边界，不在本合同测试面内。
 
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 

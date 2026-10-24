@@ -111,12 +111,28 @@ pub struct ParticipantRegistryRecord {
     pub task_generation: Generation,
     pub generation: u64,
     pub prior_root: [u8; 32],
+    /// Nullable §26.1 `prior_participant_registry_root` (`None` on initial
+    /// generation 1, `Some(prior_root)` on rotated or reopened successor
+    /// generations).
+    pub prior_participant_registry_root: Option<[u8; 32]>,
     pub participants: Vec<ParticipantRecord>,
     pub root: [u8; 32],
     pub state: ParticipantRegistryState,
+    /// Optional 16-byte authority identity that signed this registry snapshot
+    /// (§26.1 `TaskAuthorityParticipantRegistry.authority`).
+    pub authority: Option<[u8; 16]>,
+    /// Optional 64-byte signature over this registry snapshot
+    /// (§26.1 `TaskAuthorityParticipantRegistry.signature`).
+    pub signature: Option<[u8; 64]>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
+
+/// Normative §26.1 alias for [`ParticipantRegistryRecord`].
+pub type TaskAuthorityParticipantRegistry = ParticipantRegistryRecord;
+
+/// Snapshot alias for [`ParticipantRegistryRecord`].
+pub type ParticipantRegistrySnapshot = ParticipantRegistryRecord;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParticipantRegistrationDecision {
@@ -599,18 +615,24 @@ fn insert_registry_generation(
         prior_root,
         participants,
     );
+    let prior_participant_registry_root = (generation > 1).then_some(prior_root);
     transaction.execute(
         "INSERT INTO task_participant_registries (
             registry_id, task_id, task_generation, registry_generation,
-            prior_registry_root, participant_registry_root, registry_state,
+            prior_registry_root, prior_participant_registry_root,
+            participant_registry_root, registry_state,
+            authority_id, signature,
             created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL, ?8, ?9)",
         params![
             registry_id.as_bytes().as_slice(),
             task.task_id.as_bytes().as_slice(),
             encode_u64(task.task_generation.get()).as_slice(),
             encode_u64(generation).as_slice(),
             prior_root.as_slice(),
+            prior_participant_registry_root
+                .as_ref()
+                .map(<[u8; 32]>::as_slice),
             root.as_slice(),
             now_ms,
             now_ms,
@@ -658,11 +680,59 @@ fn insert_registry_generation(
         task_generation: task.task_generation,
         generation,
         prior_root,
+        prior_participant_registry_root,
         participants: participants.to_vec(),
         root,
         state: ParticipantRegistryState::Open,
+        authority: None,
+        signature: None,
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
+    })
+}
+
+pub(crate) fn record_registry_signature(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    expected: ParticipantRegistryBinding,
+    authority: [u8; 16],
+    signature: [u8; 64],
+    signed_at_ms: i64,
+) -> Result<ParticipantRegistryRecord, TaskStoreError> {
+    let registry = initialize_registry(transaction, task, signed_at_ms)?;
+    if registry.generation != expected.generation || registry.root != expected.root {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if registry.authority.is_some() || registry.signature.is_some() {
+        if registry.authority == Some(authority) && registry.signature == Some(signature) {
+            return Ok(registry);
+        }
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if signed_at_ms < registry.created_at_ms || signed_at_ms < registry.updated_at_ms {
+        return Err(TaskStoreError::CorruptRecord(
+            "participant registry signature timestamp",
+        ));
+    }
+    let changed = transaction.execute(
+        "UPDATE task_participant_registries
+         SET authority_id = ?1, signature = ?2, updated_at_ms = ?3
+         WHERE registry_id = ?4 AND authority_id IS NULL AND signature IS NULL",
+        params![
+            authority.as_slice(),
+            signature.as_slice(),
+            signed_at_ms,
+            registry.registry_id.as_bytes().as_slice(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+    }
+    Ok(ParticipantRegistryRecord {
+        authority: Some(authority),
+        signature: Some(signature),
+        updated_at_ms: signed_at_ms,
+        ..registry
     })
 }
 
@@ -677,6 +747,18 @@ fn validate_registry(
     }
     if registry.participants.is_empty() {
         return Err(TaskStoreError::CorruptRecord("empty participant registry"));
+    }
+    if registry.authority.is_some() != registry.signature.is_some() {
+        return Err(TaskStoreError::CorruptRecord(
+            "participant registry signature coupling",
+        ));
+    }
+    if let Some(prior) = registry.prior_participant_registry_root
+        && prior != registry.prior_root
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "participant registry prior root mismatch",
+        ));
     }
     let expected_root = registry_root(
         registry.task_id,
@@ -701,7 +783,8 @@ fn load_current_registry(
         .query_row(
             "SELECT registry_id, task_generation, registry_generation,
                     prior_registry_root, participant_registry_root, registry_state,
-                    created_at_ms, updated_at_ms
+                    created_at_ms, updated_at_ms,
+                    prior_participant_registry_root, authority_id, signature
              FROM task_participant_registries
              WHERE task_id=?1 ORDER BY registry_generation DESC LIMIT 1",
             [task_id.as_bytes().as_slice()],
@@ -715,6 +798,9 @@ fn load_current_registry(
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<Vec<u8>>>(9)?,
+                    row.get::<_, Option<Vec<u8>>>(10)?,
                 ))
             },
         )
@@ -725,22 +811,53 @@ fn load_current_registry(
             .try_into()
             .map_err(|_| TaskStoreError::CorruptRecord("registry id"))?,
     );
+    let generation = u64_from_bytes(row.2)?;
+    let prior_root: [u8; 32] = row
+        .3
+        .try_into()
+        .map_err(|_| TaskStoreError::CorruptRecord("prior registry root"))?;
+    let stored_prior_participant_root = row
+        .8
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("prior participant registry root"))
+        })
+        .transpose()?;
+    let prior_participant_registry_root =
+        stored_prior_participant_root.or_else(|| (generation > 1).then_some(prior_root));
+    let authority = row
+        .9
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("participant registry authority"))
+        })
+        .transpose()?;
+    let signature = row
+        .10
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("participant registry signature"))
+        })
+        .transpose()?;
     let participants = load_participants(connection, registry_id)?;
     Ok(Some(ParticipantRegistryRecord {
         registry_id,
         task_id,
         task_generation: generation_from_bytes(row.1)?,
-        generation: u64_from_bytes(row.2)?,
-        prior_root: row
-            .3
-            .try_into()
-            .map_err(|_| TaskStoreError::CorruptRecord("prior registry root"))?,
+        generation,
+        prior_root,
+        prior_participant_registry_root,
         participants,
         root: row
             .4
             .try_into()
             .map_err(|_| TaskStoreError::CorruptRecord("registry root"))?,
         state: ParticipantRegistryState::from_code(row.5)?,
+        authority,
+        signature,
         created_at_ms: row.6,
         updated_at_ms: row.7,
     }))
@@ -993,9 +1110,12 @@ mod takeover_root_tests {
             task_generation: Generation::INITIAL,
             generation: 1,
             prior_root: [0x12; 32],
+            prior_participant_registry_root: None,
             participants,
             root: [0x13; 32],
             state: ParticipantRegistryState::FrozenForTakeover,
+            authority: None,
+            signature: None,
             created_at_ms: 1,
             updated_at_ms: 1,
         }

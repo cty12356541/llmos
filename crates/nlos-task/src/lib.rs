@@ -180,16 +180,17 @@ pub use group::{
     RemoveMemberRequest, TaskGroupCommitBinding, empty_group_membership_root, membership_root_of,
 };
 pub use lease::{
-    AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
-    AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
-    AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
-    AuthoritySuccessorRegistryReopenRecord, AuthoritySuccessorRegistryReopenRequest,
-    AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
-    AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverBarrierSigner,
-    AuthorityTakeoverCompletionRecord, AuthorityTakeoverFenceMemberRecord,
-    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, BarrierObservationSignature,
-    CompleteAuthorityTakeoverRequest, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityAssignmentStatus,
+    AuthorityLeaseBinding, AuthorityLeaseDecision, AuthorityLeasePermitRequest,
+    AuthorityLeaseRecord, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord,
+    AuthorityLeaseTakeoverFenceRequest, AuthoritySuccessorRegistryReopenRecord,
+    AuthoritySuccessorRegistryReopenRequest, AuthorityTakeoverBarrierCoverage,
+    AuthorityTakeoverBarrierCoverageState, AuthorityTakeoverBarrierReceiptRecord,
+    AuthorityTakeoverBarrierReceiptRequest, AuthorityTakeoverBarrierReceiptState,
+    AuthorityTakeoverBarrierSigner, AuthorityTakeoverCompletionRecord,
+    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, BarrierObservationSignature, CompleteAuthorityTakeoverRequest,
+    MAX_AUTHORITY_LEASE_TTL_MS, TaskAuthorityAssignment, TaskAuthorityTakeoverReceipt,
     barrier_observation_signature_message,
 };
 pub use materialization::{
@@ -216,7 +217,8 @@ pub use model::{
 pub use nlos_types::{EffectPermitId, EffectSlotId, OperationId, TaskGroupId, TaskId};
 pub use participant::{
     ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
-    ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
+    ParticipantRegistryRecord, ParticipantRegistrySnapshot, ParticipantRegistryState,
+    ParticipantType, TaskAuthorityParticipantRegistry,
 };
 pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,

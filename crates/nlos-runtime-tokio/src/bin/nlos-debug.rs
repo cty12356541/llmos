@@ -90,7 +90,7 @@ const USAGE: &str = "usage: nlos-debug snapshot inspect <STORE> \
 const WAIT_SCHEMA_VERSION: i64 = 2;
 const CHANNEL_SCHEMA_VERSION: i64 = 3;
 const PROCESS_SCHEMA_VERSION: i64 = 5;
-const TASK_SCHEMA_VERSION: i64 = 46;
+const TASK_SCHEMA_VERSION: i64 = 47;
 /// The operation authority's store (W57-B parked the outbox at schema v5;
 /// W58-1 added the controlled unpark reverse at schema v6). The debugger
 /// renders the outbox parking history (parked/recovered entries) through
@@ -2245,7 +2245,7 @@ mod tests {
             hex_of(&binding(1))
         )));
         assert!(output.contains("input_len=19 written_at=2500"));
-        assert!(output.contains("face task.sqlite3 present schema=46"));
+        assert!(output.contains("face task.sqlite3 present schema=47"));
         // The operation outbox's parking history: one parked (dead-letter)
         // and one recovered (unparked) fixture entry with its counts.
         assert!(output.contains("operation-outbox parked=1 recovered=1"));

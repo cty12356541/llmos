@@ -41,9 +41,11 @@ pub use canonical::{
     encode_unsigned_spec_event, semantic_event_id,
 };
 pub use merge::{
-    AdmissionConflictOccurrence, MergedSignedEvent, SignedEventSetConflict, SignedEventSetItem,
-    SignedEventSetMergeReport, SignedEventSetOrigin, SignedEventSetRejection,
-    merge_signed_event_sets,
+    AdmissionConflictOccurrence, CrossDomainAuditRecord, CrossDomainEventItem,
+    CrossDomainEventSetMergeReport, MergedCrossDomainEvent, MergedSignedEvent,
+    SignedEventSetConflict, SignedEventSetItem, SignedEventSetMergeReport, SignedEventSetOrigin,
+    SignedEventSetRejection, merge_cross_domain_event_sets, merge_signed_event_sets,
+    verify_and_merge_cross_domain_events,
 };
 pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
@@ -1121,6 +1123,113 @@ impl SemanticAuthority {
         load_event_record(&connection, event_id)?
             .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
         load_receipt(&connection, event_id)
+    }
+
+    /// Reads the immutable producer signature recorded at admission for one
+    /// committed event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EventNotFound` when the event is absent, or a storage/corrupt
+    /// record error when the stored signature row is missing or disagrees with
+    /// the event's `key_id`.
+    pub fn inspect_event_signature(
+        &self,
+        event_id: SemanticEventId,
+    ) -> Result<[u8; 64], SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let event = load_event_record(&connection, event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
+        load_event_signature(&connection, event_id, event.key_id)
+    }
+
+    /// Exports all committed `(SemanticEventRecord, AdmissionReceipt)` pairs
+    /// from this authority in deterministic local `log_seq` order
+    /// (`[DIST-EVENT-001]`).
+    ///
+    /// Each exported item is cross-checked against the authority's internal
+    /// event, producer-signature, and admission-receipt binding invariants
+    /// before returning. Callers pass the resulting slice into
+    /// [`merge_signed_event_sets`] to compute a cross-store set union without
+    /// assuming a global scalar `log_seq` (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or `CorruptRecord` error if any committed log entry
+    /// lacks a matching event record, producer signature row, or admission
+    /// receipt.
+    pub fn export_signed_event_set(
+        &self,
+    ) -> Result<Vec<SignedEventSetItem>, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let event_ids = load_logged_event_ids(&connection)?;
+        let mut items = Vec::with_capacity(event_ids.len());
+        for (log_seq, event_id) in event_ids {
+            let event = load_event_record(&connection, event_id)?.ok_or(
+                SemanticAuthorityError::CorruptRecord(
+                    "event_log references missing semantic_event",
+                ),
+            )?;
+            if event.log_seq != log_seq {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "event record log_seq disagrees with event_log",
+                ));
+            }
+            let _ = load_event_signature(&connection, event_id, event.key_id)?;
+            let admission = load_receipt(&connection, event_id)?;
+            if admission.event_id != event_id || admission.log_seq != log_seq {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "admission receipt binding disagrees with event_log",
+                ));
+            }
+            items.push(SignedEventSetItem { event, admission });
+        }
+        Ok(items)
+    }
+
+    /// Exports all committed events with their source producer signature,
+    /// receiving-domain `AdmissionReceipt`, and applicable
+    /// `trust_snapshot_digest` in deterministic local `log_seq` order
+    /// (`[DIST-EVENT-001]`, `[DIST-AUDIT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or `CorruptRecord` error if any committed log entry
+    /// lacks a matching event record, producer signature row, or admission
+    /// receipt.
+    pub fn export_cross_domain_event_set(
+        &self,
+        trust_snapshot_digest: [u8; 32],
+    ) -> Result<Vec<CrossDomainEventItem>, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let event_ids = load_logged_event_ids(&connection)?;
+        let mut items = Vec::with_capacity(event_ids.len());
+        for (log_seq, event_id) in event_ids {
+            let event = load_event_record(&connection, event_id)?.ok_or(
+                SemanticAuthorityError::CorruptRecord(
+                    "event_log references missing semantic_event",
+                ),
+            )?;
+            if event.log_seq != log_seq {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "event record log_seq disagrees with event_log",
+                ));
+            }
+            let producer_signature = load_event_signature(&connection, event_id, event.key_id)?;
+            let admission = load_receipt(&connection, event_id)?;
+            if admission.event_id != event_id || admission.log_seq != log_seq {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "admission receipt binding disagrees with event_log",
+                ));
+            }
+            items.push(CrossDomainEventItem {
+                event,
+                producer_signature,
+                admission,
+                trust_snapshot_digest,
+            });
+        }
+        Ok(items)
     }
 
     /// Reads one immutable owner-issued durability proof for an admitted
@@ -2759,6 +2868,48 @@ fn load_event_record(
             })
         })
         .transpose()
+}
+
+fn load_logged_event_ids(
+    connection: &Connection,
+) -> Result<Vec<(u64, SemanticEventId)>, SemanticAuthorityError> {
+    let mut statement =
+        connection.prepare("SELECT log_seq, event_id FROM event_log ORDER BY log_seq ASC")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (raw_seq, raw_id) = row?;
+        let log_seq = decode_u64(raw_seq)?;
+        let event_id = decode_id(raw_id, SemanticEventId::from_bytes, "logged event id")?;
+        out.push((log_seq, event_id));
+    }
+    Ok(out)
+}
+
+fn load_event_signature(
+    connection: &Connection,
+    event_id: SemanticEventId,
+    expected_key_id: nlos_types::KeyId,
+) -> Result<[u8; 64], SemanticAuthorityError> {
+    let (key_bytes, sig_bytes): (Vec<u8>, Vec<u8>) = connection
+        .query_row(
+            "SELECT key_id, signature FROM event_signatures WHERE event_id=?1",
+            [event_id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(SemanticAuthorityError::CorruptRecord(
+            "admitted event has no signature row",
+        ))?;
+    let recorded_key_id = decode_id(key_bytes, nlos_types::KeyId::from_bytes, "signature key id")?;
+    if recorded_key_id != expected_key_id {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "event signature key binding mismatch",
+        ));
+    }
+    decode_array(sig_bytes, "event signature")
 }
 
 fn load_edge_ids(

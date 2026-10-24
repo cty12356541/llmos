@@ -152,6 +152,7 @@ mod recover;
 mod retention;
 mod schema;
 mod store;
+pub mod sync;
 
 use std::error::Error;
 use std::fmt;
@@ -188,6 +189,15 @@ pub use package_file::{
 pub use publication::staging_id_for;
 pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};
 pub use store::ArtifactStore;
+pub use sync::{
+    ARTIFACT_CONFLICT_RECEIPT_DOMAIN, ArtifactConflictReceipt, ArtifactConflictStrategy,
+    ArtifactDeletionSemantics, ArtifactLocalSyncState, ArtifactMergeStrategy,
+    ArtifactRemoteSyncCandidate, ArtifactReplicaAuthority, ArtifactReplicaSyncOutcome,
+    ArtifactSyncDecision, ArtifactSyncError, ArtifactSyncOperationKind, ArtifactSyncPolicy,
+    ArtifactSyncPolicyError, ArtifactSyncPolicyRegistry, PolicyRegistrationDecision,
+    ReplicaRevisionBundle, SyncArtifactReplicaRequest, compute_conflict_digest,
+    evaluate_artifact_sync, export_replica_revision_bundle, sync_artifact_replica_head,
+};
 
 /// Typed errors of the artifact store. No `anyhow`; every failure mode a
 /// caller can act on is its own variant.

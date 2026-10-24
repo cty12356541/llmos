@@ -904,3 +904,15 @@
   scope: "ADR-0019 修订 2 R2.2 第 3 条六类目（分区/重启/迁移 mid-fault/重复消息/stale epoch/分区双主）双进程注入，分区与双主为双存活掐通道（kill 仅崩溃类目）；断言不抢先/仲裁单胜者/拒绝三形/收敛四不变量；harness 通道层注入非 OS 级分区；仅 TaskStore endpoint；物理 cleanup 残域保留"
   assurance: H3
   date: "2026-10-08"
+- id: c-sync-001-signed-event-set-merge
+  path: docs/evidence/stage-c/c-sync-001-signed-event-set-merge.md
+  title: "C-SYNC-001 / W45-D1 + W62-CSYNC-SEM：签名事件集合合并、store 导出与 DIST-AUDIT-001 跨域溯源信封"
+  scope: "nlos-semantic 签名事件集合合并原语（DIST-EVENT-001：幂等去重、无 CRDT 语义合成、无跨 Cell 单一标量 log_seq 遵循 SEM-CHECKPOINT-001、冲突 fail-closed 全数排除、digest 碰撞残余分歧整组拒绝）+ SemanticAuthority durable store 导出（export_signed_event_set / export_cross_domain_event_set）+ DIST-AUDIT-001 跨域溯源信封（生产者 signature + 接收域 AdmissionReceipt + 非零 trust snapshot digest，缺项/篡改 fail-closed）；仅单机内存/单库导出与合并验证，非跨机网络传输或跨 store 自动持久化写回"
+  assurance: H3
+  date: "2026-10-24"
+- id: c-sync-002-artifact-sync-policy
+  path: docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
+  title: "C-SYNC-002 / W62-CSYNC-ART：DIST-ART-001 按内容类型四轴制品同步策略与冲突回执"
+  scope: "nlos-artifact 按内容类型声明四轴同步策略（ArtifactMergeStrategy / ArtifactConflictStrategy / ArtifactReplicaAuthority / ArtifactDeletionSemantics）+ ArtifactSyncPolicyRegistry（未注册 MIME fail-closed）+ 顺序无关确定性冲突回执 ArtifactConflictReceipt + evaluate_artifact_sync / export_replica_revision_bundle / sync_artifact_replica_head（SingleAuthoritativeCell 非权威写入拒绝、QuarantineBothHeads 冲突隔离、TombstoneWithRetention 墓碑因果门控）；仅单机策略求值与本地 head 同步，非跨机 blob 传输或 CRDT 自动合并"
+  assurance: H3
+  date: "2026-10-24"

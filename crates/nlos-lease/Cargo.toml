@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 nlos-cell = { path = "../nlos-cell" }
 nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
 
 [lints]
 workspace = true

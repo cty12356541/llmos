@@ -1088,3 +1088,347 @@ fn fenced_authority_kill_over_generation_pid_map_terminates_real_child() {
         .expect("fenced replay re-signals the dead target");
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
 }
+
+#[cfg(windows)]
+struct LiveProcessTree {
+    parent: std::process::Child,
+    parent_pid: u32,
+    grandchild_pid: u32,
+}
+
+#[cfg(windows)]
+impl LiveProcessTree {
+    fn spawn() -> Self {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let mut parent = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$child = Start-Process -FilePath ping.exe -ArgumentList '-n','600','127.0.0.1' -WindowStyle Hidden -PassThru; [Console]::Out.WriteLine($child.Id); [Console]::Out.Flush(); Start-Sleep -Seconds 600",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn powershell parent for live process tree");
+        let parent_pid = parent.id();
+        let stdout = parent.stdout.take().expect("piped parent stdout");
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("read grandchild pid from parent stdout");
+        let grandchild_pid: u32 = line
+            .trim()
+            .parse()
+            .unwrap_or_else(|error| panic!("parse grandchild pid from {line:?}: {error}"));
+        assert_ne!(
+            parent_pid, grandchild_pid,
+            "grandchild pid must be distinct from parent pid"
+        );
+        Self {
+            parent,
+            parent_pid,
+            grandchild_pid,
+        }
+    }
+
+    fn assert_both_alive(&mut self) {
+        use nlos_process::SupervisorPidLiveness;
+        use std::time::Duration;
+
+        assert!(
+            self.parent.try_wait().expect("poll parent child").is_none(),
+            "parent process must still be running"
+        );
+        for (role, pid) in [
+            ("parent", self.parent_pid),
+            ("grandchild", self.grandchild_pid),
+        ] {
+            assert_eq!(
+                poll_pid_liveness(pid, SupervisorPidLiveness::Alive, Duration::from_secs(5)),
+                SupervisorPidLiveness::Alive,
+                "{role} pid {pid} must be Alive"
+            );
+        }
+    }
+
+    fn assert_both_dead(&mut self) {
+        use nlos_process::SupervisorPidLiveness;
+        use std::time::Duration;
+
+        let status = wait_for_exit(&mut self.parent, Duration::from_secs(5))
+            .expect("parent process exited within 5s of taskkill /F /T");
+        assert!(!status.success());
+        for (role, pid) in [
+            ("parent", self.parent_pid),
+            ("grandchild", self.grandchild_pid),
+        ] {
+            assert_eq!(
+                poll_pid_liveness(pid, SupervisorPidLiveness::Dead, Duration::from_secs(5)),
+                SupervisorPidLiveness::Dead,
+                "{role} pid {pid} must reach Dead after taskkill /F /T"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for LiveProcessTree {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &self.parent_pid.to_string(), "/F", "/T"])
+            .output();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &self.grandchild_pid.to_string(), "/F", "/T"])
+            .output();
+        let _ = self.parent.kill();
+        let _ = self.parent.wait();
+    }
+}
+
+#[cfg(windows)]
+fn poll_pid_liveness(
+    os_pid: u32,
+    expected: nlos_process::SupervisorPidLiveness,
+    timeout: std::time::Duration,
+) -> nlos_process::SupervisorPidLiveness {
+    use nlos_process::{HostSupervisorPidProbe, SupervisorPidProbe};
+    use std::time::Instant;
+
+    let mut probe = HostSupervisorPidProbe;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let liveness = probe
+            .os_pid_liveness(os_pid)
+            .expect("host supervisor pid liveness probe on windows");
+        if liveness == expected || Instant::now() >= deadline {
+            return liveness;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_platform_kill_terminates_live_parent_and_child_process_tree() {
+    use nlos_process::{RegisterSupervisorPidRequest, SupervisorPidRegistry};
+
+    let root = TestRoot::new("windows-live-tree-kill");
+    let fixture = open_fixture(&root, 90);
+    let mut tree = LiveProcessTree::spawn();
+    tree.assert_both_alive();
+
+    let registry = SupervisorPidRegistry::new();
+    registry
+        .register(RegisterSupervisorPidRequest {
+            process_id: fixture.process_id,
+            process_generation: fixture.process_generation,
+            os_pid: tree.parent_pid,
+            registered_at_ms: 4_000,
+        })
+        .expect("register parent pid in supervisor registry");
+
+    let adapter =
+        WindowsPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map());
+    let kill_key = IdempotencyKey::from_bytes([0x90; 16]);
+    let request = kill_request(&fixture, kill_key);
+
+    let decision = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("platform kill on live parent+child tree");
+    assert!(matches!(decision, PlatformKillDecision::Signaled(_)));
+    let receipt = decision.receipt().clone();
+    assert_eq!(receipt.idempotency_key, kill_key);
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect kill receipt")
+            .as_ref(),
+        Some(&receipt)
+    );
+
+    tree.assert_both_dead();
+
+    // Exact idempotency replay with the same key re-invokes the adapter (which
+    // observes AlreadyTerminated on the now-dead tree) and returns the original receipt.
+    let replay = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("idempotent replay on terminated process tree");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &receipt);
+
+    // Direct adapter invocation on the dead tree reports AlreadyTerminated.
+    assert!(matches!(
+        adapter.signal_platform_kill(fixture.process_id, fixture.process_generation),
+        Ok(PlatformKillAdapterOutcome::AlreadyTerminated)
+    ));
+
+    // Advance to generation 2 mapped to the now-dead grandchild pid and verify a
+    // fresh platform kill request with a fresh idempotency key observes AlreadyTerminated.
+    let restored = match fixture.authority.restore_process(RestoreProcessRequest {
+        process_id: fixture.process_id,
+        expected_process_generation: fixture.process_generation,
+        expected_process_fencing_token: fixture.process_fencing_token,
+        isolation_domain_id: fixture.isolation_domain_id,
+        isolation_domain_generation: fixture.isolation_domain_generation,
+        isolation_domain_fencing_token: fixture.isolation_domain_fencing_token,
+        idempotency_key: IdempotencyKey::from_bytes([0x91; 16]),
+        restored_at_ms: 5_000,
+    }) {
+        Ok(RestoreProcessDecision::Restored(record)) => record,
+        other => panic!("expected Restored, got {other:?}"),
+    };
+    registry
+        .register(RegisterSupervisorPidRequest {
+            process_id: restored.process_id,
+            process_generation: restored.process_generation,
+            os_pid: tree.grandchild_pid,
+            registered_at_ms: 5_100,
+        })
+        .expect("register dead grandchild pid under restored generation");
+    let adapter_g2 =
+        WindowsPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map());
+    let fresh_kill_on_dead = fixture
+        .authority
+        .request_platform_kill_with_registry(
+            RequestPlatformKillRequest {
+                process_id: restored.process_id,
+                expected_process_generation: restored.process_generation,
+                expected_process_fencing_token: restored.process_fencing_token,
+                idempotency_key: IdempotencyKey::from_bytes([0x92; 16]),
+                killed_at_ms: 5_200,
+            },
+            &adapter_g2,
+            Some(&registry),
+        )
+        .expect("fresh platform kill on already-dead tree pid");
+    assert!(matches!(
+        fresh_kill_on_dead,
+        PlatformKillDecision::AlreadyTerminated(_)
+    ));
+}
+
+#[cfg(windows)]
+fn scan_target(fixture: &Fixture) -> nlos_process::SupervisorPidScanTarget {
+    nlos_process::SupervisorPidScanTarget {
+        process_id: fixture.process_id,
+        process_generation: fixture.process_generation,
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_platform_kill_b2_1_dual_live_trees_kills_target_tree_without_harming_sibling() {
+    use nlos_process::{
+        HostSupervisorPidProbe, ProcessSupervisor, SupervisorPidFinding, SupervisorPidStaleReason,
+    };
+    use std::collections::HashSet;
+
+    let root = TestRoot::new("windows-b2-1-dual-trees");
+    let proc_a = open_fixture(&root, 93);
+    let proc_b = open_fixture(&root, 98);
+    assert_ne!(proc_a.process_id, proc_b.process_id);
+
+    let mut tree_a = LiveProcessTree::spawn();
+    let mut tree_b = LiveProcessTree::spawn();
+    let unique_pids: HashSet<u32> = [
+        tree_a.parent_pid,
+        tree_a.grandchild_pid,
+        tree_b.parent_pid,
+        tree_b.grandchild_pid,
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(unique_pids.len(), 4, "all 4 tree PIDs must be distinct");
+    tree_a.assert_both_alive();
+    tree_b.assert_both_alive();
+
+    let supervisor = ProcessSupervisor::new();
+    register_pid(
+        supervisor.registry(),
+        &proc_a,
+        proc_a.process_generation,
+        tree_a.parent_pid,
+    );
+    register_pid(
+        supervisor.registry(),
+        &proc_b,
+        proc_b.process_generation,
+        tree_b.parent_pid,
+    );
+
+    let scan_targets = [scan_target(&proc_a), scan_target(&proc_b)];
+    let pre_kill_scan = supervisor
+        .scan_pids(&scan_targets, &mut HostSupervisorPidProbe)
+        .expect("pre-kill supervisor pid scan");
+    assert_eq!(
+        pre_kill_scan.findings(),
+        &[
+            SupervisorPidFinding::Fresh {
+                target: scan_targets[0],
+                os_pid: tree_a.parent_pid,
+            },
+            SupervisorPidFinding::Fresh {
+                target: scan_targets[1],
+                os_pid: tree_b.parent_pid,
+            },
+        ]
+    );
+
+    let adapter = WindowsPlatformKillAdapter::with_generation_pid_map(
+        supervisor.registry().generation_pid_map(),
+    );
+
+    // Kill proc_a's process tree; sibling proc_b's tree must remain completely unharmed.
+    let kill_a = proc_a
+        .authority
+        .request_platform_kill_with_registry(
+            kill_request(&proc_a, IdempotencyKey::from_bytes([0x93; 16])),
+            &adapter,
+            Some(supervisor.registry()),
+        )
+        .expect("platform kill proc_a tree");
+    assert!(matches!(kill_a, PlatformKillDecision::Signaled(_)));
+    tree_a.assert_both_dead();
+    tree_b.assert_both_alive();
+    proc_b
+        .authority
+        .inspect_active_process_binding(proc_b.process_id)
+        .expect("proc_b binding remains active");
+
+    let mid_scan = supervisor
+        .scan_pids(&scan_targets, &mut HostSupervisorPidProbe)
+        .expect("post-proc_a-kill supervisor pid scan");
+    assert!(matches!(
+        mid_scan.findings(),
+        [
+            SupervisorPidFinding::Stale {
+                target: t_a,
+                reason: SupervisorPidStaleReason::RecordedPidDead,
+                ..
+            },
+            SupervisorPidFinding::Fresh {
+                target: t_b,
+                os_pid: pid_b,
+            },
+        ] if *t_a == scan_targets[0] && *t_b == scan_targets[1] && *pid_b == tree_b.parent_pid
+    ));
+
+    // Cleanly tear down proc_b's tree via its own binding so no orphan processes remain.
+    let kill_b = proc_b
+        .authority
+        .request_platform_kill_with_registry(
+            kill_request(&proc_b, IdempotencyKey::from_bytes([0x94; 16])),
+            &adapter,
+            Some(supervisor.registry()),
+        )
+        .expect("platform kill proc_b tree");
+    assert!(matches!(kill_b, PlatformKillDecision::Signaled(_)));
+    tree_b.assert_both_dead();
+}

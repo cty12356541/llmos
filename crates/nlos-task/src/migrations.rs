@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v46) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v47) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -3186,3 +3186,374 @@ const SCHEMA_V46_SQL: &str = "CREATE INDEX task_write_set_effect_endpoints_by_op
         WHERE endpoint_kind = 6;
 
     PRAGMA user_version = 46;";
+
+/// v46 → v47 aligns the three normative §26.1 distributed task authority
+/// records (`TaskAuthorityAssignment`, `TaskAuthorityParticipantRegistry`,
+/// `TaskAuthorityTakeoverReceipt`) under CS1-A:
+/// 1. `task_authority_assignments`: widens `assignment_state` from 3 states
+///    to the 5 normative §26.1 states (`ACTIVE = 1`, `TAKEOVER_PENDING = 2`,
+///    `FENCED = 3`, `EXPIRED = 4`, `QUARANTINED = 5`) and locks terminal
+///    states `(3, 4, 5)` against any subsequent mutation.
+/// 2. `task_participant_registries`: adds nullable
+///    `prior_participant_registry_root` (backfilled on generation > 1 rows),
+///    `authority_id` (`[u8; 16]`), and `signature` (`[u8; 64]`), with
+///    coupled-presence and write-once immutability triggers.
+/// 3. `task_authority_takeover_receipts`: adds nullable
+///    `outstanding_effect_quarantine_root` (`[u8; 32]`) and nullable
+///    `consensus_commit_index` (`INTEGER`, passive metadata slot with zero
+///    consensus protocol semantics per ADR-0018 Decision 5 & ADR-0020).
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v47(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let normalize = |sql: &str| {
+        sql.to_ascii_lowercase()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+
+    let assignment_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_authority_assignments'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let assignment_trigger_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='trigger' AND name='task_authority_assignment_identity_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let assignment_no_delete: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_authority_assignment_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let assignment_norm = assignment_sql.as_deref().map(normalize).unwrap_or_default();
+    let assignment_trigger_v47 = assignment_trigger_sql
+        .as_ref()
+        .is_some_and(|sql| sql.contains("OLD.assignment_state IN (3, 4, 5)"));
+    let assignments_v47 = assignment_norm.contains("check(assignment_statein(1,2,3,4,5))")
+        && assignment_trigger_v47
+        && assignment_no_delete;
+    let assignments_v31 = assignment_norm.contains("check(assignment_statebetween1and3)")
+        && assignment_trigger_sql.is_some()
+        && !assignment_trigger_v47
+        && assignment_no_delete;
+    if !assignments_v47 && !assignments_v31 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v47 authority record alignment schema",
+        ));
+    }
+
+    let registry_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_participant_registries'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let registry_col_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_participant_registries')
+         WHERE name IN ('prior_participant_registry_root', 'authority_id', 'signature')",
+        [],
+        |row| row.get(0),
+    )?;
+    let registry_trigger_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='trigger' AND name='task_participant_registry_identity_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let registry_no_delete: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_participant_registry_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let registry_coupled_insert: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='participant_registry_signature_coupled_insert'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let registry_trigger_v47 = registry_trigger_sql
+        .as_ref()
+        .is_some_and(|sql| sql.contains("authority_id"));
+    let registries_v47 = registry_present
+        && registry_col_count == 3
+        && registry_trigger_v47
+        && registry_no_delete
+        && registry_coupled_insert;
+    let registries_v11 = registry_present
+        && registry_col_count == 0
+        && registry_trigger_sql.is_some()
+        && !registry_trigger_v47
+        && registry_no_delete
+        && !registry_coupled_insert;
+    if !registries_v47 && !registries_v11 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v47 authority record alignment schema",
+        ));
+    }
+
+    let takeover_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let takeover_col_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_authority_takeover_receipts')
+         WHERE name IN ('outstanding_effect_quarantine_root', 'consensus_commit_index')",
+        [],
+        |row| row.get(0),
+    )?;
+    let takeover_trigger_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='trigger' AND name='task_authority_takeover_receipt_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let takeover_no_delete: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_authority_takeover_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let takeover_trigger_v47 = takeover_trigger_sql.as_ref().is_some_and(|sql| {
+        sql.contains("outstanding_effect_quarantine_root") && sql.contains("consensus_commit_index")
+    });
+    let takeover_trigger_v37 = takeover_trigger_sql
+        .as_ref()
+        .is_some_and(|sql| sql.contains("OLD.barrier_state") && !takeover_trigger_v47);
+    let takeover_v47 =
+        takeover_present && takeover_col_count == 2 && takeover_trigger_v47 && takeover_no_delete;
+    let takeover_v37 =
+        takeover_present && takeover_col_count == 0 && takeover_trigger_v37 && takeover_no_delete;
+    if !takeover_v47 && !takeover_v37 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v47 authority record alignment schema",
+        ));
+    }
+
+    if assignments_v47 && registries_v47 && takeover_v47 {
+        connection.pragma_update(None, "user_version", 47)?;
+        return Ok(());
+    }
+
+    // Either all three records are at their pre-v47 baseline (normal v46 → v47
+    // migration), or `task_authority_takeover_receipts` alone was regressed to
+    // v36 and rebuilt to v37 by `migrate_v37` while the other two tables
+    // already carry v47. Any other mixed state fails closed.
+    let takeover_only_upgrade = assignments_v47 && registries_v47 && takeover_v37;
+    let full_upgrade = assignments_v31 && registries_v11 && takeover_v37;
+    if !full_upgrade && !takeover_only_upgrade {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v47 authority record alignment schema",
+        ));
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if full_upgrade {
+            transaction.execute_batch(SCHEMA_V47_ASSIGNMENTS_SQL)?;
+            transaction.execute_batch(SCHEMA_V47_REGISTRIES_SQL)?;
+        }
+        transaction.execute_batch(SCHEMA_V47_TAKEOVER_RECEIPTS_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", "ON");
+    if let Err(error) = migration {
+        let _ = restore;
+        return Err(error);
+    }
+    restore?;
+    Ok(())
+}
+
+const SCHEMA_V47_ASSIGNMENTS_SQL: &str = "DROP TRIGGER task_authority_assignment_identity_immutable;
+    DROP TRIGGER task_authority_assignment_no_delete;
+    CREATE TABLE task_authority_assignments_v47 (
+        assignment_id BLOB PRIMARY KEY NOT NULL CHECK(length(assignment_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        authority_id BLOB NOT NULL CHECK(length(authority_id) = 16),
+        authority_lease_holder_id BLOB NOT NULL CHECK(length(authority_lease_holder_id) = 16),
+        authority_lease_term BLOB NOT NULL CHECK(length(authority_lease_term) = 8),
+        authority_lease_epoch BLOB NOT NULL CHECK(length(authority_lease_epoch) = 8),
+        authority_lease_fencing_token BLOB NOT NULL CHECK(length(authority_lease_fencing_token) = 32),
+        authority_lease_expires_at_ms INTEGER NOT NULL CHECK(authority_lease_expires_at_ms >= 0),
+        control_epoch BLOB NOT NULL CHECK(length(control_epoch) = 8),
+        participant_registry_generation BLOB NOT NULL CHECK(length(participant_registry_generation) = 8),
+        participant_registry_root BLOB NOT NULL CHECK(length(participant_registry_root) = 32),
+        assignment_state INTEGER NOT NULL CHECK(assignment_state IN (1, 2, 3, 4, 5)),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
+        UNIQUE(task_id, assignment_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+    ) STRICT;
+
+    INSERT INTO task_authority_assignments_v47 (
+        assignment_id, task_id, task_generation, authority_id,
+        authority_lease_holder_id, authority_lease_term, authority_lease_epoch,
+        authority_lease_fencing_token, authority_lease_expires_at_ms,
+        control_epoch, participant_registry_generation,
+        participant_registry_root, assignment_state,
+        created_at_ms, updated_at_ms
+    )
+    SELECT assignment_id, task_id, task_generation, authority_id,
+           authority_lease_holder_id, authority_lease_term, authority_lease_epoch,
+           authority_lease_fencing_token, authority_lease_expires_at_ms,
+           control_epoch, participant_registry_generation,
+           participant_registry_root, assignment_state,
+           created_at_ms, updated_at_ms
+    FROM task_authority_assignments;
+
+    DROP TABLE task_authority_assignments;
+    ALTER TABLE task_authority_assignments_v47 RENAME TO task_authority_assignments;
+
+    CREATE TRIGGER task_authority_assignment_identity_immutable
+    BEFORE UPDATE ON task_authority_assignments
+    WHEN NEW.assignment_id != OLD.assignment_id
+      OR NEW.task_id != OLD.task_id
+      OR NEW.task_generation != OLD.task_generation
+      OR NEW.authority_id != OLD.authority_id
+      OR NEW.authority_lease_term != OLD.authority_lease_term
+      OR NEW.participant_registry_generation != OLD.participant_registry_generation
+      OR NEW.participant_registry_root != OLD.participant_registry_root
+      OR NEW.created_at_ms != OLD.created_at_ms
+      OR OLD.assignment_state IN (3, 4, 5)
+      OR (OLD.assignment_state = 2 AND NEW.assignment_state = 1)
+    BEGIN
+       SELECT RAISE(ABORT, 'task authority assignment identity is immutable');
+    END;
+
+    CREATE TRIGGER task_authority_assignment_no_delete
+    BEFORE DELETE ON task_authority_assignments
+    BEGIN
+       SELECT RAISE(ABORT, 'task authority assignment is durable evidence');
+    END;";
+
+const SCHEMA_V47_REGISTRIES_SQL: &str = "DROP TRIGGER task_participant_registry_identity_immutable;
+    ALTER TABLE task_participant_registries
+        ADD COLUMN prior_participant_registry_root BLOB
+            CHECK(prior_participant_registry_root IS NULL OR length(prior_participant_registry_root) = 32);
+    ALTER TABLE task_participant_registries
+        ADD COLUMN authority_id BLOB
+            CHECK(authority_id IS NULL OR length(authority_id) = 16);
+    ALTER TABLE task_participant_registries
+        ADD COLUMN signature BLOB
+            CHECK(signature IS NULL OR length(signature) = 64);
+
+    UPDATE task_participant_registries
+        SET prior_participant_registry_root = prior_registry_root
+        WHERE registry_generation != X'0000000000000001';
+
+    CREATE TRIGGER participant_registry_signature_coupled_insert
+    BEFORE INSERT ON task_participant_registries
+    WHEN (NEW.authority_id IS NULL) != (NEW.signature IS NULL)
+    BEGIN
+        SELECT RAISE(ABORT, 'participant registry authority and signature must be coupled');
+    END;
+
+    CREATE TRIGGER task_participant_registry_identity_immutable
+    BEFORE UPDATE ON task_participant_registries
+    WHEN NEW.registry_id != OLD.registry_id
+      OR NEW.task_id != OLD.task_id
+      OR NEW.task_generation != OLD.task_generation
+      OR NEW.registry_generation != OLD.registry_generation
+      OR NEW.prior_registry_root != OLD.prior_registry_root
+      OR NEW.prior_participant_registry_root IS NOT OLD.prior_participant_registry_root
+      OR NEW.participant_registry_root != OLD.participant_registry_root
+      OR NEW.created_at_ms != OLD.created_at_ms
+      OR (NEW.authority_id IS NULL) != (NEW.signature IS NULL)
+      OR (OLD.authority_id IS NOT NULL AND NEW.authority_id IS NOT OLD.authority_id)
+      OR (OLD.signature IS NOT NULL AND NEW.signature IS NOT OLD.signature)
+    BEGIN
+        SELECT RAISE(ABORT, 'participant registry identity is immutable');
+    END;";
+
+const SCHEMA_V47_TAKEOVER_RECEIPTS_SQL: &str = "DROP TRIGGER task_authority_takeover_receipt_immutable;
+    ALTER TABLE task_authority_takeover_receipts
+        ADD COLUMN outstanding_effect_quarantine_root BLOB
+            CHECK(outstanding_effect_quarantine_root IS NULL OR length(outstanding_effect_quarantine_root) = 32);
+    ALTER TABLE task_authority_takeover_receipts
+        ADD COLUMN consensus_commit_index INTEGER
+            CHECK(consensus_commit_index IS NULL OR consensus_commit_index >= 0);
+
+    CREATE TRIGGER task_authority_takeover_receipt_immutable
+    BEFORE UPDATE ON task_authority_takeover_receipts
+    WHEN NOT (
+        (
+            (
+                OLD.barrier_state = 1
+                AND NEW.barrier_state = 2
+                AND OLD.new_assignment_id IS NULL
+                AND NEW.new_assignment_id IS NOT NULL
+            )
+            OR (
+                OLD.barrier_state = 1
+                AND NEW.barrier_state = 1
+                AND OLD.new_assignment_id IS NULL
+                AND NEW.new_assignment_id IS NULL
+                AND (
+                    (OLD.outstanding_effect_quarantine_root IS NULL AND NEW.outstanding_effect_quarantine_root IS NOT NULL)
+                    OR (OLD.consensus_commit_index IS NULL AND NEW.consensus_commit_index IS NOT NULL)
+                )
+            )
+        )
+        AND (
+            OLD.outstanding_effect_quarantine_root IS NULL
+            OR NEW.outstanding_effect_quarantine_root IS OLD.outstanding_effect_quarantine_root
+        )
+        AND (
+            OLD.consensus_commit_index IS NULL
+            OR NEW.consensus_commit_index IS OLD.consensus_commit_index
+        )
+        AND NEW.receipt_id IS OLD.receipt_id
+        AND NEW.task_id IS OLD.task_id
+        AND NEW.task_generation IS OLD.task_generation
+        AND NEW.old_assignment_id IS OLD.old_assignment_id
+        AND NEW.fence_receipt_id IS OLD.fence_receipt_id
+        AND NEW.frozen_old_authority_term IS OLD.frozen_old_authority_term
+        AND NEW.frozen_old_control_epoch IS OLD.frozen_old_control_epoch
+        AND NEW.new_authority_id IS OLD.new_authority_id
+        AND NEW.new_authority_lease_holder_id IS OLD.new_authority_lease_holder_id
+        AND NEW.new_authority_lease_term IS OLD.new_authority_lease_term
+        AND NEW.new_authority_lease_epoch IS OLD.new_authority_lease_epoch
+        AND NEW.new_authority_lease_fencing_token IS OLD.new_authority_lease_fencing_token
+        AND NEW.new_authority_lease_expires_at_ms IS OLD.new_authority_lease_expires_at_ms
+        AND NEW.new_control_epoch IS OLD.new_control_epoch
+        AND NEW.frozen_registry_generation IS OLD.frozen_registry_generation
+        AND NEW.frozen_registry_root IS OLD.frozen_registry_root
+        AND NEW.exact_fence_set_root IS OLD.exact_fence_set_root
+        AND NEW.outstanding_operation_participant_root IS OLD.outstanding_operation_participant_root
+        AND NEW.created_at_ms IS OLD.created_at_ms
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover receipt is immutable');
+    END;
+
+    PRAGMA user_version = 47;";

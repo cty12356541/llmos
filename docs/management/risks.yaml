@@ -124,13 +124,13 @@
 - id: RISK-B-10
   category: cancel-effect-unknown
   severity: P1
-  status: open
-  description: "Windows 实机终止语义未证：platform kill adapter（taskkill /F/T）仅有 CI 契约道证据，且步骤绿也不含 live-child 实杀断言；第二 Process spawn→kill 全链（W29-F）为 Unix 实证，Windows 实杀（B6-2/B2-1 同源）未做——Windows 上终止效果与进程树行为不可证"
-  mitigation: "WindowsPlatformKillAdapter 已入库；W28-F CI 步骤「Test platform kill contract on Windows」在 run 35511878717 windows-latest 腿 step 级 success（job 级因无关 Clippy 步失败，根因已修——W34-A §6 residual 4 精确口径，防「run 绿」误读）；当前 HEAD run 35531478487 重验中；实机实杀递延登记并由 claims 限定口径（ROAD-B-002/006 limitations）"
+  status: partial
+  description: "Windows 实机终止语义（分域口径 2026-10-24）：同权限父子进程树 live-child 实杀（B6-2）与 B2-1 双活三层场景同机兄弟进程树隔离已在 Windows 实机验证（b-process-003 §13：taskkill /F /T 终止父+子双 PID 且不误伤兄弟树）；**残域显式保留**：跨权限/UAC 提权子进程、Job Object breakaway 脱离进程树、以及 Windows supervisor 守护级挂钩在极端权限边界下的终止不可证风险"
+  mitigation: "WindowsPlatformKillAdapter 已入库；W62-CWINKILL 在真实 Windows 宿主补齐两项实机集成测试（windows_platform_kill_terminates_live_parent_and_child_process_tree + windows_platform_kill_b2_1_dual_live_trees_kills_target_tree_without_harming_sibling，b-process-003 §13），确认父+子双活 PID 被 taskkill /F /T 实杀且兄弟进程树 100% 存活；残余跨权限/breakaway 边界由 claims limitations 显式限定，不外推为任意脱离进程树的强制回收保证"
   evidence_refs:
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
-  review_point: "阶段 C 首个 Windows 实机验证车道（live-child 实杀 + B2-1 双活三层场景）落地时复审；W34-D 裁量移交登记"
+  review_point: "分域降级（W62-CWINKILL，2026-10-24）：open→partial（同权限父子进程树 + B2-1 双活兄弟隔离已证）；残域在引入 Windows Job Object 强约束或跨权限宿主执行器时复审"
 
 - id: RISK-B-11
   category: durable-state-loss

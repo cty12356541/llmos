@@ -18,11 +18,18 @@ use nlos_process::{
     CreateIsolationDomainRequest, ProcessAuthority, RegisterDelegatedProcessRequest,
 };
 use nlos_semantic::{
-    AdmissionReceipt, AppendAssertionRequest, AppendDecision, AssertionMode, MergedSignedEvent,
-    SemanticAuthority, SemanticPayloadIdentity, SignedEventSetConflict, SignedEventSetItem,
-    SignedEventSetOrigin, SignedEventSetRejection, StoreSigner, StoreSignerError, TaintFlags,
-    UnsignedAssertionEvent, admission_receipt_core_digest, content_digest,
-    encode_unsigned_assertion_event, merge_signed_event_sets, semantic_event_id,
+    AdmissionReceipt, AppendAssertionRequest, AppendDecision, AppendSpecRequest,
+    AppendTypedEventRequest, AssertionMode, CriterionAggregation, CriterionEffect,
+    CrossDomainAuditRecord, CrossDomainEventItem, EvaluatorKind, ImmutableEvaluatorReference,
+    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
+    IntentSettlement, IntentSpecBody, JudgmentRelation, MergedSignedEvent, SemanticAuthority,
+    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, SignedEventSetConflict,
+    SignedEventSetItem, SignedEventSetOrigin, SignedEventSetRejection, StoreSigner,
+    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedJudgmentEvent, UnsignedSpecEvent,
+    admission_receipt_core_digest, content_digest, encode_intent_spec_body,
+    encode_unsigned_assertion_event, encode_unsigned_judgment_event, encode_unsigned_spec_event,
+    intent_spec_body_digest, merge_cross_domain_event_sets, merge_signed_event_sets,
+    semantic_event_id, verify_and_merge_cross_domain_events,
 };
 use nlos_types::{
     Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId, TaskAttemptId, TaskId,
@@ -561,8 +568,8 @@ fn receipt_content_conflict_excludes_event_without_other_admission() {
             assert_eq!(*receipt_id, item_a.admission.receipt_id);
             assert_eq!(occurrences.len(), 2);
         }
-        SignedEventSetConflict::DuplicateStoreAdmission { .. } => {
-            panic!("unexpected conflict")
+        other => {
+            panic!("unexpected conflict: {other:?}")
         }
     }
     assert_eq!(report.rejections.len(), 1);
@@ -614,8 +621,8 @@ fn duplicate_store_admission_conflict_keeps_other_stores() {
             assert_eq!(*id, event_id);
             assert_eq!(occurrences.len(), 2);
         }
-        SignedEventSetConflict::AdmissionReceiptContent { .. } => {
-            panic!("unexpected conflict")
+        other => {
+            panic!("unexpected conflict: {other:?}")
         }
     }
 }
@@ -675,4 +682,482 @@ fn empty_inputs_and_argument_order_independence() {
         merge_signed_event_sets(std::slice::from_ref(&item_b), std::slice::from_ref(&item_a));
     assert_eq!(forward.merged, backward.merged);
     assert_eq!(forward.merged.len(), 1);
+}
+
+fn spec_request(domain: &Domain, seed: u8) -> AppendSpecRequest {
+    let body = IntentSpecBody {
+        goal_digest: [seed.wrapping_add(0x10); 32],
+        acceptance: vec![IntentCriterion {
+            description_digest: [seed.wrapping_add(0x11); 32],
+            effect: CriterionEffect::Hard,
+            evaluator_kind: EvaluatorKind::DeterministicTool,
+            evaluator_ref: ImmutableEvaluatorReference {
+                kind: ImmutableEvaluatorReferenceKind::Artifact,
+                digest: [seed.wrapping_add(0x12); 32],
+            },
+            target_selector_digest: [seed.wrapping_add(0x13); 32],
+            timeout_ms: Some(5_000),
+            independence_policy_digest: None,
+            authority_policy_digest: None,
+            risk_policy_digest: None,
+            aggregation: CriterionAggregation {
+                pass_quorum: 1,
+                fail_quorum: 1,
+                veto_on_authorized_fail: true,
+            },
+        }],
+        constraints: IntentConstraints {
+            resource_vector_digest: [seed.wrapping_add(0x14); 32],
+            deadline_ms: Some(8_000),
+            namespace_root: NamespaceId::from_bytes([0x44; 16]),
+            allowed_capability_digests: Vec::new(),
+            forbidden_capability_digests: Vec::new(),
+        },
+        criticality: IntentCriticality::Standard,
+        settlement: IntentSettlement {
+            mode: SettlementMode::None,
+            hard_criteria_digest: None,
+            on_timeout: SettlementTimeoutAction::Refund,
+            challenge_window_ms: None,
+        },
+        critical_extensions: Vec::new(),
+        noncritical_extensions: Vec::new(),
+    };
+    let canonical_spec_body = encode_intent_spec_body(&body).unwrap();
+    let spec_body_digest = intent_spec_body_digest(&body).unwrap();
+    let event = UnsignedSpecEvent {
+        scope: domain.capability_record.target,
+        issuer: domain.issuer.principal_id,
+        issuer_execution: nlos_semantic::LocalProcessRef {
+            process_id: domain.process_binding.process_id,
+            generation: domain.process_binding.process_generation,
+        },
+        control_domain: domain.issuer.control_domain_id,
+        issued_at_unix_ns: 2_000_000_000 + u64::from(seed),
+        nonce: vec![seed.wrapping_add(0x20); 16],
+        declared_parents: Vec::new(),
+        valid_until_ms: Some(8_000),
+        purpose_digest: domain.capability_record.purpose_digest,
+        spec_body_digest,
+        canonical_spec_body,
+        key_id: domain.issuer.key_id,
+    };
+    let canonical_unsigned_event = encode_unsigned_spec_event(&event).unwrap();
+    let claimed_event_id = semantic_event_id(&canonical_unsigned_event);
+    let signature = domain
+        .issuer_key
+        .sign(&nlos_identity::semantic_signature_message(claimed_event_id))
+        .to_bytes();
+    AppendSpecRequest {
+        canonical_unsigned_event,
+        claimed_event_id,
+        signature,
+        capability: domain.capability_record.handle,
+        captured_inputs: Vec::new(),
+        ingress_taint: TaintFlags::default(),
+        authz_policy_digest: [0x99; 32],
+        admission_limit_ms: Some(8_500),
+        admitted_at_ms: 2_100,
+    }
+}
+
+fn judgment_request(
+    domain: &Domain,
+    seed: u8,
+    source: SemanticEventId,
+    target: SemanticEventId,
+) -> AppendTypedEventRequest {
+    let event = UnsignedJudgmentEvent {
+        scope: domain.capability_record.target,
+        issuer: domain.issuer.principal_id,
+        issuer_execution: nlos_semantic::LocalProcessRef {
+            process_id: domain.process_binding.process_id,
+            generation: domain.process_binding.process_generation,
+        },
+        control_domain: domain.issuer.control_domain_id,
+        issued_at_unix_ns: 3_000_000_000 + u64::from(seed),
+        nonce: vec![seed.wrapping_add(0x30); 16],
+        declared_parents: Vec::new(),
+        valid_until_ms: Some(8_000),
+        purpose_digest: domain.capability_record.purpose_digest,
+        key_id: domain.issuer.key_id,
+        relation: JudgmentRelation::Supports,
+        source,
+        target,
+        context_digest: None,
+        evaluator_evidence_receipt_id: ReceiptId::from_bytes([seed.wrapping_add(0x31); 16]),
+        confidence_bp: Some(9_000),
+    };
+    let canonical_unsigned_event = encode_unsigned_judgment_event(&event).unwrap();
+    let claimed_event_id = semantic_event_id(&canonical_unsigned_event);
+    let signature = domain
+        .issuer_key
+        .sign(&nlos_identity::semantic_signature_message(claimed_event_id))
+        .to_bytes();
+    AppendTypedEventRequest {
+        canonical_unsigned_event,
+        claimed_event_id,
+        signature,
+        capability: domain.capability_record.handle,
+        captured_inputs: Vec::new(),
+        ingress_taint: TaintFlags::default(),
+        authz_policy_digest: [0x99; 32],
+        admission_limit_ms: Some(8_500),
+        admitted_at_ms: 2_200,
+    }
+}
+
+fn append_spec(domain: &Domain, request: &AppendSpecRequest) {
+    let mut bound = request.clone();
+    bound.capability = domain.capability_record.handle;
+    domain
+        .semantic
+        .append_spec(
+            &domain.identity,
+            &domain.capability,
+            &domain.process,
+            &domain.store_signer,
+            &bound,
+        )
+        .unwrap();
+}
+
+fn append_judgment(domain: &Domain, request: &AppendTypedEventRequest) {
+    let mut bound = request.clone();
+    bound.capability = domain.capability_record.handle;
+    domain
+        .semantic
+        .append_judgment(
+            &domain.identity,
+            &domain.capability,
+            &domain.process,
+            &domain.store_signer,
+            &bound,
+        )
+        .unwrap();
+}
+
+#[test]
+fn store_backed_export_signed_event_set_across_event_types_and_idempotent_merge() {
+    let (_root_a, domain_a, domain_b) = twin_domains();
+
+    let assertion = request(&domain_a, 7);
+    let spec = spec_request(&domain_a, 8);
+    let judgment = judgment_request(
+        &domain_a,
+        9,
+        assertion.claimed_event_id,
+        spec.claimed_event_id,
+    );
+
+    append(&domain_a, &assertion);
+    append_spec(&domain_a, &spec);
+    append_judgment(&domain_a, &judgment);
+
+    // Domain B admits the extra assertion first so local log_seq values
+    // intentionally diverge from Domain A (`[SEM-CHECKPOINT-001]`).
+    let mut only_b = request(&domain_b, 11);
+    only_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &only_b);
+
+    let mut assertion_b = assertion.clone();
+    assertion_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &assertion_b);
+    append_spec(&domain_b, &spec);
+    append_judgment(&domain_b, &judgment);
+
+    let exported_a = domain_a.semantic.export_signed_event_set().unwrap();
+    let exported_b = domain_b.semantic.export_signed_event_set().unwrap();
+    assert_eq!(exported_a.len(), 3);
+    assert_eq!(exported_b.len(), 4);
+    assert_eq!(
+        exported_a
+            .iter()
+            .map(|item| item.event.log_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        exported_b
+            .iter()
+            .map(|item| item.event.log_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+
+    let report = merge_signed_event_sets(&exported_a, &exported_b);
+    assert!(report.rejections.is_empty(), "{:?}", report.rejections);
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert_eq!(report.merged.len(), 4);
+
+    // The 3 shared events each carry 2 admissions (with distinct store-local
+    // log_seq values); the B-only event carries 1 admission.
+    for shared_id in [
+        assertion.claimed_event_id,
+        spec.claimed_event_id,
+        judgment.claimed_event_id,
+    ] {
+        let entry = report
+            .merged
+            .iter()
+            .find(|entry| entry.event_id == shared_id)
+            .unwrap();
+        assert_eq!(entry.admissions.len(), 2);
+    }
+    let only_b_entry = report
+        .merged
+        .iter()
+        .find(|entry| entry.event_id == only_b.claimed_event_id)
+        .unwrap();
+    assert_eq!(only_b_entry.admissions.len(), 1);
+
+    // Idempotent self-merge on store-exported slice.
+    let self_report = merge_signed_event_sets(&exported_a, &exported_a);
+    assert_eq!(
+        self_report.rejections,
+        [] as [nlos_semantic::SignedEventSetRejection; 0]
+    );
+    assert_eq!(
+        self_report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
+    assert_eq!(self_report.merged.len(), 3);
+    assert!(
+        self_report
+            .merged
+            .iter()
+            .all(|entry| entry.admissions.len() == 1)
+    );
+}
+
+#[test]
+fn dist_audit_001_cross_domain_export_and_verified_merge_preserves_provenance() {
+    let (_root_a, domain_a, domain_b) = twin_domains();
+    let request = request(&domain_a, 7);
+    let event_id = request.claimed_event_id;
+    append(&domain_a, &request);
+    let mut request_b = request.clone();
+    request_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &request_b);
+
+    let sig_a = domain_a.semantic.inspect_event_signature(event_id).unwrap();
+    let sig_b = domain_b.semantic.inspect_event_signature(event_id).unwrap();
+    assert_eq!(sig_a, request.signature);
+    assert_eq!(sig_b, request.signature);
+
+    let snapshot_a = [0xA1; 32];
+    let snapshot_b = [0xB2; 32];
+    let cross_a = domain_a
+        .semantic
+        .export_cross_domain_event_set(snapshot_a)
+        .unwrap();
+    let cross_b = domain_b
+        .semantic
+        .export_cross_domain_event_set(snapshot_b)
+        .unwrap();
+    assert_eq!(cross_a.len(), 1);
+    assert_eq!(cross_b.len(), 1);
+
+    let report = verify_and_merge_cross_domain_events(&domain_a.identity, &cross_a, &cross_b);
+    assert!(report.rejections.is_empty(), "{:?}", report.rejections);
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert_eq!(report.merged.len(), 1);
+
+    let merged = &report.merged[0];
+    assert_eq!(merged.event_id, event_id);
+    assert_eq!(merged.producer_signature, request.signature);
+    assert_eq!(merged.admissions.len(), 2);
+    assert_eq!(merged.audit_records.len(), 2);
+
+    let expected_records: Vec<CrossDomainAuditRecord> = {
+        let mut records = vec![
+            CrossDomainAuditRecord {
+                producer_key_id: domain_a.issuer.key_id,
+                producer_signature: request.signature,
+                admission: cross_a[0].admission.clone(),
+                trust_snapshot_digest: snapshot_a,
+            },
+            CrossDomainAuditRecord {
+                producer_key_id: domain_b.issuer.key_id,
+                producer_signature: request.signature,
+                admission: cross_b[0].admission.clone(),
+                trust_snapshot_digest: snapshot_b,
+            },
+        ];
+        records.sort_by_key(|record| record.admission.receipt_id);
+        records
+    };
+    assert_eq!(merged.audit_records, expected_records);
+}
+
+#[test]
+fn dist_audit_001_rejects_missing_or_zero_trust_snapshot_fail_closed() {
+    let root = Root::new("zero-snapshot");
+    let domain_a = domain(&root, 7, 27);
+    let request = request(&domain_a, 7);
+    append(&domain_a, &request);
+
+    let items = domain_a
+        .semantic
+        .export_cross_domain_event_set([0_u8; 32])
+        .unwrap();
+    let report = verify_and_merge_cross_domain_events(&domain_a.identity, &items, &[]);
+    assert_eq!(
+        report.merged,
+        [] as [nlos_semantic::MergedCrossDomainEvent; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
+    assert_eq!(report.rejections.len(), 1);
+    match &report.rejections[0] {
+        SignedEventSetRejection::MissingTrustSnapshot {
+            origin,
+            event_id,
+            receipt_id,
+        } => {
+            assert_eq!(*origin, SignedEventSetOrigin::First);
+            assert_eq!(*event_id, request.claimed_event_id);
+            assert_eq!(*receipt_id, items[0].admission.receipt_id);
+        }
+        other => panic!("unexpected rejection: {other:?}"),
+    }
+}
+
+#[test]
+fn dist_audit_001_rejects_invalid_or_zero_producer_signature_fail_closed() {
+    let root = Root::new("bad-sig");
+    let domain_a = domain(&root, 7, 27);
+    let request = request(&domain_a, 7);
+    append(&domain_a, &request);
+
+    let mut forged = domain_a
+        .semantic
+        .export_cross_domain_event_set([0xCC; 32])
+        .unwrap();
+    forged[0].producer_signature[0] ^= 0xFF;
+
+    let report = verify_and_merge_cross_domain_events(&domain_a.identity, &forged, &[]);
+    assert_eq!(
+        report.merged,
+        [] as [nlos_semantic::MergedCrossDomainEvent; 0]
+    );
+    assert_eq!(
+        report.conflicts,
+        [] as [nlos_semantic::SignedEventSetConflict; 0]
+    );
+    assert_eq!(report.rejections.len(), 1);
+    match &report.rejections[0] {
+        SignedEventSetRejection::InvalidProducerSignature {
+            origin,
+            event_id,
+            key_id,
+        } => {
+            assert_eq!(*origin, SignedEventSetOrigin::First);
+            assert_eq!(*event_id, request.claimed_event_id);
+            assert_eq!(*key_id, domain_a.issuer.key_id);
+        }
+        other => panic!("unexpected rejection: {other:?}"),
+    }
+
+    let mut zeroed = domain_a
+        .semantic
+        .export_cross_domain_event_set([0xCC; 32])
+        .unwrap();
+    zeroed[0].producer_signature = [0_u8; 64];
+    let zero_report = merge_cross_domain_event_sets(&zeroed, &[]);
+    assert_eq!(
+        zero_report.merged,
+        [] as [nlos_semantic::MergedCrossDomainEvent; 0]
+    );
+    assert_eq!(
+        zero_report.rejections,
+        vec![SignedEventSetRejection::InvalidProducerSignature {
+            origin: SignedEventSetOrigin::First,
+            event_id: request.claimed_event_id,
+            key_id: domain_a.issuer.key_id,
+        }]
+    );
+}
+
+#[test]
+fn dist_audit_001_rejects_conflicting_producer_signatures_across_domains_fail_closed() {
+    let (_root_a, domain_a, domain_b) = twin_domains();
+    let request = request(&domain_a, 7);
+    let event_id = request.claimed_event_id;
+    append(&domain_a, &request);
+    let mut request_b = request.clone();
+    request_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &request_b);
+
+    let cross_a = domain_a
+        .semantic
+        .export_cross_domain_event_set([0xA1; 32])
+        .unwrap();
+    let mut cross_b: Vec<CrossDomainEventItem> = domain_b
+        .semantic
+        .export_cross_domain_event_set([0xB2; 32])
+        .unwrap();
+    cross_b[0].producer_signature[0] ^= 0x55;
+
+    let report = merge_cross_domain_event_sets(&cross_a, &cross_b);
+    assert_eq!(
+        report.merged,
+        [] as [nlos_semantic::MergedCrossDomainEvent; 0]
+    );
+    assert_eq!(report.conflicts.len(), 1);
+    match &report.conflicts[0] {
+        SignedEventSetConflict::ProducerSignatureMismatch {
+            event_id: conflict_id,
+            occurrences,
+        } => {
+            assert_eq!(*conflict_id, event_id);
+            assert_eq!(occurrences.len(), 2);
+        }
+        other => panic!("unexpected conflict: {other:?}"),
+    }
+    assert_eq!(
+        report.rejections,
+        vec![SignedEventSetRejection::ProducerSignatureConflict { event_id }]
+    );
+}
+
+#[test]
+fn dist_audit_001_rejects_conflicting_trust_snapshots_for_same_receipt_id() {
+    let root = Root::new("snapshot-conflict");
+    let domain_a = domain(&root, 7, 27);
+    let request = request(&domain_a, 7);
+    let event_id = request.claimed_event_id;
+    append(&domain_a, &request);
+
+    let cross_first = domain_a
+        .semantic
+        .export_cross_domain_event_set([0x11; 32])
+        .unwrap();
+    let cross_second = domain_a
+        .semantic
+        .export_cross_domain_event_set([0x22; 32])
+        .unwrap();
+
+    let report = merge_cross_domain_event_sets(&cross_first, &cross_second);
+    assert_eq!(
+        report.merged,
+        [] as [nlos_semantic::MergedCrossDomainEvent; 0]
+    );
+    assert_eq!(report.conflicts.len(), 1);
+    match &report.conflicts[0] {
+        SignedEventSetConflict::TrustSnapshotConflict {
+            receipt_id,
+            occurrences,
+        } => {
+            assert_eq!(*receipt_id, cross_first[0].admission.receipt_id);
+            assert_eq!(occurrences.len(), 2);
+        }
+        other => panic!("unexpected conflict: {other:?}"),
+    }
+    assert_eq!(
+        report.rejections,
+        vec![SignedEventSetRejection::EventWithoutValidAdmission { event_id }]
+    );
 }

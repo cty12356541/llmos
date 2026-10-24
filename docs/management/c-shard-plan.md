@@ -21,9 +21,9 @@
 - **勘误（原草案错误，裁定指出）**：原草案把「旧 Cell 效果拒绝 / QUARANTINE」当作「远端物理 cleanup 证明」——两者不等同。拒绝/QUARANTINE 只证明**拒绝语义**；**物理 cleanup 残域保留**至存在实际清理证据（ADR 修订 2 R2.3 第 2 条）。
 - Phase 0 证据覆盖的 participant endpoint **逐 endpoint 声明**；未覆盖者不得宣称闭环（R2.3 第 3 条）。跨机残域挂 R1.4 触发器 7（R2.3 第 4 条）。
 
-### CS-2：三 Record 命名/映射策略 —— **裁定：接受保守映射，终裁留 CS1-A**
+### CS-2：三 Record 命名/映射策略 —— **裁定：接受保守映射，终裁留 CS1-A（CS1-A 已终裁并入册 §4.1 映射表）**
 
-保留现有 `Authority*` 类型与表名；**映射表义务**：须明确字段、状态、不变量的对应**与缺口**——名称对齐不代替语义实现（ADR 修订 2 R2.4）。终裁在 Phase 1 CS1-A 设计门。
+保留现有 `Authority*` / `ParticipantRegistry*` 类型与 SQLite 表名，并提供 §26.1 规范名类型别名（`TaskAuthorityAssignment`、`AuthorityAssignmentStatus`、`TaskAuthorityParticipantRegistry`、`ParticipantRegistrySnapshot`、`TaskAuthorityTakeoverReceipt`）；**映射表义务**：已于 §4.1 逐字段、逐状态、逐不变量列出对应关系**与语义缺口**——名称对齐不代替语义实现（ADR 修订 2 R2.4）。
 
 ### 验收修正（裁定追加，适用于 CS0-D）—— **分区双主必须双存活注入**
 
@@ -107,11 +107,46 @@ Phase 1 各车道派发时**必须重做代码级核验**（教训六；本计�
 
 | 车道 | 义务 | 规范锚点 | 验收门（框架级） |
 |---|---|---|---|
-| CS1-A 三 Record 迁移族 | schema v47+：registry 全 Record 化（authority/signature/prior_participant_registry_root/participant_registry_root 字段面）；assignment 状态机对齐五态（现有 Active/TakeoverPending/Fenced 三态 → §26.1 的 ACTIVE/TAKEOVER_PENDING/FENCED/EXPIRED/QUARANTINED）；receipt 字段对齐（fence_barrier_receipts、outstanding_effect_quarantine_root 可空、consensus_commit_index 占位——ADR-0018 决定 5：无协议语义）；CS-2 终裁 + **映射表**（字段/状态/不变量对应与缺口，命名≠语义） | §26.1 三 Record | golden DDL 快照沿既有惯例；迁移幂等 + 回滚说明随提交（PD-COMMIT）；DIST-TASK 逐条 conformance 测试起步；映射表入册 |
+| CS1-A 三 Record 迁移族（**DONE**，schema v47） | schema v47：registry 全 Record 化（`authority` / `signature` / `prior_participant_registry_root` / `participant_registry_root` 字段面）；assignment 状态机对齐五态（`Active = 1` / `TakeoverPending = 2` / `Fenced = 3` / `Expired = 4` / `Quarantined = 5`）；receipt 字段对齐（`fence_barrier_receipts` 子表映射、`outstanding_effect_quarantine_root` 可空、`consensus_commit_index` 被动槽——ADR-0018 决定 5 & ADR-0020：零共识协议语义）；CS-2 终裁 + **§4.1 映射表**（字段/状态/不变量对应与缺口，命名≠语义） | §26.1 三 Record | `migrate_v47` 幂等 + 半迁移 fail-closed；`c_shard_cs1a_schema_v47` 全绿；映射表入册 §4.1 |
 | CS1-B admission 全语义 | participant 注册先于 operation admission（同 authority transaction 或不可激活 durable prepare）；CommitPermit 发放同 CAS 置 FROZEN_FOR_PERMIT、存续期禁新增、EffectPermit 绑定逐位相同 generation/root；permit 背后禁扩集合（须 closure + 新 registry generation 重新 seal） | DIST-TASK-001 | 逐句 conformance；fence-集-未覆盖参与者零容忍断言（DIST-TASK-004 尾句） |
 | CS1-C 002/004 缺口对齐 | exact fence set = frozen registry 当前全集 ∪ 旧 control epoch durable outstanding participants（并集语义显式化）；六类 participant_type（TASK_STORE/ARTIFACT_HEAD/SEMANTIC_ADMISSION/CHANNEL_TOPIC/DRIVER_GATEWAY/RESOURCE_LEDGER）的 barrier 覆盖映射落表（Phase 0 未覆盖 endpoint 在此补证）；TaskPermitClosureReceipt → 新 OPEN registry generation（禁原地解冻） | DIST-TASK-002/004 | 逐句 conformance；与 Phase 0 驱动器回归打通 |
 | CS1-D 驱动面生产化 | Phase 0 驱动器从证据面升生产语义；`MigrationObject`（opaque 16B）↔ 真实 DIST-TASK record 绑定（federation.rs:115 显式遗留义务）；checkpoint digest 绑定升级；`nlos-takeover-control` 升格或替换裁定 | R1.2.2/R1.2.5 | 绑定可验证；federation.rs 两处 deferred 声明更新为已实现引用 |
 | CS1-E 收尾 | 台账 C-SHARD 行状态、claims（仍限定单机双进程域）、L0、C-MIGRATE 解锁评估（§C.5.2 依赖链） | §C.5.2 | Claim ≤ Evidence lint；C-SHARD DONE 所需全证据在册，或如实登记余量 |
+
+### 4.1 CS-2 三 Record 字段 / 状态 / 不变量对应与缺口映射表（CS1-A 终裁入册）
+
+> **边界声明（ADR-0019 修订 2 R2.4）**：保留现有 `nlos-task` SQLite 表名与 `Authority*` / `ParticipantRegistry*` 主结构名，同时导出 §26.1 规范名类型别名；下表逐项区分「已实现并由 SQLite 触发器 / CAS 门强制」与「仍属后续车道（CS1-B..D）或长期残域的语义缺口」，绝不以名称或列存在冒充协议闭环。
+
+#### (A) `TaskAuthorityAssignment` ↔ `AuthorityAssignmentRecord`（表 `task_authority_assignments`，schema v31 创建、v47 扩五态）
+
+| §26.1 规范字段 / 状态 / 不变量 | SQLite 列 / 约束（v47） | Rust 结构 / API 映射 | 当前已证不变量（v47） | 残余缺口与归属车道 |
+|---|---|---|---|---|
+| `assignment_id` / `task_id` / `task_generation` | `assignment_id BLOB(16) PK`、`task_id BLOB(16) FK`、`task_generation BLOB(8)` | `AuthorityAssignmentRecord::{assignment_id, task_id, task_generation}`（别名 `TaskAuthorityAssignment`） | `derive_assignment_id` 确定性派生；`task_authority_assignment_identity_immutable` 触发器锁死身份列不可变、`no_delete` 禁删 | 无 |
+| `authority_id` / `authority_term` / `lease_until` / `fencing_token` | `authority_id BLOB(16)`、`authority_lease_holder_id BLOB(16)`、`authority_lease_term BLOB(8)`、`authority_lease_epoch BLOB(8)`、`authority_lease_fencing_token BLOB(32)`、`authority_lease_expires_at_ms INTEGER` | `authority_lease_binding: AuthorityLeaseBinding` | 同 term 续约可经 `refresh_active_assignment` 更新 epoch/expires_at_ms；跨 term 只能经 takeover completion 旋转新行 | 跨机时钟与网络租约仲裁不在单机双进程域（留 R1.4 触发器 7） |
+| `control_epoch` / `participant_registry_generation` / `participant_registry_root` | `control_epoch BLOB(8)`、`participant_registry_generation BLOB(8)`、`participant_registry_root BLOB(32)` | `control_epoch: u64`、`participant_registry_binding: ParticipantRegistryBinding` | 触发器锁死 `participant_registry_generation` 与 `participant_registry_root` 不可变；registry 演进必须旋转新 assignment 行 | `TaskPermitClosureReceipt` 触发新 OPEN registry 后的自动 assignment 旋转衔接归 **CS1-C** |
+| `status: ACTIVE \| TAKEOVER_PENDING \| FENCED \| EXPIRED \| QUARANTINED` | `assignment_state INTEGER NOT NULL CHECK(assignment_state IN (1, 2, 3, 4, 5))` | `AuthorityAssignmentState` / `AuthorityAssignmentStatus`：`Active(1)`、`TakeoverPending(2)`、`Fenced(3)`、`Expired(4)`、`Quarantined(5)`；`expire_authority_assignment`、`quarantine_authority_assignment` | 终态 `(3, 4, 5)` 由 SQLite 触发器与 Rust CAS 双重锁死不可逆、不可回退；`TakeoverPending(2) -> Active(1)` 触发器禁止；相同目标终态重放逐字节幂等 | 驱动器在租约自然超时或未知效果隔离时自动触发 `Expired` / `Quarantined` 状态转换的跨进程编排归 **CS1-D** |
+| `authority` / `signature`（Record 尾签名） | 未单列（由 `authority_id` + `fencing_token` 承载本地权威绑定） | `authority_lease_binding.authority_id` / `fencing_token` | 本地单库事务与 `nlos-identity` 签名 barrier observation 在 takeover 门核验 | assignment 行级独立签名信封在单机双进程域非必需；跨机控制面签名信封留 R1.4 |
+
+#### (B) `TaskAuthorityParticipantRegistry` ↔ `ParticipantRegistryRecord`（表 `task_participant_registries` + `task_participants`，schema v11 创建、v15/v24/v40 扩枚举、v47 补齐字段面）
+
+| §26.1 规范字段 / 状态 / 不变量 | SQLite 列 / 约束（v47） | Rust 结构 / API 映射 | 当前已证不变量（v47） | 残余缺口与归属车道 |
+|---|---|---|---|---|
+| `registry_id` / `task_id` / `task_generation` / `participant_registry_generation` | `registry_id BLOB(16) PK`、`task_id BLOB(16) FK`、`task_generation BLOB(8)`、`registry_generation BLOB(8)`，`UNIQUE(task_id, registry_generation)` | `ParticipantRegistryRecord::{registry_id, task_id, task_generation, generation}`（别名 `TaskAuthorityParticipantRegistry` / `ParticipantRegistrySnapshot`） | 每代一行、单调递增、触发器锁死身份列与历史行不可删改 | `assignment_id` / `authority_term` / `control_epoch` 通过当前 `task_authority_assignments.participant_registry_binding` 外键/绑定关联，未在 registry 表内冗余存储 |
+| `prior_participant_registry_root` / `participant_registry_root` | `prior_registry_root BLOB(32)`（哈希链非空根）+ v47 新增可空 `prior_participant_registry_root BLOB CHECK(IS NULL OR length = 32)`、`participant_registry_root BLOB(32)` | `prior_root: [u8; 32]`、`prior_participant_registry_root: Option<[u8; 32]>`（gen 1 为 `None`，gen > 1 及 successor reopen 为 `Some(prior_root)`）、`root: [u8; 32]` | `validate_registry` 每次读取重算 SHA-256 根并校验 `prior_participant_registry_root` 与 `prior_root` 一致；触发器锁死不可变 | 无 |
+| `participants:[...]`（§26.1 六类 + 扩展进程/操作端点） | 子表 `task_participants`：`participant_type BETWEEN 1 AND 8`（1=`TaskStore`, 2=`ArtifactHead`, 3=`SemanticAdmission`, 4=`ChannelTopic`, 5=`DriverGateway`, 6=`ResourceLedger`, 7=`ProcessBinding`, 8=`OperationBinding`） | `participants: Vec<ParticipantRecord>` | 子表触发器完全不可变；注册入口强制先向各 owner authority 读取真实 endpoint proof | `DIST-TASK-001`「operation admission 必须同事务或不可激活 prepare」全路径门控归 **CS1-B**；六类 endpoint 全覆盖 barrier 证据归 **CS1-C** |
+| `state: OPEN \| FROZEN_FOR_PERMIT \| FROZEN_FOR_TAKEOVER \| SUPERSEDED` | `registry_state INTEGER NOT NULL CHECK(registry_state BETWEEN 1 AND 4)` | `ParticipantRegistryState::{Open, FrozenForPermit, FrozenForTakeover, Superseded}` | permit 发放冻结为 `FrozenForPermit`；takeover 预门冻结为 `FrozenForTakeover`；新代创建将旧代置 `Superseded` | `TaskPermitClosureReceipt` 禁止原地解冻、强制推进新 `OPEN` generation 的完整闭环归 **CS1-B / CS1-C** |
+| `authority` / `signature` | v47 新增可空 `authority_id BLOB(16)`、`signature BLOB(64)` | `authority: Option<[u8; 16]>`、`signature: Option<[u8; 64]>`；`record_participant_registry_signature` | `participant_registry_signature_coupled_insert` 与 `task_participant_registry_identity_immutable` 触发器强制两列成对出现（同 NULL 或同 NOT NULL）且写后不可变；相同签名重放幂等、异值冲突拒绝 | 跨进程接管驱动器对快照签名作 `nlos-identity` 密钥链验签的编排接入归 **CS1-D** |
+
+#### (C) `TaskAuthorityTakeoverReceipt` ↔ `AuthorityTakeoverReceiptRecord`（表 `task_authority_takeover_receipts` + 子表 `task_authority_takeover_barrier_receipts` / `task_authority_takeover_fence_members`，schema v32–v37 创建、v47 补齐字段面）
+
+| §26.1 规范字段 / 状态 / 不变量 | SQLite 列 / 约束（v47） | Rust 结构 / API 映射 | 当前已证不变量（v47） | 残余缺口与归属车道 |
+|---|---|---|---|---|
+| `receipt_id` / `task_id` / `task_generation` / `old_assignment_id` / `new_assignment_id` | `receipt_id BLOB(16) PK`、`task_id BLOB(16)`、`task_generation BLOB(8)`、`old_assignment_id BLOB(16) FK`、`new_assignment_id BLOB(16) NULL` | `AuthorityTakeoverReceiptRecord`（别名 `TaskAuthorityTakeoverReceipt`）对应字段 | `Pending(1)` 时 `new_assignment_id IS NULL`；仅 `complete_authority_takeover` 可经窄化触发器做唯一一次 `Pending(1) -> Complete(2)` 并填入 `new_assignment_id` | 无 |
+| `frozen_old_authority_term` / `frozen_old_control_epoch` / `new_authority_term` / `new_control_epoch` | `frozen_old_authority_term`、`frozen_old_control_epoch`、`new_authority_*`（含 holder/term/epoch/fencing_token/expires_at_ms）、`new_control_epoch` | `frozen_old_authority_term`、`frozen_old_control_epoch`、`new_authority_lease_binding`、`new_control_epoch` | 预门原子递增 `control_epoch` 并要求 `new_term > old_term`；触发器锁死不可变 | 无 |
+| `frozen_participant_registry_generation` / `frozen_participant_registry_root` / `exact_fence_set_root` | `frozen_registry_generation BLOB(8)`、`frozen_registry_root BLOB(32)`、`exact_fence_set_root BLOB(32) NULL`、`outstanding_operation_participant_root BLOB(32) NULL` | `frozen_registry_binding: ParticipantRegistryBinding`、`exact_fence_set_root: Option<[u8; 32]>`、`outstanding_operation_participant_root: Option<[u8; 32]>` | `takeover_fence_roots` 计算 frozen registry ∪ outstanding operation participants 的确定性摘要并落库 `task_authority_takeover_fence_members` | `DIST-TASK-002` 要求并集显式覆盖全部旧 control epoch durable outstanding participants（含非 operation 端点）的完备性核验归 **CS1-C** |
+| `fence_barrier_receipts:[...]` | 子表 `task_authority_takeover_barrier_receipts`（v33 创建、v35 补 digest、v36 补 5 个 signer 列与成对触发器） | `inspect_authority_takeover_barrier_receipts`、`record_signed_authority_takeover_barrier_receipt`、`inspect_authority_takeover_barrier_coverage` | `complete_authority_takeover` 强制校验 manifest 非空、全成员覆盖、且每条 observation 均带 `nlos-identity` 验证通过的签名 | 六类 endpoint 全覆盖实证与远端物理 cleanup 残域分别归 **CS1-C** 与 **RISK-B-11 残域** |
+| `outstanding_effect_quarantine_root` | v47 新增可空 `outstanding_effect_quarantine_root BLOB CHECK(IS NULL OR length = 32)` | `outstanding_effect_quarantine_root: Option<[u8; 32]>`；`prepare_authority_takeover_fence_with_receipt_extensions` / `record_authority_takeover_receipt_extensions` | `Pending` 期写一次即锁死，`Complete` 后完全不可变；重放幂等、冲突拒绝 | 与 `task_quarantine_receipts` 自动派生的端到端接线归 **CS1-C / CS1-D** |
+| `consensus_commit_index` | v47 新增可空 `consensus_commit_index INTEGER CHECK(IS NULL OR >= 0)` | `consensus_commit_index: Option<u64>` | 写一次即锁死，支持落库与读取；**显式声明（ADR-0018 决定 5 & ADR-0020）：仅作被动元数据槽，零 Raft/多节点共识协议语义** | 共识协议基底属 ADR-0020 `CANDIDATE`（未激活，非本计划目标） |
 
 ---
 

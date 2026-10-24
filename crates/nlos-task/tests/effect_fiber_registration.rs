@@ -556,7 +556,7 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            46
+            47
         );
     }
     let reopened = database.open();
@@ -792,7 +792,7 @@ fn v45_migration_scopes_fiber_idempotency_keys_per_task_and_preserves_rows() {
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            46,
+            47,
             "migration chain stamps the current schema version"
         );
         let mut statement = raw
