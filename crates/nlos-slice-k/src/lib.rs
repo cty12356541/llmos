@@ -46,6 +46,7 @@ mod error;
 mod fiber;
 mod nl;
 mod package;
+pub mod partition_recovery;
 mod payload;
 pub mod process_migration_drive;
 mod pump;
@@ -59,7 +60,7 @@ mod teardown;
 
 pub use cell_host::{
     CellAssemblyInspect, CellBroadcastRefusal, CellEpochAdvance, CellEpochBroadcastIncomplete,
-    CellHost, CellHostConfig,
+    CellHost, CellHostConfig, CellPartitionSpendError,
 };
 pub use chain::{
     CancelFacts, HappyChain, RecoveryPrefix, SECOND_BACKGROUND_TASK_SEED_OFFSET,
@@ -73,6 +74,24 @@ pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
     AutoOrphanGc, PublishedPackage, Publisher, TemplatedInstallReceipt, artifact_blob_path,
     fixture_bytes, install_plan_revision_key, plant_orphan_artifact_blob, provenance_triple,
+};
+pub use partition_recovery::{
+    ArtifactImportCommitContext, ArtifactPartitionConvergenceReport,
+    ArtifactPartitionConvergenceSpec, CapacityPartitionSettlementSpec, CellLeaseReconciliationSpec,
+    CellPartitionEndpoint, DecodedPartitionRecoveryCheckpointEntry, DevicePartitionSettlementSpec,
+    LocalCellHostPartitionEndpoint, PARTITION_BOUNDED_LOSS_PROOF_DOMAIN,
+    PARTITION_RECOVERY_CHECKPOINT_ENTRY_MAGIC, PARTITION_RECOVERY_RECEIPT_DOMAIN,
+    PartitionArtifactImportSummary, PartitionBoundedLossProof, PartitionEpochAdvanceSnapshot,
+    PartitionRecordedCheckpointSummary, PartitionRecoveryError, PartitionRecoveryOutcome,
+    PartitionRecoveryReceipt, PartitionRecoveryRequest, PartitionSettledCapacitySummary,
+    PartitionSettledDeviceSummary, QuotaLeaseReconciliationSummary, QuotaPartitionSettlementSpec,
+    SemanticConvergenceStepSnapshot, SemanticPartitionConvergenceReport,
+    SemanticPartitionConvergenceSpec, decode_artifact_transfer_package, decode_cell_fence,
+    decode_cross_domain_event_items, decode_partition_recovery_checkpoint_entry,
+    decode_signed_vector_checkpoint, drive_partition_reconnection_convergence,
+    encode_artifact_transfer_package, encode_cell_fence, encode_cross_domain_event_items,
+    encode_signed_vector_checkpoint, partition_recovery_checkpoint_entry,
+    partition_recovery_checkpoint_prefix,
 };
 pub use payload::{
     PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,

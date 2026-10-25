@@ -1,41 +1,29 @@
-//! Process-scoped Cell identity / epoch / fencing (C-CELL first slice).
-//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
-//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
-//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
-//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
-//! 2026-10-05 W47-L2 起七件套建设中（首批 failure detector + name cache）。
-
-//! 接线前提：slice-k runtime 按 ADR-0018 装配本 crate 的 cell 权威（当前 runtime 内联进程域，未引本 crate）。
-//! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-cell 依赖边）——解冻条件达成；CellHost 为首个装配消费方。
-//! 2026-10-05 W49：ADR-0021——`CellAuthority` 增共享面 `into_shared`（claim 排他仍在进程槽；
-//! epoch 单写者纪律移交装配面运行时不变量承载）。
-//! 2026-10-05 W50：federation 机制面最小面（[`federation`]：`CellDirectory` 跨 Cell
-//! 名称/服务发现 + `MigrationIntent` 迁移意图登记，共享文件目录 std-only）——ADR-0019
-//! 决定 5 的机制面前两项；不含跨 Cell 提交、全局共识或意图执行。
-//! 2026-10-06 W51：补齐第三项机制面（`ReconciliationCheckpoint` 登记：`CheckpointFact`
-//! 不可变追加 + 按 Cell 前缀枚举读）；仍不含 checkpoint 验证/执行或跨 Cell
-//! reconciliation 协调（ADR-0019 定案后）。
-//! 2026-10-08 CS0-B：checkpoint digest 钉面——`CheckpointDigest` 域分隔 `SHA-256`
-//! （fence 三轴 + 规范化前缀字节）与 fail-closed 验证器（`CheckpointFact::verify_digest`）；
-//! 验证 API 已提供，executor 消费仍属 CS0-C，checkpoint 执行/跨 Cell 协调仍不含。
-//! 2026-10-24 CS1-D：`MigrationObject` ↔ `DIST-TASK` record 绑定与 checkpoint
-//! 绑定验证升级——`DistTaskMigrationKind`、`DistTaskRecordBinding`
-//! （`"llmos/dist-task-migration-binding/v1"` 域分隔 `SHA-256`）与 fail-closed
-//! `verify_dist_task_binding`，由 `nlos-slice-k` 生产接管驱动器端到端消费。
+//! Process-scoped Cell identity / epoch / fencing (`C-CELL` & `C-PARTITION` slices).
+//!
+//! 装配演进：
+//! - 2026-10-05 W47-L2：七件套首批本地组件（`failure_detector` + `name_cache`）落地。
+//! - 2026-10-05 W48：接线计划已落地（`nlos-slice-k` `CellHost` 装配 + `nlos-slice-k`→`nlos-cell` 依赖边）——`CellHost` 为首个装配消费方。
+//! - 2026-10-05 W49：ADR-0021——`CellAuthority` 增共享面 `into_shared`（claim 排他仍在进程槽；epoch 单写者纪律移交装配面运行时不变量承载）。
+//! - 2026-10-05 W50：federation 机制面最小面（[`federation`]：`CellDirectory` 跨 Cell 名称/服务发现 + `MigrationIntent` 迁移意图登记，共享文件目录 std-only）——ADR-0019 决定 5 的机制面前两项；不含跨 Cell 提交、全局共识或意图执行。
+//! - 2026-10-06 W51：补齐第三项机制面（`ReconciliationCheckpoint` 登记：`CheckpointFact` 不可变追加 + 按 Cell 前缀枚举读）；仍不含 checkpoint 执行或全局共识。
+//! - 2026-10-08 CS0-B：checkpoint digest 钉面——`CheckpointDigest` 域分隔 `SHA-256`（fence 三轴 + 规范化前缀字节）与 fail-closed 验证器（`CheckpointFact::verify_digest`）。
+//! - 2026-10-24 CS1-D：`MigrationObject` ↔ `DIST-TASK` record 绑定与 checkpoint 绑定验证升级——`DistTaskMigrationKind`、`DistTaskRecordBinding`（`"llmos/dist-task-migration-binding/v1"` 域分隔 `SHA-256`）与 fail-closed `verify_dist_task_binding`，由 `nlos-slice-k` 生产接管驱动器端到端消费。
+//! - 2026-10-25 W65：分区本地自治门控与显式远程调用失败契约（[`partition`]：`ControlPlaneLinkState`、`PartitionAutonomyGate`、`RemoteCallContract`、`RemoteCallOutcome`，覆盖 `DIST-LOCAL-001` 与 `DIST-FAIL-001`），由 `nlos-slice-k` `CellHost` 与跨进程分区恢复协调器端到端消费。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
-//! implements the first two pieces of the Cell-local seven-piece set — the
-//! failure detector ([`failure_detector`]) and the capability/name cache
-//! ([`name_cache`]), both in-memory and not yet assembled into a runtime.
-//! The remaining five pieces (process supervisor, resource lease sub-ledger,
-//! driver gateway, durable event/outbox, artifact cache) are not implemented
-//! here. This crate also does not implement product IPC, consensus, or
-//! Raft.
+//! implements the Cell-local failure detector ([`failure_detector`]),
+//! capability/name cache ([`name_cache`]), federation directory/checkpoint
+//! primitives ([`federation`]), and partition autonomy / explicit remote-failure
+//! contracts ([`partition`]). The remaining pieces (process supervisor, resource
+//! lease sub-ledger, driver gateway, durable event/outbox, artifact cache) live
+//! in their dedicated crates and are assembled in `nlos-slice-k`. This crate
+//! does not implement consensus or Raft.
 
 mod failure_detector;
 mod federation;
 mod name_cache;
+mod partition;
 
 use std::error::Error;
 use std::fmt;
@@ -60,6 +48,12 @@ pub use federation::{
 pub use name_cache::{
     CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,
     InvalidationOutcome, NameCacheError, NamePath,
+};
+pub use partition::{
+    ControlPlaneLinkPhase, ControlPlaneLinkState, LocalAutonomyProof,
+    PARTITION_AUTONOMY_RECEIPT_DOMAIN, PartitionAutonomyGate, PartitionAutonomyReceipt,
+    PartitionViolation, PartitionedActionKind, REMOTE_CALL_PARTIAL_UNCERTAINTY_DOMAIN,
+    RemoteCallContract, RemoteCallOutcome, RemoteRetryDirective, RemoteRetryRefusal,
 };
 
 static PROCESS_CLAIM: Mutex<Option<CellIdentity>> = Mutex::new(None);

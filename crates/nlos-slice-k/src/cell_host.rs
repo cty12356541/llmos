@@ -63,20 +63,25 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use nlos_artifact::ReplicaSyncRetentionSet;
 use nlos_cell::{
     CacheHit, CapabilityNameCache, CellAuthority, CellDirectory, CellEpoch, CellFence,
-    CellFencingToken, CellIdentity, CellRegistrationEntry, CheckpointFact, CheckpointRecord,
-    EpochAdvanceReport, EpochInvalidation, FailureDetector, FailureDetectorConfig,
-    FailureDetectorError, HeartbeatOutcome, InsertOutcome, InvalidationOutcome, MigrationIntent,
-    MigrationIntentRecord, MonitoredSubject, NameCacheError, NamePath, SweepReport,
+    CellFencingToken, CellIdentity, CellRegistrationEntry, CheckpointDigest, CheckpointFact,
+    CheckpointPrefix, CheckpointRecord, ControlPlaneLinkState, EpochAdvanceReport,
+    EpochInvalidation, FailureDetector, FailureDetectorConfig, FailureDetectorError,
+    HeartbeatOutcome, InsertOutcome, InvalidationOutcome, LocalAutonomyProof, MigrationIntent,
+    MigrationIntentRecord, MonitoredSubject, NameCacheError, NamePath, PartitionAutonomyGate,
+    PartitionAutonomyReceipt, PartitionViolation, PartitionedActionKind, SweepReport,
 };
 use nlos_clock::NowRequest;
 use nlos_driver_mock::{CacheHealth, MockProvider, ProviderCache};
+use nlos_identity::{BootstrapPrincipalRequest, KeyPurpose};
 use nlos_lease::{
     CapacityLeaseGrant, CapacityLeaseGrantor, CapacityReconcileError,
     CapacityReconciliationReceipt, DeviceReconcileError, DeviceReconciliationReceipt,
     DeviceResetReceipt, ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantor, LeaseInstant,
-    QuotaLeaseGrant, QuotaLeaseGrantor, QuotaReconcileError, QuotaReconciliationReceipt,
+    QuotaLeaseGrant, QuotaLeaseGrantor, QuotaLeaseLedgerError, QuotaLeaseState,
+    QuotaReconcileError, QuotaReconciliationReceipt,
 };
 use nlos_process::{
     MarkProcessTerminatedRequest, ProcessAuthorityError, ProcessBindingRecord,
@@ -88,6 +93,7 @@ use nlos_types::{
     CapabilityId, CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, IdempotencyKey,
     ProcessId, QuotaLeaseId, SchedulerDomainId, TaskAttemptId, TaskId,
 };
+use sha2::{Digest, Sha256};
 
 use crate::error::{SliceKError, SliceKResult};
 use crate::runtime::{SliceKRuntime, seeded_key};
@@ -184,6 +190,10 @@ pub struct CellHost {
     os_process_id: u32,
     /// Generation-fenced `ProcessId` → host OS pid supervisor registry (`W64`).
     supervisor_pids: SupervisorPidRegistry,
+    /// Cell-local partition autonomy gate (`[DIST-LOCAL-001]`, `W65`).
+    partition_gate: PartitionAutonomyGate,
+    /// Replica sync conflict/tombstone retention root set (`[DIST-ART-001]`, `W65`).
+    artifact_sync_retention: ReplicaSyncRetentionSet,
     /// The opt-in federation face: shared-root [`CellDirectory`] plus this
     /// host's monotone registration-heartbeat counter. `None` under the
     /// default (non-federated) opening — zero behavior delta there.
@@ -289,6 +299,8 @@ impl CellHost {
             beat_sequence: 0,
             os_process_id,
             supervisor_pids: SupervisorPidRegistry::new(),
+            partition_gate: PartitionAutonomyGate::new_connected(fence, 0),
+            artifact_sync_retention: ReplicaSyncRetentionSet::new(),
             federation,
         })
     }
@@ -377,6 +389,28 @@ impl CellHost {
             face.directory
                 .record_checkpoint(fence.identity(), &checkpoint_fact)?,
         ))
+    }
+
+    /// Appends one structured [`CheckpointDigest`] derived from `prefix` and
+    /// this host's current fence snapshot to the federation checkpoint log
+    /// (`CS0-B` / `W65`). Returns `None` when this host is not federated.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::Federation`] when the checkpoint append refuses.
+    pub fn record_structured_reconciliation_checkpoint(
+        &self,
+        prefix: &CheckpointPrefix,
+    ) -> SliceKResult<Option<(CheckpointDigest, CheckpointRecord)>> {
+        let fence = self.fence;
+        let digest = CheckpointDigest::from_prefix(
+            fence.node_boot_generation(),
+            fence.epoch(),
+            fence.fencing_token(),
+            prefix,
+        );
+        let recorded = self.record_reconciliation_checkpoint(&digest.to_text())?;
+        Ok(recorded.map(|rec| (digest, rec)))
     }
 
     /// The wrapped slice runtime — the assembled home of the process
@@ -532,6 +566,57 @@ impl CellHost {
     ) -> Result<QuotaLeaseGrant, QuotaReconcileError> {
         let fence = self.fence;
         self.quota.reconcile(&fence, receipt)
+    }
+
+    /// Reports monotonic usage high-water against an explicit presented fence
+    /// (`LEASE-SPEND-001`, `W65`) — used to verify fail-closed stale-epoch
+    /// spend rejection after partition reconnection.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`QuotaLeaseLedgerError`] typed (including
+    /// [`nlos_cell::CellAdmitError::StaleEpoch`]).
+    pub fn report_quota_usage_against(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+        high_water: u64,
+    ) -> SliceKResult<QuotaLeaseGrant> {
+        Ok(self.quota.report_usage(presented, lease_id, high_water)?)
+    }
+
+    /// Sweeps `QuotaLease`s whose TTL deadline has expired at `now`, moving
+    /// them into `FENCED` (`LEASE-TTL-001`, `W65`).
+    pub fn sweep_expired_quota_leases(&mut self, now: LeaseInstant) -> Vec<QuotaLeaseId> {
+        self.quota.sweep_expired(now)
+    }
+
+    /// Committed [`QuotaReconciliationReceipt`] records for `lease_id` (`W65`).
+    #[must_use]
+    pub fn quota_reconciliation_receipts(
+        &self,
+        lease_id: QuotaLeaseId,
+    ) -> &[QuotaReconciliationReceipt] {
+        self.quota.reconciliation_receipts(lease_id)
+    }
+
+    /// Committed [`CapacityReconciliationReceipt`] for `capacity_lease_id`
+    /// (`W65`).
+    #[must_use]
+    pub fn capacity_reconciliation_receipt(
+        &self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Option<CapacityReconciliationReceipt> {
+        self.capacity.reconciliation_receipt(capacity_lease_id)
+    }
+
+    /// Committed [`DeviceReconciliationReceipt`] for `device_lease_id` (`W65`).
+    #[must_use]
+    pub fn device_reconciliation_receipt(
+        &self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Option<DeviceReconciliationReceipt> {
+        self.device.reconciliation_receipt(device_lease_id)
     }
 
     /// Remaining source pool of the capacity lease sub-ledger (W49).
@@ -873,10 +958,228 @@ impl CellHost {
             }
         };
         self.fence = new_fence;
+        if self.partition_gate.state().is_connected() {
+            let tick = self.partition_gate.last_observed_tick();
+            let _ = self
+                .partition_gate
+                .record_control_plane_contact(new_fence, tick);
+        }
         Ok(CellEpochAdvance {
             fence: new_fence,
             detector: detector_report,
             name_cache: name_cache_report,
+        })
+    }
+
+    /// Current [`ControlPlaneLinkState`] tracked by this host's
+    /// [`PartitionAutonomyGate`] (`[DIST-LOCAL-001]`, `W65`).
+    #[must_use]
+    pub const fn connectivity_state(&self) -> ControlPlaneLinkState {
+        self.partition_gate.state()
+    }
+
+    /// Read-only handle to this host's [`PartitionAutonomyGate`] (`W65`).
+    #[must_use]
+    pub const fn partition_autonomy_gate(&self) -> &PartitionAutonomyGate {
+        &self.partition_gate
+    }
+
+    /// Replica sync conflict/tombstone retention roots held by this host
+    /// (`[DIST-ART-001]`, `W65`).
+    #[must_use]
+    pub const fn artifact_sync_retention(&self) -> &ReplicaSyncRetentionSet {
+        &self.artifact_sync_retention
+    }
+
+    /// Mutable handle to this host's [`ReplicaSyncRetentionSet`] (`W65`).
+    pub const fn artifact_sync_retention_mut(&mut self) -> &mut ReplicaSyncRetentionSet {
+        &mut self.artifact_sync_retention
+    }
+
+    /// Transitions this host's control-plane link into
+    /// [`ControlPlaneLinkState::Partitioned`] at its current [`CellFence`]
+    /// (`[DIST-LOCAL-001]`, `W65`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PartitionViolation`] on tick regression or invalid state.
+    pub fn enter_control_plane_partition(
+        &mut self,
+        now_tick: u64,
+        reason_code: u16,
+    ) -> Result<ControlPlaneLinkState, PartitionViolation> {
+        let fence = self.fence;
+        self.partition_gate
+            .enter_partition(fence, now_tick, reason_code)
+    }
+
+    /// Transitions this host's control-plane link from `Partitioned` into
+    /// [`ControlPlaneLinkState::Reconnecting`] using the host's current
+    /// advanced [`CellFence`] (`[LEASE-LOSS-001]`, `W65`).
+    ///
+    /// Callers MUST invoke [`Self::advance_cell_epoch`] first so `self.fence`
+    /// has strictly advanced its `CellEpoch` and `CellFencingToken`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PartitionViolation`] if not partitioned, if `now_tick`
+    /// regresses, or if `self.fence` has not advanced past `frozen_fence`.
+    pub fn begin_control_plane_reconnection(
+        &mut self,
+        now_tick: u64,
+    ) -> Result<ControlPlaneLinkState, PartitionViolation> {
+        let candidate_fence = self.fence;
+        self.partition_gate
+            .begin_reconnection(candidate_fence, now_tick)
+    }
+
+    /// Completes reconnection convergence from `Reconnecting` back into
+    /// [`ControlPlaneLinkState::Connected`] at the host's current [`CellFence`]
+    /// (`W65`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PartitionViolation`] on invalid state or tick regression.
+    pub fn complete_control_plane_reconnection(
+        &mut self,
+        now_tick: u64,
+    ) -> Result<ControlPlaneLinkState, PartitionViolation> {
+        let verified_fence = self.fence;
+        self.partition_gate
+            .complete_reconnection(verified_fence, now_tick)
+    }
+
+    /// Evaluates [`PartitionAutonomyGate::admit_action`] against this host's
+    /// current [`CellFence`] (`[DIST-LOCAL-001]`, `W65`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PartitionViolation`] fail-closed.
+    pub fn admit_partitioned_action(
+        &self,
+        now_tick: u64,
+        action: &PartitionedActionKind,
+    ) -> Result<PartitionAutonomyReceipt, PartitionViolation> {
+        let fence = self.fence;
+        self.partition_gate.admit_action(now_tick, &fence, action)
+    }
+
+    /// Probe variant of [`Self::admit_partitioned_action`] accepting an
+    /// explicit presented [`CellFence`] (`W65`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PartitionViolation`] fail-closed.
+    pub fn admit_partitioned_action_against(
+        &self,
+        now_tick: u64,
+        presented: &CellFence,
+        action: &PartitionedActionKind,
+    ) -> Result<PartitionAutonomyReceipt, PartitionViolation> {
+        self.partition_gate
+            .admit_action(now_tick, presented, action)
+    }
+
+    /// Evaluates local autonomy admission for a local `QuotaLease` spend (or
+    /// `0`-spend pure compute) and, upon admission, commits the monotonic spend
+    /// delta into the local `QuotaLease` sub-ledger (`[DIST-LOCAL-001]`,
+    /// `[LEASE-SPEND-001]`, `W65`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed before any ledger mutation when the lease does not exist,
+    /// the capability/lease proof fails [`PartitionAutonomyGate`], or the
+    /// ledger rejects the usage update.
+    pub fn spend_quota_lease_with_local_autonomy(
+        &mut self,
+        now_tick: u64,
+        lease_id: QuotaLeaseId,
+        spend_delta: u64,
+        capability_valid_until_tick: u64,
+        capability_revoked: bool,
+        capability_locally_verified: bool,
+    ) -> Result<(PartitionAutonomyReceipt, QuotaLeaseGrant), CellPartitionSpendError> {
+        let existing = self.quota.query(lease_id)?;
+        let proof = LocalAutonomyProof::new(
+            capability_valid_until_tick,
+            capability_revoked,
+            capability_locally_verified,
+            existing.epoch(),
+            existing.expires_at().map(LeaseInstant::get),
+            existing.remaining(),
+            spend_delta,
+        );
+        let receipt = self.admit_partitioned_action(
+            now_tick,
+            &PartitionedActionKind::LocalPureComputeOrAuthorizedSpend(proof),
+        )?;
+        let fence = self.fence;
+        let active = if existing.state() == QuotaLeaseState::Issued {
+            self.quota.activate(&fence, lease_id)?
+        } else {
+            existing
+        };
+        let updated = if spend_delta == 0 {
+            active
+        } else {
+            let next_high_water = active.spent().checked_add(spend_delta).ok_or(
+                QuotaLeaseLedgerError::UsageExceedsFace {
+                    reported: u64::MAX,
+                    face_value: active.face_value(),
+                },
+            )?;
+            self.quota.report_usage(&fence, lease_id, next_high_water)?
+        };
+        Ok((receipt, updated))
+    }
+
+    /// Exports the public-key [`BootstrapPrincipalRequest`] describing this
+    /// host's dedicated [`crate::SemanticWriter`] principal so a peer Cell's
+    /// `IdentityAuthority` can cryptographically verify signed vector
+    /// checkpoints and cross-domain semantic events produced by this host
+    /// without ever exporting private key material (`[DIST-EVENT-001]`, `W65`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`SliceKError::Identity`] if the writer key binding cannot be
+    /// inspected.
+    pub fn semantic_writer_bootstrap_request(&self) -> SliceKResult<BootstrapPrincipalRequest> {
+        const WRITER_IDENTITY_DOMAIN: &[u8] = b"llmos/slice-k/semantic-writer/identity/v1";
+        let binding = self
+            .runtime
+            .identity
+            .inspect_current_binding(self.runtime.semantic_writer().key_id())?;
+        let public_key = binding.public_key;
+
+        let mut profile_hasher = Sha256::new();
+        profile_hasher.update(WRITER_IDENTITY_DOMAIN);
+        profile_hasher.update(b"profile");
+        profile_hasher.update(public_key);
+        let principal_profile_digest: [u8; 32] = profile_hasher.finalize().into();
+
+        let mut policy_hasher = Sha256::new();
+        policy_hasher.update(WRITER_IDENTITY_DOMAIN);
+        policy_hasher.update(b"policy");
+        policy_hasher.update(public_key);
+        let control_domain_policy_digest: [u8; 32] = policy_hasher.finalize().into();
+
+        let mut bootstrap_hasher = Sha256::new();
+        bootstrap_hasher.update(WRITER_IDENTITY_DOMAIN);
+        bootstrap_hasher.update(b"bootstrap");
+        bootstrap_hasher.update(public_key);
+        let bootstrap_digest: [u8; 32] = bootstrap_hasher.finalize().into();
+        let mut id_bytes = [0_u8; 16];
+        id_bytes.copy_from_slice(&bootstrap_digest[..16]);
+
+        Ok(BootstrapPrincipalRequest {
+            principal_profile_digest,
+            control_domain_policy_digest,
+            public_key,
+            key_purpose: KeyPurpose::SemanticSigning,
+            key_valid_from_ms: binding.key_valid_from_ms,
+            key_valid_until_ms: binding.key_valid_until_ms,
+            idempotency_key: IdempotencyKey::from_bytes(id_bytes),
+            created_at_ms: binding.key_valid_from_ms,
         })
     }
 
@@ -1320,3 +1623,37 @@ impl CellAssemblyInspect {
         ]
     }
 }
+
+/// Fail-closed error returned by
+/// [`CellHost::spend_quota_lease_with_local_autonomy`] (`[DIST-LOCAL-001]`,
+/// `[LEASE-SPEND-001]`, `W65`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellPartitionSpendError {
+    /// Local autonomy gate rejected the action before any ledger mutation.
+    Partition(PartitionViolation),
+    /// Quota lease sub-ledger rejected the query, activation, or usage report.
+    Ledger(QuotaLeaseLedgerError),
+}
+
+impl From<PartitionViolation> for CellPartitionSpendError {
+    fn from(error: PartitionViolation) -> Self {
+        Self::Partition(error)
+    }
+}
+
+impl From<QuotaLeaseLedgerError> for CellPartitionSpendError {
+    fn from(error: QuotaLeaseLedgerError) -> Self {
+        Self::Ledger(error)
+    }
+}
+
+impl std::fmt::Display for CellPartitionSpendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Partition(error) => write!(formatter, "partition autonomy gate refused: {error}"),
+            Self::Ledger(error) => write!(formatter, "QuotaLease ledger refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CellPartitionSpendError {}

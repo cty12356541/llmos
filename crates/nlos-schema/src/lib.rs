@@ -25,6 +25,9 @@ pub const SABI_WAIT_CONTROL_SCHEMA: &str = "nlos.sabi.WaitControl";
 /// ADR-0011 connection-level principal handshake channel; the seventh
 /// registry entry, added additively under the ADR-0014 v1-beta freeze.
 pub const SABI_PRINCIPAL_HANDSHAKE_SCHEMA: &str = "nlos.sabi.PrincipalHandshake";
+/// ADR-0024 driver provider channel; the eighth canonical registry entry,
+/// promoted to frozen status under ADR-0014 (`#9 C-PROVIDER-REAL`).
+pub const SABI_DRIVER_PROVIDER_SCHEMA: &str = "nlos.sabi.DriverProvider";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -32,6 +35,8 @@ pub const MAX_SYSTEM_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_WAIT_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES: usize = 4 * 1024;
+pub const MAX_DRIVER_PROVIDER_PAYLOAD_BYTES: usize = 16 * 1024;
+pub const MAX_PROVIDER_PROFILE_BYTES: usize = 128;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
@@ -139,6 +144,14 @@ const SABI_PRINCIPAL_HANDSHAKE_V1: SchemaDescriptor = SchemaDescriptor {
     frozen: false,
 };
 
+const SABI_DRIVER_PROVIDER_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_DRIVER_PROVIDER_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+    frozen: true,
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
@@ -147,6 +160,7 @@ const REGISTRY: &[SchemaDescriptor] = &[
     SABI_TAKEOVER_CONTROL_V1,
     SABI_WAIT_CONTROL_V1,
     SABI_PRINCIPAL_HANDSHAKE_V1,
+    SABI_DRIVER_PROVIDER_V1,
 ];
 
 #[must_use]
@@ -232,6 +246,11 @@ pub enum CompatibilityError {
     InvalidHandshakeChannelBindingLength {
         actual: usize,
     },
+    MissingDriverProviderBody,
+    InvalidDriverProviderIdentifier,
+    InvalidDriverProviderGeneration,
+    UnspecifiedDriverProviderOutcome,
+    UnsafeProviderProfile,
 }
 
 // A flat Display match grows linearly with the variant count; splitting it
@@ -370,6 +389,20 @@ impl fmt::Display for CompatibilityError {
                 formatter,
                 "handshake channel binding has {actual} bytes; 1..={MAX_HANDSHAKE_CHANNEL_BINDING_BYTES} are required"
             ),
+            Self::MissingDriverProviderBody => {
+                formatter.write_str("DriverProvider payload is missing its body or attestation")
+            }
+            Self::InvalidDriverProviderIdentifier => formatter.write_str(
+                "DriverProvider payload contains an invalid fixed-width identifier or digest",
+            ),
+            Self::InvalidDriverProviderGeneration => {
+                formatter.write_str("DriverProvider payload contains a zero generation")
+            }
+            Self::UnspecifiedDriverProviderOutcome => formatter.write_str(
+                "DriverProvider payload uses an unspecified or invalid outcome or lifecycle state",
+            ),
+            Self::UnsafeProviderProfile => formatter
+                .write_str("DriverProvider profile name is empty, oversized, or contains NUL"),
         }
     }
 }
@@ -1710,6 +1743,261 @@ fn validate_principal_handshake_attestation_fields(
         return Err(CompatibilityError::InvalidHandshakeChannelBindingLength {
             actual: attestation.channel_binding.len(),
         });
+    }
+    Ok(())
+}
+
+/// Returns the v1 identity required on every `DriverProvider` payload.
+#[must_use]
+pub fn driver_provider_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Validates and encodes a bounded `DriverProvider` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid schema identity, missing
+/// request arm, malformed fixed-width identifier/seed, zero generation, or
+/// oversized payload.
+pub fn encode_driver_provider_request(
+    request: &sabi::v1::DriverProviderRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_driver_provider_request(request)?;
+    encode_bounded_with_limit(request, MAX_DRIVER_PROVIDER_PAYLOAD_BYTES)
+}
+
+/// Decodes and validates a bounded `DriverProvider` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, oversized, incompatible, or
+/// invariant-violating input.
+pub fn decode_driver_provider_request(
+    wire: &[u8],
+) -> Result<sabi::v1::DriverProviderRequest, CompatibilityError> {
+    let request: sabi::v1::DriverProviderRequest =
+        decode_bounded_with_limit(wire, MAX_DRIVER_PROVIDER_PAYLOAD_BYTES)?;
+    validate_driver_provider_request(&request)?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `DriverProvider` response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid schema identity, missing
+/// response arm or isolation attestation, malformed fixed-width identifier or
+/// digest, zero generation, unspecified outcome/state, unsafe profile string,
+/// or oversized payload.
+pub fn encode_driver_provider_response(
+    response: &sabi::v1::DriverProviderResponse,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_driver_provider_response(response)?;
+    encode_bounded_with_limit(response, MAX_DRIVER_PROVIDER_PAYLOAD_BYTES)
+}
+
+/// Decodes and validates a bounded `DriverProvider` response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, oversized, incompatible, or
+/// invariant-violating input.
+pub fn decode_driver_provider_response(
+    wire: &[u8],
+) -> Result<sabi::v1::DriverProviderResponse, CompatibilityError> {
+    let response: sabi::v1::DriverProviderResponse =
+        decode_bounded_with_limit(wire, MAX_DRIVER_PROVIDER_PAYLOAD_BYTES)?;
+    validate_driver_provider_response(&response)?;
+    Ok(response)
+}
+
+fn validate_driver_provider_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_DRIVER_PROVIDER_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_driver_provider_request(
+    request: &sabi::v1::DriverProviderRequest,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::driver_provider_request::Request;
+
+    validate_driver_provider_identity(request.schema.as_ref())?;
+    let arm = request
+        .request
+        .as_ref()
+        .ok_or(CompatibilityError::MissingDriverProviderBody)?;
+    match arm {
+        Request::Register(register) => {
+            if register.operation_id.len() != REQUEST_ID_BYTES
+                || register.owner_fiber_id.len() != REQUEST_ID_BYTES
+                || register.cancellation_scope_id.len() != REQUEST_ID_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if register.operation_generation == 0
+                || register.owner_fiber_generation == 0
+                || register.cancellation_generation == 0
+            {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Request::Dispatch(dispatch) => {
+            if dispatch.operation_id.len() != REQUEST_ID_BYTES
+                || dispatch.callback_id.len() != REQUEST_ID_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if dispatch.operation_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Request::Complete(complete) => {
+            if complete.operation_id.len() != REQUEST_ID_BYTES
+                || complete.callback_id.len() != REQUEST_ID_BYTES
+                || complete.seed.len() != SHA256_DIGEST_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if complete.operation_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Request::Cancel(cancel) => {
+            if cancel.operation_id.len() != REQUEST_ID_BYTES
+                || cancel.no_effect_receipt_id.len() != REQUEST_ID_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if cancel.operation_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Request::QueryIsolation(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_driver_provider_response(
+    response: &sabi::v1::DriverProviderResponse,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::driver_provider_response::Response;
+    use sabi::v1::{DriverProviderTerminalOutcome, OperationLifecycleState};
+
+    validate_driver_provider_identity(response.schema.as_ref())?;
+    let arm = response
+        .response
+        .as_ref()
+        .ok_or(CompatibilityError::MissingDriverProviderBody)?;
+    match arm {
+        Response::RegisterAck(ack) => {
+            if ack.operation_id.len() != REQUEST_ID_BYTES
+                || ack.admission_receipt_id.len() != REQUEST_ID_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if ack.operation_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Response::DispatchAck(ack) => {
+            if ack.preparation_receipt_id.len() != REQUEST_ID_BYTES
+                || ack.activation_receipt_id.len() != REQUEST_ID_BYTES
+                || ack.callback_id.len() != REQUEST_ID_BYTES
+                || ack.operation_id.len() != REQUEST_ID_BYTES
+                || ack.owner_fiber_id.len() != REQUEST_ID_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if ack.operation_generation == 0 || ack.owner_fiber_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+        }
+        Response::CompleteAck(ack) => {
+            let outcome = DriverProviderTerminalOutcome::try_from(ack.outcome)
+                .map_err(|_| CompatibilityError::UnspecifiedDriverProviderOutcome)?;
+            if outcome == DriverProviderTerminalOutcome::Unspecified {
+                return Err(CompatibilityError::UnspecifiedDriverProviderOutcome);
+            }
+            let state = OperationLifecycleState::try_from(ack.state)
+                .map_err(|_| CompatibilityError::UnspecifiedDriverProviderOutcome)?;
+            if !is_terminal_lifecycle_state(state) {
+                return Err(CompatibilityError::UnspecifiedDriverProviderOutcome);
+            }
+            if ack.receipt_id.len() != REQUEST_ID_BYTES
+                || ack.compute_digest.len() != SHA256_DIGEST_BYTES
+            {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            validate_provider_isolation_attestation(ack.isolation.as_ref())?;
+        }
+        Response::CancelAck(ack) => {
+            if ack.operation_id.len() != REQUEST_ID_BYTES {
+                return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+            }
+            if ack.operation_generation == 0 {
+                return Err(CompatibilityError::InvalidDriverProviderGeneration);
+            }
+            let state = OperationLifecycleState::try_from(ack.state)
+                .map_err(|_| CompatibilityError::UnspecifiedDriverProviderOutcome)?;
+            match state {
+                OperationLifecycleState::CancelRequested => {
+                    if !ack.terminal_receipt_id.is_empty() {
+                        return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+                    }
+                }
+                other if is_terminal_lifecycle_state(other) => {
+                    if ack.terminal_receipt_id.len() != REQUEST_ID_BYTES {
+                        return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+                    }
+                }
+                _ => return Err(CompatibilityError::UnspecifiedDriverProviderOutcome),
+            }
+        }
+        Response::IsolationReport(report) => {
+            validate_provider_isolation_attestation(report.isolation.as_ref())?;
+        }
+    }
+    Ok(())
+}
+
+const fn is_terminal_lifecycle_state(state: sabi::v1::OperationLifecycleState) -> bool {
+    use sabi::v1::OperationLifecycleState;
+
+    matches!(
+        state,
+        OperationLifecycleState::Completed
+            | OperationLifecycleState::Failed
+            | OperationLifecycleState::CancelledBeforeEffect
+            | OperationLifecycleState::PartialEffect
+            | OperationLifecycleState::EffectUnknown
+    )
+}
+
+fn validate_provider_isolation_attestation(
+    isolation: Option<&sabi::v1::ProviderIsolationAttestationWire>,
+) -> Result<(), CompatibilityError> {
+    let isolation = isolation.ok_or(CompatibilityError::MissingDriverProviderBody)?;
+    if isolation.attestation_digest.len() != SHA256_DIGEST_BYTES {
+        return Err(CompatibilityError::InvalidDriverProviderIdentifier);
+    }
+    if isolation.provider_profile.is_empty()
+        || isolation.provider_profile.len() > MAX_PROVIDER_PROFILE_BYTES
+        || isolation.provider_profile.contains('\0')
+    {
+        return Err(CompatibilityError::UnsafeProviderProfile);
     }
     Ok(())
 }

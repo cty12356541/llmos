@@ -195,6 +195,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - lease grantor 共享 `CellAuthority` 所有权（capacity/device 进 CellHost 装配）：[ADR-0021](./adrs/0021-lease-grantor-shared-cell-authority.md)
 - capability 签发闭环 operator 密钥文件路径：[ADR-0022](./adrs/0022-operator-root-capability-issuance.md)
 - 语义写入端 driver 回调桥（解除 D6 后置）：[ADR-0023](./adrs/0023-semantic-write-side-driver-bridge.md)
+- DriverProvider 载荷编解码通道冻结（第 8 个 SABI 通道 `nlos.sabi.DriverProvider` v1.0，闭合 `RISK-B-05 review_point` 与 `U-10`）：[ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md)
 - C-SHARD 工作包计划：[c-shard-plan.md](./c-shard-plan.md)（2026-10-08 附条件采纳；Phase 0 证据车道族 `C-SHARD-001..004` 与 Phase 1 本体迁移车道族 `CS1-A..E` `C-SHARD-005..006` 已于 2026-10-24 `W62/W63` 全部完成；效力域限定 ADR-0018 单机双进程拓扑，跨机与远端物理 cleanup 残域按 `RISK-B-11` 保留）
 - Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 

@@ -1,17 +1,21 @@
-//! `sample-app-driver` — W33-B 第三方样板应用的生命周期驱动（B1-5）。
+//! `sample-app-driver` — W33-B / W65-CAPP-PAYLOAD 第三方样板应用的生命周期驱动（B1-5 / 移交 #2）。
 //!
 //! 消费端演示：一个不触任何内核内部 API 的第三方程序，如何只骑公共面
-//! 完成 install → run → update → uninstall——
+//! 完成 install → run（含载荷执行车道） → update → payload → uninstall——
 //!
 //! - **install**：`nlos-package verify`（W33-A CLI）把包物化进真实
 //!   `ArtifactStore` 并产出 verified receipt；本驱动只拿 receipt id 走
 //!   `nlos-slice-k` 装配的 `install_verified_package_by_id`（内里是
 //!   `ApplicationAuthority::install_application` 的 verify-then-commit 门）。
-//! - **run**：`Task`/`Attempt`（durable 行携带 application 关联）→ delegated
-//!   `Process` → `CommitPermit` → tokio fiber 的 durable driver Operation
-//!   （register→dispatch→complete）+ 应用自有 artifact 的
-//!   stage → plan → converge（TaskCommitReceipt）→ background task /
+//! - **run**：先经 `nlos_slice_k::execute_application_payload` 在内核载荷执行车道上
+//!   真实执行当前代际 manifest 声明的 `sample-driver`（`app.bin`）可执行入口并落持久
+//!   driver 回执与桥接语义断言；再走 `Task`/`Attempt`（durable 行携带 application
+//!   关联）→ delegated `Process` → `CommitPermit` → tokio fiber 的 durable driver
+//!   `Operation`（register→dispatch→complete）+ 应用自有 artifact 的
+//!   stage → plan → converge（`TaskCommitReceipt`）→ background task /
 //!   process binding 注册（W27-D 门与 W30-D 链的消费面）。
+//! - **payload**：独立触发或重放 `execute_application_payload`（可用于同代际幂等重放
+//!   与 `update` 切换至代际 2 后验证新 `app.bin` 载荷字节的执行回执）。
 //! - **update**：同 major 新 revision 的 verified receipt 经 W29-E 迁移
 //!   runner：begin → 步骤记录 → 健康检查（probe 恰一次）→ 单事务原子切换。
 //! - **uninstall**：先见证 W27-D 真实活动门的 typed 拒绝，再走 W30-D
@@ -23,6 +27,7 @@
 //! ```text
 //! sample-app-driver install   <root> <receipt-id-HEX32>
 //! sample-app-driver run       <root> <package-id-HEX32>
+//! sample-app-driver payload   <root> <package-id-HEX32> [entry]
 //! sample-app-driver update    <root> <package-id-HEX32> <receipt-id-HEX32>
 //! sample-app-driver uninstall <root> <package-id-HEX32> [os-pid]
 //! ```
@@ -32,7 +37,7 @@
 //! 驱动自有的幂等/时钟键走 `llmos/sample-app/driver-key/v1` 域分隔派生，
 //! 与任何 seed 带无碰撞面。
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -48,8 +53,8 @@ use nlos_process::{PlatformKillDecision, RegisterSupervisorPidRequest, Superviso
 use nlos_runtime::{FiberSpec, RuntimeAdapter as _};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
-    SliceKError, SliceKRuntime, WriteFiberJob, run_application_teardown, short_hex,
-    spawn_write_fiber,
+    PayloadExecution, SliceKError, SliceKRuntime, WriteFiberJob, execute_application_payload,
+    run_application_teardown, short_hex, spawn_write_fiber,
 };
 use nlos_task::{
     ArtifactPublicationExpectation, Authorities, PermitDecision, PermitRequest,
@@ -62,8 +67,12 @@ use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: sample-app-driver install <root> <receipt-id-HEX32> \
  | run <root> <package-id-HEX32> \
+ | payload <root> <package-id-HEX32> [entry] \
  | update <root> <package-id-HEX32> <receipt-id-HEX32> \
  | uninstall <root> <package-id-HEX32> [os-pid]";
+
+/// manifest 声明的可执行载荷入口名（`entry = sample-driver executable app.bin`）。
+const EXECUTABLE_ENTRY: &str = "sample-driver";
 
 /// install 阶段 seed 带（slice-k 助手内部键 15/16/21/22 → 0x6A/0x6B/0x70/0x71）。
 const SEED_INSTALL: u8 = 0x5B;
@@ -85,6 +94,7 @@ const DRIVER_KEY_DOMAIN: &[u8] = b"llmos/sample-app/driver-key/v1";
 const OUTPUT_ARTIFACT_DOMAIN: &[u8] = b"llmos/sample-app/output-artifact/v1";
 
 /// Typed 驱动失败：`1` 用法，`2` 权威拒绝或执行失败（main 按此映射）。
+#[derive(Debug)]
 enum DriverError {
     Usage,
     Failed(String),
@@ -164,11 +174,94 @@ fn parse_hex16(text: &str, what: &str) -> DriverResult<[u8; 16]> {
     Ok(out)
 }
 
+fn full_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
     println!(
         "[sample-app] RECEIPT kind={kind} id={} {detail}",
         short_hex(id)
     );
+}
+
+fn verify_and_print_payload_execution(
+    runtime: &SliceKRuntime,
+    expected_application: ApplicationId,
+    expected_generation: Generation,
+    expected_entry: &str,
+    execution: &PayloadExecution,
+) -> DriverResult<()> {
+    if execution.application_id != expected_application {
+        return Err(DriverError::Failed(
+            "payload execution returned mismatched application id".to_string(),
+        ));
+    }
+    if execution.installation_generation != expected_generation {
+        return Err(DriverError::Failed(format!(
+            "payload execution generation {} did not match installed generation {}",
+            execution.installation_generation.get(),
+            expected_generation.get()
+        )));
+    }
+    if execution.entry_name != expected_entry {
+        return Err(DriverError::Failed(format!(
+            "payload execution entry {:?} did not match requested {:?}",
+            execution.entry_name, expected_entry
+        )));
+    }
+    if execution.payload_size_bytes == 0 {
+        return Err(DriverError::Failed(
+            "executable payload entry bytes must be non-empty".to_string(),
+        ));
+    }
+    let snapshot = runtime
+        .operations
+        .inspect(execution.operation)
+        .map_err(|error| DriverError::Failed(format!("inspect payload operation: {error}")))?;
+    if !snapshot.state.is_terminal() || snapshot.state != execution.terminal_state {
+        return Err(DriverError::Failed(
+            "payload operation must commit a durable terminal state".to_string(),
+        ));
+    }
+    let decision = if execution.register_replayed
+        && execution.dispatch_replayed
+        && execution.complete_replayed
+    {
+        "replayed"
+    } else {
+        "executed"
+    };
+    let op_hex = full_hex(execution.operation.operation_id.as_bytes());
+    let digest_hex = full_hex(execution.payload_digest.as_bytes());
+    let semantic_hex = full_hex(execution.semantic_event_id.as_bytes());
+    println!(
+        "[sample-app] PAYLOAD entry={} payload_operation_id={op_hex} payload_generation={} \
+         payload_digest={digest_hex} payload_bytes={} decision={decision} \
+         semantic_event={semantic_hex} semantic_log_seq={}",
+        execution.entry_name,
+        execution.installation_generation.get(),
+        execution.payload_size_bytes,
+        execution.semantic_log_seq,
+    );
+    receipt_line(
+        "payload-execution",
+        execution.operation.operation_id.as_bytes(),
+        &format!(
+            "entry={} payload_operation_id={op_hex} payload_generation={} \
+             payload_digest={digest_hex} admission={} preparation={} activation={}",
+            execution.entry_name,
+            execution.installation_generation.get(),
+            short_hex(execution.admission_receipt_id.as_bytes()),
+            short_hex(execution.preparation_receipt_id.as_bytes()),
+            short_hex(execution.activation_receipt_id.as_bytes()),
+        ),
+    );
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -177,7 +270,11 @@ async fn main() -> ExitCode {
     let rest: &[String] = arguments.get(1..).unwrap_or(&[]);
     let result = match (arguments.first().map(String::as_str), rest) {
         (Some("install"), [root, receipt]) => cmd_install(root, receipt),
-        (Some("run"), [root, package]) => cmd_run(root, package).await,
+        (Some("run"), [root, package]) => cmd_run(root, package).await.map(|_| ()),
+        (Some("payload"), [root, package]) => {
+            cmd_payload(root, package, EXECUTABLE_ENTRY).map(|_| ())
+        }
+        (Some("payload"), [root, package, entry]) => cmd_payload(root, package, entry).map(|_| ()),
         (Some("update"), [root, package, receipt]) => cmd_update(root, package, receipt),
         (Some("uninstall"), [root, package]) => cmd_uninstall(root, package, None),
         (Some("uninstall"), [root, package, pid]) => match pid.parse::<u32>() {
@@ -228,12 +325,48 @@ fn cmd_install(root: &str, receipt_hex: &str) -> DriverResult<()> {
     Ok(())
 }
 
-/// run：Task/Attempt/Process → permit → fiber driver operation → 应用自有
+/// payload：在当前代际上独立执行（或幂等重放）具名 executable 载荷入口并校验持久回执。
+fn cmd_payload(root: &str, package_hex: &str, entry_name: &str) -> DriverResult<PayloadExecution> {
+    if entry_name.is_empty() || entry_name.contains('\0') {
+        return Err(DriverError::Failed(
+            "entry name must be non-empty and NUL-free".to_string(),
+        ));
+    }
+    let package_id = PackageId::from_bytes(parse_hex16(package_hex, "package id")?);
+    let runtime = SliceKRuntime::open(root)?;
+    let application = runtime
+        .applications
+        .inspect_application(package_id)?
+        .ok_or_else(|| {
+            DriverError::Failed(format!(
+                "no application installed for package {package_hex}"
+            ))
+        })?;
+    if application.status != ApplicationStatus::Installed {
+        return Err(DriverError::Failed(format!(
+            "application {} is not installed (status={})",
+            short_hex(application.application_id.as_bytes()),
+            status_name(application.status)
+        )));
+    }
+    let execution = execute_application_payload(&runtime, package_id, entry_name)?;
+    verify_and_print_payload_execution(
+        &runtime,
+        application.application_id,
+        application.current_installation_generation,
+        entry_name,
+        &execution,
+    )?;
+    Ok(execution)
+}
+
+/// run：先走 `execute_application_payload` 执行 `sample-driver`（`app.bin`）可执行入口，
+/// 再走 `Task`/`Attempt`/`Process` → permit → fiber driver operation → 应用自有
 /// artifact 的 stage/plan/converge → background task + process binding 注册。
-/// Unix 下同时以真实 OS 子进程充当 manifest 声明的 background-service
+/// Unix 下同时以真实 OS 子进程充当 manifest 声明的 `background-service`
 /// 载荷的 Os 侧替身（teardown 演练会经真实 POSIX kill 链杀死它）。
 #[allow(clippy::too_many_lines)]
-async fn cmd_run(root: &str, package_hex: &str) -> DriverResult<()> {
+async fn cmd_run(root: &str, package_hex: &str) -> DriverResult<u32> {
     let package_id = PackageId::from_bytes(parse_hex16(package_hex, "package id")?);
     let runtime = Arc::new(SliceKRuntime::open(root)?);
     let adapter = TokioRuntimeAdapter::new(
@@ -270,6 +403,17 @@ async fn cmd_run(root: &str, package_hex: &str) -> DriverResult<()> {
         application.current_installation_generation.get(),
         status_name(application.status)
     );
+
+    // 0) 内核载荷执行车道：读取当前安装代际的 `sample-driver`（`app.bin`）物化字节，
+    //    经 provider 面完成 register→dispatch→complete 并写入语义断言账本。
+    let payload_execution = execute_application_payload(&runtime, package_id, EXECUTABLE_ENTRY)?;
+    verify_and_print_payload_execution(
+        &runtime,
+        application_id,
+        application.current_installation_generation,
+        EXECUTABLE_ENTRY,
+        &payload_execution,
+    )?;
 
     // 1) Task/Attempt：durable 任务行携带 application 关联（W30-A 面）。
     let (task_id, attempt_id, scope_id) =
@@ -473,7 +617,7 @@ async fn cmd_run(root: &str, package_hex: &str) -> DriverResult<()> {
         "[sample-app] RUN done application={}",
         short_hex(application_id.as_bytes())
     );
-    Ok(())
+    Ok(service_os_pid)
 }
 
 /// 健康检查 probe：真实部署里这里做 config-shape 校验/烟雾启动；样板
@@ -603,7 +747,7 @@ fn cmd_update(root: &str, package_hex: &str, receipt_hex: &str) -> DriverResult<
 /// `SupervisorPidRegistry` 是纯内存注册表、无跨进程查询面——因此：
 ///
 /// - 显式给了 pid：Unix 下拒绝等于驱动自身 pid 的入参（stand-in 是
-///   run 阶段 spawn 的独立子进程；向自身发 SIGTERM 即自杀）。非 Unix
+///   run 阶段 spawn 的独立子进程；向自身发 `SIGTERM` 即自杀）。非 Unix
 ///   的 noop kill 链从不真发信号，run 契约道输出的自身 pid 保持可回传。
 /// - 未给 pid 且存在 process binding：typed 拒绝（exit 2），指引用户
 ///   显式传 pid，绝不回退自身 pid。
@@ -749,5 +893,252 @@ fn status_name(status: ApplicationStatus) -> &'static str {
         ApplicationStatus::Installed => "installed",
         ApplicationStatus::Disabled => "disabled",
         ApplicationStatus::Uninstalled => "uninstalled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use nlos_artifact::ContentDigest;
+
+    use super::{
+        EXECUTABLE_ENTRY, cmd_install, cmd_payload, cmd_run, cmd_uninstall, cmd_update, driver_key,
+        full_hex, parse_hex16, resolve_stand_in_pid,
+    };
+
+    const PACKAGE_HEX: &str = "9a1c7d3e5f0b2a4c6d8e0f1a2b3c4d5e";
+    const TEST_KEY_SEED: &str = "5a11e0b7c3d9f1426a8b0c5d7e93f618a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d1";
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    struct TempRoot {
+        path: PathBuf,
+    }
+
+    impl TempRoot {
+        fn new(label: &str) -> Self {
+            let seq = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sample-app-driver-test-{label}-{}-{seq}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create temp root");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            for attempt in 0..5 {
+                match fs::remove_dir_all(&self.path) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound && attempt < 4 => {
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Ok(()) | Err(_) => return,
+                }
+            }
+        }
+    }
+
+    fn nlos_package_bin() -> PathBuf {
+        if let Some(overridden) = std::env::var_os("NLOS_PACKAGE_BIN") {
+            return PathBuf::from(overridden);
+        }
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("canonicalize repo root");
+        let bin_name = format!("nlos-package{}", std::env::consts::EXE_SUFFIX);
+        let debug_bin = repo_root.join("target").join("debug").join(bin_name);
+        if !debug_bin.is_file() {
+            let status = Command::new("cargo")
+                .args([
+                    "build",
+                    "--locked",
+                    "--manifest-path",
+                    &repo_root.join("Cargo.toml").to_string_lossy(),
+                    "-p",
+                    "nlos-package",
+                ])
+                .status()
+                .expect("build nlos-package binary for sample-app test");
+            assert!(status.success(), "cargo build -p nlos-package failed");
+        }
+        debug_bin
+    }
+
+    fn run_nlos_package(bin: &Path, args: &[&str]) -> String {
+        let output = Command::new(bin)
+            .args(args)
+            .output()
+            .expect("invoke nlos-package");
+        assert!(
+            output.status.success(),
+            "nlos-package {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("utf-8 stdout")
+    }
+
+    fn build_and_verify_sample_tree(
+        bin: &Path,
+        state_root: &Path,
+        work_dir: &Path,
+        key_path: &Path,
+        tree: &Path,
+        pkg_name: &str,
+    ) -> (String, Vec<u8>) {
+        let app_bytes = fs::read(tree.join("app.bin")).expect("read app.bin");
+        let pkg_out = work_dir.join(pkg_name);
+        run_nlos_package(
+            bin,
+            &[
+                "build",
+                &tree.to_string_lossy(),
+                "--key",
+                &key_path.to_string_lossy(),
+                "--out",
+                &pkg_out.to_string_lossy(),
+            ],
+        );
+        let verify_stdout = run_nlos_package(
+            bin,
+            &[
+                "verify",
+                &pkg_out.to_string_lossy(),
+                "--store",
+                &state_root.join("artifacts").to_string_lossy(),
+                "--identity",
+                &state_root.join("identity").to_string_lossy(),
+            ],
+        );
+        let receipt_hex = verify_stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("VERIFIED"))
+            .expect("VERIFIED line in nlos-package verify output")
+            .trim()
+            .to_string();
+        assert_eq!(receipt_hex.len(), 32);
+        (receipt_hex, app_bytes)
+    }
+
+    #[test]
+    fn hex_and_driver_key_derivations_stay_deterministic_and_domain_separated() {
+        let parsed = parse_hex16(PACKAGE_HEX, "package id").expect("valid hex32");
+        assert_eq!(full_hex(&parsed), PACKAGE_HEX);
+        assert!(parse_hex16("abcd", "short").is_err());
+        assert!(parse_hex16(&"zz".repeat(16), "non-hex").is_err());
+
+        assert_eq!(driver_key(b"run", 1), driver_key(b"run", 1));
+        assert_ne!(driver_key(b"run", 1), driver_key(b"run", 2));
+        assert_ne!(driver_key(b"run", 1), driver_key(b"update", 1));
+    }
+
+    #[test]
+    fn stand_in_pid_resolution_enforces_explicit_pid_contract() {
+        assert_eq!(
+            resolve_stand_in_pid(None, 0).expect("no bindings needs no pid"),
+            None
+        );
+        assert!(resolve_stand_in_pid(None, 1).is_err());
+        #[cfg(not(unix))]
+        assert_eq!(
+            resolve_stand_in_pid(Some(std::process::id()), 1).expect("noop contract accepts self"),
+            Some(std::process::id())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn driver_lifecycle_executes_real_sample_app_payload_across_generations() {
+        let temp = TempRoot::new("lifecycle");
+        let state_root = temp.path().join("state");
+        let work_dir = temp.path().join("work");
+        fs::create_dir_all(&state_root).expect("create state root");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+
+        let root_str = state_root.to_string_lossy().into_owned();
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let bin = nlos_package_bin();
+        let key_path = work_dir.join("sample-app.devkey");
+        run_nlos_package(
+            &bin,
+            &[
+                "keygen",
+                "--seed",
+                TEST_KEY_SEED,
+                "--out",
+                &key_path.to_string_lossy(),
+            ],
+        );
+
+        let (receipt_v1, v1_app_bytes) = build_and_verify_sample_tree(
+            &bin,
+            &state_root,
+            &work_dir,
+            &key_path,
+            &manifest_dir.join("package"),
+            "sample-app-v1.0.0.nlospkg",
+        );
+        let (receipt_v2, v2_app_bytes) = build_and_verify_sample_tree(
+            &bin,
+            &state_root,
+            &work_dir,
+            &key_path,
+            &manifest_dir.join("package-v1.1.0"),
+            "sample-app-v1.1.0.nlospkg",
+        );
+        assert_ne!(receipt_v1, receipt_v2);
+        assert_ne!(v1_app_bytes, v2_app_bytes);
+
+        cmd_install(&root_str, &receipt_v1).expect("driver install v1.0.0");
+        let service_pid = cmd_run(&root_str, PACKAGE_HEX)
+            .await
+            .expect("driver run executes sample-driver payload + fiber commit");
+
+        // Re-running payload on generation 1 replays the exact receipt committed during `cmd_run`.
+        let replay_gen1 =
+            cmd_payload(&root_str, PACKAGE_HEX, EXECUTABLE_ENTRY).expect("payload replay gen1");
+        assert_eq!(replay_gen1.installation_generation.get(), 1);
+        assert_eq!(
+            replay_gen1.payload_digest,
+            ContentDigest::of_bytes(&v1_app_bytes)
+        );
+        assert!(replay_gen1.register_replayed);
+        assert!(replay_gen1.dispatch_replayed);
+        assert!(replay_gen1.complete_replayed);
+        assert!(replay_gen1.semantic_replayed);
+
+        // Undeclared / raw file-path entry names fail closed.
+        assert!(cmd_payload(&root_str, PACKAGE_HEX, "assets/config.bin").is_err());
+
+        // Advance to v1.1.0 (generation 2) through the W29-E staged migration runner.
+        cmd_update(&root_str, PACKAGE_HEX, &receipt_v2).expect("driver update v1.1.0");
+
+        // Generation 2 executes the updated `package-v1.1.0/app.bin` bytes under a fresh operation.
+        let exec_gen2 =
+            cmd_payload(&root_str, PACKAGE_HEX, EXECUTABLE_ENTRY).expect("payload exec gen2");
+        assert_eq!(exec_gen2.installation_generation.get(), 2);
+        assert_eq!(
+            exec_gen2.payload_digest,
+            ContentDigest::of_bytes(&v2_app_bytes)
+        );
+        assert_ne!(exec_gen2.operation, replay_gen1.operation);
+        assert!(!exec_gen2.register_replayed);
+        assert!(!exec_gen2.complete_replayed);
+
+        // Teardown + gated uninstall, then verify both `run` and `payload` fail closed.
+        cmd_uninstall(&root_str, PACKAGE_HEX, Some(service_pid)).expect("driver uninstall");
+        assert!(cmd_run(&root_str, PACKAGE_HEX).await.is_err());
+        assert!(cmd_payload(&root_str, PACKAGE_HEX, EXECUTABLE_ENTRY).is_err());
     }
 }

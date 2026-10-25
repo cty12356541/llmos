@@ -5,12 +5,17 @@ use nlos_schema::sabi::v1::{
     BarrierObservationSignature, BarrierObservationTarget, CallerIdentity, CancelCommand,
     CancelOperationRequest, CapabilityHandle, ContextResidencyTier, ControlCommand,
     ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource, ControlScope,
-    DisableApplicationCommand, DurableOperationSnapshot, DurableOperationState,
-    DurableOperationStatus, Envelope, ExchangeRequest, ExchangeResponse,
-    ExecutionFiberLifecycleState, ExecutionFiberOperationsSnapshot, ExecutionFiberPhase,
-    ExecutionFiberStatus, GetSystemControlRequest, KillCommand, NegotiateServiceResponse,
-    OperationLifecycleState, OperationReference, OperationStatus, PauseCommand, PlanNodeKind,
-    PlanNodeLifecycleState, PrincipalHandshakeAttestation, PrincipalHandshakeChallenge,
+    DisableApplicationCommand, DriverProviderCancelAck, DriverProviderCancelRequest,
+    DriverProviderCompleteAck, DriverProviderCompleteRequest, DriverProviderDispatchAck,
+    DriverProviderDispatchRequest, DriverProviderIsolationReport,
+    DriverProviderQueryIsolationRequest, DriverProviderRegisterAck, DriverProviderRegisterRequest,
+    DriverProviderRequest, DriverProviderResponse, DriverProviderTerminalOutcome,
+    DurableOperationSnapshot, DurableOperationState, DurableOperationStatus, Envelope,
+    ExchangeRequest, ExchangeResponse, ExecutionFiberLifecycleState,
+    ExecutionFiberOperationsSnapshot, ExecutionFiberPhase, ExecutionFiberStatus,
+    GetSystemControlRequest, KillCommand, NegotiateServiceResponse, OperationLifecycleState,
+    OperationReference, OperationStatus, PauseCommand, PlanNodeKind, PlanNodeLifecycleState,
+    PrincipalHandshakeAttestation, PrincipalHandshakeChallenge, ProviderIsolationAttestationWire,
     QueryOperationRequest, ReceiptReference, ReclaimCommand, RecoveryFailureAuthority,
     RecoveryFailureSummary, RecoveryWorkerLifecycleState, RegisterWaitRequest,
     ResolveServiceRequest, ResolveServiceResponse, ResourceRecoveryAlertStatus,
@@ -22,19 +27,21 @@ use nlos_schema::sabi::v1::{
     TaskExecutionBinding, TaskGroupLifecycleState, TaskGroupMemberStatus, TaskGroupMemberType,
     TaskGroupMembershipState, TaskGroupOperationsSnapshot, TaskGroupStatus,
     TaskNodeOperationsSnapshot, TaskNodeStatus, ThrottleCommand, TopicOperationsSnapshot,
-    TopicStatus, UninstallApplicationCommand, control_command, envelope as envelope_message,
-    local_rpc,
+    TopicStatus, UninstallApplicationCommand, control_command, driver_provider_request,
+    driver_provider_response, envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
-    MAX_ENVELOPE_BYTES, MAX_HANDSHAKE_CHANNEL_BINDING_BYTES, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES,
+    MAX_DRIVER_PROVIDER_PAYLOAD_BYTES, MAX_ENVELOPE_BYTES, MAX_HANDSHAKE_CHANNEL_BINDING_BYTES,
+    MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES, MAX_PROVIDER_PROFILE_BYTES,
     MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
     MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES,
-    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
-    SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
-    SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
-    decode_artifact_recovery_operations_snapshot, decode_barrier_observation_record,
-    decode_cancel_operation_request, decode_control_command_result,
+    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_DRIVER_PROVIDER_SCHEMA,
+    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+    SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA,
+    SABI_WAIT_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
+    decode_barrier_observation_record, decode_cancel_operation_request,
+    decode_control_command_result, decode_driver_provider_request, decode_driver_provider_response,
     decode_durable_operation_snapshot, decode_exchange_request, decode_exchange_response,
     decode_execution_fiber_operations_snapshot, decode_get_system_control_request,
     decode_operation_status, decode_principal_handshake_attestation,
@@ -44,8 +51,9 @@ use nlos_schema::{
     decode_semantic_recovery_operations_snapshot, decode_submit_barrier_observation_request,
     decode_submit_control_command_request, decode_task_group_operations_snapshot,
     decode_task_node_operations_snapshot, decode_topic_operations_snapshot,
-    encode_artifact_recovery_operations_snapshot, encode_barrier_observation_record,
-    encode_cancel_operation_request, encode_control_command_result,
+    driver_provider_schema_identity, encode_artifact_recovery_operations_snapshot,
+    encode_barrier_observation_record, encode_cancel_operation_request,
+    encode_control_command_result, encode_driver_provider_request, encode_driver_provider_response,
     encode_durable_operation_snapshot, encode_exchange_request, encode_exchange_response,
     encode_execution_fiber_operations_snapshot, encode_get_system_control_request,
     encode_operation_status, encode_principal_handshake_attestation,
@@ -187,7 +195,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 7);
+    assert_eq!(registry.len(), 8);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -235,6 +243,11 @@ fn registry_exposes_the_supported_contract() {
         (principal_handshake.major, principal_handshake.minor),
         (1, 0)
     );
+    let driver_provider = registry
+        .iter()
+        .find(|entry| entry.name == SABI_DRIVER_PROVIDER_SCHEMA)
+        .unwrap();
+    assert_eq!((driver_provider.major, driver_provider.minor), (1, 0));
 }
 
 #[test]
@@ -246,6 +259,7 @@ fn registry_freeze_markers_match_adr_0014() {
         SABI_SYSTEM_CONTROL_SCHEMA,
         SABI_TAKEOVER_CONTROL_SCHEMA,
         SABI_WAIT_CONTROL_SCHEMA,
+        SABI_DRIVER_PROVIDER_SCHEMA,
     ];
     for name in frozen_names {
         assert_eq!(registry_frozen(name), Some(true), "{name} must be frozen");
@@ -2071,4 +2085,332 @@ fn w32g_layer_snapshots_pin_the_deterministic_golden_bytes() {
     for (name, golden, encode) in cases {
         assert_eq!(encode(), golden, "{name} golden mismatch");
     }
+}
+
+const DRIVER_PROVIDER_COMPLETE_REQUEST_GOLDEN_HEX: &str = concat!(
+    "0a1c0a186e6c6f732e736162692e44726976657250726f76696465721001",
+    "22480a10e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e110021a10e2e2e2e2e2e2",
+    "e2e2e2e2e2e2e2e2e2e22220e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+    "e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+);
+
+const DRIVER_PROVIDER_COMPLETE_ACK_GOLDEN_HEX: &str = concat!(
+    "0a1c0a186e6c6f732e736162692e44726976657250726f76696465721001",
+    "2272080110011a10e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e420042a20e5e5",
+    "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+    "323408011001180120012a20e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6",
+    "e6e6e6e6e6e6e6e6e6e6e6e6e6e6320876657269666965643801",
+);
+
+fn verified_isolation_wire() -> ProviderIsolationAttestationWire {
+    ProviderIsolationAttestationWire {
+        tenant_isolated: true,
+        session_ephemeral: true,
+        cache_partitioned: true,
+        zero_data_retention: true,
+        attestation_digest: vec![0xE6; 32],
+        provider_profile: "verified".to_owned(),
+    }
+}
+
+#[test]
+fn driver_provider_request_and_response_pin_frozen_golden_bytes() {
+    let complete_request = DriverProviderRequest {
+        schema: Some(driver_provider_schema_identity()),
+        request: Some(driver_provider_request::Request::Complete(
+            DriverProviderCompleteRequest {
+                operation_id: vec![0xE1; 16],
+                operation_generation: 2,
+                callback_id: vec![0xE2; 16],
+                seed: vec![0xE3; 32],
+            },
+        )),
+    };
+    let expected_request = decode_hex(DRIVER_PROVIDER_COMPLETE_REQUEST_GOLDEN_HEX);
+    let encoded_request = encode_driver_provider_request(&complete_request).unwrap();
+    assert_eq!(encoded_request, expected_request);
+    assert_eq!(
+        decode_driver_provider_request(&expected_request).unwrap(),
+        complete_request
+    );
+
+    let complete_ack = DriverProviderResponse {
+        schema: Some(driver_provider_schema_identity()),
+        response: Some(driver_provider_response::Response::CompleteAck(
+            DriverProviderCompleteAck {
+                replayed: true,
+                outcome: DriverProviderTerminalOutcome::Completed.into(),
+                receipt_id: vec![0xE4; 16],
+                state: OperationLifecycleState::Completed.into(),
+                compute_digest: vec![0xE5; 32],
+                isolation: Some(verified_isolation_wire()),
+                fenced_reconciliation_only: true,
+            },
+        )),
+    };
+    let expected_ack = decode_hex(DRIVER_PROVIDER_COMPLETE_ACK_GOLDEN_HEX);
+    let encoded_ack = encode_driver_provider_response(&complete_ack).unwrap();
+    assert_eq!(encoded_ack, expected_ack);
+    assert_eq!(
+        decode_driver_provider_response(&expected_ack).unwrap(),
+        complete_ack
+    );
+}
+
+#[test]
+fn driver_provider_all_arms_round_trip() {
+    for request_arm in [
+        driver_provider_request::Request::Register(DriverProviderRegisterRequest {
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            owner_fiber_id: vec![0xA2; 16],
+            owner_fiber_generation: 1,
+            cancellation_scope_id: vec![0xA3; 16],
+            cancellation_generation: 1,
+        }),
+        driver_provider_request::Request::Dispatch(DriverProviderDispatchRequest {
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            callback_id: vec![0xA4; 16],
+        }),
+        driver_provider_request::Request::Cancel(DriverProviderCancelRequest {
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            expected_cancel_epoch: 0,
+            no_effect_receipt_id: vec![0xA5; 16],
+        }),
+        driver_provider_request::Request::QueryIsolation(DriverProviderQueryIsolationRequest {}),
+    ] {
+        let message = DriverProviderRequest {
+            schema: Some(driver_provider_schema_identity()),
+            request: Some(request_arm),
+        };
+        let wire = encode_driver_provider_request(&message).unwrap();
+        assert_eq!(decode_driver_provider_request(&wire).unwrap(), message);
+    }
+
+    for response_arm in [
+        driver_provider_response::Response::RegisterAck(DriverProviderRegisterAck {
+            replayed: false,
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            admission_receipt_id: vec![0xA6; 16],
+        }),
+        driver_provider_response::Response::DispatchAck(DriverProviderDispatchAck {
+            replayed: false,
+            preparation_receipt_id: vec![0xA7; 16],
+            activation_receipt_id: vec![0xA8; 16],
+            callback_id: vec![0xA4; 16],
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            owner_fiber_id: vec![0xA2; 16],
+            owner_fiber_generation: 1,
+            cancel_epoch: 0,
+        }),
+        driver_provider_response::Response::CancelAck(DriverProviderCancelAck {
+            replayed: false,
+            already_terminal: false,
+            operation_id: vec![0xA1; 16],
+            operation_generation: 1,
+            state: OperationLifecycleState::CancelRequested.into(),
+            cancel_epoch: 1,
+            terminal_receipt_id: Vec::new(),
+        }),
+        driver_provider_response::Response::IsolationReport(DriverProviderIsolationReport {
+            isolation: Some(verified_isolation_wire()),
+        }),
+    ] {
+        let message = DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(response_arm),
+        };
+        let wire = encode_driver_provider_response(&message).unwrap();
+        assert_eq!(decode_driver_provider_response(&wire).unwrap(), message);
+    }
+}
+
+#[test]
+fn driver_provider_request_bounds_fail_closed() {
+    let valid_register = DriverProviderRequest {
+        schema: Some(driver_provider_schema_identity()),
+        request: Some(driver_provider_request::Request::Register(
+            DriverProviderRegisterRequest {
+                operation_id: vec![0x11; 16],
+                operation_generation: 1,
+                owner_fiber_id: vec![0x12; 16],
+                owner_fiber_generation: 1,
+                cancellation_scope_id: vec![0x13; 16],
+                cancellation_generation: 1,
+            },
+        )),
+    };
+
+    let missing_schema_wire = DriverProviderRequest {
+        schema: None,
+        ..valid_register.clone()
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_driver_provider_request(&missing_schema_wire),
+        Err(CompatibilityError::MissingSchemaIdentity)
+    );
+
+    let wrong_schema_wire = DriverProviderRequest {
+        schema: Some(wait_control_schema_identity()),
+        ..valid_register.clone()
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_driver_provider_request(&wrong_schema_wire),
+        Err(CompatibilityError::UnknownSchema(
+            SABI_WAIT_CONTROL_SCHEMA.to_owned()
+        ))
+    );
+
+    let mut future_major = driver_provider_schema_identity();
+    future_major.major = 2;
+    assert_eq!(
+        encode_driver_provider_request(&DriverProviderRequest {
+            schema: Some(future_major),
+            ..valid_register.clone()
+        }),
+        Err(CompatibilityError::UnsupportedMajor {
+            schema: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+            got: 2,
+            supported: 1,
+        })
+    );
+    let mut unknown_critical = driver_provider_schema_identity();
+    unknown_critical.critical_extension_ids.push(77);
+    assert_eq!(
+        encode_driver_provider_request(&DriverProviderRequest {
+            schema: Some(unknown_critical),
+            ..valid_register
+        }),
+        Err(CompatibilityError::UnsupportedCriticalExtension {
+            schema: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+            extension_id: 77,
+        })
+    );
+
+    assert_eq!(
+        encode_driver_provider_request(&DriverProviderRequest {
+            schema: Some(driver_provider_schema_identity()),
+            request: None,
+        }),
+        Err(CompatibilityError::MissingDriverProviderBody)
+    );
+    assert_eq!(
+        encode_driver_provider_request(&DriverProviderRequest {
+            schema: Some(driver_provider_schema_identity()),
+            request: Some(driver_provider_request::Request::Complete(
+                DriverProviderCompleteRequest {
+                    operation_id: vec![0x11; 16],
+                    operation_generation: 1,
+                    callback_id: vec![0x12; 16],
+                    seed: vec![0x13; 31],
+                },
+            )),
+        }),
+        Err(CompatibilityError::InvalidDriverProviderIdentifier)
+    );
+    assert_eq!(
+        encode_driver_provider_request(&DriverProviderRequest {
+            schema: Some(driver_provider_schema_identity()),
+            request: Some(driver_provider_request::Request::Dispatch(
+                DriverProviderDispatchRequest {
+                    operation_id: vec![0x11; 16],
+                    operation_generation: 0,
+                    callback_id: vec![0x12; 16],
+                },
+            )),
+        }),
+        Err(CompatibilityError::InvalidDriverProviderGeneration)
+    );
+}
+
+#[test]
+fn driver_provider_response_bounds_fail_closed() {
+    let base_ack = DriverProviderCompleteAck {
+        replayed: false,
+        outcome: DriverProviderTerminalOutcome::Completed.into(),
+        receipt_id: vec![0x21; 16],
+        state: OperationLifecycleState::Completed.into(),
+        compute_digest: vec![0x22; 32],
+        isolation: Some(verified_isolation_wire()),
+        fenced_reconciliation_only: false,
+    };
+    assert_eq!(
+        encode_driver_provider_response(&DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(driver_provider_response::Response::CompleteAck(
+                DriverProviderCompleteAck {
+                    outcome: DriverProviderTerminalOutcome::Unspecified.into(),
+                    ..base_ack.clone()
+                }
+            )),
+        }),
+        Err(CompatibilityError::UnspecifiedDriverProviderOutcome)
+    );
+    assert_eq!(
+        encode_driver_provider_response(&DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(driver_provider_response::Response::CompleteAck(
+                DriverProviderCompleteAck {
+                    state: OperationLifecycleState::Dispatched.into(),
+                    ..base_ack
+                }
+            )),
+        }),
+        Err(CompatibilityError::UnspecifiedDriverProviderOutcome)
+    );
+    let mut short_digest = verified_isolation_wire();
+    short_digest.attestation_digest = vec![0xAA; 16];
+    assert_eq!(
+        encode_driver_provider_response(&DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(driver_provider_response::Response::IsolationReport(
+                DriverProviderIsolationReport {
+                    isolation: Some(short_digest),
+                }
+            )),
+        }),
+        Err(CompatibilityError::InvalidDriverProviderIdentifier)
+    );
+    let mut nul_profile = verified_isolation_wire();
+    nul_profile.provider_profile = "bad\0profile".to_owned();
+    assert_eq!(
+        encode_driver_provider_response(&DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(driver_provider_response::Response::IsolationReport(
+                DriverProviderIsolationReport {
+                    isolation: Some(nul_profile),
+                }
+            )),
+        }),
+        Err(CompatibilityError::UnsafeProviderProfile)
+    );
+    let mut oversized_profile = verified_isolation_wire();
+    oversized_profile.provider_profile = "p".repeat(MAX_PROVIDER_PROFILE_BYTES + 1);
+    assert_eq!(
+        encode_driver_provider_response(&DriverProviderResponse {
+            schema: Some(driver_provider_schema_identity()),
+            response: Some(driver_provider_response::Response::IsolationReport(
+                DriverProviderIsolationReport {
+                    isolation: Some(oversized_profile),
+                }
+            )),
+        }),
+        Err(CompatibilityError::UnsafeProviderProfile)
+    );
+
+    let oversized_wire = vec![0x08; MAX_DRIVER_PROVIDER_PAYLOAD_BYTES + 1];
+    assert!(matches!(
+        decode_driver_provider_request(&oversized_wire),
+        Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+    assert!(matches!(
+        decode_driver_provider_request(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F]),
+        Err(CompatibilityError::MalformedProtobuf(_))
+    ));
 }

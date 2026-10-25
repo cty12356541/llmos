@@ -1,17 +1,23 @@
-//! Notification minimal service: a thin subscription face over the
+//! Notification service: a thin subscription face over the `Topic`/`Channel`/`Wait`
+//! authorities (`B-NOTIFY-001`, W33-D / X-1 first half) extended with background
+//! `Task` lifecycle notifications, one-shot bound action tokens, and local
+//! offline history pagination (`TASK-NOTIFY-001`, `DUI-NOTIFY-001`,
+//! `DUI-OFFLINE-001`).
+//!
 //! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
 //! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
 //! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
-//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
-
-//! 接线前提：语义事件/告警面出现订阅方（topic/channel 已活，本订阅面当前无调用方）。
-//! Topic/Channel/Wait authorities (B-NOTIFY-001, W33-D / X-1 first half).
+//! 消费方或显式接线计划落地。登记：`docs/management/stage-c-progress.md` 2026-10-05 F1 段。
 //!
-//! Stage-B decision point 2 (stage-b-progress §6.5.4) fixed the boundary:
+//! **状态更新（2026-10-25 W65）**：2026-10-25 W65：超最小面扩展落地（TASK-NOTIFY-001 后台任务状态通知、DUI-NOTIFY-001 一次性绑定动作令牌与离线历史分页）；生产消费方接线随 W66 紧接落地。
+//!
+//! 接线前提：语义事件/告警面出现订阅方（topic/channel 已活，本订阅面当前无调用方）。
+//!
+//! Stage-B decision point 2 (`stage-b-progress` §6.5.4) fixed the boundary:
 //! Notification is a *thin layer* over the existing Topic authority — no
 //! new fanout machinery (ADR-0007's single-log fanout owns that), no
-//! second source of truth.  Every canonical fact of this crate's surface
-//! lives in an authority database:
+//! second source of truth.  Every canonical fanout fact of this crate's
+//! surface lives in an authority database:
 //!
 //! - the subscription, its cursor and its delivery state are
 //!   [`nlos_topic::TopicAuthority`] rows;
@@ -20,29 +26,35 @@
 //! - the durable "wake me at sequence N" registrations are
 //!   [`nlos_wait::WaitAuthority`] rows.
 //!
-//! [`NotificationService`] holds only durable *references*: one small
-//! table mapping a derived [`NotificationId`] to `(topic_id,
-//! subscriber_key)` plus the authority-issued [`ConsumeToken`], so the
-//! face can route delivery reads, token-authenticated acks and cancels to
-//! the authority on the subscriber's behalf.  The face table has no
-//! state, cursor, queue or payload column — an out-of-band authority
-//! change is always observed live (see
-//! [`NotificationService::list_subscriptions`]), never a copied snapshot.
+//! [`NotificationService`] holds durable *references* and one-shot action
+//! verification tombstones in `notify-service.db`:
+//!
+//! - `notify_subscriptions` (`v1`): maps a derived [`NotificationId`] to
+//!   `(topic_id, subscriber_key)` plus the authority-issued [`ConsumeToken`],
+//!   so the face can route delivery reads, token-authenticated acks and
+//!   cancels to the authority on the subscriber's behalf without caching
+//!   state, cursor, queue or payload;
+//! - `notify_action_tokens` (`v2`, `DUI-NOTIFY-001`): stores cryptographically
+//!   bound one-shot action token verifier commitments (`SHA-256` digest of
+//!   `secret_proof`, never raw secrets) bound to `(notification_id,
+//!   application_id, task_id, delivery_sequence, action_code)` with `SQLite`
+//!   triggers forbidding bound-column mutation, status rollback, or deletion;
+//! - `notify_history_refs` and `notify_history_prune_watermarks` (`v2`,
+//!   `DUI-OFFLINE-001`): compact sequence-indexed reference metadata for
+//!   deterministic cursor-paginated offline notification history queries and
+//!   monotonic retention pruning.
 //!
 //! Cross-authority discipline follows the repository convention
-//! (authority-first, idempotent replay converges): subscribe/cancel write
-//! the authority decision first and the local reference second, so a crash
-//! between the two leaves a replayable authority fact and a stale or
-//! missing reference that the next identical call converges.  The publish
-//! face additionally provides the ADR-0008 commit-side wiring the Topic
-//! authority does not own: after the Topic authority's single enqueue, it
-//! issues the explicit idempotent `notify_commits` to the Wait registry
-//! with a notify key deterministically derived from the publication's
-//! idempotency key, so replaying a publish re-reports the original wake
-//! set without a second enqueue or wake flip.
+//! (authority-first, idempotent replay converges): subscribe/cancel/publish
+//! write the authority decision first and the local reference second, so a
+//! crash between the two leaves a replayable authority fact and a missing or
+//! stale reference that the next identical call converges.
+
+#![forbid(unsafe_code)]
 
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -53,15 +65,22 @@ use nlos_topic::{
     SubscribeDecision, SubscribeRequest, SubscriberKey, TopicAuthority, TopicAuthorityError,
     TopicId, UnsubscribeDecision, UnsubscribeReceipt, UnsubscribeRequest,
 };
-use nlos_types::IdempotencyKey;
+use nlos_types::{ApplicationId, ChannelId, Generation, IdempotencyKey, ReceiptId, TaskId};
 use nlos_wait::{
     BindingId, NotifyCommitsRequest, RegisterDecision, RegisterWaitRequest, WaitAuthority,
     WaitAuthorityError, WakeReport,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 mod schema;
+pub mod task_notify;
+
+pub use task_notify::{
+    DeliveredTaskNotification, TASK_NOTIFICATION_WIRE_LEN, TASK_NOTIFICATION_WIRE_MAGIC,
+    TaskHistoryMetadata, TaskNotificationEnvelope, TaskNotificationWireError, TaskTransitionKind,
+    decode_task_notification_envelope, encode_task_notification_envelope,
+};
 
 macro_rules! nominal_id {
     ($name:ident) => {
@@ -103,6 +122,49 @@ macro_rules! nominal_id {
 // subscriber key), so the same (topic, subscriber) pair always resolves to
 // the same face identity across restarts and re-subscribes.
 nominal_id!(NotificationId);
+
+// Stable identity of a one-shot notification action token (DUI-NOTIFY-001).
+nominal_id!(ActionTokenId);
+
+/// Domain separator used to derive [`NotificationActionToken::secret_proof`]
+/// (`DUI-NOTIFY-001`).
+pub const ACTION_TOKEN_DOMAIN: &[u8] = b"llmos/notify-action-token/v1";
+
+/// Maximum bounded page size accepted by
+/// [`NotificationService::query_notification_history_page`] (`DUI-OFFLINE-001`).
+pub const MAX_HISTORY_PAGE_LIMIT: usize = 1_024;
+
+/// Derives the canonical domain-separated `SHA-256` `secret_proof` for a
+/// one-shot notification action token (`DUI-NOTIFY-001`).
+#[must_use]
+pub fn derive_action_secret_proof(
+    token_id: ActionTokenId,
+    notification_id: NotificationId,
+    application_id: ApplicationId,
+    task_id: TaskId,
+    delivery_sequence: u64,
+    action_code: u16,
+    secret_nonce: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(ACTION_TOKEN_DOMAIN);
+    hasher.update(token_id.as_bytes());
+    hasher.update(notification_id.as_bytes());
+    hasher.update(application_id.as_bytes());
+    hasher.update(task_id.as_bytes());
+    hasher.update(delivery_sequence.to_be_bytes());
+    hasher.update(action_code.to_be_bytes());
+    hasher.update(secret_nonce);
+    hasher.finalize().into()
+}
+
+/// Computes the `SHA-256` verifier commitment stored in `SQLite` for a derived
+/// `secret_proof`. Raw `secret_nonce` and `secret_proof` bytes are never
+/// persisted in `notify-service.db`.
+#[must_use]
+pub fn action_secret_commitment(secret_proof: &[u8; 32]) -> [u8; 32] {
+    Sha256::digest(secret_proof).into()
+}
 
 /// One durable thin-layer reference row.
 ///
@@ -289,6 +351,164 @@ impl NotificationPublishDecision {
     }
 }
 
+/// Request to issue a one-shot cryptographically bound notification action
+/// token (`DUI-NOTIFY-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IssueNotificationActionTokenRequest {
+    pub notification_id: NotificationId,
+    pub application_id: ApplicationId,
+    pub task_id: TaskId,
+    pub delivery_sequence: u64,
+    pub action_code: u16,
+    pub secret_nonce: [u8; 32],
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Issued one-shot notification action token carrying the capability
+/// `secret_proof` (`DUI-NOTIFY-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationActionToken {
+    pub token_id: ActionTokenId,
+    pub notification_id: NotificationId,
+    pub application_id: ApplicationId,
+    pub task_id: TaskId,
+    pub delivery_sequence: u64,
+    pub action_code: u16,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub secret_proof: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IssueActionTokenDecision {
+    Issued(NotificationActionToken),
+    Replayed(NotificationActionToken),
+}
+
+impl IssueActionTokenDecision {
+    #[must_use]
+    pub const fn token(self) -> NotificationActionToken {
+        match self {
+            Self::Issued(token) | Self::Replayed(token) => token,
+        }
+    }
+}
+
+/// Durable lifecycle state of a stored notification action token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionTokenStatus {
+    Issued,
+    Redeemed {
+        redeemed_at_ms: u64,
+        receipt_id: ReceiptId,
+    },
+    Revoked {
+        revoked_at_ms: u64,
+    },
+}
+
+/// Durable verifier record stored in `notify_action_tokens` (`secret_commitment`
+/// only, never raw `secret_nonce` or `secret_proof`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActionTokenRecord {
+    pub token_id: ActionTokenId,
+    pub idempotency_key: IdempotencyKey,
+    pub notification_id: NotificationId,
+    pub application_id: ApplicationId,
+    pub task_id: TaskId,
+    pub delivery_sequence: u64,
+    pub action_code: u16,
+    pub secret_commitment: [u8; 32],
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub status: ActionTokenStatus,
+}
+
+/// Request to redeem a one-shot notification action token (`DUI-NOTIFY-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RedeemNotificationActionRequest {
+    pub token_id: ActionTokenId,
+    pub presented_proof: [u8; 32],
+    pub caller_notification_id: NotificationId,
+    pub caller_application_id: ApplicationId,
+    pub caller_task_id: TaskId,
+    pub action_code: u16,
+    pub redeemed_at_ms: u64,
+}
+
+/// Receipt proving the one-shot consumption of a bound notification action
+/// token (`DUI-NOTIFY-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationActionRedeemReceipt {
+    pub receipt_id: ReceiptId,
+    pub token_id: ActionTokenId,
+    pub notification_id: NotificationId,
+    pub application_id: ApplicationId,
+    pub task_id: TaskId,
+    pub delivery_sequence: u64,
+    pub action_code: u16,
+    pub redeemed_at_ms: u64,
+}
+
+/// Request to record a durable offline notification history reference
+/// (`DUI-OFFLINE-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordDeliveryHistoryRequest {
+    pub topic_id: TopicId,
+    pub channel_id: ChannelId,
+    pub channel_sequence: u64,
+    pub payload_digest: [u8; 32],
+    pub recorded_at_ms: u64,
+    pub task_metadata: Option<TaskHistoryMetadata>,
+}
+
+/// One durable offline notification history reference row (`DUI-OFFLINE-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationHistoryEntry {
+    pub topic_id: TopicId,
+    pub channel_id: ChannelId,
+    pub channel_sequence: u64,
+    pub payload_digest: [u8; 32],
+    pub recorded_at_ms: u64,
+    pub task_metadata: Option<TaskHistoryMetadata>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordHistoryDecision {
+    Recorded(NotificationHistoryEntry),
+    Replayed(NotificationHistoryEntry),
+}
+
+impl RecordHistoryDecision {
+    #[must_use]
+    pub const fn entry(self) -> NotificationHistoryEntry {
+        match self {
+            Self::Recorded(entry) | Self::Replayed(entry) => entry,
+        }
+    }
+}
+
+/// Bounded cursor-paginated offline notification history page
+/// (`DUI-OFFLINE-001`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationHistoryPage {
+    pub topic_id: TopicId,
+    pub entries: Vec<NotificationHistoryEntry>,
+    pub next_after_sequence: Option<u64>,
+    pub has_more: bool,
+    pub retained_from_sequence: u64,
+}
+
+/// Receipt returned by [`NotificationService::prune_history_before`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryPruneReceipt {
+    pub topic_id: TopicId,
+    pub retained_from_sequence: u64,
+    pub pruned_entries: u64,
+}
+
 #[derive(Debug)]
 pub enum NotifyError {
     Sqlite(rusqlite::Error),
@@ -309,6 +529,54 @@ pub enum NotifyError {
     NotificationNotFound(NotificationId),
     CorruptRecord(&'static str),
     LockPoisoned,
+    /// Malformed or truncated [`TaskNotificationEnvelope`] wire bytes.
+    MalformedTaskNotification(TaskNotificationWireError),
+    /// Malformed parameters in an action token issuance or redemption request.
+    InvalidActionTokenRequest(&'static str),
+    /// Reused `idempotency_key` with conflicting action token parameters.
+    ActionIdempotencyConflict(IdempotencyKey),
+    /// Unknown one-shot action token identity.
+    ActionTokenNotFound(ActionTokenId),
+    /// Cross-`Application` spoofing attempt (`DUI-NOTIFY-001`).
+    ActionCrossApplicationSpoof {
+        expected: ApplicationId,
+        actual: ApplicationId,
+    },
+    /// Mismatched `NotificationId`, `TaskId`, or `action_code` binding.
+    ActionBindingMismatch(&'static str),
+    /// Invalid `presented_proof` against the stored verifier commitment.
+    ActionTokenProofInvalid(ActionTokenId),
+    /// Action token redeemed past its `expires_at_ms` deadline.
+    ActionTokenExpired {
+        expires_at_ms: u64,
+        redeemed_at_ms: u64,
+    },
+    /// Replay / second redemption attempt on an already-redeemed one-shot
+    /// action token (`DUI-NOTIFY-001`).
+    ActionTokenAlreadyRedeemed {
+        first_redeemed_at_ms: u64,
+        receipt_id: ReceiptId,
+    },
+    /// Redemption attempt on an administratively revoked action token.
+    ActionTokenRevoked {
+        revoked_at_ms: u64,
+    },
+    /// Invalid pagination or history retention argument (`limit == 0` or
+    /// `limit > MAX_HISTORY_PAGE_LIMIT`).
+    InvalidHistoryPagination(&'static str),
+    /// Conflicting history reference recorded for the same `(topic_id,
+    /// channel_sequence)`.
+    HistoryConflict {
+        topic_id: TopicId,
+        channel_sequence: u64,
+    },
+    /// Attempt to record a history sequence below the monotonic retention
+    /// prune watermark.
+    HistorySequencePruned {
+        topic_id: TopicId,
+        channel_sequence: u64,
+        retained_from_sequence: u64,
+    },
 }
 
 impl fmt::Display for NotifyError {
@@ -352,7 +620,90 @@ impl fmt::Display for NotifyError {
                 write!(formatter, "corrupt notification record: {reason}")
             }
             Self::LockPoisoned => formatter.write_str("notification face writer lock is poisoned"),
+            other => fmt_extension_error(other, formatter),
         }
+    }
+}
+
+fn fmt_extension_error(error: &NotifyError, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match error {
+        NotifyError::MalformedTaskNotification(inner) => {
+            write!(formatter, "malformed task notification payload: {inner}")
+        }
+        NotifyError::InvalidActionTokenRequest(reason) => {
+            write!(
+                formatter,
+                "invalid notification action token request: {reason}"
+            )
+        }
+        NotifyError::ActionIdempotencyConflict(key) => write!(
+            formatter,
+            "action token idempotency key {key:?} rebound to conflicting parameters"
+        ),
+        NotifyError::ActionTokenNotFound(token_id) => {
+            write!(
+                formatter,
+                "notification action token {token_id:?} not found"
+            )
+        }
+        NotifyError::ActionCrossApplicationSpoof { expected, actual } => write!(
+            formatter,
+            "cross-application notification action spoof rejected: bound to {expected:?}, \
+             caller presented {actual:?}"
+        ),
+        NotifyError::ActionBindingMismatch(reason) => {
+            write!(
+                formatter,
+                "notification action token binding mismatch: {reason}"
+            )
+        }
+        NotifyError::ActionTokenProofInvalid(token_id) => write!(
+            formatter,
+            "invalid cryptographic proof presented for action token {token_id:?}"
+        ),
+        NotifyError::ActionTokenExpired {
+            expires_at_ms,
+            redeemed_at_ms,
+        } => write!(
+            formatter,
+            "notification action token expired at {expires_at_ms}ms \
+             (redeem attempted at {redeemed_at_ms}ms)"
+        ),
+        NotifyError::ActionTokenAlreadyRedeemed {
+            first_redeemed_at_ms,
+            receipt_id,
+        } => write!(
+            formatter,
+            "one-shot notification action token was already redeemed at \
+             {first_redeemed_at_ms}ms (receipt {receipt_id:?})"
+        ),
+        NotifyError::ActionTokenRevoked { revoked_at_ms } => {
+            write!(
+                formatter,
+                "notification action token was revoked at {revoked_at_ms}ms"
+            )
+        }
+        NotifyError::InvalidHistoryPagination(reason) => {
+            write!(formatter, "invalid notification history query: {reason}")
+        }
+        NotifyError::HistoryConflict {
+            topic_id,
+            channel_sequence,
+        } => write!(
+            formatter,
+            "conflicting notification history reference for {topic_id:?} \
+             at sequence {channel_sequence}"
+        ),
+        NotifyError::HistorySequencePruned {
+            topic_id,
+            channel_sequence,
+            retained_from_sequence,
+        } => write!(
+            formatter,
+            "notification history sequence {channel_sequence} on {topic_id:?} \
+             is below retention watermark {retained_from_sequence}"
+        ),
+        _ => unreachable!("base NotifyError variants formatted in Display::fmt"),
     }
 }
 
@@ -363,6 +714,7 @@ impl Error for NotifyError {
             Self::Io(error) => Some(error),
             Self::Topic(error) => Some(error),
             Self::Wait(error) => Some(error),
+            Self::MalformedTaskNotification(error) => Some(error),
             _ => None,
         }
     }
@@ -374,9 +726,15 @@ impl From<rusqlite::Error> for NotifyError {
     }
 }
 
+impl From<TaskNotificationWireError> for NotifyError {
+    fn from(error: TaskNotificationWireError) -> Self {
+        Self::MalformedTaskNotification(error)
+    }
+}
+
 /// The notification service face: a single writer over its own small
-/// reference database, delegating every canonical decision to the bound
-/// authorities.
+/// reference database, delegating every canonical fanout decision to the
+/// bound authorities.
 ///
 /// The `wait` authority must be bound to the same
 /// [`nlos_channel::ChannelAuthority`] as the `topic` authority (each
@@ -392,10 +750,16 @@ impl NotificationService {
     /// Opens or creates `<root>/notify-service.db` bound to the given
     /// authorities.
     ///
+    /// A brand-new database (`user_version == 0`) initializes the thin `v1`
+    /// subscription reference table (`notify_subscriptions`) and promotes to
+    /// `SCHEMA_VERSION` (`2`) transparently upon reopening an existing `v1`
+    /// database or invoking any `v2` task/action-token/history capability.
+    ///
     /// # Errors
     ///
-    /// Fails closed when `SQLite` cannot provide WAL/FULL durability or
-    /// when a stored schema version is unknown.
+    /// Fails closed when `SQLite` cannot provide WAL/FULL durability, when
+    /// stored schema tables/triggers are partial or corrupt, or when a stored
+    /// schema version is unknown.
     pub fn open(
         root: impl AsRef<Path>,
         topic: Arc<TopicAuthority>,
@@ -424,7 +788,8 @@ impl NotificationService {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            schema::SCHEMA_VERSION => {}
+            schema::SCHEMA_VERSION_V1 => schema::migrate_v2(&mut connection)?,
+            schema::SCHEMA_VERSION => schema::verify_v2(&connection)?,
             other => return Err(NotifyError::SchemaVersionUnsupported(other)),
         }
         Ok(Self {
@@ -750,6 +1115,667 @@ impl NotificationService {
             NotificationPublishDecision::Replayed(receipt)
         })
     }
+
+    /// Publishes a canonical background `Task` lifecycle transition
+    /// (`TASK-NOTIFY-001`, `TASK-STATE-001`) through the single
+    /// [`TopicAuthority`] + [`WaitAuthority`] `notify_commits` path (zero
+    /// shadow fanout), and records a compact offline history reference
+    /// (`DUI-OFFLINE-001`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with any propagated `TopicAuthority` or `WaitAuthority`
+    /// rejection, or on local `SQLite` durability/conflict errors.
+    pub fn publish_task_transition(
+        &self,
+        topic_id: TopicId,
+        envelope: &TaskNotificationEnvelope,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<NotificationPublishDecision, NotifyError> {
+        let payload = encode_task_notification_envelope(envelope);
+        let decision = self.publish(PublishNotificationRequest {
+            topic_id,
+            payload,
+            idempotency_key,
+            published_at_ms: envelope.occurred_at_ms,
+        })?;
+        let topic = self
+            .topic
+            .inspect_topic(topic_id)
+            .map_err(NotifyError::Topic)?;
+        let publication = match &decision {
+            NotificationPublishDecision::Published(receipt)
+            | NotificationPublishDecision::Replayed(receipt) => &receipt.publication,
+        };
+        let history_request = RecordDeliveryHistoryRequest {
+            topic_id,
+            channel_id: topic.channel_id,
+            channel_sequence: publication.channel_sequence,
+            payload_digest: publication.payload_digest,
+            recorded_at_ms: envelope.occurred_at_ms,
+            task_metadata: Some(TaskHistoryMetadata::from(envelope)),
+        };
+        match self.record_delivery_history(history_request) {
+            Ok(_) => {}
+            Err(NotifyError::HistorySequencePruned { .. })
+                if matches!(decision, NotificationPublishDecision::Replayed(_)) => {}
+            Err(other) => return Err(other),
+        }
+        Ok(decision)
+    }
+
+    /// Polls unacknowledged background `Task` transition notifications for
+    /// `notification_id` directly from the shared `TopicAuthority` single-log
+    /// window (`TASK-NOTIFY-001`), decoding each wire payload fail-closed.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown `notification_id`, any propagated
+    /// `TopicAuthority` rejection, or any malformed/truncated task
+    /// notification payload ([`NotifyError::MalformedTaskNotification`]).
+    pub fn poll_task_notifications(
+        &self,
+        notification_id: NotificationId,
+        limit: usize,
+    ) -> Result<Vec<DeliveredTaskNotification>, NotifyError> {
+        let raw_entries = self.poll(notification_id, limit)?;
+        let mut decoded = Vec::with_capacity(raw_entries.len());
+        for entry in raw_entries {
+            let envelope = decode_task_notification_envelope(&entry.payload)?;
+            decoded.push(DeliveredTaskNotification {
+                notification_id,
+                channel_id: entry.channel_id,
+                sequence: entry.sequence,
+                enqueued_at_ms: entry.enqueued_at_ms,
+                publication_idempotency_key: entry.idempotency_key,
+                envelope,
+            });
+        }
+        Ok(decoded)
+    }
+
+    /// Issues a cryptographically bound one-shot notification action token
+    /// (`DUI-NOTIFY-001`).
+    ///
+    /// Verifies that `request.notification_id` is currently registered, derives
+    /// `secret_proof` via `SHA-256` under [`ACTION_TOKEN_DOMAIN`], persists
+    /// only the `SHA-256` verifier commitment in `SQLite` (never raw
+    /// `secret_nonce` or `secret_proof`), and replays idempotently by
+    /// `request.idempotency_key`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when `notification_id` is unknown, when request bounds are
+    /// invalid (`delivery_sequence == 0`, `expires_at_ms < issued_at_ms`, or
+    /// all-zero `secret_nonce`), when `idempotency_key` is reused with
+    /// different bound parameters, or on `SQLite` errors.
+    pub fn issue_action_token(
+        &self,
+        request: IssueNotificationActionTokenRequest,
+    ) -> Result<IssueActionTokenDecision, NotifyError> {
+        let (delivery_sequence_i64, issued_at_i64, expires_at_i64) =
+            validate_issue_token_request(&request)?;
+
+        let mut connection = self.lock()?;
+        let _ = resolve_subscription(&connection, request.notification_id)?;
+        schema::ensure_v2(&mut connection)?;
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let _ = resolve_subscription(&transaction, request.notification_id)?;
+
+        if let Some(replayed) = replay_action_token_if_present(&transaction, &request)? {
+            return Ok(IssueActionTokenDecision::Replayed(replayed));
+        }
+
+        let token_id = action_token_id_for(&request);
+        let secret_proof = derive_action_secret_proof(
+            token_id,
+            request.notification_id,
+            request.application_id,
+            request.task_id,
+            request.delivery_sequence,
+            request.action_code,
+            &request.secret_nonce,
+        );
+        let secret_commitment = action_secret_commitment(&secret_proof);
+
+        transaction.execute(
+            "INSERT INTO notify_action_tokens (
+                token_id, idempotency_key, notification_id, application_id, task_id,
+                delivery_sequence, action_code, secret_commitment, issued_at_ms, expires_at_ms,
+                status, redeemed_at_ms, redeem_receipt_id, revoked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'ISSUED', NULL, NULL, NULL)",
+            params![
+                token_id.as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice(),
+                request.notification_id.as_bytes().as_slice(),
+                request.application_id.as_bytes().as_slice(),
+                request.task_id.as_bytes().as_slice(),
+                delivery_sequence_i64,
+                i64::from(request.action_code),
+                secret_commitment.as_slice(),
+                issued_at_i64,
+                expires_at_i64,
+            ],
+        )?;
+        transaction.commit()?;
+
+        Ok(IssueActionTokenDecision::Issued(NotificationActionToken {
+            token_id,
+            notification_id: request.notification_id,
+            application_id: request.application_id,
+            task_id: request.task_id,
+            delivery_sequence: request.delivery_sequence,
+            action_code: request.action_code,
+            issued_at_ms: request.issued_at_ms,
+            expires_at_ms: request.expires_at_ms,
+            secret_proof,
+        }))
+    }
+
+    /// Redeems a one-shot notification action token (`DUI-NOTIFY-001`),
+    /// enforcing strict binding to `(NotificationId, ApplicationId, TaskId,
+    /// action_code)` and strict single-consumption semantics.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with distinct typed [`NotifyError`] variants on:
+    /// 1. Unknown `token_id` ([`NotifyError::ActionTokenNotFound`]);
+    /// 2. Cross-`Application` spoofing
+    ///    ([`NotifyError::ActionCrossApplicationSpoof`]);
+    /// 3. Wrong `NotificationId`, `TaskId`, or `action_code`
+    ///    ([`NotifyError::ActionBindingMismatch`]);
+    /// 4. Invalid `presented_proof`
+    ///    ([`NotifyError::ActionTokenProofInvalid`]);
+    /// 5. Expired token (`redeemed_at_ms > expires_at_ms` ->
+    ///    [`NotifyError::ActionTokenExpired`]);
+    /// 6. Second use / replay of an already redeemed token
+    ///    ([`NotifyError::ActionTokenAlreadyRedeemed`]).
+    pub fn redeem_action_token(
+        &self,
+        request: RedeemNotificationActionRequest,
+    ) -> Result<NotificationActionRedeemReceipt, NotifyError> {
+        let redeemed_at_i64 = i64::try_from(request.redeemed_at_ms).map_err(|_| {
+            NotifyError::InvalidActionTokenRequest("redeemed_at_ms exceeds SQLite i64")
+        })?;
+
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored = load_action_token(&transaction, request.token_id)?
+            .ok_or(NotifyError::ActionTokenNotFound(request.token_id))?;
+
+        if request.caller_application_id != stored.application_id {
+            return Err(NotifyError::ActionCrossApplicationSpoof {
+                expected: stored.application_id,
+                actual: request.caller_application_id,
+            });
+        }
+        if request.caller_notification_id != stored.notification_id {
+            return Err(NotifyError::ActionBindingMismatch(
+                "caller_notification_id does not match bound notification_id",
+            ));
+        }
+        if request.caller_task_id != stored.task_id {
+            return Err(NotifyError::ActionBindingMismatch(
+                "caller_task_id does not match bound task_id",
+            ));
+        }
+        if request.action_code != stored.action_code {
+            return Err(NotifyError::ActionBindingMismatch(
+                "action_code does not match bound action_code",
+            ));
+        }
+
+        let presented_commitment = action_secret_commitment(&request.presented_proof);
+        if !constant_time_eq_32(&presented_commitment, &stored.secret_commitment) {
+            return Err(NotifyError::ActionTokenProofInvalid(request.token_id));
+        }
+
+        match stored.status {
+            ActionTokenStatus::Redeemed {
+                redeemed_at_ms,
+                receipt_id,
+            } => {
+                return Err(NotifyError::ActionTokenAlreadyRedeemed {
+                    first_redeemed_at_ms: redeemed_at_ms,
+                    receipt_id,
+                });
+            }
+            ActionTokenStatus::Revoked { revoked_at_ms } => {
+                return Err(NotifyError::ActionTokenRevoked { revoked_at_ms });
+            }
+            ActionTokenStatus::Issued => {}
+        }
+
+        if request.redeemed_at_ms > stored.expires_at_ms {
+            return Err(NotifyError::ActionTokenExpired {
+                expires_at_ms: stored.expires_at_ms,
+                redeemed_at_ms: request.redeemed_at_ms,
+            });
+        }
+        if request.redeemed_at_ms < stored.issued_at_ms {
+            return Err(NotifyError::InvalidActionTokenRequest(
+                "redeemed_at_ms precedes issued_at_ms",
+            ));
+        }
+
+        let receipt_id = redeem_receipt_id_for(&stored, request.redeemed_at_ms);
+        let updated = transaction.execute(
+            "UPDATE notify_action_tokens
+             SET status='REDEEMED', redeemed_at_ms=?1, redeem_receipt_id=?2
+             WHERE token_id=?3 AND status='ISSUED'",
+            params![
+                redeemed_at_i64,
+                receipt_id.as_bytes().as_slice(),
+                request.token_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if updated != 1 {
+            return Err(NotifyError::CorruptRecord(
+                "expected single ISSUED action token row transition",
+            ));
+        }
+        transaction.commit()?;
+
+        Ok(NotificationActionRedeemReceipt {
+            receipt_id,
+            token_id: stored.token_id,
+            notification_id: stored.notification_id,
+            application_id: stored.application_id,
+            task_id: stored.task_id,
+            delivery_sequence: stored.delivery_sequence,
+            action_code: stored.action_code,
+            redeemed_at_ms: request.redeemed_at_ms,
+        })
+    }
+
+    /// Administratively revokes an unredeemed action token so it can never be
+    /// redeemed afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if `token_id` is unknown, if the token was already
+    /// redeemed, or on `SQLite` errors.
+    pub fn revoke_action_token(
+        &self,
+        token_id: ActionTokenId,
+        revoked_at_ms: u64,
+    ) -> Result<(), NotifyError> {
+        let revoked_at_i64 = i64::try_from(revoked_at_ms).map_err(|_| {
+            NotifyError::InvalidActionTokenRequest("revoked_at_ms exceeds SQLite i64")
+        })?;
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored = load_action_token(&transaction, token_id)?
+            .ok_or(NotifyError::ActionTokenNotFound(token_id))?;
+        match stored.status {
+            ActionTokenStatus::Redeemed {
+                redeemed_at_ms,
+                receipt_id,
+            } => {
+                return Err(NotifyError::ActionTokenAlreadyRedeemed {
+                    first_redeemed_at_ms: redeemed_at_ms,
+                    receipt_id,
+                });
+            }
+            ActionTokenStatus::Revoked { .. } => return Ok(()),
+            ActionTokenStatus::Issued => {}
+        }
+
+        transaction.execute(
+            "UPDATE notify_action_tokens
+             SET status='REVOKED', revoked_at_ms=?1
+             WHERE token_id=?2 AND status='ISSUED'",
+            params![revoked_at_i64, token_id.as_bytes().as_slice()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Inspects the durable verifier metadata and status of an action token.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`NotifyError::ActionTokenNotFound`] when `token_id`
+    /// is unknown or on `SQLite`/corruption errors.
+    pub fn inspect_action_token(
+        &self,
+        token_id: ActionTokenId,
+    ) -> Result<ActionTokenRecord, NotifyError> {
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+        load_action_token(&connection, token_id)?.ok_or(NotifyError::ActionTokenNotFound(token_id))
+    }
+
+    /// Records a durable offline notification history reference indexed by
+    /// `(topic_id, channel_sequence)` (`DUI-OFFLINE-001`).
+    ///
+    /// Replays idempotently when the identical `(topic_id, channel_sequence)`
+    /// reference already exists, and fails closed if conflicting metadata is
+    /// presented for an existing sequence or if the sequence lies below the
+    /// topic's monotonic prune watermark.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on zero `channel_sequence`, pruned sequence insertion,
+    /// conflicting duplicate `(topic_id, channel_sequence)`, or `SQLite`
+    /// errors.
+    pub fn record_delivery_history(
+        &self,
+        request: RecordDeliveryHistoryRequest,
+    ) -> Result<RecordHistoryDecision, NotifyError> {
+        if request.channel_sequence == 0 {
+            return Err(NotifyError::InvalidHistoryPagination(
+                "channel_sequence must be non-zero",
+            ));
+        }
+        let seq_i64 = i64::try_from(request.channel_sequence).map_err(|_| {
+            NotifyError::InvalidHistoryPagination("channel_sequence exceeds SQLite i64")
+        })?;
+        let recorded_at_i64 = i64::try_from(request.recorded_at_ms).map_err(|_| {
+            NotifyError::InvalidHistoryPagination("recorded_at_ms exceeds SQLite i64")
+        })?;
+
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let retained_from = load_prune_watermark(&transaction, request.topic_id)?;
+        if request.channel_sequence < retained_from {
+            return Err(NotifyError::HistorySequencePruned {
+                topic_id: request.topic_id,
+                channel_sequence: request.channel_sequence,
+                retained_from_sequence: retained_from,
+            });
+        }
+
+        if let Some(existing) =
+            load_history_entry(&transaction, request.topic_id, request.channel_sequence)?
+        {
+            if existing.channel_id != request.channel_id
+                || existing.payload_digest != request.payload_digest
+                || existing.task_metadata != request.task_metadata
+            {
+                return Err(NotifyError::HistoryConflict {
+                    topic_id: request.topic_id,
+                    channel_sequence: request.channel_sequence,
+                });
+            }
+            return Ok(RecordHistoryDecision::Replayed(existing));
+        }
+
+        insert_history_row(&transaction, &request, seq_i64, recorded_at_i64)?;
+        transaction.commit()?;
+
+        Ok(RecordHistoryDecision::Recorded(NotificationHistoryEntry {
+            topic_id: request.topic_id,
+            channel_id: request.channel_id,
+            channel_sequence: request.channel_sequence,
+            payload_digest: request.payload_digest,
+            recorded_at_ms: request.recorded_at_ms,
+            task_metadata: request.task_metadata,
+        }))
+    }
+
+    /// Queries a bounded, deterministically ordered offline notification
+    /// history page strictly after `after_sequence` (`DUI-OFFLINE-001`).
+    ///
+    /// Pass `after_sequence = 0` for the first page, and feed
+    /// `page.next_after_sequence` into subsequent calls while `page.has_more`
+    /// is `true`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when `limit == 0` or `limit > MAX_HISTORY_PAGE_LIMIT`, or
+    /// on `SQLite`/corruption errors.
+    pub fn query_notification_history_page(
+        &self,
+        topic_id: TopicId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<NotificationHistoryPage, NotifyError> {
+        if limit == 0 {
+            return Err(NotifyError::InvalidHistoryPagination(
+                "limit must be non-zero",
+            ));
+        }
+        if limit > MAX_HISTORY_PAGE_LIMIT {
+            return Err(NotifyError::InvalidHistoryPagination(
+                "limit exceeds MAX_HISTORY_PAGE_LIMIT",
+            ));
+        }
+        let after_i64 = i64::try_from(after_sequence).map_err(|_| {
+            NotifyError::InvalidHistoryPagination("after_sequence exceeds SQLite i64")
+        })?;
+        let fetch_limit_i64 = i64::try_from(limit + 1)
+            .map_err(|_| NotifyError::InvalidHistoryPagination("limit exceeds SQLite i64"))?;
+
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+        let retained_from_sequence = load_prune_watermark(&connection, topic_id)?;
+
+        let mut statement = connection.prepare(
+            "SELECT
+                topic_id,
+                channel_sequence,
+                channel_id,
+                payload_digest,
+                recorded_at_ms,
+                entry_kind,
+                task_id,
+                application_id,
+                task_generation,
+                transition_tag,
+                requires_user_action,
+                summary_digest
+             FROM notify_history_refs
+             WHERE topic_id=?1 AND channel_sequence > ?2
+             ORDER BY channel_sequence ASC
+             LIMIT ?3",
+        )?;
+        let raw_rows = statement
+            .query_map(
+                params![topic_id.as_bytes().as_slice(), after_i64, fetch_limit_i64],
+                history_columns,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut entries = Vec::with_capacity(raw_rows.len().min(limit));
+        for columns in raw_rows {
+            entries.push(history_from_columns(columns)?);
+        }
+
+        let has_more = entries.len() > limit;
+        if has_more {
+            entries.truncate(limit);
+        }
+        let next_after_sequence = entries.last().map(|entry| entry.channel_sequence);
+
+        Ok(NotificationHistoryPage {
+            topic_id,
+            entries,
+            next_after_sequence,
+            has_more,
+            retained_from_sequence,
+        })
+    }
+
+    /// Prunes offline notification history entries with
+    /// `channel_sequence < retain_from_sequence` for `topic_id`, advancing a
+    /// monotonic retention watermark (`DUI-OFFLINE-001`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if `retain_from_sequence` regresses below the previously
+    /// committed watermark for `topic_id` or on `SQLite` errors.
+    pub fn prune_history_before(
+        &self,
+        topic_id: TopicId,
+        retain_from_sequence: u64,
+    ) -> Result<HistoryPruneReceipt, NotifyError> {
+        let retain_i64 = i64::try_from(retain_from_sequence).map_err(|_| {
+            NotifyError::InvalidHistoryPagination("retain_from_sequence exceeds SQLite i64")
+        })?;
+
+        let mut connection = self.lock()?;
+        schema::ensure_v2(&mut connection)?;
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_watermark = load_prune_watermark(&transaction, topic_id)?;
+        if retain_from_sequence < current_watermark {
+            return Err(NotifyError::InvalidHistoryPagination(
+                "retain_from_sequence must not regress below current watermark",
+            ));
+        }
+
+        transaction.execute(
+            "INSERT INTO notify_history_prune_watermarks (topic_id, retained_from_sequence)
+             VALUES (?1, ?2)
+             ON CONFLICT(topic_id) DO UPDATE SET
+                retained_from_sequence=excluded.retained_from_sequence",
+            params![topic_id.as_bytes().as_slice(), retain_i64],
+        )?;
+        let deleted = transaction.execute(
+            "DELETE FROM notify_history_refs
+             WHERE topic_id=?1 AND channel_sequence < ?2",
+            params![topic_id.as_bytes().as_slice(), retain_i64],
+        )?;
+        transaction.commit()?;
+
+        let pruned_entries = u64::try_from(deleted)
+            .map_err(|_| NotifyError::CorruptRecord("deleted row count overflows u64"))?;
+        Ok(HistoryPruneReceipt {
+            topic_id,
+            retained_from_sequence: retain_from_sequence,
+            pruned_entries,
+        })
+    }
+}
+
+fn validate_issue_token_request(
+    request: &IssueNotificationActionTokenRequest,
+) -> Result<(i64, i64, i64), NotifyError> {
+    if request.delivery_sequence == 0 {
+        return Err(NotifyError::InvalidActionTokenRequest(
+            "delivery_sequence must be non-zero",
+        ));
+    }
+    if request.expires_at_ms < request.issued_at_ms {
+        return Err(NotifyError::InvalidActionTokenRequest(
+            "expires_at_ms must be greater than or equal to issued_at_ms",
+        ));
+    }
+    if request.secret_nonce == [0u8; 32] {
+        return Err(NotifyError::InvalidActionTokenRequest(
+            "secret_nonce must be non-zero",
+        ));
+    }
+    let delivery_sequence_i64 = i64::try_from(request.delivery_sequence).map_err(|_| {
+        NotifyError::InvalidActionTokenRequest("delivery_sequence exceeds SQLite i64")
+    })?;
+    let issued_at_i64 = i64::try_from(request.issued_at_ms)
+        .map_err(|_| NotifyError::InvalidActionTokenRequest("issued_at_ms exceeds SQLite i64"))?;
+    let expires_at_i64 = i64::try_from(request.expires_at_ms)
+        .map_err(|_| NotifyError::InvalidActionTokenRequest("expires_at_ms exceeds SQLite i64"))?;
+    Ok((delivery_sequence_i64, issued_at_i64, expires_at_i64))
+}
+
+fn replay_action_token_if_present(
+    connection: &Connection,
+    request: &IssueNotificationActionTokenRequest,
+) -> Result<Option<NotificationActionToken>, NotifyError> {
+    let Some(existing) = load_action_token_by_key(connection, request.idempotency_key)? else {
+        return Ok(None);
+    };
+    let candidate_proof = derive_action_secret_proof(
+        existing.token_id,
+        request.notification_id,
+        request.application_id,
+        request.task_id,
+        request.delivery_sequence,
+        request.action_code,
+        &request.secret_nonce,
+    );
+    let candidate_commitment = action_secret_commitment(&candidate_proof);
+    let bindings_match = existing.notification_id == request.notification_id
+        && existing.application_id == request.application_id
+        && existing.task_id == request.task_id
+        && existing.delivery_sequence == request.delivery_sequence
+        && existing.action_code == request.action_code
+        && existing.expires_at_ms == request.expires_at_ms
+        && constant_time_eq_32(&existing.secret_commitment, &candidate_commitment);
+    if !bindings_match {
+        return Err(NotifyError::ActionIdempotencyConflict(
+            request.idempotency_key,
+        ));
+    }
+    Ok(Some(NotificationActionToken {
+        token_id: existing.token_id,
+        notification_id: existing.notification_id,
+        application_id: existing.application_id,
+        task_id: existing.task_id,
+        delivery_sequence: existing.delivery_sequence,
+        action_code: existing.action_code,
+        issued_at_ms: existing.issued_at_ms,
+        expires_at_ms: existing.expires_at_ms,
+        secret_proof: candidate_proof,
+    }))
+}
+
+fn insert_history_row(
+    connection: &Connection,
+    request: &RecordDeliveryHistoryRequest,
+    seq_i64: i64,
+    recorded_at_i64: i64,
+) -> Result<(), NotifyError> {
+    match &request.task_metadata {
+        None => {
+            connection.execute(
+                "INSERT INTO notify_history_refs (
+                    topic_id, channel_sequence, channel_id, payload_digest, recorded_at_ms,
+                    entry_kind, task_id, application_id, task_generation, transition_tag,
+                    requires_user_action, summary_digest
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'GENERIC', NULL, NULL, NULL, NULL, NULL, NULL)",
+                params![
+                    request.topic_id.as_bytes().as_slice(),
+                    seq_i64,
+                    request.channel_id.as_bytes().as_slice(),
+                    request.payload_digest.as_slice(),
+                    recorded_at_i64,
+                ],
+            )?;
+        }
+        Some(meta) => {
+            let task_gen_i64 = i64::try_from(meta.task_generation.get()).map_err(|_| {
+                NotifyError::InvalidHistoryPagination("task_generation exceeds SQLite i64")
+            })?;
+            connection.execute(
+                "INSERT INTO notify_history_refs (
+                    topic_id, channel_sequence, channel_id, payload_digest, recorded_at_ms,
+                    entry_kind, task_id, application_id, task_generation, transition_tag,
+                    requires_user_action, summary_digest
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'TASK_TRANSITION', ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    request.topic_id.as_bytes().as_slice(),
+                    seq_i64,
+                    request.channel_id.as_bytes().as_slice(),
+                    request.payload_digest.as_slice(),
+                    recorded_at_i64,
+                    meta.task_id.as_bytes().as_slice(),
+                    meta.application_id.as_bytes().as_slice(),
+                    task_gen_i64,
+                    i64::from(meta.transition.wire_tag()),
+                    i64::from(u8::from(meta.requires_user_action)),
+                    meta.summary_digest.as_slice(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn notification_id_for(topic_id: TopicId, subscriber_key: SubscriberKey) -> NotificationId {
@@ -765,6 +1791,39 @@ fn commit_notify_key_for(publication_key: IdempotencyKey) -> IdempotencyKey {
     hasher.update(b"nlos/notify/commit-notify/v1");
     hasher.update(publication_key.as_bytes());
     IdempotencyKey::from_bytes(hasher.finalize()[..16].try_into().expect("16 of 32 bytes"))
+}
+
+fn action_token_id_for(request: &IssueNotificationActionTokenRequest) -> ActionTokenId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/notify-action-token-id/v1");
+    hasher.update(request.idempotency_key.as_bytes());
+    hasher.update(request.notification_id.as_bytes());
+    hasher.update(request.application_id.as_bytes());
+    hasher.update(request.task_id.as_bytes());
+    hasher.update(request.delivery_sequence.to_be_bytes());
+    hasher.update(request.action_code.to_be_bytes());
+    ActionTokenId::from_bytes(hasher.finalize()[..16].try_into().expect("16 of 32 bytes"))
+}
+
+fn redeem_receipt_id_for(stored: &ActionTokenRecord, redeemed_at_ms: u64) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/notify-action-redeem-receipt/v1");
+    hasher.update(stored.token_id.as_bytes());
+    hasher.update(stored.notification_id.as_bytes());
+    hasher.update(stored.application_id.as_bytes());
+    hasher.update(stored.task_id.as_bytes());
+    hasher.update(stored.delivery_sequence.to_be_bytes());
+    hasher.update(stored.action_code.to_be_bytes());
+    hasher.update(redeemed_at_ms.to_be_bytes());
+    ReceiptId::from_bytes(hasher.finalize()[..16].try_into().expect("16 of 32 bytes"))
+}
+
+fn constant_time_eq_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut diff = 0u8;
+    for index in 0..32 {
+        diff |= left[index] ^ right[index];
+    }
+    diff == 0
 }
 
 fn upsert_subscription(
@@ -816,7 +1875,7 @@ fn subscription_from_columns(
             subscriber_key,
             "subscriber key length is not 16",
         )?),
-        consume_token: array32(consume_token)?,
+        consume_token: array32(consume_token, "consume token length is not 32")?,
         registered_at_ms: u64::try_from(registered_at_ms)
             .map_err(|_| NotifyError::CorruptRecord("negative integer"))?,
     })
@@ -828,10 +1887,10 @@ fn array16(bytes: Vec<u8>, reason: &'static str) -> Result<[u8; 16], NotifyError
         .map_err(|_| NotifyError::CorruptRecord(reason))
 }
 
-fn array32(bytes: Vec<u8>) -> Result<[u8; 32], NotifyError> {
+fn array32(bytes: Vec<u8>, reason: &'static str) -> Result<[u8; 32], NotifyError> {
     bytes
         .try_into()
-        .map_err(|_| NotifyError::CorruptRecord("consume token length is not 32"))
+        .map_err(|_| NotifyError::CorruptRecord(reason))
 }
 
 fn verify_subscription(
@@ -890,4 +1949,373 @@ fn delete_subscription(
         params![notification_id.as_bytes().as_slice()],
     )?;
     Ok(())
+}
+
+type ActionTokenColumns = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Vec<u8>,
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<i64>,
+);
+
+fn action_token_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionTokenColumns> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
+        row.get(13)?,
+    ))
+}
+
+fn action_token_from_columns(
+    columns: ActionTokenColumns,
+) -> Result<ActionTokenRecord, NotifyError> {
+    let (
+        token_id,
+        idempotency_key,
+        notification_id,
+        application_id,
+        task_id,
+        delivery_sequence,
+        action_code,
+        secret_commitment,
+        issued_at_ms,
+        expires_at_ms,
+        status_raw,
+        redeemed_at_ms,
+        redeem_receipt_id,
+        revoked_at_ms,
+    ) = columns;
+
+    let status = match status_raw.as_str() {
+        "ISSUED" => {
+            if redeemed_at_ms.is_some() || redeem_receipt_id.is_some() || revoked_at_ms.is_some() {
+                return Err(NotifyError::CorruptRecord(
+                    "ISSUED action token carries non-null terminal fields",
+                ));
+            }
+            ActionTokenStatus::Issued
+        }
+        "REDEEMED" => {
+            let at = redeemed_at_ms.ok_or(NotifyError::CorruptRecord(
+                "REDEEMED token missing redeemed_at_ms",
+            ))?;
+            let receipt_bytes = redeem_receipt_id.ok_or(NotifyError::CorruptRecord(
+                "REDEEMED token missing redeem_receipt_id",
+            ))?;
+            if revoked_at_ms.is_some() {
+                return Err(NotifyError::CorruptRecord(
+                    "REDEEMED token carries revoked_at_ms",
+                ));
+            }
+            ActionTokenStatus::Redeemed {
+                redeemed_at_ms: u64::try_from(at)
+                    .map_err(|_| NotifyError::CorruptRecord("negative redeemed_at_ms"))?,
+                receipt_id: ReceiptId::from_bytes(array16(
+                    receipt_bytes,
+                    "redeem_receipt_id length is not 16",
+                )?),
+            }
+        }
+        "REVOKED" => {
+            let at = revoked_at_ms.ok_or(NotifyError::CorruptRecord(
+                "REVOKED token missing revoked_at_ms",
+            ))?;
+            if redeemed_at_ms.is_some() || redeem_receipt_id.is_some() {
+                return Err(NotifyError::CorruptRecord(
+                    "REVOKED token carries redeemed fields",
+                ));
+            }
+            ActionTokenStatus::Revoked {
+                revoked_at_ms: u64::try_from(at)
+                    .map_err(|_| NotifyError::CorruptRecord("negative revoked_at_ms"))?,
+            }
+        }
+        _ => return Err(NotifyError::CorruptRecord("unknown action token status")),
+    };
+
+    let delivery_sequence_u64 = u64::try_from(delivery_sequence)
+        .map_err(|_| NotifyError::CorruptRecord("invalid action token delivery_sequence"))?;
+    if delivery_sequence_u64 == 0 {
+        return Err(NotifyError::CorruptRecord(
+            "zero action token delivery_sequence",
+        ));
+    }
+    let action_code_u16 = u16::try_from(action_code)
+        .map_err(|_| NotifyError::CorruptRecord("action_code out of u16 range"))?;
+
+    Ok(ActionTokenRecord {
+        token_id: ActionTokenId::from_bytes(array16(token_id, "token_id length is not 16")?),
+        idempotency_key: IdempotencyKey::from_bytes(array16(
+            idempotency_key,
+            "idempotency_key length is not 16",
+        )?),
+        notification_id: NotificationId::from_bytes(array16(
+            notification_id,
+            "notification_id length is not 16",
+        )?),
+        application_id: ApplicationId::from_bytes(array16(
+            application_id,
+            "application_id length is not 16",
+        )?),
+        task_id: TaskId::from_bytes(array16(task_id, "task_id length is not 16")?),
+        delivery_sequence: delivery_sequence_u64,
+        action_code: action_code_u16,
+        secret_commitment: array32(secret_commitment, "secret_commitment length is not 32")?,
+        issued_at_ms: u64::try_from(issued_at_ms)
+            .map_err(|_| NotifyError::CorruptRecord("negative issued_at_ms"))?,
+        expires_at_ms: u64::try_from(expires_at_ms)
+            .map_err(|_| NotifyError::CorruptRecord("negative expires_at_ms"))?,
+        status,
+    })
+}
+
+fn load_action_token(
+    connection: &Connection,
+    token_id: ActionTokenId,
+) -> Result<Option<ActionTokenRecord>, NotifyError> {
+    connection
+        .query_row(
+            "SELECT
+                token_id,
+                idempotency_key,
+                notification_id,
+                application_id,
+                task_id,
+                delivery_sequence,
+                action_code,
+                secret_commitment,
+                issued_at_ms,
+                expires_at_ms,
+                status,
+                redeemed_at_ms,
+                redeem_receipt_id,
+                revoked_at_ms
+             FROM notify_action_tokens
+             WHERE token_id=?1",
+            params![token_id.as_bytes().as_slice()],
+            action_token_columns,
+        )
+        .optional()?
+        .map(action_token_from_columns)
+        .transpose()
+}
+
+fn load_action_token_by_key(
+    connection: &Connection,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<ActionTokenRecord>, NotifyError> {
+    connection
+        .query_row(
+            "SELECT
+                token_id,
+                idempotency_key,
+                notification_id,
+                application_id,
+                task_id,
+                delivery_sequence,
+                action_code,
+                secret_commitment,
+                issued_at_ms,
+                expires_at_ms,
+                status,
+                redeemed_at_ms,
+                redeem_receipt_id,
+                revoked_at_ms
+             FROM notify_action_tokens
+             WHERE idempotency_key=?1",
+            params![idempotency_key.as_bytes().as_slice()],
+            action_token_columns,
+        )
+        .optional()?
+        .map(action_token_from_columns)
+        .transpose()
+}
+
+type HistoryColumns = (
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    String,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<Vec<u8>>,
+);
+
+fn history_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryColumns> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+    ))
+}
+
+fn history_from_columns(columns: HistoryColumns) -> Result<NotificationHistoryEntry, NotifyError> {
+    let (
+        topic_id,
+        channel_sequence,
+        channel_id,
+        payload_digest,
+        recorded_at_ms,
+        entry_kind,
+        task_id,
+        application_id,
+        task_generation,
+        transition_tag,
+        requires_user_action,
+        summary_digest,
+    ) = columns;
+
+    let seq_u64 = u64::try_from(channel_sequence)
+        .map_err(|_| NotifyError::CorruptRecord("negative history channel_sequence"))?;
+    if seq_u64 == 0 {
+        return Err(NotifyError::CorruptRecord("zero history channel_sequence"));
+    }
+
+    let task_metadata = match entry_kind.as_str() {
+        "GENERIC" => None,
+        "TASK_TRANSITION" => {
+            let task_bytes = task_id.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing task_id",
+            ))?;
+            let app_bytes = application_id.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing application_id",
+            ))?;
+            let gen_raw = task_generation.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing task_generation",
+            ))?;
+            let gen_u64 = u64::try_from(gen_raw)
+                .map_err(|_| NotifyError::CorruptRecord("negative task_generation"))?;
+            let generation = NonZeroU64::new(gen_u64)
+                .map(Generation::new)
+                .ok_or(NotifyError::CorruptRecord("zero task_generation"))?;
+            let tag_raw = transition_tag.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing transition_tag",
+            ))?;
+            let tag_u8 = u8::try_from(tag_raw)
+                .map_err(|_| NotifyError::CorruptRecord("transition_tag out of u8 range"))?;
+            let transition = TaskTransitionKind::from_wire_tag(tag_u8)
+                .ok_or(NotifyError::CorruptRecord("unknown stored transition_tag"))?;
+            let action_raw = requires_user_action.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing requires_user_action",
+            ))?;
+            let requires_action = match action_raw {
+                0 => false,
+                1 => true,
+                _ => {
+                    return Err(NotifyError::CorruptRecord(
+                        "invalid stored requires_user_action",
+                    ));
+                }
+            };
+            let summary_bytes = summary_digest.ok_or(NotifyError::CorruptRecord(
+                "TASK_TRANSITION missing summary_digest",
+            ))?;
+            Some(TaskHistoryMetadata {
+                task_id: TaskId::from_bytes(array16(task_bytes, "history task_id length != 16")?),
+                application_id: ApplicationId::from_bytes(array16(
+                    app_bytes,
+                    "history application_id length != 16",
+                )?),
+                task_generation: generation,
+                transition,
+                requires_user_action: requires_action,
+                summary_digest: array32(summary_bytes, "history summary_digest length != 32")?,
+            })
+        }
+        _ => return Err(NotifyError::CorruptRecord("unknown history entry_kind")),
+    };
+
+    Ok(NotificationHistoryEntry {
+        topic_id: TopicId::from_bytes(array16(topic_id, "history topic_id length != 16")?),
+        channel_id: ChannelId::from_bytes(array16(channel_id, "history channel_id length != 16")?),
+        channel_sequence: seq_u64,
+        payload_digest: array32(payload_digest, "history payload_digest length != 32")?,
+        recorded_at_ms: u64::try_from(recorded_at_ms)
+            .map_err(|_| NotifyError::CorruptRecord("negative history recorded_at_ms"))?,
+        task_metadata,
+    })
+}
+
+fn load_history_entry(
+    connection: &Connection,
+    topic_id: TopicId,
+    channel_sequence: u64,
+) -> Result<Option<NotificationHistoryEntry>, NotifyError> {
+    let seq_i64 = i64::try_from(channel_sequence)
+        .map_err(|_| NotifyError::CorruptRecord("channel_sequence exceeds SQLite i64"))?;
+    connection
+        .query_row(
+            "SELECT
+                topic_id,
+                channel_sequence,
+                channel_id,
+                payload_digest,
+                recorded_at_ms,
+                entry_kind,
+                task_id,
+                application_id,
+                task_generation,
+                transition_tag,
+                requires_user_action,
+                summary_digest
+             FROM notify_history_refs
+             WHERE topic_id=?1 AND channel_sequence=?2",
+            params![topic_id.as_bytes().as_slice(), seq_i64],
+            history_columns,
+        )
+        .optional()?
+        .map(history_from_columns)
+        .transpose()
+}
+
+fn load_prune_watermark(connection: &Connection, topic_id: TopicId) -> Result<u64, NotifyError> {
+    let watermark = connection
+        .query_row(
+            "SELECT retained_from_sequence
+             FROM notify_history_prune_watermarks
+             WHERE topic_id=?1",
+            params![topic_id.as_bytes().as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    match watermark {
+        None => Ok(0),
+        Some(value) => u64::try_from(value)
+            .map_err(|_| NotifyError::CorruptRecord("negative retained_from_sequence")),
+    }
 }

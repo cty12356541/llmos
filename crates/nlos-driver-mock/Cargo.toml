@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "nlos-provider-worker"
+path = "src/bin/nlos-provider-worker.rs"
+
 [dependencies]
 minicbor.workspace = true
 nlos-clock = { path = "../nlos-clock" }

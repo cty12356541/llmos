@@ -45,9 +45,22 @@ pub mod authenticated;
 pub mod cache;
 pub mod codec;
 pub mod ipc;
+pub mod process_provider;
+pub mod proto_codec;
 pub mod provider;
 
 pub use cache::{CacheHealth, DegradationCause, ProviderCache};
+pub use process_provider::{
+    DriverProviderService, DriverProviderServiceError, OutOfProcessProviderCache,
+    OutOfProcessProviderDriver, OutOfProcessProviderError, ProviderClientCredentials,
+    ProviderHandshakeSigner, ProviderWorkerConfig,
+};
+pub use proto_codec::{
+    CancelProviderOperation, CancelProviderOutcome, IsolationGuarantee,
+    PROVIDER_ISOLATION_UNVERIFIED_TAG, PROVIDER_ISOLATION_VERIFIED_TAG, ProtoCodecError,
+    ProviderExecutionReceipt, ProviderIsolationAttestation, ProviderIsolationPosture,
+    ProviderIsolationProfile, derive_worker_compute_digest,
+};
 pub use provider::{
     CompleteProviderOperation, CompleteProviderOutcome, DispatchProviderOperation,
     DispatchProviderOutcome, MockProvider, ProviderError, ProviderFaultMode,

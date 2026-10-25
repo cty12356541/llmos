@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "../../schema/nlos/sabi/v1/takeover_control.proto",
         "../../schema/nlos/sabi/v1/wait_control.proto",
         "../../schema/nlos/sabi/v1/principal_handshake.proto",
+        "../../schema/nlos/sabi/v1/driver_provider.proto",
     ];
     for proto in protos {
         println!("cargo:rerun-if-changed={proto}");
@@ -60,6 +61,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
+    config.type_attribute(
+        ".nlos.sabi.v1.ProviderIsolationAttestationWire",
+        "#[allow(clippy::struct_excessive_bools)]",
+    );
     config.service_generator(Box::new(LocalRpcServiceGenerator));
     config.compile_protos(&protos, &["../../schema"])?;
     Ok(())

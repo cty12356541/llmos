@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+import "nlos/sabi/v1/operation_control.proto";
+
+// Terminal outcome classes produced by a driver provider execution. `0` stays
+// unspecified so a decoding peer fails closed on an absent or unknown outcome.
+enum DriverProviderTerminalOutcome {
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_UNSPECIFIED = 0;
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_COMPLETED = 1;
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_FAILED = 2;
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_PARTIAL_EFFECT = 3;
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_EFFECT_UNKNOWN = 4;
+  DRIVER_PROVIDER_TERMINAL_OUTCOME_CANCELLED_BEFORE_EFFECT = 5;
+}
+
+// [TASK-PROVIDER-001] wire attestation of a provider's tenant, session, cache,
+// and data-retention isolation guarantees. If any boolean guarantee is false or
+// `attestation_digest` is all-zeros, consumers MUST classify the execution
+// receipt as `PROVIDER_ISOLATION_UNVERIFIED`.
+message ProviderIsolationAttestationWire {
+  bool tenant_isolated = 1;
+  bool session_ephemeral = 2;
+  bool cache_partitioned = 3;
+  bool zero_data_retention = 4;
+  bytes attestation_digest = 5;
+  string provider_profile = 6;
+}
+
+message DriverProviderRegisterRequest {
+  bytes operation_id = 1;
+  uint64 operation_generation = 2;
+  bytes owner_fiber_id = 3;
+  uint64 owner_fiber_generation = 4;
+  bytes cancellation_scope_id = 5;
+  uint64 cancellation_generation = 6;
+}
+
+message DriverProviderDispatchRequest {
+  bytes operation_id = 1;
+  uint64 operation_generation = 2;
+  bytes callback_id = 3;
+}
+
+message DriverProviderCompleteRequest {
+  bytes operation_id = 1;
+  uint64 operation_generation = 2;
+  bytes callback_id = 3;
+  bytes seed = 4;
+}
+
+message DriverProviderCancelRequest {
+  bytes operation_id = 1;
+  uint64 operation_generation = 2;
+  uint64 expected_cancel_epoch = 3;
+  bytes no_effect_receipt_id = 4;
+}
+
+message DriverProviderQueryIsolationRequest {}
+
+// ADR-0024 frozen DriverProvider request payload (`nlos.sabi.DriverProvider` v1.0).
+message DriverProviderRequest {
+  SchemaIdentity schema = 1;
+  oneof request {
+    DriverProviderRegisterRequest register = 2;
+    DriverProviderDispatchRequest dispatch = 3;
+    DriverProviderCompleteRequest complete = 4;
+    DriverProviderCancelRequest cancel = 5;
+    DriverProviderQueryIsolationRequest query_isolation = 6;
+  }
+}
+
+message DriverProviderRegisterAck {
+  bool replayed = 1;
+  bytes operation_id = 2;
+  uint64 operation_generation = 3;
+  bytes admission_receipt_id = 4;
+}
+
+message DriverProviderDispatchAck {
+  bool replayed = 1;
+  bytes preparation_receipt_id = 2;
+  bytes activation_receipt_id = 3;
+  bytes callback_id = 4;
+  bytes operation_id = 5;
+  uint64 operation_generation = 6;
+  bytes owner_fiber_id = 7;
+  uint64 owner_fiber_generation = 8;
+  uint64 cancel_epoch = 9;
+}
+
+message DriverProviderCompleteAck {
+  bool replayed = 1;
+  DriverProviderTerminalOutcome outcome = 2;
+  bytes receipt_id = 3;
+  OperationLifecycleState state = 4;
+  bytes compute_digest = 5;
+  ProviderIsolationAttestationWire isolation = 6;
+  bool fenced_reconciliation_only = 7;
+}
+
+message DriverProviderCancelAck {
+  bool replayed = 1;
+  bool already_terminal = 2;
+  bytes operation_id = 3;
+  uint64 operation_generation = 4;
+  OperationLifecycleState state = 5;
+  uint64 cancel_epoch = 6;
+  bytes terminal_receipt_id = 7;
+}
+
+message DriverProviderIsolationReport {
+  ProviderIsolationAttestationWire isolation = 1;
+}
+
+// ADR-0024 frozen DriverProvider response payload (`nlos.sabi.DriverProvider` v1.0).
+message DriverProviderResponse {
+  SchemaIdentity schema = 1;
+  oneof response {
+    DriverProviderRegisterAck register_ack = 2;
+    DriverProviderDispatchAck dispatch_ack = 3;
+    DriverProviderCompleteAck complete_ack = 4;
+    DriverProviderCancelAck cancel_ack = 5;
+    DriverProviderIsolationReport isolation_report = 6;
+  }
+}

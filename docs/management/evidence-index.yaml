@@ -964,3 +964,33 @@
   scope: "nlos-capability::custody SigningKeyCustodyVault / SqliteCustodyStore（WAL+FULL，KEK 封装 Ed25519 不可导出签名、单调审计日志、纪元轮换与泄露吊销墓碑）+ nlos-commit-coordinator::gateway_reconcile EnforcementGatewayReconciliationAuthority（ADR-0017 R-C->R-B 有界结算，区分 Provisional 与 FinalNonSupersedeable 验签结算回执并驱动 ResourceAuthority / SqliteTaskAuthority 双域收敛）；单机持久库验证，非物理 HSM 硬件隔离"
   assurance: H3
   date: "2026-10-25"
+- id: c-search-001-non-authoritative-checkpoint-search
+  path: docs/evidence/stage-c/c-search-001-non-authoritative-checkpoint-search.md
+  title: "C-SEARCH-001 / W65-SEARCH-EXT：非权威候选发现信封、签名向量检查点有界快照查询、游标分页与多 Cell 联邦候选归并"
+  scope: "nlos-search 一致性声明与显式降级门禁（CONS-DECL-001）+ SearchUseRestrictions::NON_AUTHORITATIVE 五门控制权威禁用守卫（CONS-CTRL-001）+ SignedSemanticVectorCheckpoint 验签有界快照发现与 verify_candidate_against_checkpoint 权威/撤回重验（SEM-CHECKPOINT-001 / TASK-SNAPSHOT-001 / TASK-SNAPSHOT-003 / SEM-RETRACT-004）+ 有界窗口游标分页（PERF-CONTROL-001）+ federated::aggregate_federated_candidates 跨 Cell 无全局 log_seq 去重与远程失败显式暴露（DIST-FAIL-001）+ SQLITE_OPEN_READ_ONLY 零写入不变量；单机多 SQLite 持久库验证，生产消费方接线随 W66 落地"
+  assurance: H3
+  date: "2026-10-25"
+- id: c-notify-001-task-lifecycle-action-token
+  path: docs/evidence/stage-c/c-notify-001-task-lifecycle-action-token.md
+  title: "C-NOTIFY-001 / W65-NOTIFY-EXT：超最小通知面扩展——后台任务生命周期通知、一次性绑定动作令牌与离线历史分页（TASK-NOTIFY-001, TASK-STATE-001, DUI-NOTIFY-001 & DUI-OFFLINE-001）"
+  scope: "nlos-notify schema v2（WAL+FULL，4 张 STRICT 表 + 6 条不可变/防复活触发器，v1->v2 原地无损迁移）+ TASK-NOTIFY-001 / TASK-STATE-001 16 态 TaskNotificationEnvelope 91B 定长编解码与单日志零影子扇出发布/唤醒/轮询 + DUI-NOTIFY-001 域分隔 SHA-256 绑定 Notification/Application/Task 一次性 ActionToken（仅落盘验证摘要，拒绝跨应用伪造与二次核销）+ DUI-OFFLINE-001 有界游标分页通知历史与单调裁剪；库与持久库验证，生产消费方接线随 W66 落地"
+  assurance: H3
+  date: "2026-10-25"
+- id: c-partition-001-partition-autonomy-bounded-loss
+  path: docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+  title: "C-PARTITION-001 / W65-CPARTITION：控制平面断连局部自治、远端不确定失败显式分类、重连有界配额损耗对账与跨双存活 OS 进程收敛验证（DIST-LOCAL-001 & DIST-FAIL-001 & LEASE-LOSS-001 & LEASE-RECON-001 & ROAD-C-001）"
+  scope: "nlos-cell::partition PartitionAutonomyGate 三态控制平面链路（Connected/Partitioned/Reconnecting）与局部自治门控（DIST-LOCAL-001：有效缓存 Capability + 未超期本地 QuotaLease 持续推进，扩容/未授权跨 Cell 发布/未缓存变更显式阻塞）+ RemoteCallContract / RemoteCallOutcome 四态远端失败与不确定副作用重试门禁（DIST-FAIL-001）+ nlos-slice-k::partition_recovery drive_partition_reconnection_convergence 四阶段重连收敛（LEASE-LOSS-001/LEASE-FENCE-001/LEASE-RECON-001/ROAD-C-001 PartitionBoundedLossProof 有界在途损耗永久隔离且零超卖 + DIST-EVENT-001/DIST-AUDIT-001/SEM-CHECKPOINT-001 签名向量检查点与幂等语义事件收敛 + DIST-ART-001 Artifact 传输包 fast-forward 与对称分叉冲突隔离 + PARTRECV 联邦检查点摘要验真）+ ADR-0018 单机双存活子 OS 进程 6 场景集成矩阵；限定单机双存活进程与文件邮箱通道断连模拟，跨物理机 TCP/QUIC 传输与硬件网络分区注入保留在 RISK-B-11"
+  assurance: H6
+  date: "2026-10-25"
+- id: c-provider-001-real-process-provider-codec
+  path: docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
+  title: "C-PROVIDER-001 / W65-CPROVIDER-REAL：跨进程真实 OS Provider Worker、跨平台 ADR-0011 认证 IPC、ADR-0024 冻结 Protobuf 载荷通道与 TASK-PROVIDER-001 隔离姿态核验"
+  scope: "ADR-0024 冻结第 8 个 SABI 通道 nlos.sabi.DriverProvider v1.0（16 KiB 有界载荷、黄金向量钉死，闭合 RISK-B-05 review_point 与 U-10，保留 minicbor 兼容层）+ 独立 OS 子进程 nlos-provider-worker 与 OutOfProcessProviderDriver 跨平台（Unix Socket / Windows Named Pipe）ADR-0011 主体认证 IPC + 真实子进程 kill/respawn 触发 ProviderCache 降级重放与恢复 + 陈旧 generation 与跨进程重启 cancel-epoch 对账栅栏 + TASK-PROVIDER-001 缺失隔离承诺/全零摘要强制标记 PROVIDER_ISOLATION_UNVERIFIED；外部公有云商用 LLM HTTP SDK 与硬件 TEE 根证书在线验真属部署适配层边界"
+  assurance: H5
+  date: "2026-10-25"
+- id: c-app-payload-001-sample-cli-execution
+  path: docs/evidence/stage-c/c-app-payload-001-sample-cli-execution.md
+  title: "Stage C Evidence — `C-APP-PAYLOAD-001`: Third-Party Sample Application Payload Execution & `nlos-package` CLI End-to-End Closure"
+  scope: "nlos-slice-k::execute_application_payload 与 SemanticWriter 载荷执行回执车道 + nlos-package CLI（keygen/build/conformance/verify/install/run/update/uninstall）+ examples/sample-app（run 与 payload 子命令真实执行 app.bin 跨代际载荷回执、lifecycle.sh 双状态根演练）+ sample_app_cli_lifecycle 跨平台端到端测试矩阵；限定确定性驱动面 Operation 与语义回执桥接，非客户机 Wasm/ELF 指令沙箱虚拟机"
+  assurance: H4
+  date: "2026-10-25"

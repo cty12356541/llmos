@@ -1,16 +1,12 @@
 //! Single-Cell `QuotaLease` / `CapacityLease` / `ExclusiveDeviceLease` grant
-//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
-//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
-//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
-//! 消费方或显式接线计划落地。登记：docs/management/stage-c-progress.md 2026-10-05 F1 段。
-
-//! 接线前提：slice-k/daemon 装配 `CellAuthority` 与 lease 三族 admit/release 面（W38 lease-admit 前片已指向该路径）。
-//! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-lease 依赖边）——解冻条件达成；生产调用方为 `CellHost` 的 quota 面。
-//! 2026-10-05 W49：ADR-0021——三族 grantor 改持共享权威 `Arc<CellAuthority>`（`CellAuthority::into_shared`），
-//! capacity/device 族随 W49 进入单进程装配；quota 族仍是唯一 epoch 推进入口。
-//! 2026-10-24 W62：三族租约 `SQLite WAL + FULL` 持久化与崩溃恢复（`SqliteLeaseStore` / `open_durable`）。
-//! 2026-10-24 W63：三族租约跨纪元对账回执（`LEASE-RECON-001`、`LEASE-FENCE-001`）、跨节点迁移（`LEASE-MIGRATE-001`、`LEASE-CAPACITY-002`、`LEASE-DEVICE-001`）与本地 WAL 丢失隔离（`LEASE-WAL-001`）。
-//! (C-LEASE slices).
+//! and reconciliation (`C-LEASE` slices).
+//!
+//! 装配与持久化演进：
+//! - 2026-10-05 W48：接线计划已落地（`nlos-slice-k` `CellHost` 装配 + `nlos-slice-k`→`nlos-lease` 依赖边）——生产调用方为 `CellHost`。
+//! - 2026-10-05 W49：ADR-0021——三族 grantor 改持共享权威 `Arc<CellAuthority>`（`CellAuthority::into_shared`），capacity/device 族随 W49 进入单进程装配；quota 族仍是唯一 epoch 推进入口。
+//! - 2026-10-24 W62：三族租约 `SQLite WAL + FULL` 持久化与崩溃恢复（[`SqliteLeaseStore`] / `open_durable`）。
+//! - 2026-10-24 W63：三族租约跨纪元对账回执（`LEASE-RECON-001`、`LEASE-FENCE-001`）、跨节点迁移（`LEASE-MIGRATE-001`、`LEASE-CAPACITY-002`、`LEASE-DEVICE-001`）与本地 WAL 丢失隔离（`LEASE-WAL-001`）。
+//! - 2026-10-25 W65：由 `nlos-slice-k::partition_recovery` 跨双存活 OS 进程端到端驱动断网冻结、在途有界损耗隔离与重连对账回执。
 //!
 //! Control-plane prepaid transfer for one Cell:
 //! - `QuotaLease` (`LEASE-GRANT-001`): `AVAILABLE` → node `LEASE`; face value
