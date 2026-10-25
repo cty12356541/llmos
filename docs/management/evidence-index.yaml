@@ -906,13 +906,37 @@
   date: "2026-10-08"
 - id: c-sync-001-signed-event-set-merge
   path: docs/evidence/stage-c/c-sync-001-signed-event-set-merge.md
-  title: "C-SYNC-001 / W45-D1 + W62-CSYNC-SEM：签名事件集合合并、store 导出与 DIST-AUDIT-001 跨域溯源信封"
-  scope: "nlos-semantic 签名事件集合合并原语（DIST-EVENT-001：幂等去重、无 CRDT 语义合成、无跨 Cell 单一标量 log_seq 遵循 SEM-CHECKPOINT-001、冲突 fail-closed 全数排除、digest 碰撞残余分歧整组拒绝）+ SemanticAuthority durable store 导出（export_signed_event_set / export_cross_domain_event_set）+ DIST-AUDIT-001 跨域溯源信封（生产者 signature + 接收域 AdmissionReceipt + 非零 trust snapshot digest，缺项/篡改 fail-closed）；仅单机内存/单库导出与合并验证，非跨机网络传输或跨 store 自动持久化写回"
+  title: "C-SYNC-001 / W45-D1 + W62-CSYNC-SEM + W63-CSYNC-APPLY：签名事件集合合并、store 导出、DIST-AUDIT-001 信封、持久库写回与 SEM-CHECKPOINT-001 向量检查点"
+  scope: "nlos-semantic 签名事件集合合并原语（DIST-EVENT-001：幂等去重、无 CRDT 语义合成、无跨 Cell 单一标量 log_seq 遵循 SEM-CHECKPOINT-001、冲突 fail-closed 全数排除、digest 碰撞残余分歧整组拒绝）+ SemanticAuthority durable store 导出与原子导入收敛（export_signed_event_set / export_cross_domain_event_set / import_cross_domain_event_set / converge_cross_domain_event_sets）+ DIST-AUDIT-001 跨域溯源信封 + SEM-CHECKPOINT-001 签名向量检查点（SignedSemanticVectorCheckpoint / diff_vector_checkpoints 因果比较）；单机多 SQLite 持久库收敛验证，非跨机网络传输"
   assurance: H3
   date: "2026-10-24"
 - id: c-sync-002-artifact-sync-policy
   path: docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
   title: "C-SYNC-002 / W62-CSYNC-ART：DIST-ART-001 按内容类型四轴制品同步策略与冲突回执"
   scope: "nlos-artifact 按内容类型声明四轴同步策略（ArtifactMergeStrategy / ArtifactConflictStrategy / ArtifactReplicaAuthority / ArtifactDeletionSemantics）+ ArtifactSyncPolicyRegistry（未注册 MIME fail-closed）+ 顺序无关确定性冲突回执 ArtifactConflictReceipt + evaluate_artifact_sync / export_replica_revision_bundle / sync_artifact_replica_head（SingleAuthoritativeCell 非权威写入拒绝、QuarantineBothHeads 冲突隔离、TombstoneWithRetention 墓碑因果门控）；仅单机策略求值与本地 head 同步，非跨机 blob 传输或 CRDT 自动合并"
+  assurance: H3
+  date: "2026-10-24"
+- id: c-shard-005-dist-task-conformance
+  path: docs/evidence/stage-c/c-shard-005-dist-task-conformance.md
+  title: "C-SHARD-005 / W62-CS1A + W63-CS1BC：§26.1 三 Record schema v47 与 DIST-TASK-001/002/004 全语义对齐"
+  scope: "nlos-task schema v47 三 Record（TaskAuthorityAssignment 五态、TaskAuthorityParticipantRegistry 签名与 prior_root、TaskAuthorityTakeoverReceipt quarantine_root 与被动 consensus_commit_index）+ DIST-TASK-001 准入/冻结门 + DIST-TASK-002 六类 canonical endpoint barrier 全覆盖与未决写集并集 fence + DIST-TASK-004 TaskPermitClosureReceipt 置旧代 Superseded 并推进新 OPEN generation；限定单机权威存储与 ADR-0018 双进程域，远端物理副作用 cleanup 与跨机残域保留在 RISK-B-11"
+  assurance: H3
+  date: "2026-10-24"
+- id: c-shard-006-production-takeover-binding
+  path: docs/evidence/stage-c/c-shard-006-production-takeover-binding.md
+  title: "C-SHARD-006 / W63-CS1D：跨 Cell 接管驱动面生产化与 MigrationObject ↔ DIST-TASK 记录绑定"
+  scope: "nlos-cell DistTaskRecordBinding 域分隔摘要绑定（MigrationIntent / CheckpointPrefix / CheckpointFact 四态核验，闭合 federation.rs:115 义务）+ nlos-slice-k takeover_drive 生产化选项（ProductionTakeoverOptions、ParticipantRegistryRecord Ed25519 快照签名与 successor 验签、v47 ReceiptExtensions 透传、Expired/Quarantined 转换与 barrier 失败自动隔离、federation 意图与检查点端到端绑定）；限定 ADR-0018 单机双进程拓扑"
+  assurance: H3
+  date: "2026-10-24"
+- id: c-lease-001-durable-three-family-reconciliation
+  path: docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
+  title: "C-LEASE-001 / W62-CLEASE-DB + W63-CLEASE-RECON：三族租约 SQLite WAL 持久化、非互换对账回执与跨节点迁移"
+  scope: "nlos-lease QuotaLease / CapacityLease / ExclusiveDeviceLease 三族状态机 + SqliteLeaseStore（WAL+FULL，11 张 STRICT 表 + 22 条不可变/单调触发器）+ LEASE-FENCE-001 FenceBarrierAck 门控 + LEASE-RECON-001 三族非互换对账回执（QuotaReconciliationReceipt / CapacityReconciliationReceipt / DeviceReconciliationReceipt）+ LEASE-MIGRATE-001 / LEASE-CAPACITY-002 / LEASE-DEVICE-001 跨节点迁移重授 + LEASE-WAL-001 本地 WAL 丢失隔离；单机持久库与双节点模型验证，非跨机网络共识"
+  assurance: H3
+  date: "2026-10-24"
+- id: c-migrate-001-process-migration-protocol
+  path: docs/evidence/stage-c/c-migrate-001-process-migration-protocol.md
+  title: "C-MIGRATE-001 / W63-CMIGRATE-PROC：DIST-MIGRATE-001 八步进程迁移状态机与 DIST-MIGRATE-002 固定会话门控"
+  scope: "nlos-process ProcessMigrationCoordinator 八步严格有序状态机（Initiated -> Quiesced -> Checkpointed -> SourceFenced -> CapabilitiesRebound -> LeasesRegranted -> TargetRestored -> Completed，产出域分隔 SHA-256 ProcessMigrationReceipt 并强制 target_generation == source_generation + 1）+ DIST-MIGRATE-002 PinnedNonMigratable 驱动会话明确拒绝（RefuseMigration）或显式降级（DowngradeToRestartFromArtifact）；协议层与单机状态机验证，CellHost 跨组件编排留后续切片"
   assurance: H3
   date: "2026-10-24"

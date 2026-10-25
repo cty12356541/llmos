@@ -16,17 +16,23 @@ use nlos_types::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
+use crate::reconcile::{
+    verify_capacity_fence_ack, verify_cleanup_attestation, verify_device_fence_ack,
+    verify_quota_fence_ack,
+};
 use crate::{
-    CapacityLeaseGrant, CapacityLeaseState, DeviceResetReceipt, ExclusiveDeviceLeaseGrant,
-    ExclusiveDeviceLeaseState, FenceScope, HostAttachReceipt, LeaseInstant, QuotaLeaseGrant,
-    QuotaLeaseState, attach_receipt_binds_lease, receipt_binds_lease,
+    CapacityLeaseGrant, CapacityLeaseState, CapacityReconciliationReceipt, CleanupAttestation,
+    DeviceReconciliationReceipt, DeviceResetReceipt, ExclusiveDeviceLeaseGrant,
+    ExclusiveDeviceLeaseState, FenceBarrierAck, FenceScope, HostAttachReceipt, LeaseInstant,
+    QuotaLeaseGrant, QuotaLeaseState, QuotaReconciliationReceipt, attach_receipt_binds_lease,
+    receipt_binds_lease,
 };
 
 /// Durable schema version for `SqliteLeaseStore`.
 pub const SCHEMA_VERSION: i64 = 1;
 
-const EXPECTED_TABLE_COUNT: i64 = 8;
-const EXPECTED_TRIGGER_COUNT: i64 = 16;
+const EXPECTED_TABLE_COUNT: i64 = 11;
+const EXPECTED_TRIGGER_COUNT: i64 = 22;
 
 /// Fail-closed typed errors of the durable `SQLite` lease store.
 #[derive(Debug)]
@@ -135,10 +141,17 @@ pub struct SqliteLeaseStore {
     connection: Mutex<Connection>,
 }
 
+pub(crate) type QuotaRehydration = (
+    u64,
+    HashMap<QuotaLeaseId, QuotaLeaseGrant>,
+    HashMap<QuotaLeaseId, Vec<QuotaReconciliationReceipt>>,
+);
+
 pub(crate) type CapacityRehydration = (
     u64,
     HashMap<CapacityLeaseId, CapacityLeaseGrant>,
     HashMap<CapacityLeaseId, HostAttachReceipt>,
+    HashMap<CapacityLeaseId, CapacityReconciliationReceipt>,
 );
 
 pub(crate) type DeviceRehydration = (
@@ -146,6 +159,7 @@ pub(crate) type DeviceRehydration = (
     Generation,
     HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
     Vec<DeviceResetReceipt>,
+    HashMap<ExclusiveDeviceLeaseId, DeviceReconciliationReceipt>,
 );
 
 impl SqliteLeaseStore {
@@ -202,7 +216,7 @@ impl SqliteLeaseStore {
         &self,
         authority: &CellAuthority,
         initial_available: u64,
-    ) -> Result<(u64, HashMap<QuotaLeaseId, QuotaLeaseGrant>), LeaseStoreError> {
+    ) -> Result<QuotaRehydration, LeaseStoreError> {
         let mut connection = self.lock()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pool_row: Option<(Vec<u8>, i64, i64, i64, i64)> = tx
@@ -243,7 +257,7 @@ impl SqliteLeaseStore {
                 ],
             )?;
             tx.commit()?;
-            return Ok((initial_available, HashMap::new()));
+            return Ok((initial_available, HashMap::new(), HashMap::new()));
         };
 
         let stored_cell = decode_cell_identity(&cell_bytes, "quota_pool_state.cell_id")?;
@@ -257,7 +271,7 @@ impl SqliteLeaseStore {
         let stored_epoch = decode_epoch(raw_epoch, "quota_pool_state.last_epoch")?;
         let stored_token = decode_fencing_token(raw_token, "quota_pool_state.last_fencing_token")?;
 
-        let (leases, net_deducted, max_lease_epoch) =
+        let (leases, reconciliation_receipts, net_deducted, max_lease_epoch) =
             load_and_validate_quota_leases(&tx, stored_cell)?;
         let total =
             stored_available
@@ -297,7 +311,7 @@ impl SqliteLeaseStore {
         }
 
         tx.commit()?;
-        Ok((stored_available, leases))
+        Ok((stored_available, leases, reconciliation_receipts))
     }
 
     pub(crate) fn persist_quota_grant(
@@ -487,6 +501,76 @@ impl SqliteLeaseStore {
         Ok(())
     }
 
+    pub(crate) fn persist_quota_reconcile(
+        &self,
+        expected_state: QuotaLeaseState,
+        next: &QuotaLeaseGrant,
+        receipt: &QuotaReconciliationReceipt,
+        pool_update: (u64, u64),
+    ) -> Result<(), LeaseStoreError> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO quota_reconciliation_receipts (
+                lease_id, reconcile_seq, receipt_id, cell_id, node_boot_generation,
+                epoch, fencing_token, face_value, high_water_spent, settled_spent,
+                returned_to_available, remaining_quarantined, ack_gateway_id,
+                ack_observed_high_water, ack_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                receipt.lease_id.as_bytes().as_slice(),
+                encode_u64(receipt.reconcile_seq, "reconcile_seq")?,
+                receipt.receipt_id.as_bytes().as_slice(),
+                receipt.cell.as_bytes().as_slice(),
+                encode_u64(receipt.node_boot_generation.get(), "node_boot_generation")?,
+                encode_u64(receipt.epoch.get(), "epoch")?,
+                encode_u64(receipt.fencing_token.get(), "fencing_token")?,
+                encode_u64(receipt.face_value, "face_value")?,
+                encode_u64(receipt.high_water_spent, "high_water_spent")?,
+                encode_u64(receipt.settled_spent, "settled_spent")?,
+                encode_u64(receipt.returned_to_available, "returned_to_available")?,
+                encode_u64(receipt.remaining_quarantined, "remaining_quarantined")?,
+                receipt.fence_barrier_ack.gateway_id().as_slice(),
+                encode_u64(
+                    receipt.fence_barrier_ack.observed_high_water(),
+                    "ack_observed_high_water"
+                )?,
+                receipt.fence_barrier_ack.ack_digest().as_slice(),
+            ],
+        )?;
+        let changed = tx.execute(
+            "UPDATE quota_leases
+             SET remaining = ?1, spent = ?2, returned = ?3, state = ?4
+             WHERE lease_id = ?5 AND state = ?6",
+            params![
+                encode_u64(next.remaining, "remaining")?,
+                encode_u64(next.spent, "spent")?,
+                encode_u64(next.returned, "returned")?,
+                encode_quota_state(next.state),
+                next.lease_id.as_bytes().as_slice(),
+                encode_quota_state(expected_state),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "quota_leases reconcile CAS lost",
+            ));
+        }
+        let (expected_available, next_available) = pool_update;
+        let pool_changed = tx.execute(
+            "UPDATE quota_pool_state SET available = ?1 WHERE singleton = 1 AND available = ?2",
+            params![
+                encode_u64(next_available, "next_available")?,
+                encode_u64(expected_available, "expected_available")?,
+            ],
+        )?;
+        if pool_changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord("quota_pool_state CAS lost"));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn open_or_rehydrate_capacity(
         &self,
         authority: &CellAuthority,
@@ -521,7 +605,7 @@ impl SqliteLeaseStore {
                 ],
             )?;
             tx.commit()?;
-            return Ok((initial_pool, HashMap::new(), HashMap::new()));
+            return Ok((initial_pool, HashMap::new(), HashMap::new(), HashMap::new()));
         };
 
         let stored_cell = decode_cell_identity(&cell_bytes, "capacity_pool_state.cell_id")?;
@@ -533,7 +617,7 @@ impl SqliteLeaseStore {
         let stored_initial = decode_u64(raw_initial, "capacity_pool_state.initial_pool")?;
         let stored_remaining = decode_u64(raw_remaining, "capacity_pool_state.pool_remaining")?;
 
-        let (leases, attach_receipts, reserved_total) =
+        let (leases, attach_receipts, reconciliation_receipts, reserved_total) =
             load_and_validate_capacity_leases(&tx, stored_cell)?;
         let total =
             stored_remaining
@@ -548,7 +632,12 @@ impl SqliteLeaseStore {
         }
 
         tx.commit()?;
-        Ok((stored_remaining, leases, attach_receipts))
+        Ok((
+            stored_remaining,
+            leases,
+            attach_receipts,
+            reconciliation_receipts,
+        ))
     }
 
     pub(crate) fn persist_capacity_grant(
@@ -680,6 +769,80 @@ impl SqliteLeaseStore {
         Ok(())
     }
 
+    pub(crate) fn persist_capacity_reconcile(
+        &self,
+        capacity_lease_id: CapacityLeaseId,
+        expected_state: CapacityLeaseState,
+        receipt: &CapacityReconciliationReceipt,
+        pool_update: (u64, u64),
+    ) -> Result<(), LeaseStoreError> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO capacity_reconciliation_receipts (
+                capacity_lease_id, receipt_id, target_node, target_node_boot_generation,
+                capacity_epoch, fencing_token, amount, cleaned_amount,
+                holder_processes_terminated, cleanup_attestation_digest,
+                ack_gateway_id, ack_observed_high_water, ack_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                receipt.capacity_lease_id.as_bytes().as_slice(),
+                receipt.receipt_id.as_bytes().as_slice(),
+                receipt.target_node.as_bytes().as_slice(),
+                encode_u64(
+                    receipt.target_node_boot_generation.get(),
+                    "target_node_boot_generation"
+                )?,
+                encode_u64(receipt.capacity_epoch.get(), "capacity_epoch")?,
+                encode_u64(receipt.fencing_token.get(), "fencing_token")?,
+                encode_u64(receipt.amount, "amount")?,
+                encode_u64(
+                    receipt.cleanup_attestation.cleaned_amount(),
+                    "cleaned_amount"
+                )?,
+                i64::from(receipt.cleanup_attestation.holder_processes_terminated()),
+                receipt.cleanup_attestation.attestation_digest().as_slice(),
+                receipt.fence_barrier_ack.gateway_id().as_slice(),
+                encode_u64(
+                    receipt.fence_barrier_ack.observed_high_water(),
+                    "ack_observed_high_water"
+                )?,
+                receipt.fence_barrier_ack.ack_digest().as_slice(),
+            ],
+        )?;
+        let changed = tx.execute(
+            "UPDATE capacity_leases
+             SET state = 'RETURNED'
+             WHERE capacity_lease_id = ?1 AND state = ?2",
+            params![
+                capacity_lease_id.as_bytes().as_slice(),
+                encode_capacity_state(expected_state),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "capacity_leases reconcile CAS lost",
+            ));
+        }
+        let (expected_pool, next_pool) = pool_update;
+        let pool_changed = tx.execute(
+            "UPDATE capacity_pool_state
+             SET pool_remaining = ?1
+             WHERE singleton = 1 AND pool_remaining = ?2",
+            params![
+                encode_u64(next_pool, "capacity next_pool")?,
+                encode_u64(expected_pool, "capacity expected_pool")?,
+            ],
+        )?;
+        if pool_changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "capacity_pool_state CAS lost",
+            ));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn open_or_rehydrate_device(
         &self,
         authority: &CellAuthority,
@@ -721,7 +884,13 @@ impl SqliteLeaseStore {
                 ],
             )?;
             tx.commit()?;
-            return Ok((true, Generation::INITIAL, HashMap::new(), Vec::new()));
+            return Ok((
+                true,
+                Generation::INITIAL,
+                HashMap::new(),
+                Vec::new(),
+                HashMap::new(),
+            ));
         };
 
         let stored_cell = decode_cell_identity(&cell_bytes, "device_head_state.cell_id")?;
@@ -741,7 +910,7 @@ impl SqliteLeaseStore {
         };
         let reset_generation = decode_generation(raw_gen, "device_head_state.reset_generation")?;
 
-        let (leases, reset_receipts) = load_and_validate_device_leases(
+        let (leases, reset_receipts, reconciliation_receipts) = load_and_validate_device_leases(
             &tx,
             device_id,
             stored_cell,
@@ -750,7 +919,13 @@ impl SqliteLeaseStore {
         )?;
 
         tx.commit()?;
-        Ok((is_free, reset_generation, leases, reset_receipts))
+        Ok((
+            is_free,
+            reset_generation,
+            leases,
+            reset_receipts,
+            reconciliation_receipts,
+        ))
     }
 
     pub(crate) fn persist_device_grant(
@@ -881,6 +1056,147 @@ impl SqliteLeaseStore {
         tx.commit()?;
         Ok(())
     }
+
+    pub(crate) fn persist_device_state_transition(
+        &self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+        expected_state: ExclusiveDeviceLeaseState,
+        next_state: ExclusiveDeviceLeaseState,
+    ) -> Result<(), LeaseStoreError> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE device_leases
+             SET state = ?1
+             WHERE device_lease_id = ?2 AND state = ?3",
+            params![
+                encode_device_state(next_state),
+                device_lease_id.as_bytes().as_slice(),
+                encode_device_state(expected_state),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "device_leases state transition CAS lost",
+            ));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn persist_device_reconcile(
+        &self,
+        device_id: DeviceId,
+        expected_state: ExclusiveDeviceLeaseState,
+        receipt: &DeviceReconciliationReceipt,
+        expected_gen: Generation,
+        next_gen: Generation,
+    ) -> Result<(), LeaseStoreError> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO device_reconciliation_receipts (
+                device_lease_id, receipt_id, device_id, holder_node,
+                holder_node_boot_generation, exclusivity_epoch, fencing_token,
+                reset_generation, reset_receipt_id, endpoint_fenced_old_token,
+                queue_drained, vram_and_secrets_zeroized, ack_gateway_id,
+                ack_observed_high_water, ack_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                receipt.device_lease_id.as_bytes().as_slice(),
+                receipt.receipt_id.as_bytes().as_slice(),
+                device_id.as_bytes().as_slice(),
+                receipt.holder_node.as_bytes().as_slice(),
+                encode_u64(
+                    receipt.holder_node_boot_generation.get(),
+                    "holder_node_boot_generation"
+                )?,
+                encode_u64(receipt.exclusivity_epoch.get(), "exclusivity_epoch")?,
+                encode_u64(receipt.fencing_token.get(), "fencing_token")?,
+                encode_u64(receipt.reset_generation.get(), "reset_generation")?,
+                receipt.reset_receipt.receipt_id().as_bytes().as_slice(),
+                i64::from(receipt.endpoint_fenced_old_token),
+                i64::from(receipt.queue_drained),
+                i64::from(receipt.vram_and_secrets_zeroized),
+                receipt.fence_barrier_ack.gateway_id().as_slice(),
+                encode_u64(
+                    receipt.fence_barrier_ack.observed_high_water(),
+                    "ack_observed_high_water"
+                )?,
+                receipt.fence_barrier_ack.ack_digest().as_slice(),
+            ],
+        )?;
+        let lease_changed = tx.execute(
+            "UPDATE device_leases
+             SET state = 'RETURNED'
+             WHERE device_lease_id = ?1 AND state = ?2",
+            params![
+                receipt.device_lease_id.as_bytes().as_slice(),
+                encode_device_state(expected_state),
+            ],
+        )?;
+        if lease_changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "device_leases reconcile CAS lost",
+            ));
+        }
+        let next_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM device_reset_receipts",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO device_reset_receipts (
+                seq, receipt_id, device_lease_id, device_id, holder_node,
+                holder_node_boot_generation, exclusivity_epoch, fencing_token, reset_generation
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                next_seq,
+                receipt.reset_receipt.receipt_id().as_bytes().as_slice(),
+                receipt
+                    .reset_receipt
+                    .device_lease_id()
+                    .as_bytes()
+                    .as_slice(),
+                device_id.as_bytes().as_slice(),
+                receipt.reset_receipt.holder_node().as_bytes().as_slice(),
+                encode_u64(
+                    receipt.reset_receipt.holder_node_boot_generation().get(),
+                    "reset_receipt.holder_node_boot_generation"
+                )?,
+                encode_u64(
+                    receipt.reset_receipt.exclusivity_epoch().get(),
+                    "reset_receipt.exclusivity_epoch"
+                )?,
+                encode_u64(
+                    receipt.reset_receipt.fencing_token().get(),
+                    "reset_receipt.fencing_token"
+                )?,
+                encode_u64(
+                    receipt.reset_receipt.reset_generation().get(),
+                    "reset_receipt.reset_generation"
+                )?,
+            ],
+        )?;
+        let head_changed = tx.execute(
+            "UPDATE device_head_state
+             SET is_free = 1, reset_generation = ?1
+             WHERE device_id = ?2 AND is_free = 0 AND reset_generation = ?3",
+            params![
+                encode_u64(next_gen.get(), "next_gen")?,
+                device_id.as_bytes().as_slice(),
+                encode_u64(expected_gen.get(), "expected_gen")?,
+            ],
+        )?;
+        if head_changed != 1 {
+            return Err(LeaseStoreError::CorruptRecord(
+                "device_head_state reconcile reset_generation CAS lost",
+            ));
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 fn resolve_db_path(path: &Path) -> Result<PathBuf, LeaseStoreError> {
@@ -903,12 +1219,15 @@ fn count_schema_objects(connection: &Connection) -> Result<(i64, i64), LeaseStor
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
             'quota_pool_state',
             'quota_leases',
+            'quota_reconciliation_receipts',
             'capacity_pool_state',
             'capacity_leases',
             'capacity_attach_receipts',
+            'capacity_reconciliation_receipts',
             'device_head_state',
             'device_leases',
-            'device_reset_receipts'
+            'device_reset_receipts',
+            'device_reconciliation_receipts'
         )",
         [],
         |row| row.get(0),
@@ -919,18 +1238,24 @@ fn count_schema_objects(connection: &Connection) -> Result<(i64, i64), LeaseStor
             'quota_pool_state_monotonic_epoch',
             'quota_leases_no_delete',
             'quota_leases_immutable_guard',
+            'quota_reconciliation_receipts_no_update',
+            'quota_reconciliation_receipts_no_delete',
             'capacity_pool_state_no_delete',
             'capacity_pool_state_immutable_identity',
             'capacity_leases_no_delete',
             'capacity_leases_immutable_guard',
             'capacity_attach_receipts_no_update',
             'capacity_attach_receipts_no_delete',
+            'capacity_reconciliation_receipts_no_update',
+            'capacity_reconciliation_receipts_no_delete',
             'device_head_state_no_delete',
             'device_head_state_monotonic_generation',
             'device_leases_no_delete',
             'device_leases_immutable_guard',
             'device_reset_receipts_no_update',
-            'device_reset_receipts_no_delete'
+            'device_reset_receipts_no_delete',
+            'device_reconciliation_receipts_no_update',
+            'device_reconciliation_receipts_no_delete'
         )",
         [],
         |row| row.get(0),
@@ -988,6 +1313,27 @@ CREATE TABLE quota_leases (
     CHECK(remaining + spent + returned = face_value)
 ) STRICT;
 
+CREATE TABLE quota_reconciliation_receipts (
+    lease_id BLOB NOT NULL CHECK(length(lease_id) = 16),
+    reconcile_seq INTEGER NOT NULL CHECK(reconcile_seq >= 1),
+    receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+    cell_id BLOB NOT NULL CHECK(length(cell_id) = 16),
+    node_boot_generation INTEGER NOT NULL CHECK(node_boot_generation >= 1),
+    epoch INTEGER NOT NULL CHECK(epoch >= 1),
+    fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
+    face_value INTEGER NOT NULL CHECK(face_value >= 0),
+    high_water_spent INTEGER NOT NULL CHECK(high_water_spent >= 0),
+    settled_spent INTEGER NOT NULL CHECK(settled_spent = high_water_spent),
+    returned_to_available INTEGER NOT NULL CHECK(returned_to_available >= 0),
+    remaining_quarantined INTEGER NOT NULL CHECK(remaining_quarantined >= 0),
+    ack_gateway_id BLOB NOT NULL CHECK(length(ack_gateway_id) = 16),
+    ack_observed_high_water INTEGER NOT NULL CHECK(ack_observed_high_water = high_water_spent),
+    ack_digest BLOB NOT NULL CHECK(length(ack_digest) = 32),
+    CHECK(settled_spent + returned_to_available + remaining_quarantined = face_value),
+    PRIMARY KEY (lease_id, reconcile_seq),
+    FOREIGN KEY(lease_id) REFERENCES quota_leases(lease_id)
+) STRICT;
+
 CREATE TABLE capacity_pool_state (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
     cell_id BLOB NOT NULL CHECK(length(cell_id) = 16),
@@ -1003,7 +1349,7 @@ CREATE TABLE capacity_leases (
     capacity_epoch INTEGER NOT NULL CHECK(capacity_epoch >= 1),
     fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
     fence_scope_cell_id BLOB NOT NULL CHECK(length(fence_scope_cell_id) = 16 AND fence_scope_cell_id = target_node),
-    state TEXT NOT NULL CHECK(state IN ('GLOBAL_RESERVED', 'TARGET_PREPARED', 'ACTIVE', 'RETURNING', 'RETURNED'))
+    state TEXT NOT NULL CHECK(state IN ('GLOBAL_RESERVED', 'TARGET_PREPARED', 'ACTIVE', 'RETURNING', 'FENCED', 'QUARANTINED', 'RETURNED'))
 ) STRICT;
 
 CREATE TABLE capacity_attach_receipts (
@@ -1014,6 +1360,23 @@ CREATE TABLE capacity_attach_receipts (
     capacity_epoch INTEGER NOT NULL CHECK(capacity_epoch >= 1),
     fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
     attached_amount INTEGER NOT NULL CHECK(attached_amount >= 0),
+    FOREIGN KEY(capacity_lease_id) REFERENCES capacity_leases(capacity_lease_id)
+) STRICT;
+
+CREATE TABLE capacity_reconciliation_receipts (
+    capacity_lease_id BLOB PRIMARY KEY NOT NULL CHECK(length(capacity_lease_id) = 16),
+    receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+    target_node BLOB NOT NULL CHECK(length(target_node) = 16),
+    target_node_boot_generation INTEGER NOT NULL CHECK(target_node_boot_generation >= 1),
+    capacity_epoch INTEGER NOT NULL CHECK(capacity_epoch >= 1),
+    fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
+    amount INTEGER NOT NULL CHECK(amount >= 0),
+    cleaned_amount INTEGER NOT NULL CHECK(cleaned_amount = amount),
+    holder_processes_terminated INTEGER NOT NULL CHECK(holder_processes_terminated = 1),
+    cleanup_attestation_digest BLOB NOT NULL CHECK(length(cleanup_attestation_digest) = 32),
+    ack_gateway_id BLOB NOT NULL CHECK(length(ack_gateway_id) = 16),
+    ack_observed_high_water INTEGER NOT NULL CHECK(ack_observed_high_water = amount),
+    ack_digest BLOB NOT NULL CHECK(length(ack_digest) = 32),
     FOREIGN KEY(capacity_lease_id) REFERENCES capacity_leases(capacity_lease_id)
 ) STRICT;
 
@@ -1033,7 +1396,7 @@ CREATE TABLE device_leases (
     fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
     fence_scope_cell_id BLOB NOT NULL CHECK(length(fence_scope_cell_id) = 16 AND fence_scope_cell_id = holder_node),
     reset_generation INTEGER NOT NULL CHECK(reset_generation >= 1),
-    state TEXT NOT NULL CHECK(state IN ('DEVICE_RESERVED', 'RESETTING', 'RETURNED'))
+    state TEXT NOT NULL CHECK(state IN ('DEVICE_RESERVED', 'RESETTING', 'FENCING', 'QUARANTINED', 'RETURNED'))
 ) STRICT;
 
 CREATE TABLE device_reset_receipts (
@@ -1046,6 +1409,25 @@ CREATE TABLE device_reset_receipts (
     exclusivity_epoch INTEGER NOT NULL CHECK(exclusivity_epoch >= 1),
     fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
     reset_generation INTEGER NOT NULL CHECK(reset_generation >= 1),
+    FOREIGN KEY(device_lease_id) REFERENCES device_leases(device_lease_id)
+) STRICT;
+
+CREATE TABLE device_reconciliation_receipts (
+    device_lease_id BLOB PRIMARY KEY NOT NULL CHECK(length(device_lease_id) = 16),
+    receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+    device_id BLOB NOT NULL CHECK(length(device_id) = 16),
+    holder_node BLOB NOT NULL CHECK(length(holder_node) = 16),
+    holder_node_boot_generation INTEGER NOT NULL CHECK(holder_node_boot_generation >= 1),
+    exclusivity_epoch INTEGER NOT NULL CHECK(exclusivity_epoch >= 1),
+    fencing_token INTEGER NOT NULL CHECK(fencing_token >= 1),
+    reset_generation INTEGER NOT NULL CHECK(reset_generation >= 1),
+    reset_receipt_id BLOB NOT NULL UNIQUE CHECK(length(reset_receipt_id) = 16),
+    endpoint_fenced_old_token INTEGER NOT NULL CHECK(endpoint_fenced_old_token = 1),
+    queue_drained INTEGER NOT NULL CHECK(queue_drained = 1),
+    vram_and_secrets_zeroized INTEGER NOT NULL CHECK(vram_and_secrets_zeroized = 1),
+    ack_gateway_id BLOB NOT NULL CHECK(length(ack_gateway_id) = 16),
+    ack_observed_high_water INTEGER NOT NULL CHECK(ack_observed_high_water = exclusivity_epoch),
+    ack_digest BLOB NOT NULL CHECK(length(ack_digest) = 32),
     FOREIGN KEY(device_lease_id) REFERENCES device_leases(device_lease_id)
 ) STRICT;
 
@@ -1072,7 +1454,10 @@ END;
 
 CREATE TRIGGER quota_leases_immutable_guard
 BEFORE UPDATE ON quota_leases
-WHEN OLD.state IN ('CLOSED', 'CANCELLED', 'QUARANTINED')
+WHEN OLD.state IN ('CLOSED', 'CANCELLED')
+  OR (OLD.state = 'QUARANTINED' AND NOT EXISTS (
+      SELECT 1 FROM quota_reconciliation_receipts WHERE lease_id = OLD.lease_id
+  ))
   OR NEW.lease_id != OLD.lease_id
   OR NEW.cell_id != OLD.cell_id
   OR NEW.node_boot_generation != OLD.node_boot_generation
@@ -1084,14 +1469,26 @@ WHEN OLD.state IN ('CLOSED', 'CANCELLED', 'QUARANTINED')
   OR (OLD.expires_at IS NULL AND NEW.expires_at IS NOT NULL)
   OR NEW.spent < OLD.spent
   OR NEW.returned < OLD.returned
+  OR (NEW.state = 'CLOSED' AND NEW.remaining != 0)
   OR NOT (
       (OLD.state = 'ISSUED' AND NEW.state IN ('ACTIVE', 'CANCELLED', 'FENCED', 'QUARANTINED'))
       OR (OLD.state = 'ACTIVE' AND NEW.state IN ('ACTIVE', 'CLOSING', 'FENCED', 'QUARANTINED'))
       OR (OLD.state = 'CLOSING' AND NEW.state IN ('CLOSED', 'FENCED', 'QUARANTINED'))
       OR (OLD.state = 'FENCED' AND NEW.state IN ('CLOSED', 'QUARANTINED'))
+      OR (OLD.state = 'QUARANTINED' AND NEW.state IN ('QUARANTINED', 'CLOSED'))
   )
 BEGIN
     SELECT RAISE(ABORT, 'quota_leases terminal or monotonic invariant violated');
+END;
+
+CREATE TRIGGER quota_reconciliation_receipts_no_update
+BEFORE UPDATE ON quota_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'quota_reconciliation_receipts rows are immutable');
+END;
+
+CREATE TRIGGER quota_reconciliation_receipts_no_delete
+BEFORE DELETE ON quota_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'quota_reconciliation_receipts rows are durable');
 END;
 
 CREATE TRIGGER capacity_pool_state_no_delete
@@ -1116,6 +1513,9 @@ END;
 CREATE TRIGGER capacity_leases_immutable_guard
 BEFORE UPDATE ON capacity_leases
 WHEN OLD.state = 'RETURNED'
+  OR (OLD.state = 'QUARANTINED' AND NEW.state = 'RETURNED' AND NOT EXISTS (
+      SELECT 1 FROM capacity_reconciliation_receipts WHERE capacity_lease_id = OLD.capacity_lease_id
+  ))
   OR NEW.capacity_lease_id != OLD.capacity_lease_id
   OR NEW.target_node != OLD.target_node
   OR NEW.target_node_boot_generation != OLD.target_node_boot_generation
@@ -1124,10 +1524,12 @@ WHEN OLD.state = 'RETURNED'
   OR NEW.fencing_token != OLD.fencing_token
   OR NEW.fence_scope_cell_id != OLD.fence_scope_cell_id
   OR NOT (
-      (OLD.state = 'GLOBAL_RESERVED' AND NEW.state IN ('TARGET_PREPARED', 'RETURNING'))
-      OR (OLD.state = 'TARGET_PREPARED' AND NEW.state IN ('ACTIVE', 'RETURNING'))
-      OR (OLD.state = 'ACTIVE' AND NEW.state = 'RETURNING')
-      OR (OLD.state = 'RETURNING' AND NEW.state = 'RETURNED')
+      (OLD.state = 'GLOBAL_RESERVED' AND NEW.state IN ('TARGET_PREPARED', 'RETURNING', 'FENCED', 'QUARANTINED'))
+      OR (OLD.state = 'TARGET_PREPARED' AND NEW.state IN ('ACTIVE', 'RETURNING', 'FENCED', 'QUARANTINED'))
+      OR (OLD.state = 'ACTIVE' AND NEW.state IN ('RETURNING', 'FENCED', 'QUARANTINED'))
+      OR (OLD.state = 'RETURNING' AND NEW.state IN ('RETURNED', 'FENCED', 'QUARANTINED'))
+      OR (OLD.state = 'FENCED' AND NEW.state IN ('QUARANTINED', 'RETURNED'))
+      OR (OLD.state = 'QUARANTINED' AND NEW.state IN ('QUARANTINED', 'RETURNED'))
   )
 BEGIN
     SELECT RAISE(ABORT, 'capacity_leases terminal or identity invariant violated');
@@ -1141,6 +1543,16 @@ END;
 CREATE TRIGGER capacity_attach_receipts_no_delete
 BEFORE DELETE ON capacity_attach_receipts BEGIN
     SELECT RAISE(ABORT, 'capacity_attach_receipts rows are durable');
+END;
+
+CREATE TRIGGER capacity_reconciliation_receipts_no_update
+BEFORE UPDATE ON capacity_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'capacity_reconciliation_receipts rows are immutable');
+END;
+
+CREATE TRIGGER capacity_reconciliation_receipts_no_delete
+BEFORE DELETE ON capacity_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'capacity_reconciliation_receipts rows are durable');
 END;
 
 CREATE TRIGGER device_head_state_no_delete
@@ -1165,6 +1577,9 @@ END;
 CREATE TRIGGER device_leases_immutable_guard
 BEFORE UPDATE ON device_leases
 WHEN OLD.state = 'RETURNED'
+  OR (OLD.state = 'QUARANTINED' AND NEW.state = 'RETURNED' AND NOT EXISTS (
+      SELECT 1 FROM device_reconciliation_receipts WHERE device_lease_id = OLD.device_lease_id
+  ))
   OR NEW.device_lease_id != OLD.device_lease_id
   OR NEW.device_id != OLD.device_id
   OR NEW.holder_node != OLD.holder_node
@@ -1174,8 +1589,10 @@ WHEN OLD.state = 'RETURNED'
   OR NEW.fence_scope_cell_id != OLD.fence_scope_cell_id
   OR NEW.reset_generation != OLD.reset_generation
   OR NOT (
-      (OLD.state = 'DEVICE_RESERVED' AND NEW.state = 'RESETTING')
-      OR (OLD.state = 'RESETTING' AND NEW.state = 'RETURNED')
+      (OLD.state = 'DEVICE_RESERVED' AND NEW.state IN ('RESETTING', 'FENCING', 'QUARANTINED'))
+      OR (OLD.state = 'RESETTING' AND NEW.state IN ('RETURNED', 'FENCING', 'QUARANTINED'))
+      OR (OLD.state = 'FENCING' AND NEW.state IN ('QUARANTINED', 'RETURNED'))
+      OR (OLD.state = 'QUARANTINED' AND NEW.state IN ('QUARANTINED', 'RETURNED'))
   )
 BEGIN
     SELECT RAISE(ABORT, 'device_leases terminal or identity invariant violated');
@@ -1191,13 +1608,30 @@ BEFORE DELETE ON device_reset_receipts BEGIN
     SELECT RAISE(ABORT, 'device_reset_receipts is append-only: DELETE forbidden');
 END;
 
+CREATE TRIGGER device_reconciliation_receipts_no_update
+BEFORE UPDATE ON device_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'device_reconciliation_receipts is append-only: UPDATE forbidden');
+END;
+
+CREATE TRIGGER device_reconciliation_receipts_no_delete
+BEFORE DELETE ON device_reconciliation_receipts BEGIN
+    SELECT RAISE(ABORT, 'device_reconciliation_receipts is append-only: DELETE forbidden');
+END;
+
 PRAGMA user_version = 1;
 ";
+
+type LoadedQuotaLeases = (
+    HashMap<QuotaLeaseId, QuotaLeaseGrant>,
+    HashMap<QuotaLeaseId, Vec<QuotaReconciliationReceipt>>,
+    u64,
+    u64,
+);
 
 fn load_and_validate_quota_leases(
     tx: &Transaction<'_>,
     expected_cell: CellIdentity,
-) -> Result<(HashMap<QuotaLeaseId, QuotaLeaseGrant>, u64, u64), LeaseStoreError> {
+) -> Result<LoadedQuotaLeases, LeaseStoreError> {
     let mut stmt = tx.prepare(
         "SELECT lease_id, cell_id, node_boot_generation, face_value, remaining,
                 spent, returned, epoch, fencing_token, fence_scope_cell_id,
@@ -1267,7 +1701,132 @@ fn load_and_validate_quota_leases(
         };
         leases.insert(lease_id, grant);
     }
-    Ok((leases, net_deducted, max_epoch))
+
+    let reconciliation_receipts = load_quota_reconciliation_receipt_rows(tx, &leases)?;
+    for lease in leases.values() {
+        if lease.state == QuotaLeaseState::Quarantined && lease.returned > 0 {
+            let Some(history) = reconciliation_receipts.get(&lease.lease_id) else {
+                return Err(LeaseStoreError::CorruptRecord(
+                    "QUARANTINED quota lease has non-zero returned without reconciliation receipt",
+                ));
+            };
+            let Some(last) = history.last() else {
+                return Err(LeaseStoreError::CorruptRecord(
+                    "QUARANTINED quota lease has empty reconciliation history",
+                ));
+            };
+            if last.returned_to_available() != lease.returned
+                || last.settled_spent() != lease.spent
+                || last.remaining_quarantined() != lease.remaining
+            {
+                return Err(LeaseStoreError::CorruptRecord(
+                    "QUARANTINED quota lease accounting diverges from reconciliation receipt",
+                ));
+            }
+        }
+    }
+
+    Ok((leases, reconciliation_receipts, net_deducted, max_epoch))
+}
+
+fn load_quota_reconciliation_receipt_rows(
+    tx: &Transaction<'_>,
+    leases: &HashMap<QuotaLeaseId, QuotaLeaseGrant>,
+) -> Result<HashMap<QuotaLeaseId, Vec<QuotaReconciliationReceipt>>, LeaseStoreError> {
+    let mut stmt = tx.prepare(
+        "SELECT lease_id, reconcile_seq, receipt_id, cell_id, node_boot_generation,
+                epoch, fencing_token, face_value, high_water_spent, settled_spent,
+                returned_to_available, remaining_quarantined, ack_gateway_id,
+                ack_observed_high_water, ack_digest
+         FROM quota_reconciliation_receipts
+         ORDER BY lease_id ASC, reconcile_seq ASC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut receipts: HashMap<QuotaLeaseId, Vec<QuotaReconciliationReceipt>> = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let lease_id = QuotaLeaseId::from_bytes(decode_16(
+            row.get(0)?,
+            "quota_reconciliation_receipts.lease_id",
+        )?);
+        let reconcile_seq = decode_u64(row.get(1)?, "quota_reconciliation_receipts.reconcile_seq")?;
+        let receipt_id = ReceiptId::from_bytes(decode_16(
+            row.get(2)?,
+            "quota_reconciliation_receipts.receipt_id",
+        )?);
+        let cell = decode_cell_identity(
+            &row.get::<_, Vec<u8>>(3)?,
+            "quota_reconciliation_receipts.cell_id",
+        )?;
+        let node_boot_generation = decode_generation(
+            row.get(4)?,
+            "quota_reconciliation_receipts.node_boot_generation",
+        )?;
+        let epoch = decode_epoch(row.get(5)?, "quota_reconciliation_receipts.epoch")?;
+        let fencing_token =
+            decode_fencing_token(row.get(6)?, "quota_reconciliation_receipts.fencing_token")?;
+        let face_value = decode_u64(row.get(7)?, "quota_reconciliation_receipts.face_value")?;
+        let high_water_spent = decode_u64(
+            row.get(8)?,
+            "quota_reconciliation_receipts.high_water_spent",
+        )?;
+        let settled_spent = decode_u64(row.get(9)?, "quota_reconciliation_receipts.settled_spent")?;
+        let returned_to_available = decode_u64(
+            row.get(10)?,
+            "quota_reconciliation_receipts.returned_to_available",
+        )?;
+        let remaining_quarantined = decode_u64(
+            row.get(11)?,
+            "quota_reconciliation_receipts.remaining_quarantined",
+        )?;
+        let ack_gateway_id =
+            decode_16(row.get(12)?, "quota_reconciliation_receipts.ack_gateway_id")?;
+        let ack_observed_high_water = decode_u64(
+            row.get(13)?,
+            "quota_reconciliation_receipts.ack_observed_high_water",
+        )?;
+        let ack_digest = decode_32(row.get(14)?, "quota_reconciliation_receipts.ack_digest")?;
+
+        let lease = leases.get(&lease_id).ok_or(LeaseStoreError::CorruptRecord(
+            "quota_reconciliation_receipts references unknown lease",
+        ))?;
+        let ack = FenceBarrierAck::new(
+            *lease_id.as_bytes(),
+            lease.fence_scope,
+            epoch,
+            fencing_token,
+            ack_gateway_id,
+            ack_observed_high_water,
+            ack_digest,
+        );
+        if verify_quota_fence_ack(&ack, lease, high_water_spent).is_err() {
+            return Err(LeaseStoreError::CorruptRecord(
+                "stored quota_reconciliation_receipts FenceBarrierAck invalid",
+            ));
+        }
+        let receipt = QuotaReconciliationReceipt::new(
+            receipt_id,
+            lease_id,
+            reconcile_seq,
+            cell,
+            node_boot_generation,
+            epoch,
+            fencing_token,
+            face_value,
+            high_water_spent,
+            settled_spent,
+            returned_to_available,
+            remaining_quarantined,
+            ack,
+        );
+        if !receipt.verify_conservation() {
+            return Err(LeaseStoreError::CorruptRecord(
+                "stored quota_reconciliation_receipts conservation violated",
+            ));
+        }
+        receipts.entry(lease_id).or_default().push(receipt);
+    }
+    Ok(receipts)
 }
 
 fn validate_quota_lease_invariant(
@@ -1290,10 +1849,10 @@ fn validate_quota_lease_invariant(
     }
     let state_valid = match state {
         QuotaLeaseState::Issued => spent == 0 && returned == 0 && remaining == face_value,
-        QuotaLeaseState::Active
-        | QuotaLeaseState::Closing
-        | QuotaLeaseState::Fenced
-        | QuotaLeaseState::Quarantined => returned == 0,
+        QuotaLeaseState::Active | QuotaLeaseState::Closing | QuotaLeaseState::Fenced => {
+            returned == 0
+        }
+        QuotaLeaseState::Quarantined => true,
         QuotaLeaseState::Closed => remaining == 0,
         QuotaLeaseState::Cancelled => remaining == 0 && spent == 0 && returned == face_value,
     };
@@ -1308,12 +1867,14 @@ fn validate_quota_lease_invariant(
 type LoadedCapacityLeases = (
     HashMap<CapacityLeaseId, CapacityLeaseGrant>,
     HashMap<CapacityLeaseId, HostAttachReceipt>,
+    HashMap<CapacityLeaseId, CapacityReconciliationReceipt>,
     u64,
 );
 
 type LoadedDeviceLeases = (
     HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
     Vec<DeviceResetReceipt>,
+    HashMap<ExclusiveDeviceLeaseId, DeviceReconciliationReceipt>,
 );
 
 type LoadedDeviceLeaseRows = (
@@ -1328,6 +1889,7 @@ fn load_and_validate_capacity_leases(
 ) -> Result<LoadedCapacityLeases, LeaseStoreError> {
     let (leases, reserved_total) = load_capacity_lease_rows(tx, expected_cell)?;
     let attach_receipts = load_capacity_attach_receipt_rows(tx, &leases)?;
+    let reconciliation_receipts = load_capacity_reconciliation_receipt_rows(tx, &leases)?;
 
     for lease in leases.values() {
         if lease.state == CapacityLeaseState::Active
@@ -1339,7 +1901,129 @@ fn load_and_validate_capacity_leases(
         }
     }
 
-    Ok((leases, attach_receipts, reserved_total))
+    Ok((
+        leases,
+        attach_receipts,
+        reconciliation_receipts,
+        reserved_total,
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_capacity_reconciliation_receipt_rows(
+    tx: &Transaction<'_>,
+    leases: &HashMap<CapacityLeaseId, CapacityLeaseGrant>,
+) -> Result<HashMap<CapacityLeaseId, CapacityReconciliationReceipt>, LeaseStoreError> {
+    let mut stmt = tx.prepare(
+        "SELECT capacity_lease_id, receipt_id, target_node, target_node_boot_generation,
+                capacity_epoch, fencing_token, amount, cleaned_amount,
+                holder_processes_terminated, cleanup_attestation_digest,
+                ack_gateway_id, ack_observed_high_water, ack_digest
+         FROM capacity_reconciliation_receipts",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut receipts = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let capacity_lease_id = CapacityLeaseId::from_bytes(decode_16(
+            row.get(0)?,
+            "capacity_reconciliation_receipts.capacity_lease_id",
+        )?);
+        let receipt_id = ReceiptId::from_bytes(decode_16(
+            row.get(1)?,
+            "capacity_reconciliation_receipts.receipt_id",
+        )?);
+        let target_node = decode_cell_identity(
+            &row.get::<_, Vec<u8>>(2)?,
+            "capacity_reconciliation_receipts.target_node",
+        )?;
+        let target_node_boot_generation = decode_generation(
+            row.get(3)?,
+            "capacity_reconciliation_receipts.target_node_boot_generation",
+        )?;
+        let capacity_epoch = decode_epoch(
+            row.get(4)?,
+            "capacity_reconciliation_receipts.capacity_epoch",
+        )?;
+        let fencing_token = decode_fencing_token(
+            row.get(5)?,
+            "capacity_reconciliation_receipts.fencing_token",
+        )?;
+        let amount = decode_u64(row.get(6)?, "capacity_reconciliation_receipts.amount")?;
+        let cleaned_amount = decode_u64(
+            row.get(7)?,
+            "capacity_reconciliation_receipts.cleaned_amount",
+        )?;
+        let raw_term: i64 = row.get(8)?;
+        let holder_processes_terminated = raw_term == 1;
+        let attestation_digest = decode_32(
+            row.get(9)?,
+            "capacity_reconciliation_receipts.cleanup_attestation_digest",
+        )?;
+        let ack_gateway_id = decode_16(
+            row.get(10)?,
+            "capacity_reconciliation_receipts.ack_gateway_id",
+        )?;
+        let ack_observed_high_water = decode_u64(
+            row.get(11)?,
+            "capacity_reconciliation_receipts.ack_observed_high_water",
+        )?;
+        let ack_digest = decode_32(row.get(12)?, "capacity_reconciliation_receipts.ack_digest")?;
+
+        let lease = leases
+            .get(&capacity_lease_id)
+            .ok_or(LeaseStoreError::CorruptRecord(
+                "capacity_reconciliation_receipts references unknown lease",
+            ))?;
+        if lease.state != CapacityLeaseState::Returned {
+            return Err(LeaseStoreError::CorruptRecord(
+                "capacity_reconciliation_receipts references non-RETURNED lease",
+            ));
+        }
+
+        let attestation = CleanupAttestation::new(
+            capacity_lease_id,
+            target_node,
+            target_node_boot_generation,
+            capacity_epoch,
+            fencing_token,
+            cleaned_amount,
+            holder_processes_terminated,
+            attestation_digest,
+        );
+        let ack = FenceBarrierAck::new(
+            *capacity_lease_id.as_bytes(),
+            lease.fence_scope,
+            capacity_epoch,
+            fencing_token,
+            ack_gateway_id,
+            ack_observed_high_water,
+            ack_digest,
+        );
+        if verify_cleanup_attestation(&attestation, lease).is_err()
+            || verify_capacity_fence_ack(&ack, lease).is_err()
+        {
+            return Err(LeaseStoreError::CorruptRecord(
+                "stored capacity_reconciliation_receipts attestation or ack invalid",
+            ));
+        }
+
+        receipts.insert(
+            capacity_lease_id,
+            CapacityReconciliationReceipt::new(
+                receipt_id,
+                capacity_lease_id,
+                target_node,
+                target_node_boot_generation,
+                capacity_epoch,
+                fencing_token,
+                amount,
+                attestation,
+                ack,
+            ),
+        );
+    }
+    Ok(receipts)
 }
 
 fn load_capacity_lease_rows(
@@ -1481,6 +2165,8 @@ fn load_and_validate_device_leases(
     let (leases, active_holder, returned_count) =
         load_device_lease_rows(tx, expected_device_id, expected_cell)?;
     let reset_receipts = load_device_reset_receipt_rows(tx, expected_device_id, &leases)?;
+    let reconciliation_receipts =
+        load_device_reconciliation_receipt_rows(tx, expected_device_id, &leases, &reset_receipts)?;
 
     if u64::try_from(reset_receipts.len()).ok() != Some(returned_count) {
         return Err(LeaseStoreError::CorruptRecord(
@@ -1502,7 +2188,131 @@ fn load_and_validate_device_leases(
         }
     }
 
-    Ok((leases, reset_receipts))
+    Ok((leases, reset_receipts, reconciliation_receipts))
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_device_reconciliation_receipt_rows(
+    tx: &Transaction<'_>,
+    expected_device_id: DeviceId,
+    leases: &HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
+    reset_receipts: &[DeviceResetReceipt],
+) -> Result<HashMap<ExclusiveDeviceLeaseId, DeviceReconciliationReceipt>, LeaseStoreError> {
+    let mut stmt = tx.prepare(
+        "SELECT device_lease_id, receipt_id, device_id, holder_node,
+                holder_node_boot_generation, exclusivity_epoch, fencing_token,
+                reset_generation, reset_receipt_id, endpoint_fenced_old_token,
+                queue_drained, vram_and_secrets_zeroized, ack_gateway_id,
+                ack_observed_high_water, ack_digest
+         FROM device_reconciliation_receipts
+         WHERE device_id = ?1",
+    )?;
+    let mut rows = stmt.query(params![expected_device_id.as_bytes().as_slice()])?;
+    let mut receipts = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let device_lease_id = ExclusiveDeviceLeaseId::from_bytes(decode_16(
+            row.get(0)?,
+            "device_reconciliation_receipts.device_lease_id",
+        )?);
+        let receipt_id = ReceiptId::from_bytes(decode_16(
+            row.get(1)?,
+            "device_reconciliation_receipts.receipt_id",
+        )?);
+        let device_id = DeviceId::from_bytes(decode_16(
+            row.get(2)?,
+            "device_reconciliation_receipts.device_id",
+        )?);
+        let holder_node = decode_cell_identity(
+            &row.get::<_, Vec<u8>>(3)?,
+            "device_reconciliation_receipts.holder_node",
+        )?;
+        let holder_node_boot_generation = decode_generation(
+            row.get(4)?,
+            "device_reconciliation_receipts.holder_node_boot_generation",
+        )?;
+        let exclusivity_epoch = decode_epoch(
+            row.get(5)?,
+            "device_reconciliation_receipts.exclusivity_epoch",
+        )?;
+        let fencing_token =
+            decode_fencing_token(row.get(6)?, "device_reconciliation_receipts.fencing_token")?;
+        let reset_generation = decode_generation(
+            row.get(7)?,
+            "device_reconciliation_receipts.reset_generation",
+        )?;
+        let reset_receipt_id = ReceiptId::from_bytes(decode_16(
+            row.get(8)?,
+            "device_reconciliation_receipts.reset_receipt_id",
+        )?);
+        let endpoint_fenced_old_token = row.get::<_, i64>(9)? == 1;
+        let queue_drained = row.get::<_, i64>(10)? == 1;
+        let vram_and_secrets_zeroized = row.get::<_, i64>(11)? == 1;
+        let ack_gateway_id = decode_16(
+            row.get(12)?,
+            "device_reconciliation_receipts.ack_gateway_id",
+        )?;
+        let ack_observed_high_water = decode_u64(
+            row.get(13)?,
+            "device_reconciliation_receipts.ack_observed_high_water",
+        )?;
+        let ack_digest = decode_32(row.get(14)?, "device_reconciliation_receipts.ack_digest")?;
+
+        let lease = leases
+            .get(&device_lease_id)
+            .ok_or(LeaseStoreError::CorruptRecord(
+                "device_reconciliation_receipts references unknown lease",
+            ))?;
+        if lease.state != ExclusiveDeviceLeaseState::Returned {
+            return Err(LeaseStoreError::CorruptRecord(
+                "device_reconciliation_receipts references non-RETURNED lease",
+            ));
+        }
+        let reset_receipt = reset_receipts
+            .iter()
+            .find(|r| r.receipt_id == reset_receipt_id && r.device_lease_id == device_lease_id)
+            .copied()
+            .ok_or(LeaseStoreError::CorruptRecord(
+                "device_reconciliation_receipts missing matching DeviceResetReceipt",
+            ))?;
+        let ack = FenceBarrierAck::new(
+            *device_lease_id.as_bytes(),
+            lease.fence_scope,
+            exclusivity_epoch,
+            fencing_token,
+            ack_gateway_id,
+            ack_observed_high_water,
+            ack_digest,
+        );
+        if verify_device_fence_ack(&ack, lease).is_err()
+            || !endpoint_fenced_old_token
+            || !queue_drained
+            || !vram_and_secrets_zeroized
+        {
+            return Err(LeaseStoreError::CorruptRecord(
+                "stored device_reconciliation_receipts invalid",
+            ));
+        }
+        receipts.insert(
+            device_lease_id,
+            DeviceReconciliationReceipt::new(
+                receipt_id,
+                device_lease_id,
+                device_id,
+                holder_node,
+                holder_node_boot_generation,
+                exclusivity_epoch,
+                fencing_token,
+                reset_generation,
+                endpoint_fenced_old_token,
+                queue_drained,
+                vram_and_secrets_zeroized,
+                reset_receipt,
+                ack,
+            ),
+        );
+    }
+    Ok(receipts)
 }
 
 fn load_device_lease_rows(
@@ -1560,7 +2370,10 @@ fn load_device_lease_rows(
             state,
         };
         match state {
-            ExclusiveDeviceLeaseState::DeviceReserved | ExclusiveDeviceLeaseState::Resetting => {
+            ExclusiveDeviceLeaseState::DeviceReserved
+            | ExclusiveDeviceLeaseState::Resetting
+            | ExclusiveDeviceLeaseState::Fencing
+            | ExclusiveDeviceLeaseState::Quarantined => {
                 if active_holder.is_some() {
                     return Err(LeaseStoreError::CorruptRecord(
                         "multiple non-returned device leases for the same device_id",
@@ -1654,6 +2467,12 @@ fn decode_16(bytes: Vec<u8>, _field: &'static str) -> Result<[u8; 16], LeaseStor
         .map_err(|_| LeaseStoreError::CorruptRecord("expected 16-byte nominal id"))
 }
 
+fn decode_32(bytes: Vec<u8>, _field: &'static str) -> Result<[u8; 32], LeaseStoreError> {
+    bytes
+        .try_into()
+        .map_err(|_| LeaseStoreError::CorruptRecord("expected 32-byte digest"))
+}
+
 fn decode_cell_identity(
     bytes: &[u8],
     _field: &'static str,
@@ -1719,6 +2538,8 @@ const fn encode_capacity_state(state: CapacityLeaseState) -> &'static str {
         CapacityLeaseState::TargetPrepared => "TARGET_PREPARED",
         CapacityLeaseState::Active => "ACTIVE",
         CapacityLeaseState::Returning => "RETURNING",
+        CapacityLeaseState::Fenced => "FENCED",
+        CapacityLeaseState::Quarantined => "QUARANTINED",
         CapacityLeaseState::Returned => "RETURNED",
     }
 }
@@ -1729,6 +2550,8 @@ fn decode_capacity_state(raw: &str) -> Result<CapacityLeaseState, LeaseStoreErro
         "TARGET_PREPARED" => Ok(CapacityLeaseState::TargetPrepared),
         "ACTIVE" => Ok(CapacityLeaseState::Active),
         "RETURNING" => Ok(CapacityLeaseState::Returning),
+        "FENCED" => Ok(CapacityLeaseState::Fenced),
+        "QUARANTINED" => Ok(CapacityLeaseState::Quarantined),
         "RETURNED" => Ok(CapacityLeaseState::Returned),
         _ => Err(LeaseStoreError::CorruptRecord("unknown CapacityLeaseState")),
     }
@@ -1738,6 +2561,8 @@ const fn encode_device_state(state: ExclusiveDeviceLeaseState) -> &'static str {
     match state {
         ExclusiveDeviceLeaseState::DeviceReserved => "DEVICE_RESERVED",
         ExclusiveDeviceLeaseState::Resetting => "RESETTING",
+        ExclusiveDeviceLeaseState::Fencing => "FENCING",
+        ExclusiveDeviceLeaseState::Quarantined => "QUARANTINED",
         ExclusiveDeviceLeaseState::Returned => "RETURNED",
     }
 }
@@ -1746,6 +2571,8 @@ fn decode_device_state(raw: &str) -> Result<ExclusiveDeviceLeaseState, LeaseStor
     match raw {
         "DEVICE_RESERVED" => Ok(ExclusiveDeviceLeaseState::DeviceReserved),
         "RESETTING" => Ok(ExclusiveDeviceLeaseState::Resetting),
+        "FENCING" => Ok(ExclusiveDeviceLeaseState::Fencing),
+        "QUARANTINED" => Ok(ExclusiveDeviceLeaseState::Quarantined),
         "RETURNED" => Ok(ExclusiveDeviceLeaseState::Returned),
         _ => Err(LeaseStoreError::CorruptRecord(
             "unknown ExclusiveDeviceLeaseState",

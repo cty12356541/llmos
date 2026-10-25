@@ -495,6 +495,84 @@ impl AuthorityLeaseDecision {
     }
 }
 
+/// Request to verify or atomically admit a participant-bound operation under
+/// `[DIST-TASK-001]` and `[DIST-TASK-004]`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DistTaskOperationAdmissionRequest {
+    pub task_id: TaskId,
+    pub expected_registry_binding: ParticipantRegistryBinding,
+    pub lease: AuthorityLeaseRecord,
+    pub expected_authority_term: u64,
+    pub expected_control_epoch: u64,
+    pub participant: ParticipantRecord,
+    pub admitted_at_ms: i64,
+}
+
+/// Verified `[DIST-TASK-001]` operation admission witness returned when the
+/// active assignment, live authority lease, `(authority_term, control_epoch)`,
+/// and `Open` participant registry membership all hold in the same transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DistTaskOperationAdmissionRecord {
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub assignment_id: TaskAuthorityAssignmentId,
+    pub authority_lease_binding: AuthorityLeaseBinding,
+    pub control_epoch: u64,
+    pub participant_registry_binding: ParticipantRegistryBinding,
+    pub participant: ParticipantRecord,
+    pub was_newly_registered: bool,
+}
+
+/// Request to verify or execute the `[DIST-TASK-004]` `OPEN` participant
+/// registry generation advancement after a `TaskPermitClosureReceipt`
+/// (`FAILED_BEFORE_EFFECT` or `CANCELLED_BEFORE_EFFECT` with unchanged
+/// `TaskHead`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PermitClosureRegistryReopenRequest {
+    pub task_id: TaskId,
+    pub closure_receipt_id: ReceiptId,
+    pub lease: Option<AuthorityLeaseRecord>,
+    pub reopened_at_ms: i64,
+}
+
+/// Durable projection of the new `OPEN` participant registry generation (and
+/// optional rotated `Active` authority assignment) produced after a
+/// `TaskPermitClosureReceipt` (`[DIST-TASK-004]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PermitClosureRegistryReopenRecord {
+    pub closure_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub closed_permit_id: nlos_types::CommitPermitId,
+    pub outcome: crate::ReceiptOutcome,
+    pub old_frozen_registry_binding: ParticipantRegistryBinding,
+    pub reopened_registry_binding: ParticipantRegistryBinding,
+    pub fenced_assignment_id: Option<TaskAuthorityAssignmentId>,
+    pub active_assignment_id: Option<TaskAuthorityAssignmentId>,
+    pub control_epoch: u64,
+}
+
+/// Verification report for `[DIST-TASK-002]` takeover union fence and
+/// architecture §26.1 six-endpoint barrier coverage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TakeoverEndpointBarrierAuditReport {
+    pub takeover_receipt_id: ReceiptId,
+    pub fence_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub frozen_old_authority_term: u64,
+    pub frozen_old_control_epoch: u64,
+    pub new_authority_term: u64,
+    pub new_control_epoch: u64,
+    pub exact_fence_set_root: [u8; 32],
+    pub outstanding_operation_participant_root: [u8; 32],
+    pub outstanding_effect_quarantine_root: Option<[u8; 32]>,
+    pub union_fence_members: Vec<ParticipantRecord>,
+    pub covered_canonical_types: Vec<ParticipantType>,
+    pub missing_canonical_types: Vec<ParticipantType>,
+    pub unsigned_or_unobserved_members: Vec<ParticipantRecord>,
+    pub all_six_canonical_types_present: bool,
+    pub all_union_members_signed_and_observed: bool,
+}
+
 impl SqliteTaskAuthority {
     /// Acquires, renews, or takes over the durable `TaskAuthority` lease
     /// under the historical clock-trust contract.

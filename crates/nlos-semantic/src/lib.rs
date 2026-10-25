@@ -14,6 +14,7 @@ mod spec;
 mod trust_view;
 mod typed;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -41,11 +42,20 @@ pub use canonical::{
     encode_unsigned_spec_event, semantic_event_id,
 };
 pub use merge::{
-    AdmissionConflictOccurrence, CrossDomainAuditRecord, CrossDomainEventItem,
-    CrossDomainEventSetMergeReport, MergedCrossDomainEvent, MergedSignedEvent,
-    SignedEventSetConflict, SignedEventSetItem, SignedEventSetMergeReport, SignedEventSetOrigin,
-    SignedEventSetRejection, merge_cross_domain_event_sets, merge_signed_event_sets,
-    verify_and_merge_cross_domain_events,
+    AdmissionConflictOccurrence, CROSS_DOMAIN_AUDIT_COMMITMENT_DOMAIN, CellSemanticCursor,
+    CrossDomainAuditRecord, CrossDomainConvergenceReport, CrossDomainEventItem,
+    CrossDomainEventSetMergeReport, DomainSemanticWaterMark, DomainWatermarkDiff,
+    MergedCrossDomainEvent, MergedSignedEvent, SEMANTIC_VECTOR_CHECKPOINT_DOMAIN,
+    SEMANTIC_VECTOR_CHECKPOINT_SIGNATURE_DOMAIN, SemanticVectorCheckpoint,
+    SemanticVectorCheckpointError, SignedEventSetConflict, SignedEventSetItem,
+    SignedEventSetMergeReport, SignedEventSetOrigin, SignedEventSetRejection,
+    SignedSemanticVectorCheckpoint, VectorCheckpointDiff, VectorCheckpointRelation,
+    build_vector_checkpoint, compute_cross_domain_audit_commitment_digest,
+    compute_domain_admission_watermark_digest, compute_event_id_merkle_root,
+    compute_vector_checkpoint_digest, diff_vector_checkpoints, merge_cross_domain_event_sets,
+    merge_signed_event_sets, semantic_vector_checkpoint_signature_message,
+    verify_and_merge_cross_domain_events, verify_signed_vector_checkpoint,
+    verify_vector_checkpoint,
 };
 pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
@@ -169,6 +179,11 @@ pub enum SemanticAuthorityError {
     DeclassificationLabelNotPresent,
     DeclassificationNonceReplayConflict,
     DeclassificationRemovedLabelsEmpty,
+    VectorCheckpoint(SemanticVectorCheckpointError),
+    CrossDomainMergeRejected {
+        rejections: Vec<SignedEventSetRejection>,
+        conflicts: Vec<SignedEventSetConflict>,
+    },
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -341,6 +356,18 @@ impl fmt::Display for SemanticAuthorityError {
             Self::DeclassificationRemovedLabelsEmpty => {
                 formatter.write_str("declassification receipt must remove at least one label")
             }
+            Self::VectorCheckpoint(error) => {
+                write!(formatter, "semantic vector checkpoint failed: {error}")
+            }
+            Self::CrossDomainMergeRejected {
+                rejections,
+                conflicts,
+            } => write!(
+                formatter,
+                "cross-domain event merge rejected: {} rejections, {} conflicts",
+                rejections.len(),
+                conflicts.len()
+            ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("semantic authority lock is poisoned"),
         }
@@ -355,8 +382,15 @@ impl Error for SemanticAuthorityError {
             Self::Capability(error) => Some(error),
             Self::Process(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::VectorCheckpoint(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl From<SemanticVectorCheckpointError> for SemanticAuthorityError {
+    fn from(error: SemanticVectorCheckpointError) -> Self {
+        Self::VectorCheckpoint(error)
     }
 }
 
@@ -1230,6 +1264,362 @@ impl SemanticAuthority {
             });
         }
         Ok(items)
+    }
+
+    /// Exports an unsigned [`SemanticVectorCheckpoint`] over all events
+    /// committed in this store, partitioned by origin `authority_id`
+    /// (`ControlDomainId`) without relying on any cross-Cell scalar `log_seq`
+    /// (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticVectorCheckpointError::MissingTrustSnapshot`] when
+    /// `trust_snapshot_digest` is all zeros, or a storage/corruption error.
+    pub fn export_vector_checkpoint(
+        &self,
+        trust_snapshot_digest: [u8; 32],
+    ) -> Result<SemanticVectorCheckpoint, SemanticAuthorityError> {
+        let items = self.export_signed_event_set()?;
+        Ok(build_vector_checkpoint(&items, trust_snapshot_digest)?)
+    }
+
+    /// Exports and signs a [`SignedSemanticVectorCheckpoint`] over all events
+    /// committed in this store (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// The signed checkpoint is verified against `identity` before returning.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on zero `trust_snapshot_digest`, mismatched store-signer
+    /// identity bindings, signing failure, or verification failure.
+    pub fn export_signed_vector_checkpoint(
+        &self,
+        identity: &IdentityAuthority,
+        store_signer: &impl StoreSigner,
+        trust_snapshot_digest: [u8; 32],
+        signed_at_ms: u64,
+    ) -> Result<SignedSemanticVectorCheckpoint, SemanticAuthorityError> {
+        let checkpoint = self.export_vector_checkpoint(trust_snapshot_digest)?;
+        let binding = identity.inspect_current_binding(store_signer.key_id())?;
+        if binding.principal_id != store_signer.principal_id()
+            || binding.control_domain_id != store_signer.control_domain_id()
+        {
+            return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
+        }
+        let signer_authority_id = store_signer.control_domain_id().into_bytes();
+        let signer_public_key = binding.public_key;
+        let message_digest = semantic_vector_checkpoint_signature_message(
+            checkpoint.checkpoint_id,
+            checkpoint.checkpoint_digest,
+            signer_authority_id,
+            signer_public_key,
+        );
+        let signature = store_signer.sign(&message_digest).map_err(|error| {
+            SemanticAuthorityError::StoreSigningFailed(error.message().to_owned())
+        })?;
+        let signed = SignedSemanticVectorCheckpoint {
+            checkpoint_id: checkpoint.checkpoint_id,
+            domain_watermarks: checkpoint.domain_watermarks,
+            covered_event_ids_root: checkpoint.covered_event_ids_root,
+            checkpoint_digest: checkpoint.checkpoint_digest,
+            signer_principal_id: store_signer.principal_id(),
+            signer_authority_id,
+            signer_key_id: store_signer.key_id(),
+            signer_public_key,
+            signed_at_ms,
+            signature,
+        };
+        verify_signed_vector_checkpoint(identity, &signed)?;
+        Ok(signed)
+    }
+
+    /// Durably imports one verified cross-domain event set into this
+    /// `SemanticAuthority` (`[DIST-EVENT-001]`, `[DIST-AUDIT-001]`,
+    /// `[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed before committing any SQLite row if any incoming item
+    /// fails `[DIST-EVENT-001]` / `[DIST-AUDIT-001]` verification, conflicts
+    /// with existing or batch events, or fails lineage/target validation.
+    pub fn import_cross_domain_event_set(
+        &self,
+        identity: &IdentityAuthority,
+        store_signer: &impl StoreSigner,
+        local_trust_snapshot_digest: [u8; 32],
+        remote_items: &[CrossDomainEventItem],
+    ) -> Result<CrossDomainConvergenceReport, SemanticAuthorityError> {
+        self.converge_cross_domain_event_sets(
+            identity,
+            store_signer,
+            local_trust_snapshot_digest,
+            &[remote_items],
+        )
+    }
+
+    /// Verifies, merges, and durably converges multiple cross-domain event
+    /// sets into this `SemanticAuthority` in one atomic SQLite transaction
+    /// (`[DIST-EVENT-001]`, `[DIST-AUDIT-001]`, `[SEM-CHECKPOINT-001]`).
+    ///
+    /// 1. Exports the receiving store's existing cross-domain event set.
+    /// 2. Runs [`verify_and_merge_cross_domain_events`] across the local set
+    ///    and all incoming `remote_sets`. Any rejection or conflict aborts
+    ///    fail-closed before opening a write transaction.
+    /// 3. For each newly admitted remote event not yet present in the
+    ///    receiving SQLite store, persists its canonical event, source
+    ///    producer signature, receiving-domain `AdmissionReceipt`, and
+    ///    receiving-domain `DurabilityReceipt` (binding the `[DIST-AUDIT-001]`
+    ///    provenance commitment digest) in deterministic topological dependency
+    ///    order while idempotently skipping already-present `SemanticEventId`s.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticAuthorityError::CrossDomainMergeRejected`] on any
+    /// cross-domain verification or admission conflict, or a typed fail-closed
+    /// error (releasing the rolled-back SQLite transaction) on any canonical,
+    /// lineage, or target-reference violation.
+    #[allow(clippy::too_many_lines)] // Single atomic cross-domain convergence transaction.
+    pub fn converge_cross_domain_event_sets(
+        &self,
+        identity: &IdentityAuthority,
+        store_signer: &impl StoreSigner,
+        local_trust_snapshot_digest: [u8; 32],
+        remote_sets: &[&[CrossDomainEventItem]],
+    ) -> Result<CrossDomainConvergenceReport, SemanticAuthorityError> {
+        if local_trust_snapshot_digest == [0_u8; 32] {
+            return Err(SemanticAuthorityError::VectorCheckpoint(
+                SemanticVectorCheckpointError::MissingTrustSnapshot,
+            ));
+        }
+        let local_items = self.export_cross_domain_event_set(local_trust_snapshot_digest)?;
+        let combined_remote: Vec<CrossDomainEventItem>;
+        let remote_slice: &[CrossDomainEventItem] = match remote_sets {
+            [] => &[],
+            [single] => single,
+            multiple => {
+                let total_len: usize = multiple.iter().map(|set| set.len()).sum();
+                let mut buf = Vec::with_capacity(total_len);
+                for set in multiple {
+                    buf.extend_from_slice(set);
+                }
+                combined_remote = buf;
+                &combined_remote
+            }
+        };
+
+        let merge_report =
+            verify_and_merge_cross_domain_events(identity, &local_items, remote_slice);
+        if !merge_report.rejections.is_empty() || !merge_report.conflicts.is_empty() {
+            return Err(SemanticAuthorityError::CrossDomainMergeRejected {
+                rejections: merge_report.rejections,
+                conflicts: merge_report.conflicts,
+            });
+        }
+
+        let decoded_events: Vec<DecodedImportEvent<'_>> = merge_report
+            .merged
+            .iter()
+            .map(decode_import_event)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut imported_event_ids = Vec::new();
+        let mut skipped_existing_event_ids = Vec::new();
+        let mut imported_admissions = Vec::new();
+        let mut imported_durability_receipts = Vec::new();
+
+        {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut to_import: Vec<&DecodedImportEvent<'_>> = Vec::new();
+
+            for item in &decoded_events {
+                let merged = item.merged;
+                if let Some(existing_canonical) =
+                    load_existing_canonical(&transaction, merged.event_id)?
+                {
+                    if existing_canonical != merged.canonical_unsigned_event {
+                        return Err(SemanticAuthorityError::EventIdCollision);
+                    }
+                    let existing_sig =
+                        load_event_signature(&transaction, merged.event_id, merged.key_id)?;
+                    if existing_sig != merged.producer_signature {
+                        return Err(SemanticAuthorityError::EventReplayConflict);
+                    }
+                    if let DecodedImportPayload::Spec(spec) = &item.payload {
+                        insert_or_validate_spec_body(
+                            &transaction,
+                            spec.spec_body_digest,
+                            &spec.canonical_spec_body,
+                        )?;
+                    }
+                    skipped_existing_event_ids.push(merged.event_id);
+                } else {
+                    to_import.push(item);
+                }
+            }
+
+            let ordered_indices = topological_import_order(&to_import);
+            for idx in ordered_indices {
+                let item = to_import[idx];
+                let merged = item.merged;
+                let adm = item.canonical_admission;
+
+                validate_lineage(
+                    &transaction,
+                    merged.event_id,
+                    &item.declared_parents,
+                    &adm.captured_inputs,
+                )?;
+
+                match &item.payload {
+                    DecodedImportPayload::Assertion(assertion) => {
+                        transaction.execute(
+                            "INSERT OR IGNORE INTO content_objects (content_digest, media_type, exact_bytes)
+                             VALUES (?1, 'application/octet-stream', X'')",
+                            [assertion.content_digest.as_slice()],
+                        )?;
+                        insert_imported_assertion_event(
+                            &transaction,
+                            merged.event_id,
+                            &merged.canonical_unsigned_event,
+                            assertion,
+                        )?;
+                    }
+                    DecodedImportPayload::Spec(spec) => {
+                        insert_or_validate_spec_body(
+                            &transaction,
+                            spec.spec_body_digest,
+                            &spec.canonical_spec_body,
+                        )?;
+                        insert_imported_spec_event(
+                            &transaction,
+                            merged.event_id,
+                            &merged.canonical_unsigned_event,
+                            spec,
+                        )?;
+                    }
+                    DecodedImportPayload::Typed(typed_event) => {
+                        match typed_event {
+                            typed::TypedEvent::Judgment(judgment) => {
+                                require_committed_event(&transaction, judgment.source)?;
+                                require_committed_event(&transaction, judgment.target)?;
+                            }
+                            typed::TypedEvent::Verification(verification) => {
+                                validate_verification_target(&transaction, &verification.target)?;
+                            }
+                            typed::TypedEvent::Retraction(retraction) => {
+                                validate_retraction_target(
+                                    &transaction,
+                                    retraction.target_event_id,
+                                    retraction.mode,
+                                    typed_event.issuer(),
+                                    typed_event.scope(),
+                                )?;
+                            }
+                        }
+                        insert_imported_typed_event(
+                            &transaction,
+                            merged.event_id,
+                            &merged.canonical_unsigned_event,
+                            typed_event,
+                        )?;
+                    }
+                }
+
+                transaction.execute(
+                    "INSERT INTO event_signatures (event_id, key_id, signature) VALUES (?1, ?2, ?3)",
+                    params![
+                        merged.event_id.as_bytes().as_slice(),
+                        merged.key_id.as_bytes().as_slice(),
+                        merged.producer_signature.as_slice(),
+                    ],
+                )?;
+                transaction.execute(
+                    "INSERT INTO event_log (event_id) VALUES (?1)",
+                    [merged.event_id.as_bytes().as_slice()],
+                )?;
+                let log_seq = u64::try_from(transaction.last_insert_rowid())
+                    .map_err(|_| SemanticAuthorityError::CorruptRecord("negative log sequence"))?;
+
+                insert_lineage_edges(
+                    &transaction,
+                    merged.event_id,
+                    &item.declared_parents,
+                    EDGE_DECLARED,
+                )?;
+                insert_lineage_edges(
+                    &transaction,
+                    merged.event_id,
+                    &adm.captured_inputs,
+                    EDGE_CAPTURED,
+                )?;
+
+                if let DecodedImportPayload::Typed(typed_event) = &item.payload {
+                    if let typed::TypedEvent::Retraction(retraction) = typed_event {
+                        insert_event_retraction(
+                            &transaction,
+                            retraction.target_event_id,
+                            merged.event_id,
+                            retraction.mode,
+                            retraction.reason_digest,
+                            typed_event.issuer(),
+                            adm.admitted_at_ms,
+                        )?;
+                    }
+                    insert_typed_links(&transaction, merged.event_id, typed_event)?;
+                }
+
+                let receipt = seal_imported_admission(
+                    &transaction,
+                    identity,
+                    store_signer,
+                    merged.event_id,
+                    log_seq,
+                    adm.admitted_at_ms,
+                    adm.effective_valid_until_ms,
+                    &adm.captured_inputs,
+                    adm.effective_taint,
+                    adm.authz_policy_digest,
+                )?;
+                let audit_commitment = compute_cross_domain_audit_commitment_digest(
+                    merged.event_id,
+                    &merged.audit_records,
+                );
+                let durability_receipt = seal_imported_durability_receipt(
+                    &transaction,
+                    identity,
+                    store_signer,
+                    merged.event_id,
+                    log_seq,
+                    audit_commitment,
+                    adm.admitted_at_ms,
+                )?;
+
+                imported_event_ids.push(merged.event_id);
+                imported_admissions.push(receipt);
+                imported_durability_receipts.push(durability_receipt);
+            }
+
+            transaction.commit()?;
+        }
+
+        let vector_checkpoint = self.export_vector_checkpoint(local_trust_snapshot_digest)?;
+        let audit_records = merge_report
+            .merged
+            .iter()
+            .flat_map(|event| event.audit_records.iter().cloned())
+            .collect();
+
+        Ok(CrossDomainConvergenceReport {
+            merge_report,
+            imported_event_ids,
+            skipped_existing_event_ids,
+            imported_admissions,
+            imported_durability_receipts,
+            audit_records,
+            vector_checkpoint,
+        })
     }
 
     /// Reads one immutable owner-issued durability proof for an admitted
@@ -3032,4 +3422,413 @@ fn decode_id<const N: usize, T>(
     field: &'static str,
 ) -> Result<T, SemanticAuthorityError> {
     Ok(constructor(decode_array(bytes, field)?))
+}
+
+enum DecodedImportPayload {
+    Assertion(UnsignedAssertionEvent),
+    Spec(UnsignedSpecEvent),
+    Typed(typed::TypedEvent),
+}
+
+struct DecodedImportEvent<'a> {
+    merged: &'a MergedCrossDomainEvent,
+    canonical_admission: &'a AdmissionReceipt,
+    payload: DecodedImportPayload,
+    declared_parents: Vec<SemanticEventId>,
+    dependencies: Vec<SemanticEventId>,
+}
+
+fn decode_import_event(
+    merged: &MergedCrossDomainEvent,
+) -> Result<DecodedImportEvent<'_>, SemanticAuthorityError> {
+    if semantic_event_id(&merged.canonical_unsigned_event) != merged.event_id {
+        return Err(SemanticAuthorityError::EventIdMismatch);
+    }
+    let canonical_admission = merged
+        .admissions
+        .iter()
+        .min_by_key(|admission| (admission.admitted_at_ms, admission.receipt_id))
+        .ok_or(SemanticAuthorityError::CorruptRecord(
+            "merged event has no admission receipt",
+        ))?;
+    canonical::validate_sorted_unique(&canonical_admission.captured_inputs)?;
+
+    let (payload, declared_parents, mut dependencies) = match &merged.payload_identity {
+        SemanticPayloadIdentity::AssertionContent(expected_digest) => {
+            let event = decode_unsigned_assertion_event(&merged.canonical_unsigned_event)?;
+            if event.content_digest != *expected_digest
+                || event.scope != merged.scope
+                || event.issuer != merged.issuer
+                || event.control_domain != merged.control_domain
+                || event.key_id != merged.key_id
+            {
+                return Err(SemanticAuthorityError::CanonicalMismatch);
+            }
+            let parents = event.declared_parents.clone();
+            let deps = parents.clone();
+            (DecodedImportPayload::Assertion(event), parents, deps)
+        }
+        SemanticPayloadIdentity::IntentSpecBody(expected_digest) => {
+            let event = decode_unsigned_spec_event(&merged.canonical_unsigned_event)?;
+            if event.spec_body_digest != *expected_digest
+                || event.scope != merged.scope
+                || event.issuer != merged.issuer
+                || event.control_domain != merged.control_domain
+                || event.key_id != merged.key_id
+            {
+                return Err(SemanticAuthorityError::CanonicalMismatch);
+            }
+            let parents = event.declared_parents.clone();
+            let deps = parents.clone();
+            (DecodedImportPayload::Spec(event), parents, deps)
+        }
+        SemanticPayloadIdentity::Structural => {
+            let event = typed::TypedEvent::decode(&merged.canonical_unsigned_event)?;
+            if event.scope() != merged.scope
+                || event.issuer() != merged.issuer
+                || event.control_domain() != merged.control_domain
+                || event.key_id() != merged.key_id
+            {
+                return Err(SemanticAuthorityError::CanonicalMismatch);
+            }
+            let parents = event.declared_parents().to_vec();
+            let mut deps = parents.clone();
+            match &event {
+                typed::TypedEvent::Judgment(judgment) => {
+                    deps.push(judgment.source);
+                    deps.push(judgment.target);
+                }
+                typed::TypedEvent::Verification(verification) => match &verification.target {
+                    VerificationTarget::Event(target) => deps.push(target.event_id),
+                    VerificationTarget::Criterion(criterion) => deps.push(criterion.spec_id),
+                },
+                typed::TypedEvent::Retraction(retraction) => {
+                    deps.push(retraction.target_event_id);
+                }
+            }
+            (DecodedImportPayload::Typed(event), parents, deps)
+        }
+    };
+    dependencies.extend_from_slice(&canonical_admission.captured_inputs);
+
+    Ok(DecodedImportEvent {
+        merged,
+        canonical_admission,
+        payload,
+        declared_parents,
+        dependencies,
+    })
+}
+
+fn topological_import_order(items: &[&DecodedImportEvent<'_>]) -> Vec<usize> {
+    let count = items.len();
+    if count <= 1 {
+        return (0..count).collect();
+    }
+
+    let mut index_by_id: BTreeMap<SemanticEventId, usize> = BTreeMap::new();
+    for (idx, item) in items.iter().enumerate() {
+        index_by_id.insert(item.merged.event_id, idx);
+    }
+
+    let mut in_degree = vec![0_usize; count];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (idx, item) in items.iter().enumerate() {
+        let mut unique_deps: BTreeSet<usize> = BTreeSet::new();
+        for dep_id in &item.dependencies {
+            if *dep_id != item.merged.event_id
+                && let Some(&dep_idx) = index_by_id.get(dep_id)
+            {
+                unique_deps.insert(dep_idx);
+            }
+        }
+        in_degree[idx] = unique_deps.len();
+        for dep_idx in unique_deps {
+            dependents[dep_idx].push(idx);
+        }
+    }
+
+    let mut visited = vec![false; count];
+    let mut ordered = Vec::with_capacity(count);
+    while ordered.len() < count {
+        let next_idx = (0..count)
+            .filter(|&idx| !visited[idx] && in_degree[idx] == 0)
+            .min_by_key(|&idx| {
+                (
+                    items[idx].canonical_admission.admitted_at_ms,
+                    items[idx].merged.event_id,
+                )
+            });
+        let Some(chosen) = next_idx else {
+            let mut remaining: Vec<usize> = (0..count).filter(|&idx| !visited[idx]).collect();
+            remaining.sort_by_key(|&idx| {
+                (
+                    items[idx].canonical_admission.admitted_at_ms,
+                    items[idx].merged.event_id,
+                )
+            });
+            ordered.extend(remaining);
+            break;
+        };
+        visited[chosen] = true;
+        ordered.push(chosen);
+        for &child in &dependents[chosen] {
+            in_degree[child] = in_degree[child].saturating_sub(1);
+        }
+    }
+    ordered
+}
+
+fn insert_imported_assertion_event(
+    transaction: &Transaction<'_>,
+    event_id: SemanticEventId,
+    canonical_unsigned_event: &[u8],
+    event: &UnsignedAssertionEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let (scope_kind, scope_id) = encode_scope(event.scope);
+    transaction.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            event_id.as_bytes().as_slice(),
+            canonical_unsigned_event,
+            scope_kind,
+            scope_id.as_slice(),
+            event.issuer.as_bytes().as_slice(),
+            event.issuer_execution.process_id.as_bytes().as_slice(),
+            encode_u64(event.issuer_execution.generation.get())?,
+            event.control_domain.as_bytes().as_slice(),
+            encode_u64(event.issued_at_unix_ns)?,
+            event.valid_until_ms.map(encode_u64).transpose()?,
+            event.purpose_digest,
+            event.key_id.as_bytes().as_slice(),
+            event.content_digest.as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_imported_spec_event(
+    transaction: &Transaction<'_>,
+    event_id: SemanticEventId,
+    canonical_unsigned_event: &[u8],
+    event: &UnsignedSpecEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let (scope_kind, scope_id) = encode_scope(event.scope);
+    transaction.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest, spec_body_digest
+         ) VALUES (?1, ?2, 5, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13)",
+        params![
+            event_id.as_bytes().as_slice(),
+            canonical_unsigned_event,
+            scope_kind,
+            scope_id.as_slice(),
+            event.issuer.as_bytes().as_slice(),
+            event.issuer_execution.process_id.as_bytes().as_slice(),
+            encode_u64(event.issuer_execution.generation.get())?,
+            event.control_domain.as_bytes().as_slice(),
+            encode_u64(event.issued_at_unix_ns)?,
+            event.valid_until_ms.map(encode_u64).transpose()?,
+            event.purpose_digest,
+            event.key_id.as_bytes().as_slice(),
+            event.spec_body_digest.as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_imported_typed_event(
+    transaction: &Transaction<'_>,
+    event_id: SemanticEventId,
+    canonical_unsigned_event: &[u8],
+    event: &typed::TypedEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let event_type = match event {
+        typed::TypedEvent::Judgment(_) => 2,
+        typed::TypedEvent::Verification(_) => 3,
+        typed::TypedEvent::Retraction(_) => 4,
+    };
+    let (scope_kind, scope_id) = encode_scope(event.scope());
+    transaction.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest, spec_body_digest
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, NULL)",
+        params![
+            event_id.as_bytes().as_slice(),
+            canonical_unsigned_event,
+            event_type,
+            scope_kind,
+            scope_id.as_slice(),
+            event.issuer().as_bytes().as_slice(),
+            event.issuer_execution().process_id.as_bytes().as_slice(),
+            encode_u64(event.issuer_execution().generation.get())?,
+            event.control_domain().as_bytes().as_slice(),
+            encode_u64(event.issued_at_unix_ns())?,
+            event.valid_until_ms().map(encode_u64).transpose()?,
+            event.purpose_digest(),
+            event.key_id().as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // Fixed signed Receipt core field order.
+fn seal_imported_admission(
+    transaction: &Transaction<'_>,
+    identity: &IdentityAuthority,
+    store_signer: &impl StoreSigner,
+    event_id: SemanticEventId,
+    log_seq: u64,
+    admitted_at_ms: u64,
+    effective_valid_until_ms: Option<u64>,
+    captured_inputs: &[SemanticEventId],
+    effective_taint: TaintFlags,
+    authz_policy_digest: [u8; 32],
+) -> Result<AdmissionReceipt, SemanticAuthorityError> {
+    let receipt_core_digest = build_admission_receipt_core_digest(
+        event_id,
+        log_seq,
+        admitted_at_ms,
+        effective_valid_until_ms,
+        captured_inputs,
+        effective_taint,
+        authz_policy_digest,
+        store_signer.principal_id(),
+        store_signer.control_domain_id(),
+        store_signer.key_id(),
+    );
+    let mut receipt_id_bytes = [0_u8; 16];
+    receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
+    let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
+    let receipt_message = admission_receipt_signature_message(receipt_id, receipt_core_digest);
+    let store_signature = store_signer
+        .sign(&receipt_message)
+        .map_err(|error| SemanticAuthorityError::StoreSigningFailed(error.message().to_owned()))?;
+    let verified_store =
+        identity.verify_semantic_authority_signature(VerifySemanticAuthoritySignatureRequest {
+            message_digest: receipt_message,
+            issuer: store_signer.principal_id(),
+            control_domain_id: store_signer.control_domain_id(),
+            key_id: store_signer.key_id(),
+            signature: store_signature,
+            verified_at_ms: admitted_at_ms,
+        })?;
+    if verified_store.principal_id() != store_signer.principal_id()
+        || verified_store.control_domain_id() != store_signer.control_domain_id()
+        || verified_store.key_id() != store_signer.key_id()
+    {
+        return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
+    }
+    let receipt = AdmissionReceipt {
+        receipt_id,
+        event_id,
+        log_seq,
+        admitted_at_ms,
+        effective_valid_until_ms,
+        captured_inputs: captured_inputs.to_vec(),
+        effective_taint,
+        authz_policy_digest,
+        durability: AdmissionDurability::Durable,
+        store_principal: store_signer.principal_id(),
+        store_control_domain: store_signer.control_domain_id(),
+        store_key_id: store_signer.key_id(),
+        store_signature,
+    };
+    insert_admission_receipt(transaction, &receipt)?;
+    transaction.execute(
+        "INSERT INTO semantic_outbox (log_seq, event_id, receipt_id, acknowledged_at_ms)
+         VALUES (?1, ?2, ?3, NULL)",
+        params![
+            encode_u64(log_seq)?,
+            receipt.event_id.as_bytes().as_slice(),
+            receipt.receipt_id.as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(receipt)
+}
+
+fn seal_imported_durability_receipt(
+    transaction: &Transaction<'_>,
+    identity: &IdentityAuthority,
+    store_signer: &impl StoreSigner,
+    event_id: SemanticEventId,
+    log_seq: u64,
+    durable_checkpoint_id: [u8; 32],
+    durable_at_ms: u64,
+) -> Result<DurabilityReceipt, SemanticAuthorityError> {
+    let receipt_core_digest = build_durability_receipt_core_digest(
+        event_id,
+        log_seq,
+        durable_checkpoint_id,
+        durable_at_ms,
+        store_signer.principal_id(),
+        store_signer.control_domain_id(),
+        store_signer.key_id(),
+    );
+    let mut receipt_id_bytes = [0_u8; 16];
+    receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
+    let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
+    let preimage = durability_receipt_canonical_preimage(receipt_id, receipt_core_digest)?;
+    let receipt_message: [u8; 32] = Sha256::digest(&preimage).into();
+    let store_signature = store_signer
+        .sign(&receipt_message)
+        .map_err(|error| SemanticAuthorityError::StoreSigningFailed(error.message().to_owned()))?;
+    let verified_store =
+        identity.verify_semantic_authority_signature(VerifySemanticAuthoritySignatureRequest {
+            message_digest: receipt_message,
+            issuer: store_signer.principal_id(),
+            control_domain_id: store_signer.control_domain_id(),
+            key_id: store_signer.key_id(),
+            signature: store_signature,
+            verified_at_ms: durable_at_ms,
+        })?;
+    if verified_store.principal_id() != store_signer.principal_id()
+        || verified_store.control_domain_id() != store_signer.control_domain_id()
+        || verified_store.key_id() != store_signer.key_id()
+    {
+        return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
+    }
+    let receipt = DurabilityReceipt {
+        receipt_id,
+        event_id,
+        durable_checkpoint_id,
+        durable_at_ms,
+        store_principal: Some(store_signer.principal_id()),
+        store_control_domain: Some(store_signer.control_domain_id()),
+        store_key_id: Some(store_signer.key_id()),
+        store_signature,
+        signature_preimage_version: SIGNATURE_PREIMAGE_CANONICAL,
+    };
+    transaction.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+            store_principal_id, store_control_domain_id, store_key_id, store_signature,
+            signature_preimage_version
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            receipt.receipt_id.as_bytes().as_slice(),
+            receipt.event_id.as_bytes().as_slice(),
+            receipt.durable_checkpoint_id.as_slice(),
+            encode_u64(receipt.durable_at_ms)?,
+            receipt.store_principal.map(|id| id.as_bytes().to_vec()),
+            receipt
+                .store_control_domain
+                .map(|id| id.as_bytes().to_vec()),
+            receipt.store_key_id.map(|id| id.as_bytes().to_vec()),
+            receipt.store_signature.as_slice(),
+            i64::from(receipt.signature_preimage_version),
+        ],
+    )?;
+    Ok(receipt)
 }

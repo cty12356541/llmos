@@ -100,7 +100,14 @@ pub use semantic_writer::{
 };
 pub use takeover_drive::{
     BarrierObservationDemand, BarrierObservationSource, CrossCellTakeoverOutcome,
-    CrossCellTakeoverRequest, SignedBarrierObservation, TakeoverDriveError,
-    drive_cross_cell_takeover,
+    CrossCellTakeoverRequest, PARTICIPANT_REGISTRY_SNAPSHOT_SIGNATURE_DOMAIN,
+    ProductionTakeoverOptions, ReceiptExtensions, RegistrySnapshotSignature,
+    SignedBarrierObservation, TakeoverDriveError, TakeoverFederationBindingOutcome,
+    TakeoverFederationContext, bind_takeover_to_federation, dist_task_binding_for_assignment,
+    dist_task_binding_for_registry, dist_task_binding_for_takeover_receipt,
+    drive_cross_cell_takeover, drive_cross_cell_takeover_with_options,
+    drive_takeover_with_federation_binding, expire_authority_assignment,
+    participant_registry_snapshot_signature_message, quarantine_authority_assignment,
+    record_verified_participant_registry_signature, verify_frozen_registry_signature,
 };
 pub use teardown::{ApplicationTeardown, run_application_teardown};

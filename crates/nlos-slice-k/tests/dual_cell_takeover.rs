@@ -58,7 +58,12 @@ use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_slice_k::{
     BarrierObservationDemand, BarrierObservationSource, CrossCellTakeoverRequest,
-    SignedBarrierObservation, TakeoverDriveError, drive_cross_cell_takeover,
+    ProductionTakeoverOptions, ReceiptExtensions, RegistrySnapshotSignature,
+    SignedBarrierObservation, TakeoverDriveError, TakeoverFederationContext,
+    drive_cross_cell_takeover, drive_cross_cell_takeover_with_options,
+    drive_takeover_with_federation_binding, expire_authority_assignment,
+    participant_registry_snapshot_signature_message, quarantine_authority_assignment,
+    verify_frozen_registry_signature,
 };
 use nlos_task::{
     AuthorityAssignmentState, AuthorityLeaseDecision, AuthorityLeaseFinalizeRequest,
@@ -1093,4 +1098,431 @@ fn registry_binding_of(
         generation: registry.generation,
         root: registry.root,
     }
+}
+
+struct InMemorySignedBarrierSource {
+    signing_key: SigningKey,
+    issuer: PrincipalId,
+    control_domain_id: ControlDomainId,
+    key_id: KeyId,
+    fail_with: Option<&'static str>,
+}
+
+impl BarrierObservationSource for InMemorySignedBarrierSource {
+    fn observe_barrier(
+        &mut self,
+        demand: BarrierObservationDemand,
+    ) -> Result<SignedBarrierObservation, TakeoverDriveError> {
+        if let Some(reason) = self.fail_with {
+            return Err(TakeoverDriveError::BarrierSource(reason.to_string()));
+        }
+        let remote_receipt_id =
+            poc_remote_receipt_id(demand.takeover_receipt_id, &demand.participant);
+        let barrier_digest = poc_barrier_digest(demand.takeover_receipt_id, &demand.participant);
+        let message = barrier_observation_signature_message(
+            demand.takeover_receipt_id,
+            &demand.participant,
+            remote_receipt_id,
+            barrier_digest,
+            demand.fence_set_root,
+        );
+        let signature = self.signing_key.sign(&message).to_bytes();
+        Ok(SignedBarrierObservation {
+            remote_receipt_id,
+            barrier_digest,
+            signature: BarrierObservationSignature {
+                issuer: self.issuer,
+                control_domain_id: self.control_domain_id,
+                key_id: self.key_id,
+                signature,
+            },
+        })
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cs1d_production_takeover_verifies_signed_registry_receipt_extensions_and_federation_binding() {
+    use nlos_cell::{
+        CellDirectory, CellEpoch, CellFencingToken, CellIdentity, DistTaskBindingVerification,
+        verify_dist_task_binding,
+    };
+    use nlos_types::SchedulerDomainId;
+
+    let store_dir = TempDir::new("cs1d-prod-store");
+    let identity_dir = TempDir::new("cs1d-prod-identity");
+    let federation_dir = TempDir::new("cs1d-prod-federation");
+    let store_path = store_dir.path().join("tasks.sqlite");
+
+    // 1. Cell A establishes term-1 lease, task + attempt + lease-bound permit + finalize.
+    let authority = SqliteTaskAuthority::open(&store_path).expect("open task store");
+    let lease_one = match authority
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0xA1; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x11; 16]),
+            requested_at_ms: LEASE_ONE_AT_MS,
+            ttl_ms: LEASE_ONE_TTL_MS,
+        })
+        .expect("acquire term-1 lease")
+    {
+        AuthorityLeaseDecision::Acquired(record) => record,
+        other => panic!("expected acquired lease, got {other:?}"),
+    };
+    let attempt = register_task_attempt(&authority, 0x31, LEASE_ONE_AT_MS + 1);
+    let permit = match authority
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&attempt, 0x32, LEASE_ONE_AT_MS + 2),
+            lease: lease_one,
+        })
+        .expect("issue lease-bound permit")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    authority
+        .finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize: finalize_request(&attempt, permit.permit_id, LEASE_ONE_AT_MS + 3),
+            lease: lease_one,
+        })
+        .expect("finalize term-1 commit");
+
+    // 2. Bootstrap signer in IdentityAuthority and sign the registry generation snapshot.
+    let identity = IdentityAuthority::open(identity_dir.path()).expect("open identity root");
+    let signing_key = SigningKey::from_bytes(&[0x5A; 32]);
+    let signer_binding = identity
+        .bootstrap_principal(BootstrapPrincipalRequest {
+            principal_profile_digest: [0x5B; 32],
+            control_domain_policy_digest: [0x5C; 32],
+            public_key: signing_key.verifying_key().to_bytes(),
+            key_purpose: KeyPurpose::BarrierObservationSigning,
+            key_valid_from_ms: 0,
+            key_valid_until_ms: 10_000_000,
+            idempotency_key: IdempotencyKey::from_bytes([0x5D; 16]),
+            created_at_ms: 0,
+        })
+        .expect("bootstrap signer")
+        .binding();
+
+    let initial_registry = authority
+        .inspect_participant_registry(task_id())
+        .expect("inspect initial registry");
+    let snapshot_digest = participant_registry_snapshot_signature_message(&initial_registry);
+    let registry_signature = signing_key.sign(&snapshot_digest).to_bytes();
+    let registry_signer = RegistrySnapshotSignature {
+        issuer: signer_binding.principal_id,
+        control_domain_id: signer_binding.control_domain_id,
+        key_id: signer_binding.key_id,
+        signature: registry_signature,
+    };
+
+    // Tampered registry signature is rejected fail-closed before any mutation.
+    let mut bad_signer = registry_signer;
+    bad_signer.signature[0] ^= 0xFF;
+    assert!(matches!(
+        verify_frozen_registry_signature(&identity, &initial_registry, bad_signer, 200),
+        Err(TakeoverDriveError::RegistrySignatureInvalid(_))
+    ));
+
+    // 3. Drive production takeover with v47 receipt extensions, signed registry verification,
+    // and federation MigrationIntent + ReconciliationCheckpoint binding.
+    let directory = CellDirectory::open(federation_dir.path()).expect("open cell directory");
+    let source_cell = CellIdentity::from_domain(SchedulerDomainId::from_bytes([0xCA; 16]));
+    let target_cell = CellIdentity::from_domain(SchedulerDomainId::from_bytes([0xCB; 16]));
+    let mut barrier_source = InMemorySignedBarrierSource {
+        signing_key,
+        issuer: signer_binding.principal_id,
+        control_domain_id: signer_binding.control_domain_id,
+        key_id: signer_binding.key_id,
+        fail_with: None,
+    };
+    let mut tick = PARENT_CLOCK_BASE_MS;
+    let mut clock = || {
+        tick += PARENT_CLOCK_STEP_MS;
+        tick
+    };
+    let expected_quarantine_root = [0x77; 32];
+    let expected_consensus_index = 42_u64;
+
+    let (outcome, federation_binding) = drive_takeover_with_federation_binding(
+        CrossCellTakeoverRequest {
+            store: &authority,
+            identity: &identity,
+            barrier_source: &mut barrier_source,
+            task_id: task_id(),
+            successor_holder_id: ProcessId::from_bytes([0xB2; 16]),
+            lease_idempotency_key: IdempotencyKey::from_bytes([0x61; 16]),
+            lease_ttl_ms: PARENT_LEASE_TTL_MS,
+            now_ms: &mut clock,
+        },
+        ProductionTakeoverOptions {
+            receipt_extensions: ReceiptExtensions {
+                outstanding_effect_quarantine_root: Some(expected_quarantine_root),
+                consensus_commit_index: Some(expected_consensus_index),
+            },
+            quarantined_permit_id: None,
+            frozen_registry_signer: Some(registry_signer),
+            quarantine_on_barrier_failure: true,
+        },
+        TakeoverFederationContext {
+            directory: &directory,
+            source_cell,
+            target_cell,
+            checkpoint_boot_generation: Generation::INITIAL,
+            checkpoint_epoch: CellEpoch::INITIAL,
+            checkpoint_fencing_token: CellFencingToken::INITIAL,
+        },
+    )
+    .expect("drive production takeover with federation binding");
+
+    // 4. Assert v47 frozen registry signature & receipt extensions.
+    assert_eq!(
+        outcome.frozen_registry.authority,
+        Some(*signer_binding.principal_id.as_bytes())
+    );
+    assert_eq!(outcome.frozen_registry.signature, Some(registry_signature));
+    let verified_signer = outcome
+        .verified_registry_signer
+        .expect("verified frozen registry signer proof");
+    assert_eq!(verified_signer.principal_id(), signer_binding.principal_id);
+    assert_eq!(
+        outcome
+            .takeover_receipt_pending
+            .outstanding_effect_quarantine_root,
+        Some(expected_quarantine_root)
+    );
+    assert_eq!(
+        outcome.takeover_receipt_pending.consensus_commit_index,
+        Some(expected_consensus_index)
+    );
+    assert_eq!(
+        outcome.takeover_receipt_completed.barrier_state,
+        AuthorityTakeoverReceiptState::Complete
+    );
+    assert_eq!(
+        outcome
+            .takeover_receipt_completed
+            .outstanding_effect_quarantine_root,
+        Some(expected_quarantine_root)
+    );
+    assert_eq!(
+        outcome.takeover_receipt_completed.consensus_commit_index,
+        Some(expected_consensus_index)
+    );
+    assert_eq!(
+        outcome.reopened_registry.prior_participant_registry_root,
+        Some(outcome.frozen_registry.root)
+    );
+
+    // 5. Assert Federation MigrationIntent + CheckpointFact round-trip and fail-closed verification.
+    let intents = directory
+        .migration_intents()
+        .expect("enumerate migration intents")
+        .into_records();
+    assert_eq!(intents.len(), 3);
+    let checkpoints = directory
+        .checkpoints(target_cell)
+        .expect("enumerate target cell checkpoints")
+        .into_records();
+    assert_eq!(checkpoints.len(), 1);
+    let stored_fact = checkpoints[0].fact();
+
+    for (intent_record, expected_binding) in [
+        (&intents[0], &federation_binding.takeover_receipt_binding),
+        (&intents[1], &federation_binding.active_assignment_binding),
+        (&intents[2], &federation_binding.reopened_registry_binding),
+    ] {
+        assert_eq!(
+            verify_dist_task_binding(
+                intent_record.intent(),
+                stored_fact,
+                &federation_binding.checkpoint_prefix,
+                expected_binding,
+            ),
+            DistTaskBindingVerification::Verified
+        );
+    }
+    assert_eq!(
+        stored_fact.verify_dist_task_binding(
+            &federation_binding.checkpoint_prefix,
+            &federation_binding.old_assignment_binding,
+        ),
+        DistTaskBindingVerification::Verified
+    );
+
+    let mut tampered = federation_binding.takeover_receipt_binding;
+    tampered.authority_term += 1;
+    assert!(matches!(
+        verify_dist_task_binding(
+            intents[0].intent(),
+            stored_fact,
+            &federation_binding.checkpoint_prefix,
+            &tampered,
+        ),
+        DistTaskBindingVerification::Mismatch { .. }
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cs1d_assignment_expired_and_quarantined_transitions_and_barrier_failure_quarantine() {
+    let store_dir = TempDir::new("cs1d-5state-store");
+    let identity_dir = TempDir::new("cs1d-5state-identity");
+    let store_path = store_dir.path().join("tasks.sqlite");
+
+    // Part A: Assignment `Expired` transition with anchored lease-liveness guard.
+    let authority = SqliteTaskAuthority::open(&store_path).expect("open task store");
+    let lease_one = match authority
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0xA1; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
+            requested_at_ms: LEASE_ONE_AT_MS,
+            ttl_ms: LEASE_ONE_TTL_MS, // expires at 200
+        })
+        .expect("acquire term-1 lease")
+    {
+        AuthorityLeaseDecision::Acquired(record) => record,
+        other => panic!("expected acquired lease, got {other:?}"),
+    };
+    let attempt = register_task_attempt(&authority, 0x72, LEASE_ONE_AT_MS + 1);
+    let permit = match authority
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&attempt, 0x73, LEASE_ONE_AT_MS + 2),
+            lease: lease_one,
+        })
+        .expect("issue lease-bound permit")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    authority
+        .finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize: finalize_request(&attempt, permit.permit_id, LEASE_ONE_AT_MS + 3),
+            lease: lease_one,
+        })
+        .expect("finalize commit");
+
+    // Refuses to expire while lease is still live (150 < 200) or wall_now_ms == 0.
+    assert!(matches!(
+        expire_authority_assignment(&authority, task_id(), 150, 150),
+        Err(TakeoverDriveError::AssignmentLeaseStillLive {
+            expires_at_ms: 200,
+            effective_now_ms: 150,
+        })
+    ));
+    assert!(matches!(
+        expire_authority_assignment(&authority, task_id(), 0, 250),
+        Err(TakeoverDriveError::AssignmentLeaseStillLive {
+            expires_at_ms: 200,
+            ..
+        })
+    ));
+
+    // Transitions to `Expired` once anchored clock reaches 200, and replays idempotently.
+    let expired =
+        expire_authority_assignment(&authority, task_id(), 200, 200).expect("expire assignment");
+    assert_eq!(expired.state, AuthorityAssignmentState::Expired);
+    let expired_replay = expire_authority_assignment(&authority, task_id(), 210, 210)
+        .expect("idempotent expire replay");
+    assert_eq!(expired_replay, expired);
+
+    // Quarantining an already-Expired assignment fails closed.
+    assert!(matches!(
+        quarantine_authority_assignment(&authority, task_id(), 220),
+        Err(TakeoverDriveError::Store(
+            TaskStoreError::AuthorityLeaseFenced
+        ))
+    ));
+
+    // Part B: `[DIST-TASK-002]` tail clause — barrier failure during takeover quarantines the
+    // incumbent `TakeoverPending` assignment and leaves no successor assignment active.
+    let store_path_b = store_dir.path().join("tasks_b.sqlite");
+    let authority_b = SqliteTaskAuthority::open(&store_path_b).expect("open store B");
+    let lease_b1 = match authority_b
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0xA2; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x81; 16]),
+            requested_at_ms: LEASE_ONE_AT_MS,
+            ttl_ms: LEASE_ONE_TTL_MS,
+        })
+        .expect("acquire term-1 lease on store B")
+    {
+        AuthorityLeaseDecision::Acquired(record) => record,
+        other => panic!("expected acquired lease, got {other:?}"),
+    };
+    let attempt_b = register_task_attempt(&authority_b, 0x82, LEASE_ONE_AT_MS + 1);
+    let permit_b = match authority_b
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&attempt_b, 0x83, LEASE_ONE_AT_MS + 2),
+            lease: lease_b1,
+        })
+        .expect("issue lease-bound permit on store B")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    authority_b
+        .finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize: finalize_request(&attempt_b, permit_b.permit_id, LEASE_ONE_AT_MS + 3),
+            lease: lease_b1,
+        })
+        .expect("finalize commit on store B");
+
+    let identity = IdentityAuthority::open(identity_dir.path()).expect("open identity root");
+    let signing_key = SigningKey::from_bytes(&[0x84; 32]);
+    let signer_binding = identity
+        .bootstrap_principal(BootstrapPrincipalRequest {
+            principal_profile_digest: [0x85; 32],
+            control_domain_policy_digest: [0x86; 32],
+            public_key: signing_key.verifying_key().to_bytes(),
+            key_purpose: KeyPurpose::BarrierObservationSigning,
+            key_valid_from_ms: 0,
+            key_valid_until_ms: 10_000_000,
+            idempotency_key: IdempotencyKey::from_bytes([0x87; 16]),
+            created_at_ms: 0,
+        })
+        .expect("bootstrap signer")
+        .binding();
+
+    let mut failing_source = InMemorySignedBarrierSource {
+        signing_key,
+        issuer: signer_binding.principal_id,
+        control_domain_id: signer_binding.control_domain_id,
+        key_id: signer_binding.key_id,
+        fail_with: Some("simulated endpoint barrier timeout"),
+    };
+    let mut tick = PARENT_CLOCK_BASE_MS;
+    let mut clock = || {
+        tick += PARENT_CLOCK_STEP_MS;
+        tick
+    };
+
+    let err = drive_cross_cell_takeover_with_options(
+        CrossCellTakeoverRequest {
+            store: &authority_b,
+            identity: &identity,
+            barrier_source: &mut failing_source,
+            task_id: task_id(),
+            successor_holder_id: ProcessId::from_bytes([0xB3; 16]),
+            lease_idempotency_key: IdempotencyKey::from_bytes([0x88; 16]),
+            lease_ttl_ms: PARENT_LEASE_TTL_MS,
+            now_ms: &mut clock,
+        },
+        ProductionTakeoverOptions {
+            quarantine_on_barrier_failure: true,
+            ..ProductionTakeoverOptions::default()
+        },
+    )
+    .expect_err("barrier failure must abort takeover");
+    assert!(matches!(err, TakeoverDriveError::BarrierSource(_)));
+
+    let quarantined = authority_b
+        .inspect_authority_assignment(task_id())
+        .expect("inspect assignment after barrier failure");
+    assert_eq!(quarantined.state, AuthorityAssignmentState::Quarantined);
+    assert_eq!(quarantined.authority_lease_binding.term, 1);
+
+    // Direct quarantine replay is idempotent.
+    let quarantined_replay =
+        quarantine_authority_assignment(&authority_b, task_id(), 300).expect("idempotent replay");
+    assert_eq!(quarantined_replay, quarantined);
 }

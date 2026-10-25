@@ -688,7 +688,7 @@ fn decode_quarantine_row(
     })
 }
 
-fn load_quarantine_by_permit(
+pub(crate) fn load_quarantine_by_permit(
     source: &impl SqlRead,
     permit_id: CommitPermitId,
 ) -> Result<Option<QuarantineReceiptRecord>, TaskStoreError> {
@@ -2066,6 +2066,15 @@ fn write_closure_receipt(
     };
     insert_receipt(transaction, &receipt)?;
     close_permit(transaction, ctx.permit, ctx.now_ms)?;
+
+    store::reopen_registry_and_rotate_assignment_on_permit_closure(
+        transaction,
+        &ctx.task.record,
+        ctx.effective_registry_binding,
+        control_epoch,
+        ctx.now_ms,
+    )?;
+
     let attempt_state = match outcome.receipt_outcome() {
         ReceiptOutcome::CancelledBeforeEffect => AttemptState::Cancelled,
         _ => AttemptState::Failed,

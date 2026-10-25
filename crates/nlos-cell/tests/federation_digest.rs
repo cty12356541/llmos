@@ -22,7 +22,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_cell::{
     CellDirectory, CellEpoch, CellFencingToken, CellIdentity, CheckpointDigest,
-    CheckpointDigestVerification, CheckpointFact, CheckpointPrefix,
+    CheckpointDigestVerification, CheckpointFact, CheckpointPrefix, DIST_TASK_BINDING_DOMAIN,
+    DistTaskBindingVerification, DistTaskMigrationKind, DistTaskRecordBinding, MigrationIntent,
+    MigrationObject, verify_dist_task_binding,
 };
 use nlos_types::{Generation, SchedulerDomainId};
 
@@ -376,5 +378,291 @@ fn digest_text_round_trips_through_the_checkpoint_log() {
                 &wrong,
             ),
         }
+    );
+}
+
+fn sample_assignment_binding() -> DistTaskRecordBinding {
+    DistTaskRecordBinding {
+        kind: DistTaskMigrationKind::AuthorityAssignment,
+        task_id: [0x11; 16],
+        task_generation: 2,
+        record_id: [0x22; 16],
+        authority_term: 4,
+        control_epoch: 3,
+        participant_registry_generation: 5,
+        participant_registry_root: [0x33; 32],
+        exact_fence_set_root: None,
+    }
+}
+
+fn sample_takeover_receipt_binding() -> DistTaskRecordBinding {
+    DistTaskRecordBinding {
+        kind: DistTaskMigrationKind::TakeoverReceipt,
+        task_id: [0x11; 16],
+        task_generation: 2,
+        record_id: [0x44; 16],
+        authority_term: 4,
+        control_epoch: 3,
+        participant_registry_generation: 5,
+        participant_registry_root: [0x33; 32],
+        exact_fence_set_root: Some([0x55; 32]),
+    }
+}
+
+fn sample_registry_binding() -> DistTaskRecordBinding {
+    DistTaskRecordBinding {
+        kind: DistTaskMigrationKind::ParticipantRegistry,
+        task_id: [0x11; 16],
+        task_generation: 2,
+        record_id: [0x66; 16],
+        authority_term: 4,
+        control_epoch: 3,
+        participant_registry_generation: 5,
+        participant_registry_root: [0x33; 32],
+        exact_fence_set_root: None,
+    }
+}
+
+#[test]
+fn cs1d_dist_task_record_binding_is_deterministic_and_round_trips_checkpoint_entries() {
+    assert_eq!(
+        DIST_TASK_BINDING_DOMAIN,
+        b"llmos/dist-task-migration-binding/v1"
+    );
+
+    let assignment = sample_assignment_binding();
+    let receipt = sample_takeover_receipt_binding();
+    let registry = sample_registry_binding();
+
+    assert!(assignment.is_well_formed());
+    assert!(receipt.is_well_formed());
+    assert!(registry.is_well_formed());
+
+    assert_eq!(
+        MigrationObject::from_dist_task_binding(&assignment),
+        assignment.migration_object()
+    );
+    assert_eq!(
+        &assignment.migration_object().as_bytes()[..],
+        &assignment.binding_digest()[..16]
+    );
+    assert_ne!(assignment.migration_object(), receipt.migration_object());
+    assert_ne!(assignment.migration_object(), registry.migration_object());
+    assert_ne!(receipt.migration_object(), registry.migration_object());
+
+    // Deterministic binding digest pins every field.
+    assert_eq!(assignment.binding_digest(), assignment.binding_digest());
+    assert_ne!(assignment.binding_digest(), receipt.binding_digest());
+    assert_ne!(assignment.binding_digest(), registry.binding_digest());
+
+    let mut moved_term = assignment;
+    moved_term.authority_term += 1;
+    assert_ne!(assignment.binding_digest(), moved_term.binding_digest());
+
+    let mut moved_epoch = assignment;
+    moved_epoch.control_epoch += 1;
+    assert_ne!(assignment.binding_digest(), moved_epoch.binding_digest());
+
+    let mut moved_root = assignment;
+    moved_root.participant_registry_root[0] ^= 0x01;
+    assert_ne!(assignment.binding_digest(), moved_root.binding_digest());
+
+    // Canonical checkpoint entry round-trip across all three record kinds.
+    for binding in [assignment, receipt, registry] {
+        let encoded = binding.to_checkpoint_entry();
+        let decoded = DistTaskRecordBinding::from_checkpoint_entry(&encoded)
+            .expect("decode well-formed checkpoint entry");
+        assert_eq!(decoded, binding);
+
+        let reason = binding.to_intent_reason();
+        assert!(
+            reason.len() <= 256 && !reason.contains(['\n', '\r']),
+            "intent reason fits <=256-byte single-line federation contract: {} bytes",
+            reason.len()
+        );
+    }
+
+    // Corrupt checkpoint entries are rejected fail-closed.
+    let mut bad_magic = assignment.to_checkpoint_entry();
+    bad_magic[0] ^= 0xff;
+    assert!(DistTaskRecordBinding::from_checkpoint_entry(&bad_magic).is_none());
+
+    let mut bad_zero_gen = assignment.to_checkpoint_entry();
+    bad_zero_gen[25..33].copy_from_slice(&0u64.to_be_bytes());
+    assert!(DistTaskRecordBinding::from_checkpoint_entry(&bad_zero_gen).is_none());
+
+    let mut bad_fence_flag = assignment.to_checkpoint_entry();
+    bad_fence_flag[105] = 2;
+    assert!(DistTaskRecordBinding::from_checkpoint_entry(&bad_fence_flag).is_none());
+}
+
+#[test]
+fn cs1d_migration_intent_and_checkpoint_binding_round_trip() {
+    let root = TempDir::new("cs1d-binding-round-trip");
+    let directory = CellDirectory::open(root.path()).expect("open cell directory");
+    let source = identity(0xa1);
+    let target = identity(0xb2);
+
+    let assignment = sample_assignment_binding();
+    let receipt = sample_takeover_receipt_binding();
+    let registry = sample_registry_binding();
+
+    // 1. Record bound MigrationIntents across all three DIST-TASK record kinds.
+    for binding in [assignment, receipt, registry] {
+        let intent = MigrationIntent::from_dist_task_binding(source, target, &binding)
+            .expect("construct bound migration intent");
+        assert_eq!(
+            intent.verify_dist_task_binding(&binding),
+            DistTaskBindingVerification::Verified
+        );
+        directory
+            .record_migration_intent(&intent)
+            .expect("persist bound migration intent");
+    }
+
+    let intents = directory
+        .migration_intents()
+        .expect("read migration intents")
+        .into_records();
+    assert_eq!(intents.len(), 3);
+    assert_eq!(
+        intents[0].intent().verify_dist_task_binding(&assignment),
+        DistTaskBindingVerification::Verified
+    );
+    assert_eq!(
+        intents[1].intent().verify_dist_task_binding(&receipt),
+        DistTaskBindingVerification::Verified
+    );
+    assert_eq!(
+        intents[2].intent().verify_dist_task_binding(&registry),
+        DistTaskBindingVerification::Verified
+    );
+
+    // 2. Record a bound CheckpointFact over the prefix of all three DIST-TASK bindings.
+    let prefix = CheckpointPrefix::from_dist_task_bindings(&[assignment, receipt, registry]);
+    let decoded = prefix
+        .decode_dist_task_bindings()
+        .expect("decode prefix bindings");
+    assert_eq!(decoded, vec![assignment, receipt, registry]);
+
+    let digest = CheckpointDigest::from_prefix(
+        Generation::INITIAL,
+        CellEpoch::INITIAL,
+        CellFencingToken::INITIAL,
+        &prefix,
+    );
+    let fact = structured_fact(&digest.to_text());
+    directory
+        .record_checkpoint(source, &fact)
+        .expect("persist bound checkpoint");
+
+    let checkpoints = directory
+        .checkpoints(source)
+        .expect("enumerate checkpoints")
+        .into_records();
+    assert_eq!(checkpoints.len(), 1);
+    let stored_fact = checkpoints[0].fact();
+    for (idx, binding) in [assignment, receipt, registry].into_iter().enumerate() {
+        assert_eq!(
+            stored_fact.verify_dist_task_binding(&prefix, &binding),
+            DistTaskBindingVerification::Verified
+        );
+        assert_eq!(
+            verify_dist_task_binding(intents[idx].intent(), stored_fact, &prefix, &binding),
+            DistTaskBindingVerification::Verified
+        );
+    }
+}
+
+#[test]
+fn cs1d_migration_intent_and_checkpoint_binding_fail_closed() {
+    let source = identity(0xa1);
+    let target = identity(0xb2);
+
+    let assignment = sample_assignment_binding();
+    let receipt = sample_takeover_receipt_binding();
+    let registry = sample_registry_binding();
+
+    let receipt_intent = MigrationIntent::from_dist_task_binding(source, target, &receipt)
+        .expect("construct bound receipt intent");
+    let prefix = CheckpointPrefix::from_dist_task_bindings(&[assignment, receipt, registry]);
+    let digest = CheckpointDigest::from_prefix(
+        Generation::INITIAL,
+        CellEpoch::INITIAL,
+        CellFencingToken::INITIAL,
+        &prefix,
+    );
+    let stored_fact = structured_fact(&digest.to_text());
+
+    // Tampered record binding causes Mismatch on both MigrationIntent and CheckpointFact.
+    let mut tampered_receipt = receipt;
+    tampered_receipt.authority_term += 1;
+    assert_eq!(
+        receipt_intent.verify_dist_task_binding(&tampered_receipt),
+        DistTaskBindingVerification::Mismatch {
+            expected_digest: tampered_receipt.binding_digest(),
+            presented_digest: Some(receipt.binding_digest()),
+        }
+    );
+    assert_eq!(
+        stored_fact.verify_dist_task_binding(&prefix, &tampered_receipt),
+        DistTaskBindingVerification::Mismatch {
+            expected_digest: tampered_receipt.binding_digest(),
+            presented_digest: Some(receipt.binding_digest()),
+        }
+    );
+
+    // Tampered prefix causes CheckpointDigestMismatch before binding comparison.
+    let tampered_prefix =
+        CheckpointPrefix::from_dist_task_bindings(&[assignment, tampered_receipt, registry]);
+    assert!(matches!(
+        stored_fact.verify_dist_task_binding(&tampered_prefix, &tampered_receipt),
+        DistTaskBindingVerification::CheckpointDigestMismatch { .. }
+    ));
+
+    // Unbound free-text MigrationIntent and CheckpointFact report Unbound.
+    let unbound_intent = MigrationIntent::new(
+        source,
+        target,
+        assignment.migration_object(),
+        Generation::new(std::num::NonZeroU64::new(assignment.authority_term).expect("non-zero")),
+        "operator manual evacuation",
+    )
+    .expect("construct unbound intent");
+    assert_eq!(
+        unbound_intent.verify_dist_task_binding(&assignment),
+        DistTaskBindingVerification::Unbound
+    );
+    let unbound_fact = structured_fact("manual checkpoint without structured digest");
+    assert_eq!(
+        unbound_fact.verify_dist_task_binding(&prefix, &assignment),
+        DistTaskBindingVerification::Unbound
+    );
+
+    // Corrupt tagged MigrationIntent reason and corrupt DTBINDV1 prefix bytes report Corrupt.
+    let corrupt_intent = MigrationIntent::new(
+        source,
+        target,
+        assignment.migration_object(),
+        Generation::new(std::num::NonZeroU64::new(assignment.authority_term).expect("non-zero")),
+        "v1:dist-task-binding:not-a-valid-tagged-reason",
+    )
+    .expect("construct syntactically valid intent with corrupt tag");
+    assert_eq!(
+        corrupt_intent.verify_dist_task_binding(&assignment),
+        DistTaskBindingVerification::Corrupt
+    );
+
+    let corrupt_prefix = CheckpointPrefix::from_entries([b"DTBINDV1\x01truncated".as_slice()]);
+    let corrupt_prefix_digest = CheckpointDigest::from_prefix(
+        Generation::INITIAL,
+        CellEpoch::INITIAL,
+        CellFencingToken::INITIAL,
+        &corrupt_prefix,
+    );
+    let corrupt_prefix_fact = structured_fact(&corrupt_prefix_digest.to_text());
+    assert_eq!(
+        corrupt_prefix_fact.verify_dist_task_binding(&corrupt_prefix, &assignment),
+        DistTaskBindingVerification::Corrupt
     );
 }

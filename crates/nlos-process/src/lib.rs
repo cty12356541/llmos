@@ -5,6 +5,7 @@
 //! claim the full cross-authority `BirthDecision`: resource, capability,
 //! namespace and Task contract prepares remain separate acceptance gates.
 
+pub mod migration;
 mod model;
 mod platform_kill;
 mod schema;
@@ -26,6 +27,14 @@ use nlos_types::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+pub use migration::{
+    CapabilityRebindProof, CheckpointPayloadKind, DriverSessionAttachment,
+    InitiateProcessMigrationRequest, LeaseCloseRegrantProof, MigratedLeaseEntry,
+    MigrationAbortOutcome, MigrationMode, MigrationStepDecision, PROCESS_MIGRATION_RECEIPT_DOMAIN,
+    PinnedSessionPolicy, ProcessCheckpointProof, ProcessMigrationCoordinator,
+    ProcessMigrationError, ProcessMigrationPlan, ProcessMigrationReceipt, ProcessMigrationStep,
+    QuiesceProof, ReboundCapabilityEntry, SourceProcessFenceProof, TargetRestoreProof,
+};
 pub use model::{
     ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken,
     FiberCancelPropagationDecision, FiberEntrySnapshotDecision, FiberEntrySnapshotRecord,

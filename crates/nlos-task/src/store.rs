@@ -29,8 +29,10 @@ use crate::lease::{
     AuthorityTakeoverBarrierSigner, AuthorityTakeoverCompletionRecord,
     AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
     AuthorityTakeoverReceiptState, BarrierObservationSignature, CompleteAuthorityTakeoverRequest,
-    barrier_observation_signature_message, derive_assignment_id,
-    derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
+    DistTaskOperationAdmissionRecord, DistTaskOperationAdmissionRequest,
+    PermitClosureRegistryReopenRecord, PermitClosureRegistryReopenRequest,
+    TakeoverEndpointBarrierAuditReport, barrier_observation_signature_message,
+    derive_assignment_id, derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
     derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
     insert_takeover_fence_member, insert_takeover_fence_receipt, insert_takeover_receipt,
     load_assignment_by_id, load_current_assignment, load_takeover_barrier_receipt_by_participant,
@@ -1183,6 +1185,11 @@ impl SqliteTaskAuthority {
             return Err(TaskStoreError::StaleTaskHead);
         }
         let group_binding = crate::group::current_commit_binding(&transaction, request.attempt_id)?;
+        if let Some(current_assignment) = load_current_assignment(&transaction, request.task_id)?
+            && current_assignment.state != AuthorityAssignmentState::Active
+        {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
         let registry = crate::participant::initialize_registry(
             &transaction,
             &task.record,
@@ -1705,6 +1712,39 @@ impl SqliteTaskAuthority {
     /// returns the optional [`crate::WorkingSetReclaimAdvisory`] prefix when
     /// the projected active working set crosses the soft threshold while hard
     /// admission still passes. Idempotent replays omit the advisory.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::request_commit_permit_with_authorities_struct`].
+    #[allow(clippy::needless_pass_by_value)]
+    /// Runs the `CommitPermit` CAS with both the owner revalidations named by
+    /// one [`Authorities`] bundle and an [`AuthorityLeasePermitRequest`]
+    /// binding (`[DIST-TASK-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::request_commit_permit_with_authorities_struct`] plus authority
+    /// lease validation/fencing errors.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_authorities_and_lease(
+        &self,
+        authorities: Authorities<'_>,
+        request: AuthorityLeasePermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        permit_only(self.request_commit_permit_inner(
+            authorities.artifact,
+            authorities.process,
+            authorities.resource,
+            authorities.operation,
+            authorities.channel,
+            request.permit,
+            Some(request.lease),
+        ))
+    }
+
+    /// Same as [`Self::request_commit_permit_with_authorities_struct`], but
+    /// returns the optional [`crate::WorkingSetReclaimAdvisory`] prefix.
     ///
     /// # Errors
     ///
@@ -2958,6 +2998,446 @@ impl SqliteTaskAuthority {
         Ok(result)
     }
 
+    /// Verifies or executes the `[DIST-TASK-004]` `OPEN` participant registry
+    /// generation advancement (and active authority assignment rotation when
+    /// lease-bound) after a `TaskPermitClosureReceipt` (`FAILED_BEFORE_EFFECT`
+    /// or `CANCELLED_BEFORE_EFFECT` with unchanged `TaskHead`).
+    ///
+    /// In-place unfreezing of the closed permit's `FrozenForPermit` registry
+    /// generation is strictly forbidden: the old generation is marked
+    /// `Superseded`, and a new `Open` generation `generation + 1` is created
+    /// with `prior_participant_registry_root = Some(old_frozen_root)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found, lease-fencing, registry-binding, reconcile-state,
+    /// or storage error.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn reopen_participant_registry_after_permit_closure(
+        &self,
+        request: PermitClosureRegistryReopenRequest,
+    ) -> Result<PermitClosureRegistryReopenRecord, TaskStoreError> {
+        if request.reopened_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord(
+                "permit closure registry reopen timestamp",
+            ));
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, request.task_id)?;
+        let receipt = load_receipt(&transaction, request.task_id, request.closure_receipt_id)?;
+        if !matches!(
+            receipt.outcome,
+            ReceiptOutcome::FailedBeforeEffect | ReceiptOutcome::CancelledBeforeEffect
+        ) || receipt.new_head_commit_seq != receipt.prior_head_commit_seq
+        {
+            return Err(TaskStoreError::InvalidReconcileState {
+                reason: "receipt is not a head-unchanged TaskPermitClosureReceipt",
+            });
+        }
+        let closed_permit_id = receipt.permit_id.ok_or(TaskStoreError::PermitNotFound)?;
+        let old_frozen_registry_binding = receipt
+            .participant_registry_binding
+            .ok_or(TaskStoreError::ParticipantRegistryBindingMissing)?;
+        let permit = load_permit_by_id(&transaction, request.task_id, closed_permit_id)?;
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &permit,
+            request.reopened_at_ms,
+            request.lease,
+        )?;
+        reopen_registry_and_rotate_assignment_on_permit_closure(
+            &transaction,
+            &task.record,
+            Some(old_frozen_registry_binding),
+            task.record.control_epoch,
+            request.reopened_at_ms,
+        )?;
+        let old_registry = crate::participant::load_registry_at_generation(
+            &transaction,
+            request.task_id,
+            old_frozen_registry_binding.generation,
+        )?
+        .ok_or(TaskStoreError::ParticipantRegistryNotFound)?;
+        if old_registry.root != old_frozen_registry_binding.root
+            || old_registry.state == crate::ParticipantRegistryState::Open
+            || old_registry.state == crate::ParticipantRegistryState::FrozenForPermit
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        let next_generation = old_frozen_registry_binding
+            .generation
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let reopened_registry = crate::participant::load_registry_at_generation(
+            &transaction,
+            request.task_id,
+            next_generation,
+        )?
+        .ok_or(TaskStoreError::ParticipantRegistryNotFound)?;
+        if reopened_registry.prior_participant_registry_root
+            != Some(old_frozen_registry_binding.root)
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        let reopened_registry_binding = crate::ParticipantRegistryBinding {
+            generation: reopened_registry.generation,
+            root: reopened_registry.root,
+        };
+        let (fenced_assignment_id, active_assignment_id) =
+            if let Some(lease_binding) = permit.authority_lease_binding {
+                let old_id = derive_assignment_id(
+                    task.record.task_id,
+                    task.record.task_generation,
+                    lease_binding.authority_id,
+                    lease_binding.term,
+                    old_frozen_registry_binding,
+                );
+                let new_id = derive_assignment_id(
+                    task.record.task_id,
+                    task.record.task_generation,
+                    lease_binding.authority_id,
+                    lease_binding.term,
+                    reopened_registry_binding,
+                );
+                let old_row = load_assignment_by_id(&transaction, request.task_id, old_id)?;
+                let new_row = load_assignment_by_id(&transaction, request.task_id, new_id)?;
+                (
+                    old_row.map(|row| row.assignment_id),
+                    new_row.map(|row| row.assignment_id),
+                )
+            } else {
+                (None, None)
+            };
+        transaction.commit()?;
+        Ok(PermitClosureRegistryReopenRecord {
+            closure_receipt_id: receipt.receipt_id,
+            task_id: request.task_id,
+            closed_permit_id,
+            outcome: receipt.outcome,
+            old_frozen_registry_binding,
+            reopened_registry_binding,
+            fenced_assignment_id,
+            active_assignment_id,
+            control_epoch: task.record.control_epoch,
+        })
+    }
+
+    /// Verifies that a participant-bound operation is admissible under
+    /// `[DIST-TASK-001]` and `[DIST-TASK-004]`:
+    /// - The task's current `TaskAuthorityAssignment` is `Active` (not
+    ///   `TakeoverPending`, `Fenced`, `Expired`, or `Quarantined`) and matches
+    ///   `lease`, `expected_authority_term`, and `expected_control_epoch`.
+    /// - The current `TaskAuthorityParticipantRegistry` is `Open` at
+    ///   `expected_registry_binding`.
+    /// - The `participant` is already registered in that `Open` registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lease-fenced, lease-binding, registry-frozen,
+    /// registry-CAS, or write-set conflict error when any check fails.
+    pub fn verify_dist_task_operation_admission(
+        &self,
+        request: DistTaskOperationAdmissionRequest,
+    ) -> Result<DistTaskOperationAdmissionRecord, TaskStoreError> {
+        self.admit_or_verify_dist_task_operation(request, false)
+    }
+
+    /// Atomically registers a verified participant (if not already present) in
+    /// the `Open` `TaskAuthorityParticipantRegistry` and admits the
+    /// participant-bound operation inside the same `BEGIN IMMEDIATE` authority
+    /// transaction (`[DIST-TASK-001]`, `[DIST-TASK-004]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lease-fenced, lease-binding, registry-frozen, or
+    /// registry-CAS error when the assignment is not `Active` or the registry
+    /// is not `Open`.
+    pub fn admit_verified_participant_operation(
+        &self,
+        request: DistTaskOperationAdmissionRequest,
+    ) -> Result<DistTaskOperationAdmissionRecord, TaskStoreError> {
+        self.admit_or_verify_dist_task_operation(request, true)
+    }
+
+    /// Verifies an `OperationBinding` endpoint against `operation_authority`
+    /// and atomically registers + admits it in the `Open`
+    /// `TaskAuthorityParticipantRegistry` inside a single authority
+    /// transaction (`[DIST-TASK-001]`, `[DIST-TASK-004]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed Operation owner, endpoint-generation, lease-fenced,
+    /// registry-frozen, or registry-CAS error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_operation_binding_with_authority(
+        &self,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        task_id: TaskId,
+        expected_registry_binding: crate::ParticipantRegistryBinding,
+        lease: AuthorityLeaseRecord,
+        expected_authority_term: u64,
+        expected_control_epoch: u64,
+        operation_id: OperationId,
+        expected_operation_generation: Generation,
+        admitted_at_ms: i64,
+    ) -> Result<DistTaskOperationAdmissionRecord, TaskStoreError> {
+        let proof = self.verify_operation_binding_participant_proof(
+            operation_authority,
+            task_id,
+            operation_id,
+            expected_operation_generation,
+        )?;
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::OperationBinding,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.admit_or_verify_dist_task_operation(
+            DistTaskOperationAdmissionRequest {
+                task_id,
+                expected_registry_binding,
+                lease,
+                expected_authority_term,
+                expected_control_epoch,
+                participant,
+                admitted_at_ms,
+            },
+            true,
+        )
+    }
+
+    fn admit_or_verify_dist_task_operation(
+        &self,
+        request: DistTaskOperationAdmissionRequest,
+        allow_same_tx_registration: bool,
+    ) -> Result<DistTaskOperationAdmissionRecord, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, request.task_id)?;
+        let current_assignment = load_current_assignment(&transaction, request.task_id)?
+            .ok_or(TaskStoreError::AuthorityLeaseFenced)?;
+        if current_assignment.state != AuthorityAssignmentState::Active
+            || current_assignment.task_generation != task.record.task_generation
+            || current_assignment.authority_lease_binding.authority_id != request.lease.authority_id
+            || current_assignment.authority_lease_binding.term != request.lease.term
+            || request.expected_authority_term != request.lease.term
+        {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+        if current_assignment.authority_lease_binding != request.lease.binding()
+            || request.expected_control_epoch != task.record.control_epoch
+            || current_assignment.control_epoch > task.record.control_epoch
+        {
+            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        }
+        validate_authority_lease_binding_in_transaction(
+            &transaction,
+            request.lease.binding(),
+            request.admitted_at_ms,
+        )?;
+        let registry = crate::participant::initialize_registry(
+            &transaction,
+            &task.record,
+            request.admitted_at_ms,
+        )?;
+        if registry.state != crate::ParticipantRegistryState::Open {
+            return Err(TaskStoreError::ParticipantRegistryFrozen {
+                state: registry.state,
+            });
+        }
+        if registry.generation != request.expected_registry_binding.generation
+            || registry.root != request.expected_registry_binding.root
+        {
+            return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+        }
+        if crate::participant::has_participant(&registry, request.participant) {
+            let active_assignment = ensure_active_assignment_for_admission(
+                &transaction,
+                &task.record,
+                request.lease.binding(),
+                request.expected_registry_binding,
+                request.admitted_at_ms,
+            )?;
+            transaction.commit()?;
+            return Ok(DistTaskOperationAdmissionRecord {
+                task_id: task.record.task_id,
+                task_generation: task.record.task_generation,
+                assignment_id: active_assignment.assignment_id,
+                authority_lease_binding: active_assignment.authority_lease_binding,
+                control_epoch: active_assignment.control_epoch,
+                participant_registry_binding: active_assignment.participant_registry_binding,
+                participant: request.participant,
+                was_newly_registered: false,
+            });
+        }
+        if !allow_same_tx_registration {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "endpoint participant must be registered in Open participant registry before operation admission",
+            });
+        }
+        let decision = crate::participant::register_verified_participant(
+            &transaction,
+            &task.record,
+            request.expected_registry_binding,
+            request.participant,
+            request.admitted_at_ms,
+        )?;
+        let updated_registry = decision.registry();
+        let new_binding = crate::ParticipantRegistryBinding {
+            generation: updated_registry.generation,
+            root: updated_registry.root,
+        };
+        let active_assignment = ensure_active_assignment_for_admission(
+            &transaction,
+            &task.record,
+            request.lease.binding(),
+            new_binding,
+            request.admitted_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(DistTaskOperationAdmissionRecord {
+            task_id: task.record.task_id,
+            task_generation: task.record.task_generation,
+            assignment_id: active_assignment.assignment_id,
+            authority_lease_binding: active_assignment.authority_lease_binding,
+            control_epoch: active_assignment.control_epoch,
+            participant_registry_binding: new_binding,
+            participant: request.participant,
+            was_newly_registered: true,
+        })
+    }
+
+    /// Inspects the `[DIST-TASK-002]` union fence (`frozen registry ∪ durable
+    /// outstanding participants`) and architecture §26.1 six-endpoint barrier
+    /// coverage for a takeover receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, `CorruptRecord`, or a storage error.
+    pub fn inspect_takeover_endpoint_barrier_audit(
+        &self,
+        takeover_receipt_id: ReceiptId,
+    ) -> Result<TakeoverEndpointBarrierAuditReport, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let takeover = load_takeover_receipt_by_id(&*connection, takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        let exact_fence_set_root =
+            takeover
+                .exact_fence_set_root
+                .ok_or(TaskStoreError::CorruptRecord(
+                    "takeover fence set root is incomplete",
+                ))?;
+        let outstanding_operation_participant_root = takeover
+            .outstanding_operation_participant_root
+            .ok_or(TaskStoreError::CorruptRecord(
+                "takeover outstanding participant root is incomplete",
+            ))?;
+        let fence_members = load_takeover_fence_members_for_audit(
+            &*connection,
+            takeover.fence_receipt_id,
+            takeover.task_id,
+            takeover.task_generation,
+        )?;
+        if fence_members.is_empty() {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover fence member manifest missing",
+            ));
+        }
+        let union_fence_members: Vec<crate::ParticipantRecord> = fence_members
+            .iter()
+            .map(|member| member.participant)
+            .collect();
+        let computed_root = compute_takeover_fence_set_root_for_audit(
+            takeover.task_id,
+            takeover.task_generation,
+            &union_fence_members,
+        );
+        if computed_root? != exact_fence_set_root {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover fence member manifest root mismatch",
+            ));
+        }
+        let mut covered_canonical_types = Vec::new();
+        let mut missing_canonical_types = Vec::new();
+        for canonical in crate::ParticipantType::CANONICAL_SECTION_26_1 {
+            if union_fence_members
+                .iter()
+                .any(|member| member.participant_type == canonical)
+            {
+                covered_canonical_types.push(canonical);
+            } else {
+                missing_canonical_types.push(canonical);
+            }
+        }
+        let observations = load_takeover_barrier_receipts(&*connection, takeover_receipt_id)?;
+        let mut unsigned_or_unobserved_members = Vec::new();
+        for member in &union_fence_members {
+            let signed_observed = observations.iter().any(|observation| {
+                observation.participant == *member
+                    && observation.state == crate::AuthorityTakeoverBarrierReceiptState::Observed
+                    && observation.fence_set_root == exact_fence_set_root
+                    && observation.signer.is_some()
+            });
+            if !signed_observed {
+                unsigned_or_unobserved_members.push(*member);
+            }
+        }
+        let all_six_canonical_types_present = missing_canonical_types.is_empty();
+        let all_union_members_signed_and_observed = unsigned_or_unobserved_members.is_empty();
+        Ok(TakeoverEndpointBarrierAuditReport {
+            takeover_receipt_id: takeover.receipt_id,
+            fence_receipt_id: takeover.fence_receipt_id,
+            task_id: takeover.task_id,
+            frozen_old_authority_term: takeover.frozen_old_authority_term,
+            frozen_old_control_epoch: takeover.frozen_old_control_epoch,
+            new_authority_term: takeover.new_authority_lease_binding.term,
+            new_control_epoch: takeover.new_control_epoch,
+            exact_fence_set_root,
+            outstanding_operation_participant_root,
+            outstanding_effect_quarantine_root: takeover.outstanding_effect_quarantine_root,
+            union_fence_members,
+            covered_canonical_types,
+            missing_canonical_types,
+            unsigned_or_unobserved_members,
+            all_six_canonical_types_present,
+            all_union_members_signed_and_observed,
+        })
+    }
+
+    /// Verifies that all six architecture §26.1 endpoint participant types
+    /// (`TaskStore`, `ArtifactHead`, `SemanticAdmission`, `ChannelTopic`,
+    /// `DriverGateway`, `ResourceLedger`) are present in the takeover union
+    /// fence manifest (`frozen registry ∪ durable outstanding participants`)
+    /// and that every member of the union fence has an `Observed`,
+    /// principal-signed barrier receipt (`[DIST-TASK-002]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `BarrierCoverageIncomplete` when any of the 6 canonical endpoint
+    /// types is missing from the union fence or any union member lacks an
+    /// observation, or `BarrierObservationUnsigned` when an observation lacks a
+    /// verified principal signature.
+    pub fn verify_six_endpoint_takeover_barrier_coverage(
+        &self,
+        takeover_receipt_id: ReceiptId,
+    ) -> Result<TakeoverEndpointBarrierAuditReport, TaskStoreError> {
+        let report = self.inspect_takeover_endpoint_barrier_audit(takeover_receipt_id)?;
+        if !report.all_six_canonical_types_present {
+            return Err(TaskStoreError::BarrierCoverageIncomplete {
+                expected: crate::ParticipantType::CANONICAL_SECTION_26_1.len(),
+                observed: report.covered_canonical_types.len(),
+            });
+        }
+        if !report.all_union_members_signed_and_observed {
+            let expected = report.union_fence_members.len();
+            let observed = expected.saturating_sub(report.unsigned_or_unobserved_members.len());
+            return Err(TaskStoreError::BarrierCoverageIncomplete { expected, observed });
+        }
+        Ok(report)
+    }
+
     /// Reads all immutable local endpoint-barrier observations for a pending
     /// takeover receipt. An empty list is valid and does not imply completion.
     ///
@@ -3314,6 +3794,39 @@ impl SqliteTaskAuthority {
     ///
     /// Returns typed Operation proof, generation, task, registry CAS/freeze,
     /// bound, or storage errors. No Task mutation occurs on proof mismatch.
+    #[allow(clippy::unused_self)]
+    fn verify_operation_binding_participant_proof(
+        &self,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        _task_id: TaskId,
+        operation_id: OperationId,
+        expected_operation_generation: Generation,
+    ) -> Result<nlos_store::OperationEndpointProof, TaskStoreError> {
+        let proof = operation_authority
+            .inspect_endpoint_proof(OperationHandle {
+                operation_id,
+                generation: expected_operation_generation,
+            })
+            .map_err(TaskStoreError::OperationParticipantAuthority)?;
+        if proof.operation.operation_id != operation_id
+            || proof.operation.generation != expected_operation_generation
+            || proof.participant_generation != expected_operation_generation
+        {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_operation_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        Ok(proof)
+    }
+
+    /// Registers the current Operation endpoint after exact owner proof
+    /// readback.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Operation proof, generation, task, registry CAS/freeze,
+    /// bound, or storage errors. No Task mutation occurs on proof mismatch.
     pub fn register_operation_binding_participant(
         &self,
         operation_authority: &nlos_store::SqliteOperationStore,
@@ -3460,6 +3973,11 @@ impl SqliteTaskAuthority {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, task_id)?;
+        if let Some(current_assignment) = load_current_assignment(&transaction, task_id)?
+            && current_assignment.state != AuthorityAssignmentState::Active
+        {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
         let decision = crate::participant::register_verified_participant(
             &transaction,
             &task.record,
@@ -4578,6 +5096,51 @@ fn issue_permit(
     Ok(record)
 }
 
+fn load_takeover_fence_members_for_audit(
+    source: &impl SqlRead,
+    fence_receipt_id: ReceiptId,
+    _task_id: TaskId,
+    _task_generation: Generation,
+) -> Result<Vec<AuthorityTakeoverFenceMemberRecord>, TaskStoreError> {
+    load_takeover_fence_members(source, fence_receipt_id)
+}
+
+fn compute_takeover_fence_set_root_for_audit(
+    _task_id: TaskId,
+    _task_generation: Generation,
+    participants: &[crate::ParticipantRecord],
+) -> Result<[u8; 32], TaskStoreError> {
+    crate::participant::takeover_fence_set_root(participants)
+}
+
+fn ensure_active_assignment_for_admission(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    lease_binding: crate::lease::AuthorityLeaseBinding,
+    registry_binding: crate::ParticipantRegistryBinding,
+    now_ms: i64,
+) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+    let synthetic_lease = AuthorityLeaseRecord {
+        authority_id: lease_binding.authority_id,
+        holder_id: lease_binding.holder_id,
+        term: lease_binding.term,
+        lease_epoch: lease_binding.lease_epoch,
+        fencing_token: lease_binding.fencing_token,
+        requested_at_ms: now_ms,
+        expires_at_ms: lease_binding.expires_at_ms,
+        ttl_ms: 1,
+        idempotency_key: IdempotencyKey::from_bytes([0; 16]),
+    };
+    ensure_active_assignment(
+        transaction,
+        task,
+        synthetic_lease,
+        registry_binding,
+        task.control_epoch,
+        now_ms,
+    )
+}
+
 fn ensure_active_assignment(
     transaction: &Transaction<'_>,
     task: &TaskRecord,
@@ -4670,6 +5233,19 @@ fn persist_takeover_pending_receipt(
         return Err(TaskStoreError::CorruptRecord(
             "takeover assignment changed during fence",
         ));
+    }
+    let mut outstanding_effect_quarantine_root = outstanding_effect_quarantine_root;
+    if let Some(quarantined) = load_quarantined_permit(transaction, task.task_id)?
+        && let Some(quarantine_receipt) =
+            crate::reconcile::load_quarantine_by_permit(transaction, quarantined.permit_id)?
+    {
+        if let Some(caller_root) = outstanding_effect_quarantine_root
+            && caller_root != quarantine_receipt.outstanding_effect_quarantine_root
+        {
+            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        }
+        outstanding_effect_quarantine_root =
+            Some(quarantine_receipt.outstanding_effect_quarantine_root);
     }
     let pending = match current.state {
         AuthorityAssignmentState::Active => {
@@ -6532,6 +7108,87 @@ pub(crate) fn load_outstanding_permit(
     rows.next()?.map(decode_permit_row).transpose()
 }
 
+pub(crate) fn reopen_registry_and_rotate_assignment_on_permit_closure(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    effective_registry_binding: Option<crate::ParticipantRegistryBinding>,
+    control_epoch: u64,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    let Some(frozen_binding) = effective_registry_binding else {
+        return Ok(());
+    };
+    let current_registry = crate::participant::initialize_registry(transaction, task, now_ms)?;
+    if current_registry.generation != frozen_binding.generation
+        || current_registry.root != frozen_binding.root
+        || current_registry.state != crate::ParticipantRegistryState::FrozenForPermit
+    {
+        return Ok(());
+    }
+    let reopened =
+        crate::participant::reopen_after_permit_closure(transaction, task, frozen_binding, now_ms)?;
+    let reopened_binding = crate::ParticipantRegistryBinding {
+        generation: reopened.generation,
+        root: reopened.root,
+    };
+    if let Some(current_assignment) = load_current_assignment(transaction, task.task_id)?
+        && current_assignment.state == AuthorityAssignmentState::Active
+        && current_assignment.task_generation == task.task_generation
+    {
+        mark_assignment_fenced(transaction, &current_assignment, now_ms)?;
+        let active_assignment_id = derive_assignment_id(
+            task.task_id,
+            task.task_generation,
+            current_assignment.authority_lease_binding.authority_id,
+            current_assignment.authority_lease_binding.term,
+            reopened_binding,
+        );
+        insert_assignment(
+            transaction,
+            &AuthorityAssignmentRecord {
+                assignment_id: active_assignment_id,
+                task_id: task.task_id,
+                task_generation: task.task_generation,
+                authority_lease_binding: current_assignment.authority_lease_binding,
+                control_epoch,
+                participant_registry_binding: reopened_binding,
+                state: AuthorityAssignmentState::Active,
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn load_registry_participants_at_generation(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    generation: u64,
+) -> Result<Vec<crate::ParticipantRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT p.participant_type, p.participant_id, p.participant_generation, p.admission_receipt_id
+         FROM task_participant_registries r
+         JOIN task_participants p ON p.registry_id = r.registry_id
+         WHERE r.task_id = ?1 AND r.registry_generation = ?2
+         ORDER BY p.participant_seq",
+    )?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        encode_u64(generation).as_slice(),
+    ])?;
+    let mut participants = Vec::new();
+    while let Some(row) = rows.next()? {
+        participants.push(crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::from_code(row.get(0)?)?,
+            participant_id: nlos_types::TaskParticipantId::from_bytes(blob16(row, 1)?),
+            participant_generation: generation_from_blob(row, 2)?,
+            admission_receipt_id: ReceiptId::from_bytes(blob16(row, 3)?),
+        });
+    }
+    Ok(participants)
+}
+
 fn load_outstanding_operation_participants(
     source: &impl SqlRead,
     task_id: TaskId,
@@ -6542,13 +7199,7 @@ fn load_outstanding_operation_participants(
     let Some(write_set) = load_write_set_by_root(source, task_id, permit.write_set_root)? else {
         return Ok(None);
     };
-    if !write_set.artifact_reads.is_empty()
-        || !write_set.artifact_writes.is_empty()
-        || !write_set.semantic_reads.is_empty()
-        || !write_set.semantic_appends.is_empty()
-        || !write_set.resource_reservations.is_empty()
-        || !write_set.planned_effects.is_empty() && write_set.effect_endpoints.is_empty()
-    {
+    if !write_set.planned_effects.is_empty() && write_set.effect_endpoints.is_empty() {
         return Ok(None);
     }
     let mut participants = write_set
@@ -6567,6 +7218,36 @@ fn load_outstanding_operation_participants(
             .iter()
             .map(effect_endpoint_participant),
     );
+    let registry_members = load_registry_participants_at_generation(
+        source,
+        task_id,
+        write_set.participant_registry_binding.generation,
+    )?;
+    let non_task_store: Vec<_> = registry_members
+        .into_iter()
+        .filter(|member| member.participant_type != crate::ParticipantType::TaskStore)
+        .collect();
+    if !write_set.artifact_reads.is_empty()
+        && !non_task_store
+            .iter()
+            .chain(participants.iter())
+            .any(|member| member.participant_type == crate::ParticipantType::ArtifactHead)
+    {
+        return Ok(None);
+    }
+    participants.extend(non_task_store);
+    if let Some(permit_registry) = permit.participant_registry_binding
+        && permit_registry.generation != write_set.participant_registry_binding.generation
+    {
+        let permit_members =
+            load_registry_participants_at_generation(source, task_id, permit_registry.generation)?;
+        participants.extend(
+            permit_members
+                .into_iter()
+                .filter(|member| member.participant_type != crate::ParticipantType::TaskStore),
+        );
+    }
+
     Ok(Some(participants))
 }
 

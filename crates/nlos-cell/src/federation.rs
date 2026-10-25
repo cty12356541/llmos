@@ -9,9 +9,11 @@
 //! intent *execution* (that is `C-MIGRATE`), checkpoint *execution*, any
 //! cross-Cell reconciliation coordination (ADR-0019 extension point B
 //! leaves those shapes to its finalization), and any cross-host claims.
-//! (CS0-B note: the digest *verification primitives* —
-//! [`CheckpointDigest`] and [`CheckpointFact::verify_digest`] — are here;
-//! consuming them inside a reconciliation executor is not.) A shared-root
+//! (Since `CS0-B` + `CS1-D`, the digest and record-binding *verification
+//! primitives* — [`CheckpointDigest`], [`CheckpointFact::verify_digest`],
+//! [`DistTaskRecordBinding`], and [`verify_dist_task_binding`] — live here;
+//! consuming them inside the reconciliation convergence core and production
+//! takeover drive lives in `nlos-slice-k` (`CS0-C` / `CS1-D`).) A shared-root
 //! directory is a single-host,
 //! ADR-0018-topology mechanism: two OS processes on one host each holding
 //! one Cell discover each other through files, nothing more. Citing this
@@ -40,12 +42,18 @@
 //! authority, and `[DIST-LOCAL-001]` still binds what a Cell may act on.
 //! A registered checkpoint is likewise a *claim by its author*: the log
 //! itself stores and enumerates the fact verbatim, without judging it.
-//! Since CS0-B the structured half of that claim is pinnable and checkable
+//! Since `CS0-B` the structured half of that claim is pinnable and checkable
 //! here: [`CheckpointDigest::from_prefix`] derives a domain-separated
 //! `SHA-256` over the fence axes plus a canonical prefix serialization,
 //! and [`CheckpointFact::verify_digest`] recomputes and compares it
-//! fail-closed. What remains deferred is the executor: *acting* on a
-//! verified checkpoint during reconciliation is the CS0-C slice's job.
+//! fail-closed. Since `CS1-D`, [`DistTaskRecordBinding`] and
+//! [`verify_dist_task_binding`] cryptographically bind [`MigrationObject`],
+//! [`MigrationIntent`], and [`CheckpointPrefix`] entries to concrete §26.1
+//! `DIST-TASK` records (`TaskAuthorityAssignment`,
+//! `TaskAuthorityTakeoverReceipt`, `TaskAuthorityParticipantRegistry`) via
+//! the `"llmos/dist-task-migration-binding/v1"` `SHA-256` commitment, while
+//! the reconciliation executor (`CS0-C`) and production takeover drive
+//! (`CS1-D`) in `nlos-slice-k` consume those verified claims.
 
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -89,6 +97,15 @@ const CHECKPOINT_DIGEST_DOMAIN: &[u8] = b"llmos/reconciliation-checkpoint/v1";
 /// [`CheckpointDigest`] (everything else on that axis is author free
 /// text). Canonical bodies are exactly 64 lowercase hex characters.
 const STRUCTURED_DIGEST_TAG: &str = "v1:sha256:";
+/// Domain-separation string hashed into every `DIST-TASK` record migration
+/// binding digest (`CS1-D`).
+pub const DIST_TASK_BINDING_DOMAIN: &[u8] = b"llmos/dist-task-migration-binding/v1";
+/// Fixed 8-byte header marking a [`CheckpointPrefix`] entry as a canonical
+/// [`DistTaskRecordBinding`] payload (`CS1-D`).
+const DIST_TASK_ENTRY_MAGIC: &[u8; 8] = b"DTBINDV1";
+/// Prefix marking a [`MigrationIntent::reason`] axis as the canonical text
+/// form of a [`DistTaskRecordBinding::binding_digest`] (`CS1-D`).
+const STRUCTURED_INTENT_REASON_TAG: &str = "v1:dist-task-binding:";
 
 /// The shared-root cross-Cell directory: registration files under
 /// `<root>/cells/`, the append-only migration-intent log under
@@ -126,13 +143,90 @@ pub struct CellDirectorySnapshot {
     corrupt: usize,
 }
 
-/// The opaque object a migration intent is about: 16 bytes naming the
-/// object in its source Cell. v0.5 does not yet give the `C-MIGRATE`
-/// object model, so this mechanism face carries an opaque reference only —
-/// binding it to the real `DIST-TASK` records is the executor's job, not
-/// the intent log's.
+/// The 16-byte object reference a migration intent is about.
+///
+/// On disk, the intent log stores 16 opaque bytes so non-task `C-MIGRATE`
+/// callers remain supported; since `CS1-D`, [`DistTaskRecordBinding`]
+/// ([`MigrationObject::from_dist_task_binding`] /
+/// [`DistTaskRecordBinding::migration_object`]) and
+/// [`verify_dist_task_binding`] deterministically project and verify §26.1
+/// `DIST-TASK` records against [`MigrationObject`], [`MigrationIntent`], and
+/// [`CheckpointFact`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MigrationObject([u8; 16]);
+
+/// Which §26.1 `DIST-TASK` record family a [`DistTaskRecordBinding`]
+/// commits to (`CS1-D`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DistTaskMigrationKind {
+    /// §26.1 `TaskAuthorityAssignment` record.
+    AuthorityAssignment,
+    /// §26.1 `TaskAuthorityTakeoverReceipt` record.
+    TakeoverReceipt,
+    /// §26.1 `TaskAuthorityParticipantRegistry` record.
+    ParticipantRegistry,
+}
+
+/// Cryptographic binding descriptor linking an opaque [`MigrationObject`],
+/// a [`MigrationIntent`], and a [`CheckpointPrefix`] entry to a concrete
+/// §26.1 `DIST-TASK` record (`CS1-D`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DistTaskRecordBinding {
+    /// Which §26.1 `DIST-TASK` record family is bound.
+    pub kind: DistTaskMigrationKind,
+    /// 16-byte `TaskId`.
+    pub task_id: [u8; 16],
+    /// Monotonic `Task` generation (`>= 1`).
+    pub task_generation: u64,
+    /// 16-byte primary record identity (`assignment_id`, `receipt_id`, or
+    /// `registry_id`).
+    pub record_id: [u8; 16],
+    /// Authority lease term bound by the record (`>= 1`).
+    pub authority_term: u64,
+    /// Task control epoch bound by the record.
+    pub control_epoch: u64,
+    /// Participant registry generation bound by the record (`>= 1`).
+    pub participant_registry_generation: u64,
+    /// 32-byte `participant_registry_root`.
+    pub participant_registry_root: [u8; 32],
+    /// Optional 32-byte `exact_fence_set_root` (`Some` on takeover
+    /// receipts with a resolved fence manifest).
+    pub exact_fence_set_root: Option<[u8; 32]>,
+}
+
+/// Fail-closed verification outcome when checking a [`MigrationIntent`]
+/// and/or [`CheckpointFact`] + [`CheckpointPrefix`] against an expected
+/// [`DistTaskRecordBinding`] (`CS1-D`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DistTaskBindingVerification {
+    /// Cryptographic digest and `DIST-TASK` record binding match
+    /// byte-for-byte.
+    Verified,
+    /// The `MigrationIntent` or `CheckpointPrefix` entry binds a different
+    /// `DIST-TASK` record or tampered field values. Fail closed.
+    Mismatch {
+        /// Expected 32-byte binding commitment.
+        expected_digest: [u8; 32],
+        /// Presented 32-byte binding commitment (or `None` when only the
+        /// 16-byte `MigrationObject` or `Generation` axis differed).
+        presented_digest: Option<[u8; 32]>,
+    },
+    /// The `CheckpointFact` digest failed verification against the claimed
+    /// `CheckpointPrefix`. Fail closed.
+    CheckpointDigestMismatch {
+        /// Digest presented by the `CheckpointFact`.
+        presented: CheckpointDigest,
+        /// Digest recomputed over the `CheckpointPrefix`.
+        recomputed: CheckpointDigest,
+    },
+    /// Neither structured binding tag nor `DTBINDV1` prefix entry was
+    /// present (for example free-text checkpoint or unbound prefix).
+    /// Fail closed for takeover binding claims.
+    Unbound,
+    /// A tagged intent reason, checkpoint digest, or `DTBINDV1` entry
+    /// failed to decode or had zero generation/term axes. Fail closed.
+    Corrupt,
+}
 
 /// A migration intent as its author states it: source Cell, target Cell,
 /// object, the object's fenced generation, and a reason digest. Recording
@@ -753,10 +847,163 @@ impl MigrationObject {
         Self(bytes)
     }
 
+    /// Deterministically projects a [`DistTaskRecordBinding`] into its
+    /// 16-byte [`MigrationObject`] reference (`CS1-D`).
+    #[must_use]
+    pub fn from_dist_task_binding(binding: &DistTaskRecordBinding) -> Self {
+        binding.migration_object()
+    }
+
     /// The opaque bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
+    }
+}
+
+impl DistTaskMigrationKind {
+    /// One-byte wire discriminant used inside [`DistTaskRecordBinding`]
+    /// canonical entry bytes and digest preimages.
+    #[must_use]
+    pub const fn wire_code(self) -> u8 {
+        match self {
+            Self::AuthorityAssignment => 1,
+            Self::TakeoverReceipt => 2,
+            Self::ParticipantRegistry => 3,
+        }
+    }
+
+    /// Strict inverse of [`Self::wire_code`].
+    #[must_use]
+    pub const fn from_wire_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::AuthorityAssignment),
+            2 => Some(Self::TakeoverReceipt),
+            3 => Some(Self::ParticipantRegistry),
+            _ => None,
+        }
+    }
+}
+
+impl DistTaskRecordBinding {
+    /// Returns `true` when every generation/term axis is non-zero (`>= 1`).
+    #[must_use]
+    pub const fn is_well_formed(&self) -> bool {
+        self.task_generation >= 1
+            && self.authority_term >= 1
+            && self.participant_registry_generation >= 1
+    }
+
+    /// Canonical deterministic [`CheckpointPrefix`] entry byte grammar:
+    /// `DTBINDV1 (8B) || kind (1B) || task_id (16B) || be64(task_generation) ||
+    /// record_id (16B) || be64(authority_term) || be64(control_epoch) ||
+    /// be64(participant_registry_generation) || participant_registry_root (32B) ||
+    /// (0u8 | 1u8 || exact_fence_set_root (32B))`.
+    #[must_use]
+    pub fn to_checkpoint_entry(&self) -> Vec<u8> {
+        let capacity = if self.exact_fence_set_root.is_some() {
+            138
+        } else {
+            106
+        };
+        let mut out = Vec::with_capacity(capacity);
+        out.extend_from_slice(DIST_TASK_ENTRY_MAGIC);
+        out.push(self.kind.wire_code());
+        out.extend_from_slice(&self.task_id);
+        out.extend_from_slice(&self.task_generation.to_be_bytes());
+        out.extend_from_slice(&self.record_id);
+        out.extend_from_slice(&self.authority_term.to_be_bytes());
+        out.extend_from_slice(&self.control_epoch.to_be_bytes());
+        out.extend_from_slice(&self.participant_registry_generation.to_be_bytes());
+        out.extend_from_slice(&self.participant_registry_root);
+        match self.exact_fence_set_root {
+            None => out.push(0),
+            Some(root) => {
+                out.push(1);
+                out.extend_from_slice(&root);
+            }
+        }
+        out
+    }
+
+    /// Strict inverse of [`Self::to_checkpoint_entry`]: decodes only a
+    /// canonical, well-formed `DTBINDV1` entry (`None` on wrong magic,
+    /// unknown kind, wrong byte length, non-canonical option flag, or a
+    /// zero generation/term axis).
+    #[must_use]
+    pub fn from_checkpoint_entry(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 106 || &bytes[..8] != DIST_TASK_ENTRY_MAGIC {
+            return None;
+        }
+        let kind = DistTaskMigrationKind::from_wire_code(bytes[8])?;
+        let task_id: [u8; 16] = bytes[9..25].try_into().ok()?;
+        let task_generation = u64::from_be_bytes(bytes[25..33].try_into().ok()?);
+        let record_id: [u8; 16] = bytes[33..49].try_into().ok()?;
+        let authority_term = u64::from_be_bytes(bytes[49..57].try_into().ok()?);
+        let control_epoch = u64::from_be_bytes(bytes[57..65].try_into().ok()?);
+        let participant_registry_generation = u64::from_be_bytes(bytes[65..73].try_into().ok()?);
+        let participant_registry_root: [u8; 32] = bytes[73..105].try_into().ok()?;
+        let exact_fence_set_root = match bytes[105] {
+            0 => {
+                if bytes.len() != 106 {
+                    return None;
+                }
+                None
+            }
+            1 => {
+                if bytes.len() != 138 {
+                    return None;
+                }
+                Some(bytes[106..138].try_into().ok()?)
+            }
+            _ => return None,
+        };
+        let binding = Self {
+            kind,
+            task_id,
+            task_generation,
+            record_id,
+            authority_term,
+            control_epoch,
+            participant_registry_generation,
+            participant_registry_root,
+            exact_fence_set_root,
+        };
+        binding.is_well_formed().then_some(binding)
+    }
+
+    /// Domain-separated `SHA-256` commitment over [`DIST_TASK_BINDING_DOMAIN`]
+    /// (`"llmos/dist-task-migration-binding/v1"`) and [`Self::to_checkpoint_entry`].
+    #[must_use]
+    pub fn binding_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(DIST_TASK_BINDING_DOMAIN);
+        hasher.update(self.to_checkpoint_entry());
+        hasher.finalize().into()
+    }
+
+    /// Deterministic 16-byte projection into [`MigrationObject`] (the first
+    /// 16 bytes of [`Self::binding_digest`]).
+    #[must_use]
+    pub fn migration_object(&self) -> MigrationObject {
+        let digest = self.binding_digest();
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        MigrationObject::from_bytes(bytes)
+    }
+
+    /// Canonical single-line reason text (`v1:dist-task-binding:<64 lowercase hex>`,
+    /// 85 bytes) carrying the full 32-byte [`Self::binding_digest`] inside a
+    /// [`MigrationIntent`] without altering the on-disk intent file format.
+    #[must_use]
+    pub fn to_intent_reason(&self) -> String {
+        let digest = self.binding_digest();
+        let mut out = String::with_capacity(STRUCTURED_INTENT_REASON_TAG.len() + 64);
+        out.push_str(STRUCTURED_INTENT_REASON_TAG);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
     }
 }
 
@@ -819,6 +1066,74 @@ impl MigrationIntent {
     #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    /// Builds a [`MigrationIntent`] cryptographically bound to a
+    /// [`DistTaskRecordBinding`] (`CS1-D`): `object` is
+    /// [`DistTaskRecordBinding::migration_object`], `generation` is the
+    /// bound `authority_term`, and `reason` is the canonical
+    /// `v1:dist-task-binding:<64 lowercase hex>` digest tag.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`FederationError::InvalidIntent`] when `source == target`
+    /// or any generation/term axis in `binding` is zero.
+    pub fn from_dist_task_binding(
+        source: CellIdentity,
+        target: CellIdentity,
+        binding: &DistTaskRecordBinding,
+    ) -> Result<Self, FederationError> {
+        if !binding.is_well_formed() {
+            return Err(FederationError::InvalidIntent(
+                "dist-task binding generation and term axes must be non-zero",
+            ));
+        }
+        let generation = Generation::new(NonZeroU64::new(binding.authority_term).ok_or(
+            FederationError::InvalidIntent("dist-task binding authority_term must be non-zero"),
+        )?);
+        let reason = binding.to_intent_reason();
+        Self::new(
+            source,
+            target,
+            binding.migration_object(),
+            generation,
+            &reason,
+        )
+    }
+
+    /// Verifies that this [`MigrationIntent`] cryptographically binds
+    /// `expected` (`CS1-D`), fail-closed.
+    #[must_use]
+    pub fn verify_dist_task_binding(
+        &self,
+        expected: &DistTaskRecordBinding,
+    ) -> DistTaskBindingVerification {
+        if !expected.is_well_formed() {
+            return DistTaskBindingVerification::Corrupt;
+        }
+        let expected_digest = expected.binding_digest();
+        let generation_matches = self.generation.get() == expected.authority_term
+            || self.generation.get() == expected.task_generation;
+        let object_matches = self.object == expected.migration_object();
+        let Some(body) = self.reason.strip_prefix(STRUCTURED_INTENT_REASON_TAG) else {
+            if !object_matches || !generation_matches {
+                return DistTaskBindingVerification::Mismatch {
+                    expected_digest,
+                    presented_digest: None,
+                };
+            }
+            return DistTaskBindingVerification::Unbound;
+        };
+        let Some(presented_digest) = decode_lowercase_hex32(body) else {
+            return DistTaskBindingVerification::Corrupt;
+        };
+        if presented_digest != expected_digest || !object_matches || !generation_matches {
+            return DistTaskBindingVerification::Mismatch {
+                expected_digest,
+                presented_digest: Some(presented_digest),
+            };
+        }
+        DistTaskBindingVerification::Verified
     }
 
     fn validate(&self) -> Result<(), FederationError> {
@@ -961,6 +1276,76 @@ impl CheckpointFact {
         }
     }
 
+    /// Verifies both this [`CheckpointFact`]'s digest against `prefix` and
+    /// that `prefix` contains the exact canonical [`DistTaskRecordBinding`]
+    /// entry for `expected` (`CS1-D`), fail-closed.
+    #[must_use]
+    pub fn verify_dist_task_binding(
+        &self,
+        prefix: &CheckpointPrefix,
+        expected: &DistTaskRecordBinding,
+    ) -> DistTaskBindingVerification {
+        if !expected.is_well_formed() {
+            return DistTaskBindingVerification::Corrupt;
+        }
+        match self.verify_digest(prefix) {
+            CheckpointDigestVerification::Verified => {}
+            CheckpointDigestVerification::Mismatch {
+                presented,
+                recomputed,
+            } => {
+                return DistTaskBindingVerification::CheckpointDigestMismatch {
+                    presented,
+                    recomputed,
+                };
+            }
+            CheckpointDigestVerification::FreeText => {
+                return DistTaskBindingVerification::Unbound;
+            }
+            CheckpointDigestVerification::Corrupt => {
+                return DistTaskBindingVerification::Corrupt;
+            }
+        }
+        let decoded = match prefix.decode_dist_task_bindings() {
+            Ok(bindings) => bindings,
+            Err(err) => return err,
+        };
+        let expected_digest = expected.binding_digest();
+        if decoded.is_empty() {
+            return DistTaskBindingVerification::Unbound;
+        }
+        let mut found_match = false;
+        let mut first_mismatch_digest = None;
+        for candidate in &decoded {
+            if candidate == expected {
+                found_match = true;
+            } else if (candidate.kind == expected.kind
+                && candidate.task_id == expected.task_id
+                && candidate.record_id == expected.record_id)
+                || first_mismatch_digest.is_none()
+            {
+                first_mismatch_digest = Some(candidate.binding_digest());
+                if candidate.kind == expected.kind
+                    && candidate.task_id == expected.task_id
+                    && candidate.record_id == expected.record_id
+                {
+                    return DistTaskBindingVerification::Mismatch {
+                        expected_digest,
+                        presented_digest: Some(candidate.binding_digest()),
+                    };
+                }
+            }
+        }
+        if found_match {
+            DistTaskBindingVerification::Verified
+        } else {
+            DistTaskBindingVerification::Mismatch {
+                expected_digest,
+                presented_digest: first_mismatch_digest,
+            }
+        }
+    }
+
     fn validate(&self) -> Result<(), FederationError> {
         validate_checkpoint_digest(&self.digest)
     }
@@ -1034,6 +1419,43 @@ impl CheckpointPrefix {
                 .map(|entry| entry.as_ref().to_vec())
                 .collect(),
         }
+    }
+
+    /// Builds a [`CheckpointPrefix`] from an ordered sequence of
+    /// [`DistTaskRecordBinding`] descriptors (`CS1-D`), serializing each
+    /// binding through [`DistTaskRecordBinding::to_checkpoint_entry`].
+    #[must_use]
+    pub fn from_dist_task_bindings<'a>(
+        bindings: impl IntoIterator<Item = &'a DistTaskRecordBinding>,
+    ) -> Self {
+        Self {
+            entries: bindings
+                .into_iter()
+                .map(DistTaskRecordBinding::to_checkpoint_entry)
+                .collect(),
+        }
+    }
+
+    /// Decodes all `DTBINDV1`-tagged [`DistTaskRecordBinding`] entries in
+    /// this prefix (`CS1-D`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`DistTaskBindingVerification::Corrupt`] if any
+    /// entry starting with the `DTBINDV1` magic header is malformed or has
+    /// a zero generation/term axis.
+    pub fn decode_dist_task_bindings(
+        &self,
+    ) -> Result<Vec<DistTaskRecordBinding>, DistTaskBindingVerification> {
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            if entry.starts_with(DIST_TASK_ENTRY_MAGIC) {
+                let binding = DistTaskRecordBinding::from_checkpoint_entry(entry)
+                    .ok_or(DistTaskBindingVerification::Corrupt)?;
+                out.push(binding);
+            }
+        }
+        Ok(out)
     }
 
     /// The ordered opaque entries, in prefix order.
@@ -1114,18 +1536,38 @@ impl CheckpointDigest {
     /// forgive an encoding drift.
     fn from_text(text: &str) -> Option<Self> {
         let body = text.strip_prefix(STRUCTURED_DIGEST_TAG)?;
-        let raw = body.as_bytes();
-        if raw.len() != 64 {
-            return None;
-        }
-        let mut bytes = [0u8; 32];
-        for (index, chunk) in raw.chunks(2).enumerate() {
-            let high = lowercase_hex_nibble(chunk[0])?;
-            let low = lowercase_hex_nibble(chunk[1])?;
-            bytes[index] = (high << 4) | low;
-        }
-        Some(Self { bytes })
+        decode_lowercase_hex32(body).map(|bytes| Self { bytes })
     }
+}
+
+/// Verifies both a [`MigrationIntent`] and a [`CheckpointFact`] +
+/// [`CheckpointPrefix`] against an expected [`DistTaskRecordBinding`]
+/// (`CS1-D`), fail-closed.
+#[must_use]
+pub fn verify_dist_task_binding(
+    intent: &MigrationIntent,
+    fact: &CheckpointFact,
+    prefix: &CheckpointPrefix,
+    expected: &DistTaskRecordBinding,
+) -> DistTaskBindingVerification {
+    match intent.verify_dist_task_binding(expected) {
+        DistTaskBindingVerification::Verified => fact.verify_dist_task_binding(prefix, expected),
+        other => other,
+    }
+}
+
+fn decode_lowercase_hex32(body: &str) -> Option<[u8; 32]> {
+    let raw = body.as_bytes();
+    if raw.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (index, chunk) in raw.chunks(2).enumerate() {
+        let high = lowercase_hex_nibble(chunk[0])?;
+        let low = lowercase_hex_nibble(chunk[1])?;
+        bytes[index] = (high << 4) | low;
+    }
+    Some(bytes)
 }
 
 fn staged_registration(entry: &CellRegistrationEntry) -> String {

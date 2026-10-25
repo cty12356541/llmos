@@ -18,6 +18,10 @@
 //! 2026-10-08 CS0-B：checkpoint digest 钉面——`CheckpointDigest` 域分隔 `SHA-256`
 //! （fence 三轴 + 规范化前缀字节）与 fail-closed 验证器（`CheckpointFact::verify_digest`）；
 //! 验证 API 已提供，executor 消费仍属 CS0-C，checkpoint 执行/跨 Cell 协调仍不含。
+//! 2026-10-24 CS1-D：`MigrationObject` ↔ `DIST-TASK` record 绑定与 checkpoint
+//! 绑定验证升级——`DistTaskMigrationKind`、`DistTaskRecordBinding`
+//! （`"llmos/dist-task-migration-binding/v1"` 域分隔 `SHA-256`）与 fail-closed
+//! `verify_dist_task_binding`，由 `nlos-slice-k` 生产接管驱动器端到端消费。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
@@ -49,8 +53,9 @@ pub use failure_detector::{
 pub use federation::{
     CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, CheckpointDigest,
     CheckpointDigestVerification, CheckpointFact, CheckpointLog, CheckpointPrefix,
-    CheckpointRecord, FederationError, MigrationIntent, MigrationIntentLog, MigrationIntentRecord,
-    MigrationObject,
+    CheckpointRecord, DIST_TASK_BINDING_DOMAIN, DistTaskBindingVerification, DistTaskMigrationKind,
+    DistTaskRecordBinding, FederationError, MigrationIntent, MigrationIntentLog,
+    MigrationIntentRecord, MigrationObject, verify_dist_task_binding,
 };
 pub use name_cache::{
     CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,

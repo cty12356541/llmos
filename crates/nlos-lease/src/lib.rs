@@ -9,6 +9,7 @@
 //! 2026-10-05 W49：ADR-0021——三族 grantor 改持共享权威 `Arc<CellAuthority>`（`CellAuthority::into_shared`），
 //! capacity/device 族随 W49 进入单进程装配；quota 族仍是唯一 epoch 推进入口。
 //! 2026-10-24 W62：三族租约 `SQLite WAL + FULL` 持久化与崩溃恢复（`SqliteLeaseStore` / `open_durable`）。
+//! 2026-10-24 W63：三族租约跨纪元对账回执（`LEASE-RECON-001`、`LEASE-FENCE-001`）、跨节点迁移（`LEASE-MIGRATE-001`、`LEASE-CAPACITY-002`、`LEASE-DEVICE-001`）与本地 WAL 丢失隔离（`LEASE-WAL-001`）。
 //! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
@@ -59,6 +60,7 @@
 //! [`CapacityLeaseGrantor::open_durable`],
 //! [`ExclusiveDeviceLeaseGrantor::open_durable`]).
 
+mod reconcile;
 mod store;
 
 use std::collections::HashMap;
@@ -74,6 +76,13 @@ use nlos_types::{
     CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId, ReceiptId,
 };
 
+pub use reconcile::{
+    CapacityMigrationError, CapacityMigrationOutcome, CapacityReconcileError,
+    CapacityReconciliationReceipt, CleanupAttestation, DeviceMigrationError,
+    DeviceMigrationOutcome, DeviceReconcileError, DeviceReconciliationReceipt, FenceBarrierAck,
+    QuotaMigrationError, QuotaMigrationOutcome, QuotaReconcileError, QuotaReconciliationReceipt,
+    QuotaWalLossError,
+};
 pub use store::{LeaseStoreError, SCHEMA_VERSION, SqliteLeaseStore};
 
 /// Fence scope for a single-Cell grant: the Cell identity itself.
@@ -247,10 +256,11 @@ impl QuotaLeaseGrant {
 /// mints readers, not a second writer.
 #[derive(Debug)]
 pub struct QuotaLeaseGrantor {
-    authority: Arc<CellAuthority>,
-    available: u64,
-    leases: HashMap<QuotaLeaseId, QuotaLeaseGrant>,
-    store: Option<Arc<SqliteLeaseStore>>,
+    pub(crate) authority: Arc<CellAuthority>,
+    pub(crate) available: u64,
+    pub(crate) leases: HashMap<QuotaLeaseId, QuotaLeaseGrant>,
+    pub(crate) reconciliation_receipts: HashMap<QuotaLeaseId, Vec<QuotaReconciliationReceipt>>,
+    pub(crate) store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl QuotaLeaseGrantor {
@@ -263,6 +273,7 @@ impl QuotaLeaseGrantor {
             authority,
             available,
             leases: HashMap::new(),
+            reconciliation_receipts: HashMap::new(),
             store: None,
         }
     }
@@ -300,12 +311,13 @@ impl QuotaLeaseGrantor {
         authority: Arc<CellAuthority>,
         available: u64,
     ) -> Result<Self, LeaseStoreError> {
-        let (rehydrated_available, leases) =
+        let (rehydrated_available, leases, reconciliation_receipts) =
             store.open_or_rehydrate_quota(&authority, available)?;
         Ok(Self {
             authority,
             available: rehydrated_available,
             leases,
+            reconciliation_receipts,
             store: Some(store),
         })
     }
@@ -1117,8 +1129,13 @@ pub enum CapacityLeaseState {
     Active,
     /// Return started. Source pool is unchanged (`RETURNING`).
     Returning,
-    /// Source authority accepted the return. `amount` is back in the pool
-    /// (`RETURNED`).
+    /// Holder fenced during revoke/migration; requires `CapacityReconciliationReceipt`
+    /// (`FenceBarrierAck` + `CleanupAttestation`) before returning (`FENCED`).
+    Fenced,
+    /// Holder lost or cleanup proof missing; capacity stays frozen (`QUARANTINED`).
+    Quarantined,
+    /// Source authority accepted the return or reconciliation. `amount` is back
+    /// in the pool (`RETURNED`).
     Returned,
 }
 
@@ -1194,11 +1211,12 @@ impl CapacityLeaseGrant {
 /// fence admit.
 #[derive(Debug)]
 pub struct CapacityLeaseGrantor {
-    authority: Arc<CellAuthority>,
-    pool_remaining: u64,
-    leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
-    attach_receipts: HashMap<CapacityLeaseId, HostAttachReceipt>,
-    store: Option<Arc<SqliteLeaseStore>>,
+    pub(crate) authority: Arc<CellAuthority>,
+    pub(crate) pool_remaining: u64,
+    pub(crate) leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
+    pub(crate) attach_receipts: HashMap<CapacityLeaseId, HostAttachReceipt>,
+    pub(crate) reconciliation_receipts: HashMap<CapacityLeaseId, CapacityReconciliationReceipt>,
+    pub(crate) store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl CapacityLeaseGrantor {
@@ -1212,6 +1230,7 @@ impl CapacityLeaseGrantor {
             pool_remaining,
             leases: HashMap::new(),
             attach_receipts: HashMap::new(),
+            reconciliation_receipts: HashMap::new(),
             store: None,
         }
     }
@@ -1249,13 +1268,14 @@ impl CapacityLeaseGrantor {
         authority: Arc<CellAuthority>,
         pool_remaining: u64,
     ) -> Result<Self, LeaseStoreError> {
-        let (rehydrated_pool, leases, attach_receipts) =
+        let (rehydrated_pool, leases, attach_receipts, reconciliation_receipts) =
             store.open_or_rehydrate_capacity(&authority, pool_remaining)?;
         Ok(Self {
             authority,
             pool_remaining: rehydrated_pool,
             leases,
             attach_receipts,
+            reconciliation_receipts,
             store: Some(store),
         })
     }
@@ -1500,9 +1520,9 @@ impl CapacityLeaseGrantor {
                 Ok(next)
             }
             CapacityLeaseState::Returning => Ok(existing),
-            state @ CapacityLeaseState::Returned => {
-                Err(CapacityLeaseReturnError::NotReserved { state })
-            }
+            state @ (CapacityLeaseState::Fenced
+            | CapacityLeaseState::Quarantined
+            | CapacityLeaseState::Returned) => Err(CapacityLeaseReturnError::NotReserved { state }),
         }
     }
 
@@ -1541,7 +1561,11 @@ impl CapacityLeaseGrantor {
             CapacityLeaseState::Returned => Ok(existing),
             state @ (CapacityLeaseState::GlobalReserved
             | CapacityLeaseState::TargetPrepared
-            | CapacityLeaseState::Active) => Err(CapacityLeaseReturnError::NotReturning { state }),
+            | CapacityLeaseState::Active
+            | CapacityLeaseState::Fenced
+            | CapacityLeaseState::Quarantined) => {
+                Err(CapacityLeaseReturnError::NotReturning { state })
+            }
         }
     }
 
@@ -1918,6 +1942,11 @@ pub enum ExclusiveDeviceLeaseState {
     /// Reset+zeroization declared; the receipt is not accepted yet. The head
     /// is not FREE (`RESETTING`).
     Resetting,
+    /// Holder is being fenced; requires `DeviceReconciliationReceipt` to clear
+    /// the head (`FENCING`).
+    Fencing,
+    /// Holder lost or zeroization unverified; head stays occupied (`QUARANTINED`).
+    Quarantined,
     /// Reset+zeroization receipt accepted; the head is back to FREE
     /// (`RETURNED`).
     Returned,
@@ -2005,13 +2034,15 @@ impl ExclusiveDeviceLeaseGrant {
 /// log, plus the shared Cell authority used for fence admit.
 #[derive(Debug)]
 pub struct ExclusiveDeviceLeaseGrantor {
-    authority: Arc<CellAuthority>,
-    device_id: DeviceId,
-    free: bool,
-    reset_generation: Generation,
-    leases: HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
-    reset_receipts: Vec<DeviceResetReceipt>,
-    store: Option<Arc<SqliteLeaseStore>>,
+    pub(crate) authority: Arc<CellAuthority>,
+    pub(crate) device_id: DeviceId,
+    pub(crate) free: bool,
+    pub(crate) reset_generation: Generation,
+    pub(crate) leases: HashMap<ExclusiveDeviceLeaseId, ExclusiveDeviceLeaseGrant>,
+    pub(crate) reset_receipts: Vec<DeviceResetReceipt>,
+    pub(crate) reconciliation_receipts:
+        HashMap<ExclusiveDeviceLeaseId, DeviceReconciliationReceipt>,
+    pub(crate) store: Option<Arc<SqliteLeaseStore>>,
 }
 
 impl ExclusiveDeviceLeaseGrantor {
@@ -2027,6 +2058,7 @@ impl ExclusiveDeviceLeaseGrantor {
             reset_generation: Generation::INITIAL,
             leases: HashMap::new(),
             reset_receipts: Vec::new(),
+            reconciliation_receipts: HashMap::new(),
             store: None,
         }
     }
@@ -2066,7 +2098,7 @@ impl ExclusiveDeviceLeaseGrantor {
         authority: Arc<CellAuthority>,
         device_id: DeviceId,
     ) -> Result<Self, LeaseStoreError> {
-        let (free, reset_generation, leases, reset_receipts) =
+        let (free, reset_generation, leases, reset_receipts, reconciliation_receipts) =
             store.open_or_rehydrate_device(&authority, device_id)?;
         Ok(Self {
             authority,
@@ -2075,6 +2107,7 @@ impl ExclusiveDeviceLeaseGrantor {
             reset_generation,
             leases,
             reset_receipts,
+            reconciliation_receipts,
             store: Some(store),
         })
     }
@@ -2197,7 +2230,9 @@ impl ExclusiveDeviceLeaseGrantor {
                 Ok(next)
             }
             ExclusiveDeviceLeaseState::Resetting => Ok(existing),
-            state @ ExclusiveDeviceLeaseState::Returned => {
+            state @ (ExclusiveDeviceLeaseState::Fencing
+            | ExclusiveDeviceLeaseState::Quarantined
+            | ExclusiveDeviceLeaseState::Returned) => {
                 Err(ExclusiveDeviceLeaseReturnError::DeclareRequiresReserved { state })
             }
         }
@@ -2300,7 +2335,9 @@ impl ExclusiveDeviceLeaseGrantor {
                     requested: receipt.receipt_id,
                 })
             }
-            state @ ExclusiveDeviceLeaseState::DeviceReserved => {
+            state @ (ExclusiveDeviceLeaseState::DeviceReserved
+            | ExclusiveDeviceLeaseState::Fencing
+            | ExclusiveDeviceLeaseState::Quarantined) => {
                 Err(ExclusiveDeviceLeaseReturnError::ReceiptRequiresResetting { state })
             }
         }

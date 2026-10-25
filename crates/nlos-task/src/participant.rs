@@ -19,6 +19,38 @@ pub enum ParticipantType {
 }
 
 impl ParticipantType {
+    /// The six canonical endpoint participant types defined in architecture §26.1
+    /// (`[DIST-TASK-002]`):
+    /// 1. `TaskStore` (`Task / Attempt / Permit / EffectSlot`)
+    /// 2. `ArtifactHead` (`Artifact head / write staging`)
+    /// 3. `SemanticAdmission` (`Semantic admission / publication`)
+    /// 4. `ChannelTopic` (`Channel / Topic seq & causal boundary`)
+    /// 5. `DriverGateway` (`Driver / Tool Gateway call fence`)
+    /// 6. `ResourceLedger` (`Resource reservation / debit`)
+    pub const CANONICAL_SECTION_26_1: [Self; 6] = [
+        Self::TaskStore,
+        Self::ArtifactHead,
+        Self::SemanticAdmission,
+        Self::ChannelTopic,
+        Self::DriverGateway,
+        Self::ResourceLedger,
+    ];
+
+    /// Returns `true` when this participant type is one of the six canonical
+    /// architecture §26.1 endpoint participant types (`[DIST-TASK-002]`).
+    #[must_use]
+    pub const fn is_canonical_section_26_1(self) -> bool {
+        matches!(
+            self,
+            Self::TaskStore
+                | Self::ArtifactHead
+                | Self::SemanticAdmission
+                | Self::ChannelTopic
+                | Self::DriverGateway
+                | Self::ResourceLedger
+        )
+    }
+
     pub(crate) const fn code(self) -> i64 {
         match self {
             Self::TaskStore => 1,
@@ -366,6 +398,61 @@ pub(crate) fn reopen_after_takeover(
         registry.root,
         &registry.participants,
         now_ms,
+    )
+}
+
+/// Creates a new `OPEN` registry generation after a `TaskPermitClosureReceipt`
+/// (`FAILED_BEFORE_EFFECT` or `CANCELLED_BEFORE_EFFECT` with unchanged
+/// `TaskHead`, `[DIST-TASK-001]` / `[DIST-TASK-004]`).
+///
+/// In-place unfreezing (`FrozenForPermit -> Open` on the same generation) is
+/// strictly forbidden: the `FrozenForPermit` row is marked `Superseded` and a
+/// new `Open` generation `generation + 1` is inserted with
+/// `prior_participant_registry_root = Some(expected.root)`.
+pub(crate) fn reopen_after_permit_closure(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    expected: ParticipantRegistryBinding,
+    now_ms: i64,
+) -> Result<ParticipantRegistryRecord, TaskStoreError> {
+    let registry = initialize_registry(transaction, task, now_ms)?;
+    if registry.generation != expected.generation || registry.root != expected.root {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if registry.state != ParticipantRegistryState::FrozenForPermit {
+        return Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: registry.state,
+        });
+    }
+    let next_generation = registry
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let changed = transaction.execute(
+        "UPDATE task_participant_registries
+         SET registry_state=?1, updated_at_ms=?2
+         WHERE registry_id=?3 AND registry_generation=?4
+           AND participant_registry_root=?5
+           AND registry_state=?6",
+        params![
+            ParticipantRegistryState::Superseded.code(),
+            now_ms.max(registry.created_at_ms),
+            registry.registry_id.as_bytes().as_slice(),
+            encode_u64(registry.generation).as_slice(),
+            registry.root.as_slice(),
+            ParticipantRegistryState::FrozenForPermit.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+    }
+    insert_registry_generation(
+        transaction,
+        task,
+        next_generation,
+        registry.root,
+        &registry.participants,
+        registry.created_at_ms.min(now_ms),
     )
 }
 
@@ -848,6 +935,98 @@ fn load_current_registry(
         task_id,
         task_generation: generation_from_bytes(row.1)?,
         generation,
+        prior_root,
+        prior_participant_registry_root,
+        participants,
+        root: row
+            .4
+            .try_into()
+            .map_err(|_| TaskStoreError::CorruptRecord("registry root"))?,
+        state: ParticipantRegistryState::from_code(row.5)?,
+        authority,
+        signature,
+        created_at_ms: row.6,
+        updated_at_ms: row.7,
+    }))
+}
+
+pub(crate) fn load_registry_at_generation(
+    connection: &Connection,
+    task_id: TaskId,
+    generation: u64,
+) -> Result<Option<ParticipantRegistryRecord>, TaskStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT registry_id, task_generation, registry_generation,
+                    prior_registry_root, participant_registry_root, registry_state,
+                    created_at_ms, updated_at_ms,
+                    prior_participant_registry_root, authority_id, signature
+             FROM task_participant_registries
+             WHERE task_id=?1 AND registry_generation=?2",
+            params![
+                task_id.as_bytes().as_slice(),
+                encode_u64(generation).as_slice()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<Vec<u8>>>(9)?,
+                    row.get::<_, Option<Vec<u8>>>(10)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(row) = row else { return Ok(None) };
+    let registry_id = TaskParticipantRegistryId::from_bytes(
+        row.0
+            .try_into()
+            .map_err(|_| TaskStoreError::CorruptRecord("registry id"))?,
+    );
+    let loaded_generation = u64_from_bytes(row.2)?;
+    let prior_root: [u8; 32] = row
+        .3
+        .try_into()
+        .map_err(|_| TaskStoreError::CorruptRecord("prior registry root"))?;
+    let stored_prior_participant_root = row
+        .8
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("prior participant registry root"))
+        })
+        .transpose()?;
+    let prior_participant_registry_root =
+        stored_prior_participant_root.or_else(|| (loaded_generation > 1).then_some(prior_root));
+    let authority = row
+        .9
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("participant registry authority"))
+        })
+        .transpose()?;
+    let signature = row
+        .10
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("participant registry signature"))
+        })
+        .transpose()?;
+    let participants = load_participants(connection, registry_id)?;
+    Ok(Some(ParticipantRegistryRecord {
+        registry_id,
+        task_id,
+        task_generation: generation_from_bytes(row.1)?,
+        generation: loaded_generation,
         prior_root,
         prior_participant_registry_root,
         participants,

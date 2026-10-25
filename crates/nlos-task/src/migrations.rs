@@ -3491,6 +3491,7 @@ const SCHEMA_V47_REGISTRIES_SQL: &str = "DROP TRIGGER task_participant_registry_
       OR (NEW.authority_id IS NULL) != (NEW.signature IS NULL)
       OR (OLD.authority_id IS NOT NULL AND NEW.authority_id IS NOT OLD.authority_id)
       OR (OLD.signature IS NOT NULL AND NEW.signature IS NOT OLD.signature)
+      OR (OLD.registry_state = 4 AND NEW.registry_state != 4)
     BEGIN
         SELECT RAISE(ABORT, 'participant registry identity is immutable');
     END;";

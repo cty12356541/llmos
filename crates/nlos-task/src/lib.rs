@@ -190,8 +190,10 @@ pub use lease::{
     AuthorityTakeoverBarrierSigner, AuthorityTakeoverCompletionRecord,
     AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
     AuthorityTakeoverReceiptState, BarrierObservationSignature, CompleteAuthorityTakeoverRequest,
-    MAX_AUTHORITY_LEASE_TTL_MS, TaskAuthorityAssignment, TaskAuthorityTakeoverReceipt,
-    barrier_observation_signature_message,
+    DistTaskOperationAdmissionRecord, DistTaskOperationAdmissionRequest,
+    MAX_AUTHORITY_LEASE_TTL_MS, PermitClosureRegistryReopenRecord,
+    PermitClosureRegistryReopenRequest, TakeoverEndpointBarrierAuditReport,
+    TaskAuthorityAssignment, TaskAuthorityTakeoverReceipt, barrier_observation_signature_message,
 };
 pub use materialization::{
     MaterializationAdmissionFacts, ReclaimResidencyDrive, UnlinkedReclaimResidency,
@@ -705,6 +707,12 @@ pub enum TaskStoreError {
     /// recordable for same-trust-domain local use but can never complete a
     /// takeover.
     BarrierObservationUnsigned,
+    /// Takeover barrier coverage is incomplete (missing canonical §26.1
+    /// endpoint type or missing signed union-fence observation).
+    BarrierCoverageIncomplete {
+        expected: usize,
+        observed: usize,
+    },
     /// The owner proof does not match the generation planned by the caller.
     ParticipantEndpointGenerationMismatch {
         expected: u64,
@@ -1142,6 +1150,10 @@ impl fmt::Display for TaskStoreError {
                     "barrier observation signer proof verification failed: {error}"
                 )
             }
+            Self::BarrierCoverageIncomplete { expected, observed } => write!(
+                formatter,
+                "takeover barrier coverage incomplete: observed {observed} of {expected} required endpoints"
+            ),
             Self::BarrierObservationUnsigned => {
                 formatter.write_str("takeover barrier observation is unsigned")
             }

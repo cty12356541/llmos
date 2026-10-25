@@ -19,17 +19,21 @@ use nlos_process::{
 };
 use nlos_semantic::{
     AdmissionReceipt, AppendAssertionRequest, AppendDecision, AppendSpecRequest,
-    AppendTypedEventRequest, AssertionMode, CriterionAggregation, CriterionEffect,
-    CrossDomainAuditRecord, CrossDomainEventItem, EvaluatorKind, ImmutableEvaluatorReference,
-    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
-    IntentSettlement, IntentSpecBody, JudgmentRelation, MergedSignedEvent, SemanticAuthority,
-    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, SignedEventSetConflict,
+    AppendTypedEventRequest, AssertionMode, CellSemanticCursor, CriterionAggregation,
+    CriterionEffect, CrossDomainAuditRecord, CrossDomainEventItem, DomainSemanticWaterMark,
+    EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, JudgmentRelation,
+    MergedSignedEvent, SemanticAuthority, SemanticAuthorityError, SemanticPayloadIdentity,
+    SemanticVectorCheckpointError, SettlementMode, SettlementTimeoutAction, SignedEventSetConflict,
     SignedEventSetItem, SignedEventSetOrigin, SignedEventSetRejection, StoreSigner,
     StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedJudgmentEvent, UnsignedSpecEvent,
-    admission_receipt_core_digest, content_digest, encode_intent_spec_body,
-    encode_unsigned_assertion_event, encode_unsigned_judgment_event, encode_unsigned_spec_event,
-    intent_spec_body_digest, merge_cross_domain_event_sets, merge_signed_event_sets,
-    semantic_event_id, verify_and_merge_cross_domain_events,
+    VectorCheckpointRelation, admission_receipt_core_digest,
+    compute_cross_domain_audit_commitment_digest, compute_event_id_merkle_root,
+    compute_vector_checkpoint_digest, content_digest, diff_vector_checkpoints,
+    encode_intent_spec_body, encode_unsigned_assertion_event, encode_unsigned_judgment_event,
+    encode_unsigned_spec_event, intent_spec_body_digest, merge_cross_domain_event_sets,
+    merge_signed_event_sets, semantic_event_id, verify_and_merge_cross_domain_events,
+    verify_signed_vector_checkpoint, verify_vector_checkpoint,
 };
 use nlos_types::{
     Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId, TaskAttemptId, TaskId,
@@ -241,6 +245,57 @@ fn request_with_nonce(domain: &Domain, seed: u8, nonce: Vec<u8>) -> AppendAssert
 
 fn request(domain: &Domain, seed: u8) -> AppendAssertionRequest {
     request_with_nonce(domain, seed, vec![seed; 16])
+}
+
+fn request_with_lineage(
+    domain: &Domain,
+    seed: u8,
+    declared_parents: Vec<SemanticEventId>,
+    captured_inputs: Vec<SemanticEventId>,
+    ingress_taint: TaintFlags,
+    admitted_at_ms: u64,
+) -> AppendAssertionRequest {
+    let media_type = "text/plain".to_owned();
+    let content_bytes = format!("assertion-lineage-{seed}").into_bytes();
+    let event = UnsignedAssertionEvent {
+        scope: domain.capability_record.target,
+        issuer: domain.issuer.principal_id,
+        issuer_execution: nlos_semantic::LocalProcessRef {
+            process_id: domain.process_binding.process_id,
+            generation: domain.process_binding.process_generation,
+        },
+        control_domain: domain.issuer.control_domain_id,
+        issued_at_unix_ns: 1_000_000_000 + u64::from(seed),
+        nonce: vec![seed.wrapping_add(0x40); 16],
+        declared_parents,
+        declassification_receipt_id: None,
+        valid_until_ms: Some(8_000),
+        purpose_digest: domain.capability_record.purpose_digest,
+        content_digest: content_digest(&media_type, &content_bytes).unwrap(),
+        assertion_mode: AssertionMode::Inference,
+        execution_evidence_receipt_id: None,
+        confidence_bp: Some(8_000),
+        key_id: domain.issuer.key_id,
+    };
+    let canonical_unsigned_event = encode_unsigned_assertion_event(&event).unwrap();
+    let claimed_event_id = semantic_event_id(&canonical_unsigned_event);
+    let signature = domain
+        .issuer_key
+        .sign(&nlos_identity::semantic_signature_message(claimed_event_id))
+        .to_bytes();
+    AppendAssertionRequest {
+        canonical_unsigned_event,
+        claimed_event_id,
+        signature,
+        capability: domain.capability_record.handle,
+        content_media_type: media_type,
+        content_bytes,
+        captured_inputs,
+        ingress_taint,
+        authz_policy_digest: [0x99; 32],
+        admission_limit_ms: Some(8_500),
+        admitted_at_ms,
+    }
 }
 
 fn append(domain: &Domain, request: &AppendAssertionRequest) -> AppendDecision {
@@ -1159,5 +1214,622 @@ fn dist_audit_001_rejects_conflicting_trust_snapshots_for_same_receipt_id() {
     assert_eq!(
         report.rejections,
         vec![SignedEventSetRejection::EventWithoutValidAdmission { event_id }]
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // End-to-end two-Cell durable convergence and checkpoint verification.
+fn sem_checkpoint_001_two_cell_durable_convergence_and_order_independent_vector_checkpoint() {
+    let root_a = Root::new("conv-cell-a");
+    let root_b = Root::new("conv-cell-b");
+    let domain_a = domain(&root_a, 7, 27);
+    let domain_b = domain(&root_b, 8, 28);
+
+    // Cross-register each Cell's producer identity in the peer's IdentityAuthority
+    // so both Cells can cryptographically verify cross-domain events from both
+    // origin ControlDomainIds (seed 7 and seed 8).
+    let _ = bootstrap(&domain_a.identity, 8);
+    let _ = bootstrap(&domain_b.identity, 7);
+
+    // Cell A admits:
+    // 1. first_from_a (origin 7)
+    // 2. spec_a (origin 7)
+    // 3. judgment_a (origin 7, linking first_from_a -> spec_a)
+    let first_from_a = request(&domain_a, 1);
+    let spec_a = spec_request(&domain_a, 2);
+    let judgment_a = judgment_request(
+        &domain_a,
+        3,
+        first_from_a.claimed_event_id,
+        spec_a.claimed_event_id,
+    );
+    append(&domain_a, &first_from_a);
+    append_spec(&domain_a, &spec_a);
+    append_judgment(&domain_a, &judgment_a);
+
+    // Cell B admits:
+    // 1. root_from_b (origin 8)
+    // 2. child_from_b (origin 8, with declared_parents = [root_from_b])
+    let root_from_b = request(&domain_b, 10);
+    append(&domain_b, &root_from_b);
+    let child_from_b = request_with_lineage(
+        &domain_b,
+        11,
+        vec![root_from_b.claimed_event_id],
+        Vec::new(),
+        TaintFlags::UNTRUSTED_INGRESS,
+        2_050,
+    );
+    append(&domain_b, &child_from_b);
+
+    let trust_snapshot = [0x5A; 32];
+    let pre_cp_a = domain_a
+        .semantic
+        .export_vector_checkpoint(trust_snapshot)
+        .unwrap();
+    let pre_cp_b = domain_b
+        .semantic
+        .export_vector_checkpoint(trust_snapshot)
+        .unwrap();
+    let pre_diff = diff_vector_checkpoints(&pre_cp_a, &pre_cp_b);
+    assert_eq!(pre_diff.relation, VectorCheckpointRelation::Concurrent);
+
+    let export_a = domain_a
+        .semantic
+        .export_cross_domain_event_set(trust_snapshot)
+        .unwrap();
+    let export_b = domain_b
+        .semantic
+        .export_cross_domain_event_set(trust_snapshot)
+        .unwrap();
+    assert_eq!(export_a.len(), 3);
+    assert_eq!(export_b.len(), 2);
+
+    // Converge B into A, and A into B (opposite local log_seq orders).
+    let conv_a = domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            trust_snapshot,
+            &export_b,
+        )
+        .unwrap();
+    let conv_b = domain_b
+        .semantic
+        .converge_cross_domain_event_sets(
+            &domain_b.identity,
+            &domain_b.store_signer,
+            trust_snapshot,
+            &[&export_a],
+        )
+        .unwrap();
+
+    assert_eq!(conv_a.imported_event_ids.len(), 2);
+    assert_eq!(conv_a.skipped_existing_event_ids.len(), 3);
+    assert_eq!(conv_a.imported_admissions.len(), 2);
+    assert_eq!(conv_a.imported_durability_receipts.len(), 2);
+
+    assert_eq!(conv_b.imported_event_ids.len(), 3);
+    assert_eq!(conv_b.skipped_existing_event_ids.len(), 2);
+    assert_eq!(conv_b.imported_admissions.len(), 3);
+    assert_eq!(conv_b.imported_durability_receipts.len(), 3);
+
+    // Every imported event has a verifiable DurabilityReceipt binding the
+    // [DIST-AUDIT-001] provenance commitment digest.
+    for dr in &conv_a.imported_durability_receipts {
+        let verified = domain_a
+            .semantic
+            .verify_durability_receipt(&domain_a.identity, dr.event_id, dr.receipt_id)
+            .unwrap();
+        let merged_entry = conv_a
+            .merge_report
+            .merged
+            .iter()
+            .find(|entry| entry.event_id == dr.event_id)
+            .unwrap();
+        let expected_commitment =
+            compute_cross_domain_audit_commitment_digest(dr.event_id, &merged_entry.audit_records);
+        assert_eq!(verified.durable_checkpoint_id, expected_commitment);
+    }
+    for dr in &conv_b.imported_durability_receipts {
+        let verified = domain_b
+            .semantic
+            .verify_durability_receipt(&domain_b.identity, dr.event_id, dr.receipt_id)
+            .unwrap();
+        let merged_entry = conv_b
+            .merge_report
+            .merged
+            .iter()
+            .find(|entry| entry.event_id == dr.event_id)
+            .unwrap();
+        let expected_commitment =
+            compute_cross_domain_audit_commitment_digest(dr.event_id, &merged_entry.audit_records);
+        assert_eq!(verified.durable_checkpoint_id, expected_commitment);
+    }
+
+    // Both stores now contain all 5 events, with different store-local log_seq
+    // orderings, yet produce identical vector checkpoints and signed checkpoints!
+    let post_a = domain_a.semantic.export_signed_event_set().unwrap();
+    let post_b = domain_b.semantic.export_signed_event_set().unwrap();
+    assert_eq!(post_a.len(), 5);
+    assert_eq!(post_b.len(), 5);
+    assert_ne!(
+        post_a.iter().map(|i| i.event.event_id).collect::<Vec<_>>(),
+        post_b.iter().map(|i| i.event.event_id).collect::<Vec<_>>(),
+        "local log_seq insertion order differs between Cell A and Cell B"
+    );
+
+    let signed_cp_a = domain_a
+        .semantic
+        .export_signed_vector_checkpoint(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            trust_snapshot,
+            3_000,
+        )
+        .unwrap();
+    let signed_cp_b = domain_b
+        .semantic
+        .export_signed_vector_checkpoint(
+            &domain_b.identity,
+            &domain_b.store_signer,
+            trust_snapshot,
+            3_000,
+        )
+        .unwrap();
+
+    verify_signed_vector_checkpoint(&domain_a.identity, &signed_cp_a).unwrap();
+    verify_signed_vector_checkpoint(&domain_b.identity, &signed_cp_b).unwrap();
+
+    assert_eq!(signed_cp_a.domain_watermarks.len(), 2);
+    assert_eq!(signed_cp_a.domain_watermarks, signed_cp_b.domain_watermarks);
+    assert_eq!(
+        signed_cp_a.covered_event_ids_root,
+        signed_cp_b.covered_event_ids_root
+    );
+    assert_eq!(signed_cp_a.checkpoint_digest, signed_cp_b.checkpoint_digest);
+    assert_eq!(signed_cp_a.checkpoint_id, signed_cp_b.checkpoint_id);
+
+    let post_diff = diff_vector_checkpoints(&signed_cp_a.checkpoint(), &signed_cp_b.checkpoint());
+    assert_eq!(post_diff.relation, VectorCheckpointRelation::Equal);
+    assert_eq!(post_diff.local_ahead_domains, [] as [[u8; 16]; 0]);
+    assert_eq!(post_diff.remote_ahead_domains, [] as [[u8; 16]; 0]);
+    assert_eq!(post_diff.concurrent_domains, [] as [[u8; 16]; 0]);
+
+    // Re-importing the remote set is 100% idempotent.
+    let reimport_a = domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            trust_snapshot,
+            &export_b,
+        )
+        .unwrap();
+    assert_eq!(reimport_a.imported_event_ids, [] as [SemanticEventId; 0]);
+    assert_eq!(reimport_a.skipped_existing_event_ids.len(), 5);
+    assert_eq!(reimport_a.vector_checkpoint, signed_cp_a.checkpoint());
+}
+
+#[test]
+fn sem_checkpoint_001_verify_signed_vector_checkpoint_rejects_watermark_tampering_fail_closed() {
+    let root_a = Root::new("wm-tamper-a");
+    let root_b = Root::new("wm-tamper-b");
+    let domain_a = domain(&root_a, 7, 27);
+    let domain_b = domain(&root_b, 8, 28);
+    let _ = bootstrap(&domain_a.identity, 8);
+
+    append(&domain_a, &request(&domain_a, 1));
+    append(&domain_b, &request(&domain_b, 2));
+    let export_b = domain_b
+        .semantic
+        .export_cross_domain_event_set([0x42; 32])
+        .unwrap();
+    domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            [0x42; 32],
+            &export_b,
+        )
+        .unwrap();
+
+    // Zero trust_snapshot_digest on export fails closed.
+    let zero_err = domain_a
+        .semantic
+        .export_signed_vector_checkpoint(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            [0_u8; 32],
+            3_000,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        zero_err,
+        SemanticAuthorityError::VectorCheckpoint(
+            SemanticVectorCheckpointError::MissingTrustSnapshot
+        )
+    ));
+
+    let baseline = domain_a
+        .semantic
+        .export_signed_vector_checkpoint(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            [0x42; 32],
+            3_000,
+        )
+        .unwrap();
+    verify_signed_vector_checkpoint(&domain_a.identity, &baseline).unwrap();
+
+    // 1. Reversed / unsorted domain_watermarks order fails closed.
+    let mut unsorted = baseline.clone();
+    unsorted.domain_watermarks.reverse();
+    assert!(matches!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &unsorted),
+        Err(SemanticVectorCheckpointError::InvalidWatermarkOrder { .. })
+    ));
+
+    // 2. Zero trust_snapshot_digest inside a watermark fails closed.
+    let mut zero_wm_snapshot = baseline.clone();
+    zero_wm_snapshot.domain_watermarks[0].trust_snapshot_digest = [0_u8; 32];
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &zero_wm_snapshot),
+        Err(SemanticVectorCheckpointError::MissingTrustSnapshot)
+    );
+
+    // 3. Zero event_count in a watermark fails closed.
+    let mut zero_count = baseline.clone();
+    zero_count.domain_watermarks[0].event_count = 0;
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &zero_count),
+        Err(SemanticVectorCheckpointError::EmptyDomainWatermark {
+            authority_id: baseline.domain_watermarks[0].authority_id,
+        })
+    );
+
+    // 4. Zero or empty-merkle-root in a watermark fails closed.
+    let mut zero_root = baseline.clone();
+    zero_root.domain_watermarks[0].event_id_merkle_root = compute_event_id_merkle_root(&[]);
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &zero_root),
+        Err(SemanticVectorCheckpointError::ZeroWatermarkMerkleRoot {
+            authority_id: baseline.domain_watermarks[0].authority_id,
+        })
+    );
+
+    // 5. Zero latest_admission_receipt_digest in a watermark fails closed.
+    let mut zero_adm = baseline.clone();
+    zero_adm.domain_watermarks[0].latest_admission_receipt_digest = [0_u8; 32];
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &zero_adm),
+        Err(
+            SemanticVectorCheckpointError::ZeroWatermarkAdmissionDigest {
+                authority_id: baseline.domain_watermarks[0].authority_id,
+            }
+        )
+    );
+
+    // 6. Mutating watermark event_count and recomputing checkpoint_digest/id
+    // without the store signing key fails signature verification.
+    let mut forged_rehashed = baseline.clone();
+    forged_rehashed.domain_watermarks[0].event_count += 1;
+    forged_rehashed.checkpoint_digest = compute_vector_checkpoint_digest(
+        &forged_rehashed.domain_watermarks,
+        forged_rehashed.covered_event_ids_root,
+    );
+    forged_rehashed
+        .checkpoint_id
+        .copy_from_slice(&forged_rehashed.checkpoint_digest[..16]);
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &forged_rehashed),
+        Err(SemanticVectorCheckpointError::InvalidSignature)
+    );
+}
+
+#[test]
+fn sem_checkpoint_001_verify_signed_vector_checkpoint_rejects_root_digest_and_signer_tampering() {
+    let root = Root::new("cp-sig-tamper");
+    let domain_a = domain(&root, 7, 27);
+    append(&domain_a, &request(&domain_a, 1));
+
+    let baseline = domain_a
+        .semantic
+        .export_signed_vector_checkpoint(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            [0x77; 32],
+            3_000,
+        )
+        .unwrap();
+    verify_signed_vector_checkpoint(&domain_a.identity, &baseline).unwrap();
+
+    // 1. Single-domain checkpoint with mismatched covered_event_ids_root fails closed.
+    let mut bad_covered_root = baseline.clone();
+    bad_covered_root.covered_event_ids_root[0] ^= 0xFF;
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &bad_covered_root),
+        Err(SemanticVectorCheckpointError::CoveredEventIdsRootMismatch)
+    );
+
+    // 2. Tampered checkpoint_digest fails closed.
+    let mut bad_digest = baseline.clone();
+    bad_digest.checkpoint_digest[0] ^= 0xFF;
+    assert!(matches!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &bad_digest),
+        Err(SemanticVectorCheckpointError::CheckpointDigestMismatch { .. })
+    ));
+
+    // 3. Tampered checkpoint_id fails closed.
+    let mut bad_id = baseline.clone();
+    bad_id.checkpoint_id[0] ^= 0xFF;
+    assert!(matches!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &bad_id),
+        Err(SemanticVectorCheckpointError::CheckpointIdMismatch { .. })
+    ));
+
+    // 4. Zeroed signer metadata fails closed.
+    let mut zero_signer = baseline.clone();
+    zero_signer.signer_public_key = [0_u8; 32];
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &zero_signer),
+        Err(SemanticVectorCheckpointError::InvalidSignerMetadata)
+    );
+
+    // 5. Mismatched signer_authority_id fails closed.
+    let mut wrong_authority = baseline.clone();
+    wrong_authority.signer_authority_id[0] ^= 0xFF;
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &wrong_authority),
+        Err(SemanticVectorCheckpointError::SignerBindingMismatch)
+    );
+
+    // 6. Tampered Ed25519 signature fails closed.
+    let mut bad_sig = baseline;
+    bad_sig.signature[0] ^= 0xFF;
+    assert_eq!(
+        verify_signed_vector_checkpoint(&domain_a.identity, &bad_sig),
+        Err(SemanticVectorCheckpointError::InvalidSignature)
+    );
+}
+
+#[test]
+fn sem_checkpoint_001_diff_vector_checkpoints_causal_relations_without_scalar_log_seq() {
+    let root_a = Root::new("diff-a");
+    let root_b = Root::new("diff-b");
+    let domain_a = domain(&root_a, 7, 27);
+    let domain_b = domain(&root_b, 7, 28);
+
+    let req1 = request(&domain_a, 1);
+    let req2 = request(&domain_a, 2);
+    let req3 = request(&domain_a, 3);
+
+    // Admit req1 & req2 in opposite orders on domain_a and domain_b.
+    append(&domain_a, &req1);
+    append(&domain_a, &req2);
+
+    let mut req2_b = req2.clone();
+    req2_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &req2_b);
+    let mut req1_b = req1.clone();
+    req1_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &req1_b);
+
+    let snapshot = [0x33; 32];
+    let cp_a = domain_a
+        .semantic
+        .export_vector_checkpoint(snapshot)
+        .unwrap();
+    let cp_b = domain_b
+        .semantic
+        .export_vector_checkpoint(snapshot)
+        .unwrap();
+    verify_vector_checkpoint(&cp_a).unwrap();
+    verify_vector_checkpoint(&cp_b).unwrap();
+
+    // 1. Equal despite opposite local log_seq assignments.
+    let diff_eq = diff_vector_checkpoints(&cp_a, &cp_b);
+    assert_eq!(diff_eq.relation, VectorCheckpointRelation::Equal);
+
+    // 2. LocalAhead when domain_a admits req3.
+    append(&domain_a, &req3);
+    let cp_a_ahead = domain_a
+        .semantic
+        .export_vector_checkpoint(snapshot)
+        .unwrap();
+    let diff_local_ahead = diff_vector_checkpoints(&cp_a_ahead, &cp_b);
+    assert_eq!(
+        diff_local_ahead.relation,
+        VectorCheckpointRelation::LocalAhead
+    );
+    assert_eq!(
+        diff_local_ahead.local_ahead_domains,
+        vec![domain_a.issuer.control_domain_id.into_bytes()]
+    );
+
+    // 3. RemoteAhead when comparing cp_b against cp_a_ahead.
+    let diff_remote_ahead = diff_vector_checkpoints(&cp_b, &cp_a_ahead);
+    assert_eq!(
+        diff_remote_ahead.relation,
+        VectorCheckpointRelation::RemoteAhead
+    );
+    assert_eq!(
+        diff_remote_ahead.remote_ahead_domains,
+        vec![domain_a.issuer.control_domain_id.into_bytes()]
+    );
+
+    // 4. Same-domain Concurrent when domain_b admits a different 3rd event (req4).
+    let mut req4_b = request(&domain_b, 4);
+    req4_b.capability = domain_b.capability_record.handle;
+    append(&domain_b, &req4_b);
+    let cp_b_diverged = domain_b
+        .semantic
+        .export_vector_checkpoint(snapshot)
+        .unwrap();
+    let diff_concurrent = diff_vector_checkpoints(&cp_a_ahead, &cp_b_diverged);
+    assert_eq!(
+        diff_concurrent.relation,
+        VectorCheckpointRelation::Concurrent
+    );
+    assert_eq!(
+        diff_concurrent.concurrent_domains,
+        vec![domain_a.issuer.control_domain_id.into_bytes()]
+    );
+
+    // Verify CellSemanticCursor type alias works seamlessly as DomainSemanticWaterMark.
+    let cursor: CellSemanticCursor = cp_a_ahead.domain_watermarks[0].clone();
+    let wm: DomainSemanticWaterMark = cursor;
+    assert_eq!(wm.event_count, 3);
+}
+
+#[test]
+fn c_sync_import_rejects_corrupt_dist_audit_001_envelope_without_polluting_store() {
+    let (_root, domain_a, domain_b) = twin_domains();
+
+    let req1 = request(&domain_b, 1);
+    let req2 = request(&domain_b, 2);
+    append(&domain_b, &req1);
+    append(&domain_b, &req2);
+
+    let snapshot = [0x91; 32];
+    let mut bad_snapshot_batch = domain_b
+        .semantic
+        .export_cross_domain_event_set(snapshot)
+        .unwrap();
+    bad_snapshot_batch[1].trust_snapshot_digest = [0_u8; 32];
+
+    // 1. Batch with a zero trust_snapshot_digest on the 2nd item fails closed
+    // before touching SQLite.
+    let err = domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            snapshot,
+            &bad_snapshot_batch,
+        )
+        .unwrap_err();
+    match err {
+        SemanticAuthorityError::CrossDomainMergeRejected {
+            rejections,
+            conflicts,
+        } => {
+            assert_eq!(rejections.len(), 1);
+            assert_eq!(conflicts, [] as [SignedEventSetConflict; 0]);
+            assert!(matches!(
+                rejections[0],
+                SignedEventSetRejection::MissingTrustSnapshot { .. }
+            ));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(
+        domain_a.semantic.export_signed_event_set().unwrap(),
+        [] as [SignedEventSetItem; 0],
+        "receiving store must remain empty after rejected cross-domain batch"
+    );
+
+    // 2. Batch with a forged producer signature on the 2nd item fails closed.
+    let mut bad_sig_batch = domain_b
+        .semantic
+        .export_cross_domain_event_set(snapshot)
+        .unwrap();
+    bad_sig_batch[1].producer_signature[0] ^= 0xFF;
+    let err = domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            snapshot,
+            &bad_sig_batch,
+        )
+        .unwrap_err();
+    match err {
+        SemanticAuthorityError::CrossDomainMergeRejected {
+            rejections,
+            conflicts,
+        } => {
+            assert_eq!(rejections.len(), 1);
+            assert_eq!(conflicts, [] as [SignedEventSetConflict; 0]);
+            assert!(matches!(
+                rejections[0],
+                SignedEventSetRejection::InvalidProducerSignature { .. }
+            ));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(
+        domain_a.semantic.export_signed_event_set().unwrap(),
+        [] as [SignedEventSetItem; 0]
+    );
+}
+
+#[test]
+fn c_sync_import_atomic_rollback_on_mid_batch_dangling_lineage_or_missing_target() {
+    let (_root, domain_a, domain_b) = twin_domains();
+
+    // Domain B admits:
+    // - parent_b (log_seq 1)
+    // - standalone_b (log_seq 2)
+    // - child_b (log_seq 3, which depends on parent_b)
+    let parent_b = request(&domain_b, 1);
+    let standalone_b = request(&domain_b, 2);
+    append(&domain_b, &parent_b);
+    append(&domain_b, &standalone_b);
+    let child_b = request_with_lineage(
+        &domain_b,
+        3,
+        vec![parent_b.claimed_event_id],
+        Vec::new(),
+        TaintFlags::default(),
+        2_050,
+    );
+    append(&domain_b, &child_b);
+
+    let snapshot = [0xAB; 32];
+    let exported_b = domain_b
+        .semantic
+        .export_cross_domain_event_set(snapshot)
+        .unwrap();
+    assert_eq!(exported_b.len(), 3);
+
+    // Construct an incomplete batch containing ONLY [standalone_b, child_b],
+    // omitting parent_b. Both items pass cryptographic signature & receipt
+    // verification, and standalone_b is valid on its own, but child_b has a
+    // dangling declared_parent (parent_b).
+    let incomplete_batch: Vec<CrossDomainEventItem> = exported_b
+        .into_iter()
+        .filter(|item| item.event.event_id != parent_b.claimed_event_id)
+        .collect();
+    assert_eq!(incomplete_batch.len(), 2);
+
+    let err = domain_a
+        .semantic
+        .import_cross_domain_event_set(
+            &domain_a.identity,
+            &domain_a.store_signer,
+            snapshot,
+            &incomplete_batch,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SemanticAuthorityError::DanglingLineage(id) if id == parent_b.claimed_event_id
+        ),
+        "expected DanglingLineage for missing parent_b, got {err:?}"
+    );
+
+    // Atomic SQLite transaction rollback: standalone_b must NOT have been
+    // left behind in domain_a's SQLite store.
+    assert!(
+        domain_a
+            .semantic
+            .export_signed_event_set()
+            .unwrap()
+            .is_empty(),
+        "atomic convergence transaction must roll back all earlier inserts on mid-batch failure"
     );
 }
