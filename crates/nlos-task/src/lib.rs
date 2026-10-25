@@ -140,6 +140,7 @@
 mod activity;
 mod commit;
 mod effect;
+pub mod fanout;
 mod group;
 mod lease;
 mod materialization;
@@ -171,6 +172,24 @@ pub use effect::{
     PermitRequest as EffectPermitRequest, ReceiptKind, RegisterEffectBindingRequest, SetSummary,
     SlotRecord, SlotState, empty_effect_set_root, expected_success_assertion_digest,
     idempotency_identity_digest,
+};
+pub use fanout::{
+    BulkheadAdmissionDecision, BulkheadCompletionReport, BulkheadController,
+    BulkheadExecutionOutcome, BulkheadHealthState, BulkheadLeaseId, BulkheadPromotedTicket,
+    BulkheadQueueTicketId, BulkheadRegistry, BulkheadScopeId, BulkheadScopeKind, BulkheadSpec,
+    BulkheadStateSnapshot, BulkheadTripReason, CheckpointUpdateReport, DeterministicLocalReducer,
+    DivergentLeafRecord, FANOUT_DERIVED_SUBGROUP_DOMAIN, FANOUT_LOCAL_REDUCE_DOMAIN,
+    FANOUT_MERKLE_EMPTY_DOMAIN, FANOUT_MERKLE_LEAF_DOMAIN, FANOUT_MERKLE_NODE_DOMAIN,
+    FANOUT_MERKLE_PENDING_LEAF_DOMAIN, FANOUT_SUBGROUP_CHECKPOINT_DOMAIN, FailureBudget,
+    FanoutActualUsage, FanoutAdmissionDecision, FanoutAxis, FanoutError, FanoutGroupLifecycle,
+    FanoutHardRefusalReason, FanoutHeadroom, FanoutLeafId, FanoutLeafMember, FanoutProviderId,
+    FanoutQuotaContract, FanoutReservationRequest, FanoutSettlementReport, FanoutTenantId,
+    FanoutUsageLedger, FanoutWaitTicketId, HierarchicalFanoutTree, IncrementalSubgroupCheckpoint,
+    LeafCandidateReceipt, LocalReducerKind, LocalReductionSummary, MerkleInclusionProof,
+    MerkleLeafEntry, MerkleProofStep, MerkleResultRoot, MerkleSiblingPosition,
+    SafetyTcbSystemReserve, SubgroupCheckpointCache, SubgroupEdge, SubgroupNode, TcbSlotLeaseId,
+    TopologyComplexityMetrics, WorkloadBulkheadRoute, compute_merkle_leaf_hash,
+    compute_merkle_node_hash, verify_merkle_proof,
 };
 pub use group::{
     AttemptGroupBindingRecord, AttemptGroupRegistration, CompletionMode, FailureMode,

@@ -1512,7 +1512,7 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 1. slice-k-demo STEP 09d defect 根因处置（RISK-B-12 升级条款随行：若证明为生产 GC 误收在册 blob 即升 P0 并重开退出前提）——**已处置**（2026-09-21，merge `87ef288` 已推 origin/main，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)：durable 取证证明收集者为 W22-001 install-scoped pass 合法收集构造性 orphan（receipt 在册、referenced blob 全存活、W28-E tick 零触发），P0 升级条款经证排除、RISK-B-12 已 closed；demo 级修复 + 解掩的 STEP 12b 键带碰撞修复 + 2 条回归钉死，demo 全程 EXIT=0、136 passed/0 failed）；
 2. 载荷执行面 + `nlos package install` CLI（B-001 边界）——**前片已合入**（2026-09-21，merge `953c8af`，[B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)）；后片 run/update/uninstall CLI 消费端 + 样例接线仍开（owner：后续 C-APP-PAYLOAD）；
 3. GUI 真机战役（computer-use 清单：面板/focus/送对话/statusline/hooks 实时性/HTML/降级三连）；Windows GUI；
-4. Windows live-child 实杀测试（`taskkill /F /T` 成功路径无真实子进程断言——W28-F 只闭合「CI 复验已跑」半维）；
+4. Windows live-child 实杀测试（`taskkill /F /T` 成功路径无真实子进程断言——W28-F 只闭合「CI 复验已跑」半维）——**同权限父子进程树与 B2-1 双活隔离已证**（2026-10-24，W62-CWINKILL 合入 `236ff827`，[b-process-003 §13](../evidence/stage-b/b-process-003-crash-propagation.md)：真实 Windows 宿主验证父+子双 PID 终止且同机兄弟进程树 100% 存活，`RISK-B-10` 降级 `partial`，保留跨权限/Job Object breakaway 残域）；
 5. release-profile + 多平台（Linux/Windows）规模复测与 CI 化（全部规模数字现为 debug/test 单平台 macOS 口径；PID 级容量与 coroutine 级并发生产声明以此为前置）——**管线前片已合入**（2026-09-21，merge `09c0832`，[B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md)）；首 CI run PENDING（owner：控制器 dispatch / 夜间 schedule）；生产量级声明禁令维持；
 6. 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布——**三探针前片已合入**（2026-09-21，merge `4df55d6`，[B-RUNTIME-002 §6.19](../evidence/stage-b/b-runtime-002-fiber-scale.md)）；O(n²) 终态 purge 家族与 100K wake 风暴仍开（owner：后续 C-RUNTIME-SCALE）；
 7. G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化——**前半已合入**（2026-09-21，merge `8b91419`，[B-PLAN-001 §12](../evidence/stage-b/b-plan-001-declaration-surface.md)）；Topic/Skill/Tool/Model/外部服务与 G3 enforcement 仍开（owner：后续 C-SELECTOR）；
@@ -1525,7 +1525,7 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 14. 夜间 scale-probe 既有失败（自 2026-09-13，blocking_io_negative 探针）专项排查——已排查修复（[B-RUNTIME-002](../evidence/stage-b/b-runtime-002-fiber-scale.md) §6.18：根因为进程级线程读数 × libtest 默认并发的测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿；实际自 09-06 首夜即败，非 09-13；复证全绿闭合（2026-09-22：家族三例修复 + `--no-fail-fast` 可见性根除，dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe 历史首绿，merge `ebbeddc`/`4df55d6`/`3d423c3`，§6.18.2.1-6.19）；
 15. 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面（Task Space 全量枚举 IPC 面、五层 desktop 派发）；
 16. 真实硬件掉电与 M4/M6/M8 模型校准（层 3+）；
-17. 生产 signing key custody / enforcement-gateway reconciliation authority（ADR-0017 约束 4 的终态承载）。
+17. 生产 signing key custody / enforcement-gateway reconciliation authority（ADR-0017 约束 4 的终态承载）——**不可导出 KEK 托管与网关有界对账已证**（2026-10-25，W64-CCUSTODY，[C-CUSTODY-001](../evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md)：`SigningKeyCustodyVault` + `EnforcementGatewayReconciliationAuthority` `Provisional` / `FinalNonSupersedeable` 双域收敛；硬件 HSM/TPM 隔离保留为部署边界）。
 
 ## 7. 进度更新协议
 

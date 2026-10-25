@@ -11,7 +11,16 @@ use std::time::{Duration, Instant};
 
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
-    ResourceGroupId, SchedulerDomainId, TaskAttemptId,
+    ResourceGroupId, SchedulerDomainId as NominalSchedulerDomainId, TaskAttemptId,
+};
+
+pub mod scheduler_domain;
+
+pub use scheduler_domain::{
+    AdmissionDirective, BackpressureSignal, ContextAffinitySpec, DeadlineClass,
+    DomainPressureLevel, QueueItemInspection, ResourceGroupQueuePolicy, SaturationSource,
+    SchedulerAdmission, SchedulerDomainId, SchedulerTier, StealEligibility, StealRejectionReason,
+    ThrottleReason, WorkStealEnvelope, WorkerStealCapabilities, evaluate_steal_eligibility,
 };
 
 pub type FiberFuture = Pin<Box<dyn Future<Output = FiberExit> + Send + 'static>>;
@@ -49,7 +58,7 @@ pub struct FiberSpec {
     pub cancellation_scope_id: CancellationScopeId,
     pub cancellation_generation: Generation,
     pub resource_group_id: ResourceGroupId,
-    pub scheduler_domain_id: SchedulerDomainId,
+    pub scheduler_domain_id: NominalSchedulerDomainId,
     pub deadline: Option<Instant>,
 }
 

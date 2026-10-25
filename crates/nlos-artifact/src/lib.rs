@@ -190,13 +190,19 @@ pub use publication::staging_id_for;
 pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};
 pub use store::ArtifactStore;
 pub use sync::{
-    ARTIFACT_CONFLICT_RECEIPT_DOMAIN, ArtifactConflictReceipt, ArtifactConflictStrategy,
-    ArtifactDeletionSemantics, ArtifactLocalSyncState, ArtifactMergeStrategy,
-    ArtifactRemoteSyncCandidate, ArtifactReplicaAuthority, ArtifactReplicaSyncOutcome,
-    ArtifactSyncDecision, ArtifactSyncError, ArtifactSyncOperationKind, ArtifactSyncPolicy,
-    ArtifactSyncPolicyError, ArtifactSyncPolicyRegistry, PolicyRegistrationDecision,
-    ReplicaRevisionBundle, SyncArtifactReplicaRequest, compute_conflict_digest,
-    evaluate_artifact_sync, export_replica_revision_bundle, sync_artifact_replica_head,
+    ARTIFACT_CONFLICT_RECEIPT_DOMAIN, ARTIFACT_TRANSFER_PACKAGE_DOMAIN, ArtifactBlobPayload,
+    ArtifactConflictReceipt, ArtifactConflictStrategy, ArtifactDeletionSemantics,
+    ArtifactLocalSyncState, ArtifactMergeStrategy, ArtifactRemoteSyncCandidate,
+    ArtifactReplicaAuthority, ArtifactReplicaSyncOutcome, ArtifactSyncDecision, ArtifactSyncError,
+    ArtifactSyncOperationKind, ArtifactSyncPolicy, ArtifactSyncPolicyError,
+    ArtifactSyncPolicyRegistry, ArtifactTombstoneMetadata, ArtifactTransferPackage,
+    CrossStoreArtifactSyncReport, ExportArtifactTransferRequest, ImportArtifactTransferRequest,
+    PolicyRegistrationDecision, QuarantinedConflictPin, ReplicaRevisionBundle,
+    ReplicaSyncRetentionSet, SyncArtifactReplicaRequest, TombstoneRetentionPin,
+    TransferRevisionEntry, collect_orphan_blobs_with_sync_roots, compute_conflict_digest,
+    compute_transfer_package_digest, evaluate_artifact_sync, export_artifact_transfer_package,
+    export_replica_revision_bundle, import_artifact_transfer_package, read_retained_sync_blob,
+    sync_artifact_replica_head,
 };
 
 /// Typed errors of the artifact store. No `anyhow`; every failure mode a

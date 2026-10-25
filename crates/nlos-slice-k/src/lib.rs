@@ -47,6 +47,7 @@ mod fiber;
 mod nl;
 mod package;
 mod payload;
+pub mod process_migration_drive;
 mod pump;
 mod reconciliation;
 mod restore;
@@ -76,6 +77,28 @@ pub use package::{
 pub use payload::{
     PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
     payload_execution_seed,
+};
+pub use process_migration_drive::{
+    CapabilityRebindItemSpec, CapacityLeaseMigrationSpec, CellHostProcessMigrationOutcome,
+    CellHostProcessMigrationRequest, CheckpointSourceSpec, DecodedProcessMigrationCheckpointEntry,
+    DeviceLeaseMigrationSpec, LeaseMigrationBundleSpec, LocalCellHostSourceEndpoint,
+    LocalCellHostTargetEndpoint, PROCESS_MIGRATION_ATTENUATION_DOMAIN,
+    PROCESS_MIGRATION_CHECKPOINT_STATE_DOMAIN, PROCESS_MIGRATION_INTENT_TAG,
+    PROCESS_MIGRATION_RECEIPT_ENTRY_MAGIC, ProcessLineageGenesis, ProcessLineageRestoreHop,
+    ProcessLineageSpec, ProcessMigrationDriveError, QuotaLeaseMigrationSpec,
+    SourceCellMigrationEndpoint, SourceCellPlacementSnapshot, SourceCheckpointBundle,
+    SourceCheckpointRequest, SourceClosedQuotaSummary, SourceFenceReport, SourceFenceRequest,
+    SourceFenceSpec, SourceLeaseCloseReport, SourcePostFenceQuarantineReport, SourceQuiesceRequest,
+    SourceQuiesceSpec, SourceReturnedCapacitySummary, SourceReturnedDeviceSummary,
+    TargetCapabilityRebindReport, TargetCapabilityRebindRequest, TargetCellMigrationEndpoint,
+    TargetCellPlacementSnapshot, TargetCheckpointVerifyRequest, TargetLeaseRegrantReport,
+    TargetLeaseRegrantRequest, TargetProcessRestoreReport, TargetProcessRestoreRequest,
+    TargetReceiptCheckpointReport, TargetRestoreSpec,
+    compute_rebound_capability_attenuation_digest, compute_transparent_checkpoint_digest,
+    decode_process_migration_receipt_checkpoint_entry, drive_cell_host_process_migration,
+    inspect_host_active_capability, process_migration_intent_reason,
+    process_migration_receipt_checkpoint_entry, process_migration_receipt_checkpoint_prefix,
+    publish_restart_image_artifact,
 };
 pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
 pub use reconciliation::{

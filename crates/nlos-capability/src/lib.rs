@@ -3,6 +3,7 @@
 //! Capability IDs are authority records, not caller assertions. Every use is
 //! checked against the current generation and the complete ancestor chain.
 
+pub mod custody;
 mod model;
 mod namespace;
 mod schema;
@@ -23,6 +24,14 @@ use nlos_types::{CapabilityId, Generation, IdempotencyKey, KeyId, PrincipalId, R
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+pub use custody::{
+    BootstrapCustodyPrincipalRequest, CustodyKeySlot, CustodyKeyState, CustodyRevocationTombstone,
+    CustodyRotationReceipt, CustodySignAuditReceipt, CustodySignRequest, CustodyTier,
+    CustodyVaultError, ProvisionCustodyKeyRequest, RevokeCompromisedKeyRequest,
+    RotateCustodyKeyEpochRequest, SigningKeyCustodyVault, SqliteCustodyStore,
+    VerifiedCustodySignature, compute_custody_signing_digest, custody_domain_sha256,
+    derive_ed25519_public_key_from_seed, verify_ed25519_signature_strict,
+};
 pub use model::{
     AuthorizeSemanticRequest, CapabilityConsumptionDecision, CapabilityConsumptionReceipt,
     CapabilityHandle, CapabilityIssueDecision, CapabilityIssueReceipt, CapabilityRecord,

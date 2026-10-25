@@ -28,8 +28,16 @@ use nlos_task::{
     SqliteTaskAuthority, TaskStoreError, TaskWriteSetSemanticTarget,
 };
 
+pub mod gateway_reconcile;
 mod worker;
 
+pub use gateway_reconcile::{
+    ApplyGatewayReconciliationContext, EnforcementGatewayReconciliationAuthority,
+    GatewayOutcomeDisposition, GatewayReconcileError, GatewayReconciliationAttestation,
+    GatewayReconciliationDecision, GatewayReconciliationLedger, GatewaySettlementOutcome,
+    IssueGatewayAttestationRequest, ProjectedReconciliationAudit, ReceiptFinality,
+    verify_and_apply_gateway_reconciliation,
+};
 pub use worker::{
     RecoveryFailureAuthority, RecoveryWorkerConfig, RecoveryWorkerFailure, RecoveryWorkerHealth,
     RecoveryWorkerStartError, RecoveryWorkerState, TaskAuthorityCommitRecoveryWorker,

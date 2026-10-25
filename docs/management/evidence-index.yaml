@@ -912,10 +912,10 @@
   date: "2026-10-24"
 - id: c-sync-002-artifact-sync-policy
   path: docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
-  title: "C-SYNC-002 / W62-CSYNC-ART：DIST-ART-001 按内容类型四轴制品同步策略与冲突回执"
-  scope: "nlos-artifact 按内容类型声明四轴同步策略（ArtifactMergeStrategy / ArtifactConflictStrategy / ArtifactReplicaAuthority / ArtifactDeletionSemantics）+ ArtifactSyncPolicyRegistry（未注册 MIME fail-closed）+ 顺序无关确定性冲突回执 ArtifactConflictReceipt + evaluate_artifact_sync / export_replica_revision_bundle / sync_artifact_replica_head（SingleAuthoritativeCell 非权威写入拒绝、QuarantineBothHeads 冲突隔离、TombstoneWithRetention 墓碑因果门控）；仅单机策略求值与本地 head 同步，非跨机 blob 传输或 CRDT 自动合并"
+  title: "C-SYNC-002 / W62-CSYNC-ART + W64-CART-REPLICA：Artifact 按内容类型同步策略、跨 Store 传输包闭环与同步感知 GC 保留守卫"
+  scope: "nlos-artifact 按内容类型声明四轴同步策略（ArtifactMergeStrategy / ArtifactConflictStrategy / ArtifactReplicaAuthority / ArtifactDeletionSemantics）+ ArtifactSyncPolicyRegistry + 顺序无关确定性冲突回执 ArtifactConflictReceipt + 跨 ArtifactStore 内容寻址传输包导出/导入闭环（ArtifactTransferPackage / export_artifact_transfer_package / import_artifact_transfer_package，落盘前 SHA-256 逐字节校验）+ 同步感知孤儿 GC 根保护（ReplicaSyncRetentionSet / collect_orphan_blobs_with_sync_roots 保护冲突隔离头与墓碑保留窗口）；单机多持久库验证，非跨机网络传输或 CRDT 自动合并"
   assurance: H3
-  date: "2026-10-24"
+  date: "2026-10-25"
 - id: c-shard-005-dist-task-conformance
   path: docs/evidence/stage-c/c-shard-005-dist-task-conformance.md
   title: "C-SHARD-005 / W62-CS1A + W63-CS1BC：§26.1 三 Record schema v47 与 DIST-TASK-001/002/004 全语义对齐"
@@ -940,3 +940,27 @@
   scope: "nlos-process ProcessMigrationCoordinator 八步严格有序状态机（Initiated -> Quiesced -> Checkpointed -> SourceFenced -> CapabilitiesRebound -> LeasesRegranted -> TargetRestored -> Completed，产出域分隔 SHA-256 ProcessMigrationReceipt 并强制 target_generation == source_generation + 1）+ DIST-MIGRATE-002 PinnedNonMigratable 驱动会话明确拒绝（RefuseMigration）或显式降级（DowngradeToRestartFromArtifact）；协议层与单机状态机验证，CellHost 跨组件编排留后续切片"
   assurance: H3
   date: "2026-10-24"
+- id: c-fanout-001-hierarchical-fanout-bulkhead
+  path: docs/evidence/stage-c/c-fanout-001-hierarchical-fanout-bulkhead.md
+  title: "C-FANOUT-001 / W64-CFANOUT：层级子组扇出、局部确定性归约与 Merkle 结果根、多轴扇出准入背压与多域舱壁隔离"
+  scope: "nlos-task::fanout HierarchicalFanoutTree 层级子组有界扇出拓扑（拒绝有向环/菱形多父，消除 O(N^2) 全连接）+ DeterministicLocalReducer 顺序无关归约与分歧候选保留 + 二进制 SHA-256 MerkleResultRoot / MerkleInclusionProof + O(B * depth) IncrementalSubgroupCheckpoint（DIST-TASK-003）+ 六维 FanoutUsageLedger 预留与 FIFO WaitingResourceBackpressure（DIST-FANOUT-001）+ BulkheadRegistry 四域独立舱壁与不可侵占 SafetyTcbSystemReserve（DIST-BULKHEAD-001）；库级确定性与压力验证，非跨机网络基准"
+  assurance: H3
+  date: "2026-10-25"
+- id: c-sched-001-three-tier-scheduler-domain
+  path: docs/evidence/stage-c/c-sched-001-three-tier-scheduler-domain.md
+  title: "C-SCHED-001 / W64-CSCHED：三层 Global -> Cell -> Worker SchedulerDomain、有界 WFQ/老化队列、安全工作窃取、Context 亲和放置与跨 Cell 反向背压"
+  scope: "nlos-runtime::scheduler_domain 与 nlos-runtime-tokio::distributed_scheduler ThreeTierScheduler（SCHED-HIER-001 稳态零全局锁本地 Worker 热路径 + SCHED-QUEUE-001 按权重 DRR/饥饿老化/取消纪元围栏/队列自省 + SCHED-STEAL-001 字典序加锁原子窃取与拒绝活跃 EffectPermit/Reservation/DeviceLease 安全门禁 + Context 热缓存亲和路由 + SCHED-BACKPRESSURE-001 Worker->Cell->Global 反向背压传播与跨 Cell 放置卸载）；单进程多线程 Tokio 域验证，非跨机 RPC 调度传输"
+  assurance: H3
+  date: "2026-10-25"
+- id: c-migrate-002-cell-host-process-migration
+  path: docs/evidence/stage-c/c-migrate-002-cell-host-process-migration.md
+  title: "C-MIGRATE-002 / W64-CMIGRATE-HOST：跨 CellHost 真实权威端到端 Process 迁移编排与双 OS 进程联合验证"
+  scope: "nlos-slice-k drive_cell_host_process_migration 八步跨 CellHost 真实权威迁移编排（DIST-MIGRATE-001/002 + LEASE-MIGRATE-001/LEASE-CAPACITY-002/LEASE-DEVICE-001 三族租约先关后授守恒 + Ed25519 签名 Capability 无放大重绑与撤销 + DIST-ART-001 重启镜像副本同步验真 + SourceFenced 后失败自动隔离未决租约 + PMIGRCPT ReconciliationCheckpoint 摘要验真）+ ADR-0018 单机双真实子 OS 进程 7 场景集成矩阵；限定单机双进程与共享文件目录 CellDirectory 拓扑，跨机网络传输与物理内存热迁移保留在 RISK-B-11"
+  assurance: H3
+  date: "2026-10-25"
+- id: c-custody-001-key-custody-gateway-reconciliation
+  path: docs/evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md
+  title: "C-CUSTODY-001 / W64-CCUSTODY：不可导出 KEK 封装签名密钥托管库与执行网关对账权威"
+  scope: "nlos-capability::custody SigningKeyCustodyVault / SqliteCustodyStore（WAL+FULL，KEK 封装 Ed25519 不可导出签名、单调审计日志、纪元轮换与泄露吊销墓碑）+ nlos-commit-coordinator::gateway_reconcile EnforcementGatewayReconciliationAuthority（ADR-0017 R-C->R-B 有界结算，区分 Provisional 与 FinalNonSupersedeable 验签结算回执并驱动 ResourceAuthority / SqliteTaskAuthority 双域收敛）；单机持久库验证，非物理 HSM 硬件隔离"
+  assurance: H3
+  date: "2026-10-25"

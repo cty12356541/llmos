@@ -17,6 +17,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 mod batch_cancel;
 mod channel_wait;
+pub mod distributed_scheduler;
 mod kill_receipt;
 mod metrics;
 mod pump;
@@ -29,6 +30,10 @@ use channel_wait::ChannelWaitRegistry;
 pub use channel_wait::{
     ChannelSequenceWait, ChannelWaitError, DeliveryReport, RearmReport, RearmedChannelWait,
     TokioChannelWakeSink,
+};
+pub use distributed_scheduler::{
+    CellSchedulerDomain, DispatchedWorkItem, GlobalSchedulerDomain, ScheduledWorkItem, StealError,
+    StealReport, ThreeTierScheduler, WorkerDomainConfig, WorkerSchedulerDomain,
 };
 pub use kill_receipt::PlatformKillConsumptionReport;
 pub use pump::{

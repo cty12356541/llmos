@@ -73,10 +73,16 @@ use nlos_cell::{
 use nlos_clock::NowRequest;
 use nlos_driver_mock::{CacheHealth, MockProvider, ProviderCache};
 use nlos_lease::{
-    CapacityLeaseGrant, CapacityLeaseGrantor, DeviceResetReceipt, ExclusiveDeviceLeaseGrant,
-    ExclusiveDeviceLeaseGrantor, LeaseInstant, QuotaLeaseGrant, QuotaLeaseGrantor,
+    CapacityLeaseGrant, CapacityLeaseGrantor, CapacityReconcileError,
+    CapacityReconciliationReceipt, DeviceReconcileError, DeviceReconciliationReceipt,
+    DeviceResetReceipt, ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantor, LeaseInstant,
+    QuotaLeaseGrant, QuotaLeaseGrantor, QuotaReconcileError, QuotaReconciliationReceipt,
 };
-use nlos_process::{MarkProcessTerminatedRequest, ProcessBindingRecord, ProcessTerminalRecord};
+use nlos_process::{
+    MarkProcessTerminatedRequest, ProcessAuthorityError, ProcessBindingRecord,
+    ProcessTerminalRecord, RegisterSupervisorPidRequest, SupervisorPidRegistry,
+    SupervisorPidRegistryError,
+};
 use nlos_runtime_tokio::PumpHealth;
 use nlos_types::{
     CapabilityId, CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, IdempotencyKey,
@@ -174,6 +180,10 @@ pub struct CellHost {
     /// Monotone counter feeding the durable-clock tick keys of heartbeat
     /// and sweep evidence.
     beat_sequence: u64,
+    /// Host OS process identifier claimed by this Cell (`ADR-0018`).
+    os_process_id: u32,
+    /// Generation-fenced `ProcessId` → host OS pid supervisor registry (`W64`).
+    supervisor_pids: SupervisorPidRegistry,
     /// The opt-in federation face: shared-root [`CellDirectory`] plus this
     /// host's monotone registration-heartbeat counter. `None` under the
     /// default (non-federated) opening — zero behavior delta there.
@@ -277,6 +287,8 @@ impl CellHost {
             gateway,
             fence,
             beat_sequence: 0,
+            os_process_id,
+            supervisor_pids: SupervisorPidRegistry::new(),
             federation,
         })
     }
@@ -455,6 +467,73 @@ impl CellHost {
         Ok(self.quota.query(lease_id)?)
     }
 
+    /// Transitions `ISSUED → ACTIVE` on the quota lease sub-ledger against
+    /// the host's current fence (`W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::QuotaLeaseLedgerError`] typed.
+    pub fn activate_quota_lease(
+        &mut self,
+        lease_id: QuotaLeaseId,
+    ) -> SliceKResult<QuotaLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.quota.activate(&fence, lease_id)?)
+    }
+
+    /// Reports monotonic usage high-water on an `ACTIVE` `QuotaLease` against
+    /// the host's current fence (`LEASE-SPEND-001`, `LEASE-REPORT-001`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::QuotaLeaseLedgerError`] typed.
+    pub fn report_quota_usage(
+        &mut self,
+        lease_id: QuotaLeaseId,
+        high_water: u64,
+    ) -> SliceKResult<QuotaLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.quota.report_usage(&fence, lease_id, high_water)?)
+    }
+
+    /// Starts `ACTIVE → CLOSING` drain on a `QuotaLease` against the host's
+    /// current fence without returning funds to `AVAILABLE` (`LEASE-CLOSE-001`,
+    /// `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::QuotaLeaseLedgerError`] typed.
+    pub fn begin_quota_close(&mut self, lease_id: QuotaLeaseId) -> SliceKResult<QuotaLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.quota.begin_close(&fence, lease_id)?)
+    }
+
+    /// Completes `CLOSING → CLOSED` on a `QuotaLease` against the host's
+    /// current fence, returning the unspent remainder once (`LEASE-CLOSE-001`,
+    /// `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::QuotaLeaseLedgerError`] typed.
+    pub fn ack_quota_close(&mut self, lease_id: QuotaLeaseId) -> SliceKResult<QuotaLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.quota.ack_close(&fence, lease_id)?)
+    }
+
+    /// Reconciles a `QUARANTINED` or `FENCED` `QuotaLease` via a verified
+    /// [`QuotaReconciliationReceipt`] (`[LEASE-RECON-001]`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`QuotaReconcileError`] typed.
+    pub fn reconcile_quota_lease(
+        &mut self,
+        receipt: QuotaReconciliationReceipt,
+    ) -> Result<QuotaLeaseGrant, QuotaReconcileError> {
+        let fence = self.fence;
+        self.quota.reconcile(&fence, receipt)
+    }
+
     /// Remaining source pool of the capacity lease sub-ledger (W49).
     #[must_use]
     pub const fn capacity_pool_remaining(&self) -> u64 {
@@ -541,11 +620,68 @@ impl CellHost {
         Ok(self.capacity.ack_return(&fence, capacity_lease_id)?)
     }
 
+    /// Fences a `CapacityLease` (`GLOBAL_RESERVED` / `TARGET_PREPARED` /
+    /// `ACTIVE` / `RETURNING` → `FENCED`) against the host's current fence
+    /// without returning capacity (`[LEASE-CAPACITY-002]`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::CapacityLeaseReturnError`] typed.
+    pub fn fence_capacity_lease(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.capacity.fence_lease(&fence, capacity_lease_id)?)
+    }
+
+    /// Quarantines an unsettled `CapacityLease` (`→ QUARANTINED`) against the
+    /// host's current fence without returning capacity (`[LEASE-CAPACITY-002]`,
+    /// `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::CapacityLeaseReturnError`] typed.
+    pub fn quarantine_capacity_lease(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.capacity.quarantine_lease(&fence, capacity_lease_id)?)
+    }
+
+    /// Reconciles a `FENCED`, `QUARANTINED`, or `RETURNING` `CapacityLease`
+    /// via a verified [`CapacityReconciliationReceipt`] (`[LEASE-CAPACITY-002]`,
+    /// `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CapacityReconcileError`] typed.
+    pub fn reconcile_capacity_lease(
+        &mut self,
+        receipt: CapacityReconciliationReceipt,
+    ) -> Result<CapacityLeaseGrant, CapacityReconcileError> {
+        let fence = self.fence;
+        self.capacity.reconcile(&fence, receipt)
+    }
+
     /// Whether the device lease sub-ledger's `DeviceLeaseHead` is still
     /// FREE (W49).
     #[must_use]
     pub const fn device_head_free(&self) -> bool {
         self.device.is_free()
+    }
+
+    /// Device identity managed by this host's exclusive device sub-ledger (`W64`).
+    #[must_use]
+    pub const fn device_id(&self) -> DeviceId {
+        self.device.device_id()
+    }
+
+    /// Current `reset_generation` held by the `DeviceLeaseHead` (`W64`).
+    #[must_use]
+    pub const fn device_reset_generation(&self) -> Generation {
+        self.device.reset_generation()
     }
 
     /// Grants an `ExclusiveDeviceLease` against the host's current fence
@@ -627,6 +763,52 @@ impl CellHost {
     ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
         let fence = self.fence;
         Ok(self.device.submit_reset_receipt(&fence, receipt)?)
+    }
+
+    /// Fences an `ExclusiveDeviceLease` (`DEVICE_RESERVED` / `RESETTING` →
+    /// `FENCING`) against the host's current fence while keeping the head
+    /// occupied (`[LEASE-DEVICE-001]`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::ExclusiveDeviceLeaseReturnError`] typed.
+    pub fn fence_device_lease(
+        &mut self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.device.fence_lease(&fence, device_lease_id)?)
+    }
+
+    /// Quarantines an unsettled `ExclusiveDeviceLease` (`→ QUARANTINED`)
+    /// against the host's current fence while keeping the head occupied
+    /// (`[LEASE-DEVICE-001]`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::ExclusiveDeviceLeaseReturnError`] typed.
+    pub fn quarantine_device_lease(
+        &mut self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.device.quarantine_lease(&fence, device_lease_id)?)
+    }
+
+    /// Reconciles a `QUARANTINED`, `FENCING`, or `RESETTING`
+    /// `ExclusiveDeviceLease` via a verified [`DeviceReconciliationReceipt`],
+    /// clearing the head back to `FREE` and bumping `reset_generation`
+    /// (`[LEASE-DEVICE-001]`, `W64`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DeviceReconcileError`] typed.
+    pub fn reconcile_device_lease(
+        &mut self,
+        receipt: DeviceReconciliationReceipt,
+    ) -> Result<ExclusiveDeviceLeaseGrant, DeviceReconcileError> {
+        let fence = self.fence;
+        self.device.reconcile(&fence, receipt)
     }
 
     /// The explicit epoch-advance entry — the single-initiator broadcast
@@ -737,18 +919,31 @@ impl CellHost {
         Ok(self.cache.invalidate(path, through)?)
     }
 
+    /// Host OS process identifier claimed by this [`CellHost`] (`ADR-0018`).
+    #[must_use]
+    pub const fn os_process_id(&self) -> u32 {
+        self.os_process_id
+    }
+
+    /// Generation-fenced `ProcessId` → host OS pid supervisor registry (`W64`).
+    #[must_use]
+    pub const fn supervisor_pids(&self) -> &SupervisorPidRegistry {
+        &self.supervisor_pids
+    }
+
     /// Spawns (or replays) the delegated process of one attempt through the
-    /// wrapped runtime's supervisor face, and reports the registration to
-    /// the failure detector as liveness evidence — the minimal heartbeat
-    /// wiring: *registration observed = heartbeat*. A replayed
-    /// registration is a fresh registration call and therefore fresh
-    /// evidence.
+    /// wrapped runtime's supervisor face, registers `(process_id, generation)`
+    /// in the host's [`SupervisorPidRegistry`], and reports the registration
+    /// to the failure detector as liveness evidence — the minimal heartbeat
+    /// wiring: *registration observed = heartbeat*. A replayed registration is
+    /// a fresh registration call and therefore fresh evidence.
     ///
     /// # Errors
     ///
-    /// Propagates the process authority's fail-closed refusals and clock
-    /// errors; the heartbeat itself can refuse only on logical-clock
-    /// regression (typed [`SliceKError::FailureDetector`]).
+    /// Propagates the process authority's fail-closed refusals, supervisor pid
+    /// registry fence errors, and clock errors; the heartbeat itself can
+    /// refuse only on logical-clock regression (typed
+    /// [`SliceKError::FailureDetector`]).
     pub fn spawn_monitored_process(
         &mut self,
         seed: u8,
@@ -759,8 +954,52 @@ impl CellHost {
         let binding =
             self.runtime
                 .materialize_process(seed, task_id, task_attempt_id, attempt_generation)?;
+        self.supervisor_pids
+            .register(RegisterSupervisorPidRequest {
+                process_id: binding.process_id,
+                process_generation: binding.process_generation,
+                os_pid: self.os_process_id,
+                registered_at_ms: binding.created_at_ms,
+            })?;
         self.record_process_heartbeat(binding.process_id)?;
         Ok(binding)
+    }
+
+    /// Records one generation-fenced heartbeat for `(process_id, expected_generation)`
+    /// (`W64`): verifies that `(process_id, expected_generation)` is both the
+    /// active binding in `ProcessAuthority` and currently registered in
+    /// [`Self::supervisor_pids`] before recording detector liveness evidence.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if the binding is terminal, missing, at a different
+    /// generation, unregistered in [`Self::supervisor_pids`], or already
+    /// judged dead by the [`FailureDetector`].
+    pub fn record_fenced_process_heartbeat(
+        &mut self,
+        process_id: ProcessId,
+        expected_generation: Generation,
+    ) -> SliceKResult<HeartbeatOutcome> {
+        let active = self
+            .runtime
+            .process
+            .inspect_active_process_binding(process_id)?;
+        if active.process_generation != expected_generation {
+            return Err(SliceKError::Process(
+                ProcessAuthorityError::StaleProcessBinding,
+            ));
+        }
+        let entry = self.supervisor_pids.lookup(process_id)?;
+        if entry.process_generation != expected_generation {
+            return Err(SliceKError::SupervisorPid(
+                SupervisorPidRegistryError::StaleProcessGeneration {
+                    process_id,
+                    current: entry.process_generation,
+                    presented: expected_generation,
+                },
+            ));
+        }
+        self.record_process_heartbeat(process_id)
     }
 
     /// Records one heartbeat for a process subject at a fresh durable-clock
@@ -795,15 +1034,17 @@ impl CellHost {
     }
 
     /// Marks the process binding cleanly terminated through the supervisor
-    /// face. **No heartbeat is recorded** — a terminal observation is not
-    /// liveness evidence; silence starts (or continues) and the detector's
-    /// own sweep escalates it. Replaying the same marking is idempotent and
-    /// equally heartbeat-free.
+    /// face and unregisters `(process_id, generation)` from
+    /// [`Self::supervisor_pids`]. **No heartbeat is recorded** — a terminal
+    /// observation is not liveness evidence; silence starts (or continues) and
+    /// the detector's own sweep escalates it. Replaying the same marking is
+    /// idempotent and equally heartbeat-free.
     ///
     /// # Errors
     ///
     /// Propagates the process authority's fail-closed refusals (stale
-    /// fence, idempotency conflict) and clock errors.
+    /// fence, idempotency conflict), supervisor pid registry fence errors,
+    /// and clock errors.
     pub fn terminate_monitored_process(
         &mut self,
         binding: &ProcessBindingRecord,
@@ -812,7 +1053,7 @@ impl CellHost {
         let marked_at_ms = self
             .runtime
             .wall_now_ms(seeded_key(seed, TERMINATE_WALL_KEY_OFFSET))?;
-        Ok(self
+        let record = self
             .runtime
             .process
             .mark_process_terminated(MarkProcessTerminatedRequest {
@@ -823,7 +1064,11 @@ impl CellHost {
                 marked_at_ms,
             })?
             .record()
-            .clone())
+            .clone();
+        let _ = self
+            .supervisor_pids
+            .unregister(binding.process_id, binding.process_generation)?;
+        Ok(record)
     }
 
     /// The seven-piece assembly inspect: one live fact per piece, straight
