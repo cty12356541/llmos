@@ -86,30 +86,30 @@ Application（应用）⊇ Process（进程）⊇ AgentInstance（Agent 实例�
 |---|---|---|
 | **Stage A** | 引导微内核 | ✅ 完成 |
 | **Stage B** | 单机应用平台 | ✅ 完成（2026-09-21）— 1,536 个测试全部通过 |
-| **Stage C** | 分布式现代系统 | 🔨 进行中 |
+| **Stage C** | 分布式现代系统 | ✅ 技术完成 — 1,922+ 测试通过，等待正式退出批准 |
 | **Stage D** | 完整 NL 桌面 | 📋 规划中（与 C 并行） |
 | **Stage E** | 兼容性与生态 | 📋 规划中 |
 
-**Stage C 工作包：**
+**Stage C 工作包（全部在 [ADR-0018](docs/management/adrs/0018-single-host-multiprocess-dual-cell-topology.md) 单主机多进程拓扑下验证）：**
 
-| 工作包 | 状态 |
-|---|---|
-| C-CELL — Cell 权威与联邦 | 🟡 部分完成 |
-| C-LEASE — 配额 / 容量 / 设备 Lease | 🟡 部分完成 |
-| C-SYNC — 跨库事件与制品同步 | 🟡 部分完成 |
-| C-SHARD — 跨 Cell 分片（Phase 0+1 已验证） | 🟡 部分完成 |
-| C-MIGRATE — 进程迁移协议 | 🟡 部分完成 |
-| C-FANOUT — 分布式 Topic 扇出 | 🟡 部分完成 |
-| C-SCHED — 分布式调度器 | 🟡 部分完成 |
-| C-PARTITION — 分区容错 | 🔴 未开始 |
-| C-BENCH — 规模基准测试 | 🔴 未开始 |
+| 工作包 | 状态 | 亮点 |
+|---|---|---|
+| C-CELL — Cell 权威与联邦 | ✅ 已验证 | 七件套装配，分区自治门 |
+| C-LEASE — 配额 / 容量 / 设备 Lease | ✅ 已验证 | 三族持久状态机，对账回执 |
+| C-SYNC — 跨库事件与制品同步 | ✅ 已验证 | 签名事件集合并，向量检查点，制品传输 |
+| C-SHARD — TaskAuthority 分片 | ✅ 已验证 | Phase 0+1 完成，Schema v47，生产接管绑定 |
+| C-FANOUT — 层级扇出与舱壁 | ✅ 已验证 | Merkle 结果根，6 维准入，4 域舱壁 |
+| C-MIGRATE — 进程迁移协议 | ✅ 已验证 | 8 步协议，跨 CellHost 双进程端到端 |
+| C-SCHED — 三层调度器 | ✅ 已验证 | 零全局锁热路径，DRR，工作窃取 |
+| C-PARTITION — 分区容错 | ✅ 已验证 | 有界损耗证明，四阶段重连收敛 |
+| C-BENCH — 分布式基准测试 | ✅ 已验证 | 4.44x 线性扩展 (1→8 Cell)，p50=84µs @100K，5 类故障覆盖 |
 
 ---
 
 ## 仓库结构
 
 ```
-crates/          36 个 Rust 库/二进制 crate
+crates/          35 个 Rust 库/二进制 crate
   nlos-types/      标称身份类型（零依赖）
   nlos-identity/   Principal 与密钥权威（Ed25519）
   nlos-capability/ Capability 颁发、衰减、撤销
@@ -121,16 +121,16 @@ crates/          36 个 Rust 库/二进制 crate
   nlos-lease/      分布式 Lease 权威（Stage C）
   nlos-slice-k/    端到端集成切片（Package→Task→Fiber→Artifact）
   nlos-package/    CLI：keygen · build · verify · install · run
-  ...（还有 25 个）
+  ...（还有 24 个）
 
 desktop/         Tauri 桌面应用（TypeScript + Rust）
 docs/
   design/          架构规范（v0.5，278 KB，200+ 需求 ID）
   discussions/     36 篇设计讨论（哲学 → 分布式内核）
   management/
-    adrs/          23 份架构决策记录（ADR）
-    evidence-index.yaml   150+ 条证据条目（H0–H8 等级）
-    claims.yaml    机器可读的 Claim 注册表
+    adrs/          24 份架构决策记录（ADR）
+    evidence-index.yaml   169 条证据条目（H0–H8 等级）
+    claims.yaml    101 条机器可读 Claim（71 条 Stage B + 30 条 Stage C）
 sdk/             Python · TypeScript · Go · C# SDK
 schema/          Protobuf + CDDL schema + 金色测试向量
 experiments/     8 个 Python/Rust 设计实验

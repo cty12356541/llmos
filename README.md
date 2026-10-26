@@ -86,30 +86,30 @@ One OS process = one Cell. Cells federate via signed event sets. Processes can m
 |---|---|---|
 | **Stage A** | Bootstrap microkernel | ✅ Done |
 | **Stage B** | Single-machine application platform | ✅ Done (2026-09-21) — 1,536 tests passed |
-| **Stage C** | Distributed modern system | 🔨 In Progress |
+| **Stage C** | Distributed modern system | ✅ Technically complete — 1,922+ tests, awaiting formal exit approval |
 | **Stage D** | Complete NL desktop | 📋 Planned (parallel with C) |
 | **Stage E** | Compatibility & ecosystem | 📋 Planned |
 
-**Stage C work packages:**
+**Stage C work packages (all verified within [ADR-0018](docs/management/adrs/0018-single-host-multiprocess-dual-cell-topology.md) single-host multi-process topology):**
 
-| Package | Status |
-|---|---|
-| C-CELL — Cell authority & federation | 🟡 Partial |
-| C-LEASE — Quota / Capacity / Device leases | 🟡 Partial |
-| C-SYNC — Cross-library event & artifact sync | 🟡 Partial |
-| C-SHARD — Cross-Cell sharding (Phase 0+1 verified) | 🟡 Partial |
-| C-MIGRATE — Process migration protocol | 🟡 Partial |
-| C-FANOUT — Distributed topic fanout | 🟡 Partial |
-| C-SCHED — Distributed scheduler | 🟡 Partial |
-| C-PARTITION — Partition tolerance | 🔴 Not started |
-| C-BENCH — Scale benchmarks | 🔴 Not started |
+| Package | Status | Highlights |
+|---|---|---|
+| C-CELL — Cell authority & federation | ✅ Verified | 7-piece local assembly, partition autonomy gate |
+| C-LEASE — Quota / Capacity / Device leases | ✅ Verified | 3-family durable state machines, reconciliation receipts |
+| C-SYNC — Cross-library event & artifact sync | ✅ Verified | Signed event set merge, vector checkpoints, artifact transfer |
+| C-SHARD — TaskAuthority sharding | ✅ Verified | Phase 0+1 complete, schema v47, production takeover binding |
+| C-FANOUT — Hierarchical fanout & bulkhead | ✅ Verified | Merkle result root, 6-dim admission, 4-domain bulkhead |
+| C-MIGRATE — Process migration protocol | ✅ Verified | 8-step protocol, cross-CellHost dual-process e2e |
+| C-SCHED — Three-tier scheduler | ✅ Verified | Zero-global-lock hot path, DRR, work stealing |
+| C-PARTITION — Partition tolerance | ✅ Verified | Bounded-loss proof, 4-stage reconnection convergence |
+| C-BENCH — Distributed benchmarks | ✅ Verified | 4.44x scaling (1→8 cells), p50=84µs @100K, 5 fault categories |
 
 ---
 
 ## Repository layout
 
 ```
-crates/          36 Rust library/binary crates
+crates/          35 Rust library/binary crates
   nlos-types/      Nominal identity types (zero deps)
   nlos-identity/   Principal & key authority (Ed25519)
   nlos-capability/ Capability issue, attenuation, revocation
@@ -121,16 +121,16 @@ crates/          36 Rust library/binary crates
   nlos-lease/      Distributed lease authority (Stage C)
   nlos-slice-k/    End-to-end integration slice (Package→Task→Fiber→Artifact)
   nlos-package/    CLI: keygen · build · verify · install · run
-  ... (27 more)
+  ... (24 more)
 
 desktop/         Tauri desktop application (TypeScript + Rust)
 docs/
   design/          Architecture spec (v0.5, 278 KB, 200+ requirement IDs)
   discussions/     36 design discussions (philosophy → distributed kernel)
   management/
-    adrs/          23 Architecture Decision Records
-    evidence-index.yaml   150+ evidence entries (H0–H8 levels)
-    claims.yaml    Machine-readable claims registry
+    adrs/          24 Architecture Decision Records
+    evidence-index.yaml   169 evidence entries (H0–H8 levels)
+    claims.yaml    101 machine-readable claims (71 Stage B + 30 Stage C)
 sdk/             Python · TypeScript · Go · C# SDKs
 schema/          Protobuf + CDDL schemas + golden test vectors
 experiments/     8 Python/Rust design experiments
