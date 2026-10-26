@@ -187,9 +187,9 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 ## 11.4 阶段 D 管理入口（完整自然语言桌面，与阶段 C 跨机收官并行活跃）
 
-- 阶段 D 权威进度单与双轨并行编排：[stage-d-progress.md](./stage-d-progress.md)（2026-10-26 `W68` 依维护者裁定 A1–A4 正式开立，当前状态 `IN_PROGRESS / NOT EXITED`；全量映射 [v0.5 §28.4](../design/06-架构设计总纲-v0.5.md) 七大交付物与退出门 `[ROAD-D-001]`，定义 `D-core` 八大工作包 `D-TOKENS-KIT` / `D-IPC-ENUM` / `D-COMPOSITOR-WM` / `D-OMNIBAR-MULTIMODAL` / `D-TRUSTED-UI` / `D-TASK-SPACE-DAG` / `D-NOTIFY-SEARCH-OFFLINE` / `D-CONTROL-SETTINGS-A11Y`，并编排 `W69 → W74` 与阶段 C `C-XHOST` 100% 写集互斥双轨并行波次；当前各包均为 `DESIGN / NOT_STARTED`）
-- 混合自然语言桌面合成层、双模透视与可信 UI 防伪边界：[ADR-0025](./adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)（`ACCEPTED`，2026-10-26 裁定 A1–A3，`DESIGN` 级，`ACCEPTED ≠ VERIFIED`：确立 `Z0–Z4` 五平面合成隔离、不可遮挡 `Z4` 安全幕布 + Gerono `∞` 防伪印章、`ADR-0011` 单一控制脊柱与 `Consumer Clean <-> Expert X-Ray` 单存储双模切换）
-- 阶段 D 完整自然语言桌面视觉与交互设计规格：[2026-10-26-stage-d-desktop-visual-and-ux-design.md](../superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md)（`DESIGN` only：承接并演进 [站点设计系统 v10.6](../site/DESIGN.md) `Abyssal Glacier (#030710 + #7FC8FF)` 与内建 `Daylight Glacier (#F2FAFF + #006DDD)` 双主题 Token、§25.4 全部 18 类桌面系统对象交互契约及闭合 `TASK_SPACE_GAPS` 的 `IPC-D1..D5` 规范）
+- 阶段 D 权威进度单与双轨并行编排：[stage-d-progress.md](./stage-d-progress.md)（2026-10-26 `W68` 开立并于 `W68-R1` 依维护者去 AI 味裁定修订，当前状态 `IN_PROGRESS / NOT EXITED`；全量映射 [v0.5 §28.4](../design/06-架构设计总纲-v0.5.md) 七大交付物与退出门 `[ROAD-D-001]`，定义 `D-core` 八大工作包 `D-TOKENS-KIT` / `D-IPC-ENUM` / `D-COMPOSITOR-WM` / `D-OMNIBAR-MULTIMODAL` / `D-TRUSTED-UI` / `D-TASK-SPACE-DAG` / `D-NOTIFY-SEARCH-OFFLINE` / `D-CONTROL-SETTINGS-A11Y`，并编排 `W69 → W74` 与阶段 C `C-XHOST` 100% 写集互斥双轨并行波次；当前各包均为 `DESIGN / NOT_STARTED`）
+- 工业工作站桌面合成层、平铺窗口管理、双模透视与可信 UI 防伪边界：[ADR-0025](./adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)（`ACCEPTED`，2026-10-26 `W68` 定案并经 `W68-R1` 修订 1，`DESIGN` 级，`ACCEPTED ≠ VERIFIED`：确立 `Z0–Z4` 五平面合成隔离、窗口平铺优先 + 底部紧凑任务栏 + `Ctrl+Space` 按需呼出命令面板、实心零光晕 `Z4` 系统安全确认框 + 单色硬件波形防伪章、`ADR-0011` 单一控制脊柱与默认零术语 / `诊断透视` 双模切换）
+- 阶段 D 完整自然语言桌面视觉与交互设计规格：[2026-10-26-stage-d-desktop-visual-and-ux-design.md](../superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md)（`DESIGN` only，`W68-R1` 工业工作站修订版：采用类 Windows 11 专业版 / Zed IDE 的实心中性 `Graphite (#111214/#18191C)` 与 `Paper (#E5E7EB/#FFFFFF)` 双主题、`4–6px` 锐利边角、零毛玻璃零发光零 Emoji 零彩虹胶囊纪律、§25.4 全部 18 类桌面系统对象交互契约及闭合 `TASK_SPACE_GAPS` 的 `IPC-D1..D5` 规范）
 - 规范路线：[v0.5 第 28.4 节](../design/06-架构设计总纲-v0.5.md)（`[ROAD-D-001]`）
 
 ## 11.5 阶段 C 管理入口（单机多进程域已齐备，跨物理主机收官并行活跃）

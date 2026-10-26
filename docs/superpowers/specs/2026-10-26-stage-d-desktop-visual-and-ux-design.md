@@ -1,524 +1,374 @@
-# 阶段 D 完整自然语言桌面视觉系统与交互架构设计规格（Glacier Hybrid Desktop Specification）
+# 阶段 D 完整自然语言桌面视觉系统与交互架构设计规格（Graphite / Paper Industrial Workstation Specification）
 
 - **日期**: 2026-10-26
 - **状态**: `DESIGN` only（本文件为阶段 D 实现车道的权威视觉与交互工程蓝图；无阶段 D 新产品代码、无阶段 D 验证 Evidence、不改写当前规范正文。在各 `D-*` 工作包合入并产出可复现测试证据前，严禁将本文件中的任何能力声称为“已实现”或“生产可用”）
-- **波次**: `W68-D-VISUAL-UX-SPEC`（Task `W68-D-VISUAL-UX-SPEC`, Attempt 1）
-- **写集**: 本文件与同车道架构决策 [ADR-0025](../../management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)
+- **波次与修订**:
+  - `初版`: `W68-D-VISUAL-UX-SPEC`（2026-10-26）
+  - `修订 1（当前生效权威基线）`: `2026-10-26 W68-R1`（Task `W68R1-WORKSTATION-SPEC`, Attempt 1）——经维护者检视初版原型后显式驳回“AI 生成式科幻毛玻璃仪表盘”风格，全面重构并锁定为 **中性工业工作站（Neutral Industrial Workstation：`Graphite Workstation` 默认深色 + `Paper Workstation` 内建浅色，对标 Windows 11 Pro / Zed IDE 工程标准）**、**平铺优先多窗口工作区 + `36px` 底部紧凑任务栏 + `Ctrl+Space` 按需唤起命令/意图面板** 与 **UAC / Polkit 工作站级实心 `Z4` 系统安全确认屏**。
+- **写集**: 本文件、同车道架构决策 [ADR-0025](../../management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md) 与权威进度单 [stage-d-progress.md](../../management/stage-d-progress.md)
 - **权威输入与规范依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md)：§24（Intent 编译、`TaskPlan` 惰性物化与手工改图、`Trusted UI`、`ActionReceipt` 与撤销契约）、§25（`Task Space` 状态机、10 层手动调度 `ControlCommand`、§25.4 完整桌面 18 类系统对象与生命周期）、§14/§19（`[CONS-DECL-001]`、`[CONS-CTRL-001]` 非权威搜索边界）、§28.4（阶段 D 必交清单与退出门 `[ROAD-D-001]`）
-  - [ADR-0025：阶段 D 混合自然语言桌面合成层、双模透视与可信 UI 防伪边界](../../management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)（维护者裁定 A1–A3 正式架构定案）
+  - [ADR-0025：阶段 D 混合自然语言桌面合成层、双模透视与可信 UI 防伪边界（含 `W68-R1` 修订 1）](../../management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)
   - [ADR-0026：跨物理机传输与控制面共识扩展](../../management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)（维护者裁定 A4：`Stage D || C-XHOST` 并行推进时的跨主机 Cell 拓扑健康与断连自治衔接）
-  - [NLOS 站点设计系统 v10.6（`docs/site/DESIGN.md`）](../../site/DESIGN.md)（实测色彩、液态玻璃、轻字重排版、等宽工程纹理、细线流场与 Gerono 双纽线 `∞` 视觉契约）
+  - [NLOS 站点设计系统 v10.6（`docs/site/DESIGN.md`）](../../site/DESIGN.md)（**显式分叉说明**：该文件仅约束外部营销门户网站的 30 秒高反差叙事；阶段 D 桌面 OS 面向每日连续 10 小时生产力办公，依 `ADR-0025` 修订 1 独立采用零眩光中性工业工作站体系，严禁反向混用站点黑藏青发光冰蓝与液态玻璃样式）
   - [阶段 D 权威进度单（`docs/management/stage-d-progress.md`）](../../management/stage-d-progress.md)（工作包切分、波次依赖与退出门验收）
   - 既有桌面壳实现基线：[`desktop/README.md`](../../../desktop/README.md)、[`desktop/src/views/task-space/index.ts`](../../../desktop/src/views/task-space/index.ts)、[`desktop/src-tauri/src/lib.rs`](../../../desktop/src-tauri/src/lib.rs)、[`desktop/src-tauri/src/window_lifecycle.rs`](../../../desktop/src-tauri/src/window_lifecycle.rs)、[`crates/nlos-search/src/lib.rs`](../../../crates/nlos-search/src/lib.rs)
 
 ---
 
-## 0. 治理边界与实现前置门（Governance & Waiting Gates）
+## 0. 治理边界、实现前置门与「反 AI 塑料感」工程纪律
 
-根据维护者裁定 **A1–A4** 与 [渐进式披露规则](../../management/project-knowledge-progressive-disclosure.md)：
+根据维护者裁定 **A1–A4**、**`W68-R1` 视觉与空间纠偏裁定** 及 [渐进式披露规则](../../management/project-knowledge-progressive-disclosure.md)：
 
-1. **并行推进纪律（`Stage D || C-XHOST`）**：阶段 D 桌面工作包与阶段 C 跨物理主机扩展（`C-XHOST`，[ADR-0026](../../management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)）并行开发，互不阻塞单机本地自治主链（`[DUI-OFFLINE-001]`）；涉及多物理机 `Cell` 拓扑观测的徽标在本地单机配置下诚实显示 `LOCAL_SINGLE_NODE`，接入多 Cell 后自动投影分片与租约水位。
+1. **并行推进纪律（`Stage D || C-XHOST`）**：阶段 D 桌面工作包与阶段 C 跨物理主机扩展（`C-XHOST`，[ADR-0026](../../management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)）并行开发，互不阻塞单机本地自治主链（`[DUI-OFFLINE-001]`）；涉及多物理机 `Cell` 拓扑观测的指示器在单机配置下诚实显示“本地就绪”（诊断视图显示 `LOCAL_SINGLE_NODE`），接入多 Cell 后自动投影分片与租约水位。
 2. **零向后破坏原则**：重构 [`desktop/`](../../../desktop/README.md) 前端与 Tauri 后端时，阶段 B/C 已落地的认证读/写/成本/指标/表面集成测试（`W32-A..F`、`W33-F`、`W39-D`）及 GUI↔CLI `receipt_hex` 字节级等价探针必须保持 100% 绿灯。
-3. **诚实分级纪律**：凡依赖 `D-IPC-ENUM` 新增只读枚举/订阅 IPC 面的视图模块，在对应后端 IPC 命令合入前严禁在前端伪造模拟数据；未接线能力一律渲染类型化缺口状态卡。
+3. **诚实分级纪律**：凡依赖 `D-IPC-ENUM` 新增只读枚举/订阅 IPC 面的视图模块，在对应后端 IPC 命令合入前严禁在前端伪造模拟数据；未接线能力一律渲染类型化缺口状态行。
+
+### 0.1 反 AI 套路工程纪律检查表（Anti-AI-Tropes Engineering Discipline — 强制阻断门禁）
+
+为彻底清除“AI 生成概念仪表盘”塑料感，所有 `desktop/src/` 样式、模板与组件必须同时通过以下 **7 条硬性工程禁令**（纳入 `D-TOKENS-KIT` 单测与 `D-GATE-006` 自动化门禁，任一违反即判定验收失败）：
+
+| 编号 | 严令封禁的“AI 味”反模式（Banned Anti-Patterns） | 强制执行的工业工作站标准（Mandatory Workstation Standard） | 自动化静态/DOM 审计断言 |
+|---|---|---|---|
+| **ANTI-AI-01** | 黑底发光青蓝科幻控制台风（`#030710` + `#7FC8FF` 发光标题/外框）、背景 `48px/56px` 科技方格网、环境径向发光色斑（radial glow blobs）、`0 0 28px` 霓虹发光阴影 | 采用中性无色偏石墨灰（`Graphite`）与纸白（`Paper`）实心表面；单一功能蓝（`#2563EB` / `#3B82F6` / `#1D4ED8`）**仅限焦点环、主按钮与 `2px` 激活指示条**，严禁彩色发光标题或霓虹光晕 | 扫描 `desktop/src/**/*.css` 零 `#030710`、零 `#7fc8ff`、零背景网格渐变、零彩色扩散 `box-shadow` |
+| **ANTI-AI-02** | `backdrop-filter: blur(...)` 毛玻璃/液态玻璃折射炫技与半透明叠加眩光 | 所有桌面面板、任务栏、窗口、弹出菜单、命令面板与 `Z4` 授权框一律使用 **100% 实心不透明中性表面**，仅以锐利 `1px` 结构分割细线（hairline border）界定层级 | 扫描 `desktop/src/**/*.css` 断言 `backdrop-filter` 与 `-webkit-backdrop-filter` 出现次数严格为 `0` |
+| **ANTI-AI-03** | SaaS 网页式居中双列大卡片墙（`max-w-7xl` 卡片流）与屏幕顶部常驻展开的巨型 AI Prompt Box | 默认采用边对边 `4px` 间隙**平铺优先多窗口工作区** + Zed 风格停靠式高密度表格 `Task Space`；命令与自然语言面板默认隐藏，仅由底部 `26px` 紧凑触发槽或 `Ctrl+Space` 按需居中唤起 | 默认工作区视口纵向高度 `calc(100vh - 36px)`，零顶置常驻大输入框，零 `max-w-7xl` 居中卡片容器 |
+| **ANTI-AI-04** | `12px–16px` 大圆角卡片或 `999px` 浮夸胶囊气泡 | 严格锁死三档工业几何圆角：**`0px`**（底部 `36px` 任务栏、平铺分割面板）、**`4px`**（按钮、输入框、分段控件、标签页、状态标签、命令面板）、**上限 `6px`**（可选浮动窗口与 `Z4` 模态对话框） | CSS token 与内联样式中一切 `border-radius` 取值严格属于 `{0px, 2px, 4px, 6px}`（仅 `6px` 圆形几何状态点允许 `50%`） |
+| **ANTI-AI-05** | 在按钮、状态栏、通知或空状态中使用任何卡通 Emoji 字符图标 | 全局 100% 采用 `1.25px–1.5px` 均匀线宽、`14×14px` / `16×16px` 像素对齐的单色几何 SVG 描边图标（`stroke="currentColor"`，`fill="none"`） | 词条目录 `zh-CN.ts`/`en-US.ts` 与全部 `.ts`/`.html` 源码通过 Unicode Extended_Pictographic 正则零命中扫描 |
+| **ANTI-AI-06** | 彩虹多色相状态徽章（琥珀/紫/橙/薄荷绿/天蓝彩色胶囊混排） | 常规状态一律采用中性单色文本 + 微型 `6px` 几何 SVG 状态指示符；仅保留克制琥珀色（`#D97706`）**专用于需用户介入确认/输入**，克制深绯红（`#DC2626`）**专用于失败 / 不可逆高危警告** | 状态组件仅消费中性色与 `--nlos-signal-action` / `--nlos-signal-danger` 两枚受控警示 token |
+| **ANTI-AI-07** | 在默认普通用户视图（`[ROAD-D-001]`）直接暴露内部架构行话（`Z1`、`TypedIntent`、`0x1F`、`Quota`、`ROAD-D-001`、`ADR-0011`、`TaskAttempt`、`ExecutionFiber`、`receipt_hex`） | 默认 **Standard Workstation View** 100% 使用日常清晰办公语言；全部底层拓扑 ID、13 态 DAG 节点/Attempt/Fiber 泳道与 `receipt_hex` **仅在开启 Diagnostic / Expert View（`Ctrl/⌘ + Shift + E`）时渲染** | E2E 测试在 `data-nlos-view-mode="standard"` 下抓取全屏可见 `innerText`，断言架构黑名单术语零出现 |
 
 ---
 
-## 1. Glacier 双主题设计 Token 契约（`--nlos-*` CSS Custom Properties）
+## 1. `Graphite / Paper` 工业工作站双主题设计 Token 契约（`--nlos-*` CSS Custom Properties）
 
-阶段 D 桌面完整继承并演进 [`docs/site/DESIGN.md`](../../site/DESIGN.md) v10.6 的 **“极暗藏青底 + 单一冰蓝主轴 + 高透液态玻璃 + 300 轻字重展示标题 + ≥12px 等宽工程纹理 + 零装饰性渐变”** 美学体系，建立默认深色 **`Abyssal Glacier`** 与内建浅色 **`Daylight Glacier`** 双套完备 Token。
+阶段 D 桌面确立默认深色 **`Graphite Workstation`** 与内建浅色 **`Paper Workstation`** 双套完备实心工业工作站 Token，对标 Windows 11 Pro 工作站与 Zed IDE 的零眩光长时可读性标准。
 
-### 1.1 色彩、表面、液态玻璃与阴影完整 CSS 变量表
+### 1.1 表面、结构细线、排版墨色与受控功能色完整 CSS 变量表
 
 以下契约直接对应 `D-TOKENS-KIT` 工作包产出的 `desktop/src/styles/tokens.css`：
 
 ```css
 /* ==========================================================================
-   NLOS Desktop Design System v1.0 — Glacier Dual-Theme Token Contract
-   Source Authority: docs/site/DESIGN.md v10.6 + ADR-0025
-   Strict Rule: ZERO decorative purple/teal/rainbow gradients.
-   Monospace floor: >= 12px (0.75rem) across all viewports.
+   NLOS Desktop Design System v2.0 (W68-R1) — Neutral Industrial Workstation
+   Authority: ADR-0025 Revision 1 + Stage D Desktop Visual & UX Spec
+   Hard Bans:
+     - ZERO backdrop-filter / frosted glass / liquid glass
+     - ZERO cyan neon glow, radial blobs, or background tech grids
+     - ZERO border-radius > 6px (0px taskbar/tiles, 4px controls, 6px float/dialog)
+     - ZERO rainbow status pills or cartoon emojis
    ========================================================================== */
 
 :root,
-[data-nlos-theme="abyssal-glacier"] {
+[data-nlos-theme="graphite-workstation"] {
   color-scheme: dark;
 
-  /* ---- 1. 画布与表面层级 (Surfaces & Canvas) ---- */
-  --nlos-bg-canvas: #030710;                 /* Z0 极暗藏青主底色 (实测 rgb(3,7,16)) */
-  --nlos-bg-band: #0d1322;                   /* Z1/Z3 次级区块带 (实测 rgb(13,19,34)) */
-  --nlos-surface-1: #0a1220;                 /* 基础实心容器面 */
-  --nlos-surface-2: #0d1626;                 /* 悬浮面板/二级容器面 */
-  --nlos-surface-3: #161f34;                 /* 交互激活/表头/代码块底面 */
-  --nlos-scrim-z4: rgba(3, 7, 16, 0.82);     /* Z4 安全幕布遮罩底 */
+  /* ---- 1. 100% 实心不透明中性工作站表面 (Solid Opaque Neutral Surfaces) ---- */
+  --nlos-bg-backdrop: #111214;               /* Z0 工作区底层底板 / 4px 平铺分割槽底色 */
+  --nlos-bg-window: #18191c;                 /* Z2 应用窗口画布 / Z1 任务表格主画布 */
+  --nlos-bg-chrome: #1e2024;                 /* 面板头 / 30px 窗口标题栏 / 36px 底部任务栏 */
+  --nlos-bg-elevated: #23252a;               /* 悬浮菜单 / Ctrl+Space 命令面板 / 托盘浮层 / Z4 安全对话框 */
+  --nlos-bg-hover: #2a2d33;                  /* 列表行、标签页与工具按钮悬停态 */
+  --nlos-bg-active-row: #252830;             /* 表格选中行实心底色 */
+  --nlos-bg-recessed: #111214;               /* 输入框内槽与 Z4 32x20 硬件防伪印章凹槽 */
+  --nlos-scrim-z4: rgba(10, 11, 13, 0.78);   /* Z4 不可遮挡安全确认屏实心暗化幕布 (零模糊) */
 
-  /* ---- 2. 液态玻璃材质 (Liquid Glass: tint alpha <= 0.07) ---- */
-  --nlos-glass-bg:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.042),
-      rgba(255, 255, 255, 0.014) 42%,
-      rgba(255, 255, 255, 0) 60%
-    ),
-    rgba(214, 238, 255, 0.032);
-  --nlos-glass-bg-strong:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.060),
-      rgba(255, 255, 255, 0.020) 42%,
-      rgba(255, 255, 255, 0) 60%
-    ),
-    rgba(214, 238, 255, 0.052);
-  --nlos-glass-chrome-z3:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.055),
-      rgba(214, 238, 255, 0.028)
-    ),
-    rgba(10, 18, 32, 0.68);                  /* Z3 顶栏/Dock/Omni-Bar 保证跨复杂窗口可读性 */
-  --nlos-glass-z4-dialog:
-    linear-gradient(
-      145deg,
-      rgba(127, 200, 255, 0.085),
-      rgba(255, 255, 255, 0.024) 48%,
-      rgba(3, 7, 16, 0.92)
-    ),
-    #07101f;                                 /* Z4 最高可信度防伪模态面 */
-  --nlos-glass-blur: 16px;
-  --nlos-glass-blur-heavy: 22px;
-  --nlos-glass-saturate: 2.0;
+  /* ---- 2. 1px 结构分割细线与焦点边界 (1px Structural Hairline Borders) ---- */
+  --nlos-border-hairline: #2e3138;           /* 全局 1px 结构分割线 / 非焦点窗口边框 */
+  --nlos-border-focused: #4b515d;            /* 当前焦点窗口 / 激活浮层 1px 强化边框 */
+  --nlos-border-input-focus: #3b82f6;        /* 输入控件激活边框 */
 
-  /* ---- 3. 镜面描边与结构边界 (Borders & Specular Edges) ---- */
-  --nlos-border-subtle: #161f34;             /* 隐性结构分隔线 (1px) */
-  --nlos-border-visible: #2f4b68;            /* 可见控件/窗口描边 (1px) */
-  --nlos-border-strong: #1e3c5a;             /* 焦点外环辅线 (2px) */
-  --nlos-glass-highlight: rgba(255, 255, 255, 0.40);
-  --nlos-glass-edge-top: rgba(255, 255, 255, 0.46);
-  --nlos-glass-edge-bottom: rgba(127, 200, 255, 0.11);
-  --nlos-glass-edge-top-hover: rgba(255, 255, 255, 0.64);
-  --nlos-glass-edge-bottom-hover: rgba(127, 200, 255, 0.22);
-  --nlos-border-z4-seal: #7fc8ff;            /* Z4 防伪光框主描边 */
-  --nlos-focus-ring: #7fc8ff;                /* 键盘无障碍焦点环 (2px solid, offset 2px) */
+  /* ---- 3. 中性高对比排版墨色 (Neutral Workstation Typography Ink) ---- */
+  --nlos-text-primary: #ecedee;              /* 主正文与窗口标题 (vs #18191C 对比度 ~14.7:1, AAA) */
+  --nlos-text-secondary: #9da3ae;            /* 次级字段标签、表格元数据 (vs #18191C 对比度 ~6.8:1, AA) */
+  --nlos-text-muted: #6b7280;                /* 弱化分隔符、快捷键提示与只读占位文案 */
 
-  /* ---- 4. 文本与主交互墨色 (Ink & Typography Colors) ---- */
-  --nlos-ink-primary: #7fc8ff;               /* 冰蓝主标题/系统锚点 (WCAG contrast vs #030710: 11.4:1) */
-  --nlos-ink-dim: rgba(127, 200, 255, 0.58);
-  --nlos-ink-faint: rgba(127, 200, 255, 0.12);
-  --nlos-text-strong: #ffffff;               /* 最高强调值/关键金额与主标题焦点 (19.8:1) */
-  --nlos-text-primary: #cce9ff;              /* 标准正文 (15.6:1) */
-  --nlos-text-secondary: rgba(204, 233, 255, 0.68); /* 次级说明正文 (>= 7.2:1) */
-  --nlos-text-muted: rgba(204, 233, 255, 0.50);     /* 辅助元数据 (>= 4.6:1, 满足 AA) */
-  --nlos-cta-bg: #e5f4ff;                    /* 主按钮冰白底 */
-  --nlos-cta-fg: #030710;                    /* 主按钮深藏青字 (17.5:1) */
-  --nlos-cta-bg-hover: #ffffff;
+  /* ---- 4. 单一克制工程蓝功能色 (Single Utilitarian Accent — 严禁用于发光外框或彩色大标题) ---- */
+  --nlos-accent-primary: #2563eb;            /* 主提交按钮实心底色 / Z4 顶部 2px 钢蓝安全横梁 */
+  --nlos-accent-primary-hover: #1d4ed8;      /* 主按钮悬停底色 */
+  --nlos-accent-active: #3b82f6;             /* 2px 键盘焦点环 / 任务栏活动窗口 2px 底边指示条 */
+  --nlos-accent-fg: #ffffff;                 /* 主按钮前景白字 (对比度 >= 4.8:1, AA) */
 
-  /* ---- 5. 语义状态色 (Semantic State Tokens — 仅用于 1px 胶囊边与 6px 状态点) ---- */
-  --nlos-state-running-fg: #7fc8ff;
-  --nlos-state-running-bg: rgba(127, 200, 255, 0.12);
-  --nlos-state-running-border: rgba(127, 200, 255, 0.45);
+  /* ---- 5. 双极克制警示色与单色常规指示符 (Strict Bipolar Semantic Signals) ---- */
+  --nlos-indicator-neutral: #9da3ae;         /* 排队 / 暂停 / 离线等待等常规单色几何符号 */
+  --nlos-indicator-active: #ecedee;          /* 正在执行 / 已完成单色高对比几何符号 */
+  --nlos-signal-action: #d97706;             /* 严格仅限：需用户介入确认或补充输入 (琥珀色) */
+  --nlos-signal-action-text: #f59e0b;        /* 深底高可读待处理提示字 (>= 8.2:1) */
+  --nlos-signal-danger: #dc2626;             /* 严格仅限：执行失败 / 隔离围栏 / 不可逆高危警告 (深绯红) */
+  --nlos-signal-danger-text: #f87171;        /* 深底高可读失败说明字 (>= 6.4:1) */
+  --nlos-signal-danger-fg: #ffffff;          /* 高危破坏性确认按钮白字 */
 
-  --nlos-state-consent-fg: #e5f4ff;
-  --nlos-state-consent-bg: rgba(127, 200, 255, 0.18);
-  --nlos-state-consent-border: #7fc8ff;
-
-  --nlos-state-resource-fg: #f0b866;         /* WAITING_RESOURCE: 钢琥珀预警 */
-  --nlos-state-resource-bg: rgba(240, 184, 102, 0.11);
-  --nlos-state-resource-border: rgba(240, 184, 102, 0.44);
-
-  --nlos-state-network-fg: #9ec0e6;          /* WAITING_NETWORK: 离线自治待联网雾钢蓝 */
-  --nlos-state-network-bg: rgba(158, 192, 230, 0.10);
-  --nlos-state-network-border: rgba(158, 192, 230, 0.42);
-
-  --nlos-state-quarantined-fg: #f29a6b;      /* QUARANTINED: 隔离围栏赭橙 */
-  --nlos-state-quarantined-bg: rgba(242, 154, 107, 0.12);
-  --nlos-state-quarantined-border: rgba(242, 154, 107, 0.48);
-
-  --nlos-state-disputed-fg: #c2bef2;         /* DISPUTED: 多方回执分歧冷紫钢 (非渐变) */
-  --nlos-state-disputed-bg: rgba(194, 190, 242, 0.12);
-  --nlos-state-disputed-border: rgba(194, 190, 242, 0.46);
-
-  --nlos-state-completed-fg: #75dfb8;        /* COMPLETED: 冰薄荷终态 */
-  --nlos-state-completed-bg: rgba(117, 223, 184, 0.10);
-  --nlos-state-completed-border: rgba(117, 223, 184, 0.40);
-
-  --nlos-state-failed-fg: #ff858d;           /* FAILED: 尸检红高可读前景 */
-  --nlos-state-failed-accent: #e5636c;       /* 承自 DESIGN.md --danger */
-  --nlos-state-failed-bg: rgba(229, 99, 108, 0.13);
-  --nlos-state-failed-border: rgba(229, 99, 108, 0.52);
-
-  /* ---- 6. 层级阴影与防伪光晕 (Elevation & Z4 Seal Glow) ---- */
-  --nlos-shadow-card:
-    0 6px 24px -8px rgba(0, 0, 0, 0.52),
-    inset 0 1px 0 0 var(--nlos-glass-highlight);
-  --nlos-shadow-window:
-    0 18px 48px -12px rgba(0, 0, 0, 0.72),
-    0 0 0 1px var(--nlos-border-visible),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.28);
-  --nlos-shadow-omnibar:
-    0 20px 56px -10px rgba(0, 0, 0, 0.78),
-    0 0 0 1px rgba(127, 200, 255, 0.36),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.44);
-  --nlos-shadow-z4-seal:
-    0 28px 80px -12px rgba(0, 0, 0, 0.88),
-    0 0 0 1px #7fc8ff,
-    0 0 28px rgba(127, 200, 255, 0.24),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.52);
+  /* ---- 6. 零霓虹中性结构阴影 (仅用于浮动窗口、按需命令面板与 Z4 对话框；平铺态为 none) ---- */
+  --nlos-shadow-floating:
+    0 12px 28px rgba(0, 0, 0, 0.48),
+    0 2px 6px rgba(0, 0, 0, 0.32);
+  --nlos-shadow-palette:
+    0 16px 36px rgba(0, 0, 0, 0.56),
+    0 2px 8px rgba(0, 0, 0, 0.36);
+  --nlos-shadow-z4-dialog:
+    0 20px 48px rgba(0, 0, 0, 0.68),
+    0 4px 12px rgba(0, 0, 0, 0.42);
 }
 
 /* ==========================================================================
-   Daylight Glacier (Built-in Light Theme — DESIGN.md #F2FAFF / #006DDD)
+   Paper Workstation (Built-in Light Theme — Zero-Glare Daytime Workstation)
    ========================================================================== */
-[data-nlos-theme="daylight-glacier"] {
+[data-nlos-theme="paper-workstation"] {
   color-scheme: light;
 
-  --nlos-bg-canvas: #f2faff;                 /* 冰川浅底 (实测 rgb(242,250,255)) */
-  --nlos-bg-band: #e5f3fc;                   /* 浅色区块带 */
-  --nlos-surface-1: #ffffff;                 /* 纯净卡片面 */
-  --nlos-surface-2: #f7fcff;                 /* 次级容器面 */
-  --nlos-surface-3: #dceefa;                 /* 激活/表头/代码底面 */
-  --nlos-scrim-z4: rgba(230, 243, 252, 0.86);
+  --nlos-bg-backdrop: #e5e7eb;               /* Z0 浅灰工作区底板 / 4px 平铺间隙 */
+  --nlos-bg-window: #ffffff;                 /* Z2 窗口画布 / Z1 任务表格纯白画布 */
+  --nlos-bg-chrome: #f3f4f6;                 /* 面板头 / 30px 窗口标题栏 / 36px 底部任务栏 */
+  --nlos-bg-elevated: #ffffff;               /* 悬浮菜单 / Ctrl+Space 命令面板 / Z4 安全对话框 */
+  --nlos-bg-hover: #eaecef;                  /* 悬停态实心浅灰 */
+  --nlos-bg-active-row: #eff3f8;             /* 表格选中行浅蓝灰底 */
+  --nlos-bg-recessed: #f3f4f6;               /* 输入框内槽与 Z4 32x20 硬件防伪印章凹槽 */
+  --nlos-scrim-z4: rgba(10, 11, 13, 0.78);   /* 统一高对比实心暗化安全幕布 */
 
-  --nlos-glass-bg:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.78),
-      rgba(255, 255, 255, 0.52) 55%,
-      rgba(242, 250, 255, 0.46)
-    ),
-    rgba(255, 255, 255, 0.62);
-  --nlos-glass-bg-strong:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.90),
-      rgba(242, 250, 255, 0.76)
-    ),
-    rgba(255, 255, 255, 0.78);
-  --nlos-glass-chrome-z3: rgba(246, 252, 255, 0.84);
-  --nlos-glass-z4-dialog: #ffffff;
-  --nlos-glass-saturate: 1.45;
+  --nlos-border-hairline: #d1d5db;           /* 1px 结构分割细线 */
+  --nlos-border-focused: #9ca3af;            /* 焦点窗口 / 浮层 1px 边框 */
+  --nlos-border-input-focus: #1d4ed8;
 
-  --nlos-border-subtle: rgba(3, 7, 16, 0.11);
-  --nlos-border-visible: rgba(3, 7, 16, 0.22);
-  --nlos-border-strong: rgba(0, 109, 221, 0.42);
-  --nlos-glass-highlight: rgba(255, 255, 255, 0.92);
-  --nlos-glass-edge-top: rgba(255, 255, 255, 0.95);
-  --nlos-glass-edge-bottom: rgba(3, 7, 16, 0.09);
-  --nlos-glass-edge-top-hover: #ffffff;
-  --nlos-glass-edge-bottom-hover: rgba(0, 109, 221, 0.28);
-  --nlos-border-z4-seal: #006ddd;
-  --nlos-focus-ring: #006ddd;
+  --nlos-text-primary: #111827;              /* 主正文 (vs #FFFFFF 对比度 ~17.7:1, AAA) */
+  --nlos-text-secondary: #4b5563;            /* 次级文本 (vs #FFFFFF 对比度 ~7.5:1, AAA) */
+  --nlos-text-muted: #6b7280;                /* 辅助文本 (vs #FFFFFF 对比度 ~4.8:1, AA) */
 
-  --nlos-ink-primary: #006ddd;               /* 实测浅底强调蓝 (WCAG contrast vs #F2FAFF: 5.12:1) */
-  --nlos-ink-dim: rgba(0, 109, 221, 0.68);
-  --nlos-ink-faint: rgba(0, 109, 221, 0.09);
-  --nlos-text-strong: #030710;               /* 极暗藏青黑字 (18.8:1) */
-  --nlos-text-primary: #081120;              /* 正文主色 (17.4:1) */
-  --nlos-text-secondary: rgba(3, 7, 16, 0.68); /* 次级正文 (>= 7.1:1) */
-  --nlos-text-muted: rgba(3, 7, 16, 0.54);     /* 辅助元数据 (>= 4.7:1, 满足 AA) */
-  --nlos-cta-bg: #006ddd;
-  --nlos-cta-fg: #ffffff;                    /* 对比度 5.4:1 */
-  --nlos-cta-bg-hover: #0058b3;
+  --nlos-accent-primary: #1d4ed8;            /* 单一工程深蓝功能色 */
+  --nlos-accent-primary-hover: #1e40af;
+  --nlos-accent-active: #1d4ed8;             /* 2px 焦点环 / 2px 激活指示条 */
+  --nlos-accent-fg: #ffffff;
 
-  --nlos-state-running-fg: #0058b3;
-  --nlos-state-running-bg: rgba(0, 109, 221, 0.10);
-  --nlos-state-running-border: rgba(0, 109, 221, 0.42);
+  --nlos-indicator-neutral: #4b5563;
+  --nlos-indicator-active: #111827;
+  --nlos-signal-action: #d97706;             /* 6px 几何指示点与 2px 提示边 */
+  --nlos-signal-action-text: #b45309;        /* 白底文本配深琥珀保证 WCAG AA >= 5.0:1 */
+  --nlos-signal-danger: #dc2626;             /* 白底对比度 ~4.83:1, 满足 AA */
+  --nlos-signal-danger-text: #b91c1c;
+  --nlos-signal-danger-fg: #ffffff;
 
-  --nlos-state-consent-fg: #004a99;
-  --nlos-state-consent-bg: rgba(0, 109, 221, 0.14);
-  --nlos-state-consent-border: #006ddd;
-
-  --nlos-state-resource-fg: #8a4f00;
-  --nlos-state-resource-bg: rgba(184, 108, 0, 0.10);
-  --nlos-state-resource-border: rgba(184, 108, 0, 0.40);
-
-  --nlos-state-network-fg: #34506e;
-  --nlos-state-network-bg: rgba(52, 80, 110, 0.09);
-  --nlos-state-network-border: rgba(52, 80, 110, 0.36);
-
-  --nlos-state-quarantined-fg: #9e3c06;
-  --nlos-state-quarantined-bg: rgba(181, 71, 8, 0.10);
-  --nlos-state-quarantined-border: rgba(181, 71, 8, 0.42);
-
-  --nlos-state-disputed-fg: #463ea8;
-  --nlos-state-disputed-bg: rgba(78, 70, 180, 0.10);
-  --nlos-state-disputed-border: rgba(78, 70, 180, 0.38);
-
-  --nlos-state-completed-fg: #0b6b4b;
-  --nlos-state-completed-bg: rgba(14, 122, 86, 0.10);
-  --nlos-state-completed-border: rgba(14, 122, 86, 0.38);
-
-  --nlos-state-failed-fg: #b41e2c;
-  --nlos-state-failed-accent: #c82838;
-  --nlos-state-failed-bg: rgba(200, 40, 56, 0.10);
-  --nlos-state-failed-border: rgba(200, 40, 56, 0.44);
-
-  --nlos-shadow-card:
-    0 4px 18px -6px rgba(3, 7, 16, 0.10),
-    inset 0 1px 0 0 var(--nlos-glass-highlight);
-  --nlos-shadow-window:
-    0 16px 42px -10px rgba(3, 7, 16, 0.18),
-    0 0 0 1px var(--nlos-border-visible);
-  --nlos-shadow-omnibar:
-    0 18px 48px -10px rgba(3, 7, 16, 0.20),
-    0 0 0 1px rgba(0, 109, 221, 0.38);
-  --nlos-shadow-z4-seal:
-    0 24px 68px -12px rgba(3, 7, 16, 0.28),
-    0 0 0 2px #006ddd,
-    0 0 24px rgba(0, 109, 221, 0.18);
+  --nlos-shadow-floating:
+    0 10px 24px rgba(17, 24, 39, 0.14),
+    0 2px 6px rgba(17, 24, 39, 0.08);
+  --nlos-shadow-palette:
+    0 14px 32px rgba(17, 24, 39, 0.18),
+    0 2px 8px rgba(17, 24, 39, 0.09);
+  --nlos-shadow-z4-dialog:
+    0 20px 44px rgba(17, 24, 39, 0.26),
+    0 4px 12px rgba(17, 24, 39, 0.12);
 }
 
 /* ==========================================================================
-   Typography, Geometry, Z-Planes & Motion Tokens (Theme-Invariant)
+   Typography, Workstation Geometry, Z-Planes & Motion (Theme-Invariant)
    ========================================================================== */
 :root {
-  /* ---- 字体栈 (Font Stacks) ---- */
-  --nlos-font-display:
-    -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  /* ---- 字体栈 (System UI Sans + Engineering Monospace) ---- */
   --nlos-font-sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
   --nlos-font-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas,
+    ui-monospace, "Cascadia Mono", "SF Mono", SFMono-Regular, Menlo, Consolas,
     "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
 
-  /* ---- 字号与行高阶梯 (Type Scale — 等宽下限严格 >= 12px) ---- */
-  --nlos-fs-mono-floor: 0.75rem;   /* 12px — 绝对最小字号下限，严禁 10px/11px */
-  --nlos-fs-mono-sm: 0.8125rem;    /* 13px — 表格、回执 hex、代际标签 */
-  --nlos-fs-ui-sm: 0.8125rem;      /* 13px — 紧凑按钮、辅助说明 */
-  --nlos-fs-ui-base: 0.875rem;     /* 14px — 桌面标准控件与列表正文 */
-  --nlos-fs-card-body: 0.9375rem;  /* 15px — Consumer 义务卡主文案 */
-  --nlos-fs-reading: 1rem;         /* 16px — 详情阅读与设置说明 (行高 1.55) */
-  --nlos-fs-title-sm: 1.0625rem;   /* 17px — 卡片/窗口标题 (字重 500) */
-  --nlos-fs-title-md: 1.375rem;    /* 22px — 抽屉/模态框主标题 (字重 300, -0.02em) */
-  --nlos-fs-display-lg: 2rem;      /* 32px — 空闲舞台问候/大数字指标 (字重 300, -0.03em) */
-  --nlos-fs-stat-hero: 2.75rem;    /* 44px — 资源/配额核心读数 (字重 300, tabular-nums) */
+  /* ---- 紧凑工作站字号阶梯 (等宽下限严格 >= 12px) ---- */
+  --nlos-fs-mono-xs: 0.75rem;      /* 12px — 绝对最小字号下限：时钟、快捷键 kbd、诊断视图 ID */
+  --nlos-fs-ui-sm: 0.8125rem;      /* 13px — 高密度表格行、任务栏标签、窗口标题栏、按钮 */
+  --nlos-fs-ui-base: 0.875rem;     /* 14px — 标准表单、命令面板输入结果、Z4 键值规格表 */
+  --nlos-fs-input-cmd: 0.9375rem;  /* 15px — Ctrl+Space 命令与自然语言主输入框 */
+  --nlos-fs-title-sm: 1rem;        /* 16px — Z4 安全确认屏标题 / 设置分节标题 (字重 600) */
+  --nlos-fs-stat-md: 1.25rem;      /* 20px — 资源监控核心读数 (字重 600, tabular-nums) */
 
-  /* ---- 间距与几何圆角 (Spacing & Radii — 6px 占绝对主导) ---- */
+  /* ---- 4px 基准间距与严苛三档圆角 (Strict 0px / 4px / 6px Geometry) ---- */
   --nlos-sp-1: 4px;
   --nlos-sp-2: 8px;
   --nlos-sp-3: 12px;
   --nlos-sp-4: 16px;
   --nlos-sp-5: 24px;
-  --nlos-sp-6: 32px;
-  --nlos-sp-7: 48px;
 
-  --nlos-radius-xs: 4px;           /* 内嵌代码片/快捷键 kbd */
-  --nlos-radius-s: 6px;            /* 主导圆角：按钮、输入框、义务卡、设置行 */
-  --nlos-radius-m: 8px;            /* Z2 窗口外框、Omni-Bar、Z4 安全模态框 */
-  --nlos-radius-pill: 999px;       /* 状态胶囊与非权威搜索徽标 */
+  --nlos-radius-none: 0px;         /* 底部 36px 任务栏、平铺分割容器与表格行 */
+  --nlos-radius-ctrl: 4px;         /* 控件、输入框、按钮、窗口标签、Ctrl+Space 命令面板 */
+  --nlos-radius-win: 6px;          /* 全局最大圆角上限：可选浮动窗口与 Z4 安全模态对话框 */
 
-  /* ---- 桌面壳安全区几何 (Shell Safe-Area Geometry) ---- */
-  --nlos-rail-h: 36px;             /* Z3 顶部状态轨高度 */
-  --nlos-dock-h: 56px;             /* Z3 底部 Dock 本体高度 */
-  --nlos-dock-margin-b: 8px;       /* Dock 距视口底边悬浮留白 */
-  --nlos-dock-safe-h: 68px;        /* Z1/Z2 底部安全避让总高 */
-  --nlos-drawer-w: 388px;          /* 右侧通知/控制抽屉标准宽 */
-  --nlos-omnibar-max-w: 720px;     /* 全局 Omni-Bar 最大宽 */
+  /* ---- 工作站壳几何尺寸 (Workstation Shell Metrics) ---- */
+  --nlos-tile-gap: 4px;            /* 平铺窗口间锐利结构间隙 */
+  --nlos-titlebar-h: 30px;         /* Z2 窗口与 Z1 停靠面板紧凑实心标题栏高度 */
+  --nlos-taskbar-h: 36px;          /* Z3 底部贴边紧凑工作站任务栏高度 */
+  --nlos-taskbar-trigger-h: 26px;  /* 任务栏内嵌命令/NL 触发框高度 */
+  --nlos-flyout-w: 360px;          /* 右下角通知/控制中心实心弹出面板宽度 */
+  --nlos-palette-max-w: 640px;     /* Ctrl+Space 命令与意图面板最大宽度 */
+  --nlos-z4-dialog-w: 520px;       /* Z4 系统安全确认框标准宽度 */
 
   /* ---- 五平面 Z 轴栈序 (5-Plane Z-Index Contract) ---- */
-  --nlos-z0-ambient: 0;
-  --nlos-z1-task-space: 100;
+  --nlos-z0-backdrop: 0;
+  --nlos-z1-task-pane: 100;
   --nlos-z2-window-base: 200;      /* Z2 活动窗口在 [200..299] 区间内按 MRU 递增 */
-  --nlos-z3-chrome-rail: 400;
-  --nlos-z3-chrome-dock: 410;
-  --nlos-z3-chrome-drawer: 430;
-  --nlos-z3-omnibar: 460;
-  --nlos-z4-trusted-scrim: 900;    /* 最高特权安全幕布，任何 Z1..Z3 浮层严禁 >= 900 */
+  --nlos-z3-taskbar: 400;          /* 常驻底部 36px 任务栏 */
+  --nlos-z3-flyout: 430;           /* 应用启动菜单、通知抽屉与系统控制浮层 */
+  --nlos-z3-palette: 460;          /* Ctrl+Space 命令/意图面板与 Ctrl+K 搜索面板 */
+  --nlos-z4-security-screen: 900;  /* 最高特权安全确认屏，任何 Z1..Z3 元素严禁 >= 900 */
 
-  /* ---- 动效曲线与时长 (Motion Curves — DESIGN.md power3.out) ---- */
-  --nlos-ease-power3-out: cubic-bezier(0.215, 0.61, 0.355, 1);
-  --nlos-ease-standard: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --nlos-dur-fast: 140ms;
-  --nlos-dur-base: 220ms;
-  --nlos-dur-enter: 380ms;         /* 桌面面板入场上限 (位移 6-8px, 弱模糊 <= 1.25px) */
-}
-
-/* ---- 透明度与毛玻璃降级兜底 ---- */
-@supports not (backdrop-filter: blur(1px)) {
-  :root,
-  [data-nlos-theme="abyssal-glacier"] {
-    --nlos-glass-bg: rgba(10, 18, 32, 0.96);
-    --nlos-glass-bg-strong: rgba(13, 22, 38, 0.98);
-    --nlos-glass-chrome-z3: rgba(8, 14, 26, 0.98);
-  }
-  [data-nlos-theme="daylight-glacier"] {
-    --nlos-glass-bg: rgba(255, 255, 255, 0.97);
-    --nlos-glass-bg-strong: #ffffff;
-    --nlos-glass-chrome-z3: rgba(246, 252, 255, 0.98);
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  :root,
-  [data-nlos-theme="abyssal-glacier"] {
-    --nlos-glass-blur: 0px;
-    --nlos-glass-blur-heavy: 0px;
-    --nlos-glass-bg: #0a1220;
-    --nlos-glass-bg-strong: #0d1626;
-    --nlos-glass-chrome-z3: #08101d;
-  }
-  [data-nlos-theme="daylight-glacier"] {
-    --nlos-glass-blur: 0px;
-    --nlos-glass-blur-heavy: 0px;
-    --nlos-glass-bg: #ffffff;
-    --nlos-glass-bg-strong: #f7fcff;
-    --nlos-glass-chrome-z3: #eaf5fc;
-  }
+  /* ---- 克制瞬时过渡 (Crisp Snappy Transitions — 零弹性漂浮感) ---- */
+  --nlos-ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+  --nlos-dur-fast: 80ms;
+  --nlos-dur-base: 140ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
   :root {
     --nlos-dur-fast: 0ms;
     --nlos-dur-base: 0ms;
-    --nlos-dur-enter: 0ms;
   }
 }
 ```
 
-### 1.2 全状态语义映射表（`§25` `Task` 状态机 + 隔离态）
+### 1.2 全状态语义映射表（单色排版 + `6px` 几何 SVG 符号 + 双极警示色纪律）
 
-为防止色相泛滥，所有状态胶囊统一采用 `1px solid var(--nlos-state-*-border)` + `6px` 几何状态指示符 + `12px` 等宽大写英文/双语标签（语义同时靠形状与文字传达，色盲用户零信息损失）：
+为彻底根除“彩虹色胶囊墙”，所有状态统一采用 **中性背景（透明或 `--nlos-bg-recessed`）+ `6px` 精确几何 SVG 符号 + `13px` 清晰文字**。彩色信号严格收敛为两极：琥珀色（`#D97706`）仅表示“需要用户操作”，深绯红（`#DC2626`）仅表示“失败或不可逆安全限制”（双编码确保色觉缺陷用户零信息损失）：
 
-| 规范状态枚举 | 形状指示符 | 绑定色彩族 | Consumer 模式人类可读文案（`zh-CN` / `en-US`） |
+| 规范状态枚举（仅在 Diagnostic 视图显示枚举名） | `6px` 几何 SVG 指示符 | 绑定信号色 Token | 默认标准工作站视图文案（`zh-CN` / `en-US`，零行话） |
 |---|---|---|---|
-| `DRAFT` / `PROPOSED` | 空心圆 `○` | `--nlos-ink-dim` | 待启动草稿 / Draft Proposal |
-| `WAITING_CONSENT` | 双环星点 `◉` | `state-consent` | **需要您确认权限或预算** / Waiting for Approval |
-| `AUTHORIZED` / `RUNNING` / `COMPLETING` | 实心冰蓝脉冲点 `●` | `state-running` | 正在执行 / Running |
-| `WAITING_INPUT` | 菱形提示 `◆` | `state-consent` | **等待补充说明** / Needs Input |
-| `WAITING_RESOURCE` | 半满方框 `◧` | `state-resource` | 排队等待算力或配额 / Waiting for Quota |
-| `WAITING_NETWORK` | 虚线圆环 `◌` | `state-network` | 等待网络连接（本地继续可用） / Waiting for Network |
-| `SUSPENDED` / `CANCELLING` / `CANCELLED` | 双竖暂停杠 `‖` / `×` | `--nlos-text-muted` | 已暂停 / 已取消 / Paused · Cancelled |
-| `RECOVERING` | 顺时针弧矢 `↻` | `state-resource` | 自动对账恢复中 / Recovering |
-| `QUARANTINED` | 双斜杠隔离框 `[//]` | `state-quarantined` | **已安全隔离限制** / Quarantined |
-| `DISPUTED` | 分叉天平 `⚖` | `state-disputed` | **结果待核验（存在分歧）** / Disputed Receipt |
-| `PARTIAL` | 半实心圆 `◐` | `state-resource` | 部分完成（含未成功项） / Partially Completed |
-| `COMPLETED` | 精确勾号 `✓` | `state-completed` | 已完成 / Completed |
-| `FAILED` | 尸检十字章 `✕` | `state-failed` | 未能完成 / Failed |
+| `DRAFT` / `PROPOSED` | 空心圆环 | `--nlos-indicator-neutral` | 草稿待提交 / Draft |
+| `WAITING_CONSENT` | 实心琥珀菱形 | **`--nlos-signal-action` (`#D97706`)** | **待您确认权限或费用上限** / Approval Required |
+| `WAITING_INPUT` | 空心琥珀菱形 | **`--nlos-signal-action` (`#D97706`)** | **待补充说明** / Input Needed |
+| `AUTHORIZED` / `RUNNING` / `COMPLETING` | 实心高对比圆点 | `--nlos-indicator-active` | 正在运行 / Running |
+| `WAITING_RESOURCE` | 半填充方框 | `--nlos-indicator-neutral` | 排队等待计算资源 / Queued for Resources |
+| `WAITING_NETWORK` | 虚线圆环 | `--nlos-indicator-neutral` | 等待网络连接（本地正常可用） / Waiting for Network |
+| `SUSPENDED` / `CANCELLING` / `CANCELLED` | 双竖暂停线 / 斜杠圆 | `--nlos-text-muted` | 已暂停 / 已取消 / Paused · Cancelled |
+| `RECOVERING` | 单色闭合弧线 | `--nlos-indicator-neutral` | 正在对账恢复 / Recovering |
+| `QUARANTINED` | 实心深绯红方框 | **`--nlos-signal-danger` (`#DC2626`)** | **已受控隔离** / Isolated |
+| `DISPUTED` | 实心琥珀三角 | **`--nlos-signal-action` (`#D97706`)** | **结果不一致，待您核对** / Needs Verification |
+| `PARTIAL` | 左半实心圆 | `--nlos-indicator-active` | 部分完成（含未完成项） / Partially Completed |
+| `COMPLETED` | `1.5px` 单色折线勾号 | `--nlos-indicator-active` | 已完成 / Completed |
+| `FAILED` | `1.5px` 深绯红交叉叉号 | **`--nlos-signal-danger` (`#DC2626`)** | **未能完成** / Failed |
 
-### 1.3 Gerono 双纽线（`∞`）动态 Canvas 防伪印章规格
+### 1.3 硬件仪器级凹陷 `32×20` 单色精密防伪印章（Recessed Hardware-Style Verification Seal）
 
-承袭 [`DESIGN.md`](../../site/DESIGN.md) v10.5 / v10.5.1，桌面在两处关键系统锚点使用 **Gerono 双纽线（Lemniscate of Gerono）** 参数绘制原生标志与防伪印章：（a）`Z3` 顶部状态轨最左侧 `NLOS` 系统主徽标（`28×16px` 紧凑静态/轻呼吸态）；（b）`Z4` 可信安全确认框顶部中央 **动态防伪印章（`72×36px`）**：
+依据 `W68-R1` 裁定，废除初版 `72×36px` 发光冰蓝彗尾装饰印章，改为嵌入 `Z4` 系统安全确认屏头部的 **`32×20px` 凹陷硬件仪器风单色精密校验印章**：
 
-1. **参数方程与中心十字光轴**：
-   设画布几何中心为 $(C_x, C_y)$，水平半幅 $A$ 与垂直半幅 $B$ 保持 $A : B = 2.15 : 1$（`Z4` 印章中取 $A = 28\text{px}, B = 13\text{px}$）：
+1. **物理凹槽容器**：宽 `32px`、高 `20px`、`border-radius: 2px`、背景 `var(--nlos-bg-recessed)`（`#111214` / `#F3F4F6`）、边框 `1px solid var(--nlos-border-hairline)`，严禁施加任何外发光阴影或模糊滤镜。
+2. **数学 Gerono 双纽线 `1px` 单色示波轨迹**：
+   设画布中心 $(C_x, C_y) = (16, 10)$，水平半幅 $A = 11.5\text{px}$，垂直半幅 $B = 5.5\text{px}$：
    $$x(t) = C_x + A \cos(t), \quad y(t) = C_y + B \sin(2t), \quad t \in [0, 2\pi)$$
-   底层绘制正交十字细光轴（水平轴长 $: $ 垂直轴长 $= 1.54 : 1$），双纽线中心自交点与十字交点、中心高亮星点严格同坐标 $(C_x, C_y)$。
-2. **双中心反演对称彗尾（Dual Symmetric Comet Tails）**：
-   - 先以 `1px` 低亮底线（深色 `rgba(127, 200, 255, 0.22)` / 浅色 `rgba(0, 109, 221, 0.22)`）绘制完整闭合双纽线；
-   - 主彗尾沿参数 $t_0(\tau) = 2\pi (\tau \bmod T) / T$（周期 $T = 4.8\text{s}$）切分 **62 段**渐亮弧段，线宽从尾端 `0.8px` 过渡至头部 `2.0px`，透明度从 `0.02` 指数递增至 `0.98`；
-   - 第二条彗尾逐段执行严格中心反演 $P_2(t) = P(\pi - t) = 2C - P_1(t)$，保证左右两翼的位置、尾长、曲率与光度在任意时刻 **100% 中心对称**。
-3. **帧率门控与多层降级兜底**：
-   - `Z4` 未打开时循环完全停止（零后台 GPU/CPU 消耗）；`Z4` 激活期间以 `60fps` 运行（文档失焦或隐藏时通过 `visibilitychange` 立即暂停）；
-   - `prefers-reduced-motion: reduce` 激活时，不启动 `requestAnimationFrame`，一次性渲染 $t_0 = \pi / 4$ 处的静态高对比双彗尾定格帧；
-   - Canvas 上下文不可用时，回退为内联纯数学 Unicode 字形 `∞`（`U+221E`，严禁使用带外圆环的 Emoji `♾︎`）。
+   底层绘制 `1px` 低对比正交基准刻度十字（`var(--nlos-border-hairline)`），前景以纯单色高对比墨水 `var(--nlos-text-primary)`（`#ECEDEE` / `#111827`）绘制 `1px` 锐利双纽线相位扫描轨迹（周期 $T = 3.6\text{s}$，双中心对称相位点）。
+3. **零开销门控与无障碍回退**：
+   - `Z4` 未挂载时渲染循环完全不存在（0% CPU/GPU 占用）；
+   - `prefers-reduced-motion: reduce` 开启时，不启动动画循环，静态渲染 $1\text{px}$ 高对比闭合双纽线与中心基准点；
+   - 无 Canvas 环境回退为等宽纯数学字符 `∞`（`U+221E`，严禁 Emoji 变体）。
 
 ---
 
-## 2. 空间桌面线框图、五平面合成几何与全局快捷键
+## 2. 平铺优先工作站线框图、五平面合成几何与全局快捷键
 
-### 2.1 五平面空间合成架构图（`Z0 → Z4`）
+### 2.1 五平面工作站合成架构图（`Z0 → Z4`）
 
 ```mermaid
 flowchart LR
-  subgraph Viewport["Desktop Viewport (1024x768 min -> 3840x2160 4K HiDPI)"]
+  subgraph Viewport["Workstation Viewport (1024x768 min -> 3840x2160 4K HiDPI, Solid Zero-Blur)"]
     direction TB
-    Rail["Z3 Top Status Rail (36px): NLOS Emblem | Active Workspace | Mode Toggle (Consumer/X-Ray) | Cell/Offline Pill | Mic/Cam LED | Notification & Control Triggers"]
-    Omni["Z3 Global NL Omni-Bar (Floating Overlay, Cmd/Ctrl+Space): Multimodal Input + Live TypedIntent Chips + Disambiguation"]
-    subgraph StageArea["Workspace Safe Stage (calc(100vh - 36px - 68px))"]
-      Z1["Z1 Task Space Spatial Canvas: Obligation Cards (Consumer) <-> Interactive TaskPlan DAG (Expert X-Ray)"]
-      Z2["Z2 Window & Surface Compositor: Floating / Snap-Tiled Sandboxed Application Windows"]
-      Drawer["Z3 Slide-Over Right Drawer (388px): Notification Center / SystemControlCenter"]
+    subgraph StageArea["Tiling-First Workspace Stage (height: calc(100vh - 36px), 4px Crisp Gaps)"]
+      Z0["Z0 Solid Backdrop (#111214 / #E5E7EB)"]
+      Z2["Z2 Tiled / Optional Floating Application Windows (Sandboxed Child WebView / CSP Frame)"]
+      Z1["Z1 Docked / Toggleable Task Space Pane (Zero-Jargon Table <-> Diagnostic DAG)"]
     end
-    Dock["Z3 Bottom Application Launcher Dock (56px + 8px margin): Pinned Apps (ApplicationId) | Active Windows | Minimized Surfaces | Task Manager Trigger"]
-    Z4["Z4 Non-Occludable Trusted UI Scrim (z-index 900, Modal Hardware Input Lock): Gerono Seal + Consent / Budget / ChooserGrant / Cross-App Taint Paste"]
+    Palettes["Z3 On-Demand Solid Overlays (Hidden by Default): Ctrl+Space Command/Intent Palette (4px radius) | Ctrl+K Search | Tray Flyouts"]
+    Taskbar["Z3 Bottom Compact Workstation Taskbar (36px height, 0px radius, 1px top border): App Launcher | 26px Command Trigger | Flat Window Tabs (2px active bar) | System Tray"]
+    Z4["Z4 Non-Occludable UAC/Polkit Security Screen (z-index 900, Solid Dim Scrim + 2px Steel Bar + 32x20 Seal + Key-Value Spec Table)"]
   end
 
-  Z4 -.->|"Severes Z2 Input & Dims Z0..Z3"| StageArea
-  Omni -.->|"Compiles TypedIntent / TaskPlan"| Z1
-  Dock -.->|"Activates ApplicationId / Surface"| Z2
+  Z4 -.->|"Severes Z2 Input & Locks Focus"| StageArea
+  Palettes -.->|"Compiles Intent / Opens Verified Entity"| Z1
+  Taskbar -.->|"Activates ApplicationId / Switches Layout"| Z2
 ```
 
-### 2.2 全视口结构化 ASCII 线框图（1440×900 混合工作态 + Z4 防伪态示意）
+### 2.2 全视口结构化 ASCII 线框图（`1440×900` 平铺工作站态 + 按需命令面板 + `Z4` 安全确认屏）
+
+#### (A) 默认平铺工作站态（Standard Workstation View：3-Pane 平铺 + 停靠表格 `Task Space` + `36px` 底部任务栏，零内部行话、零 Emoji）
 
 ```text
-+------------------------------------------------------------------------------------------------------+
-| [∞ NLOS]  Workspace: Personal ▾  |  [Consumer ● / X-Ray ⌘⇧E]     [LOCAL · 2 CELLS OK] [🎙] [🔔 2] [⚙] | <- Z3 Top Status Rail (36px)
-+------------------------------------------------------------------------------------------------------+
-|                                                                                                      |
-|    +--------------------------------------------------------------------------------------------+    |
-|    | ⌘Space  "整理本周实验日志并让笔记应用生成周报草稿，预算不超过 20 积分"       [🎙] [📎] [↵] |    | <- Z3 Omni-Bar Overlay
-|    | INTENT: summarize_and_draft · APP: Notes (app_8f2a) · BOUND: <= 20 credits · [REVERSIBLE]  |    |
-|    +--------------------------------------------------------------------------------------------+    |
-|                                                                                                      |
-|  +-- Z1: TASK SPACE (Active Obligations) --------+  +-- Z2: APP WINDOW (Sandboxed Surface) --------+ |
-|  |                                               |  | [●] Notes — 周报草稿.md   [gen:3] [_][□][✕]  | | <- Trusted Z2 Frame
-|  |  [◉ 需要您确认] 跨应用读取实验归档并写入周报  |  | +------------------------------------------+ | |
-|  |  应用: Notes · 预计消耗: <= 20 积分           |  | |                                          | | |
-|  |  可撤销性: [可无损撤销 REVERSIBLE]            |  | |  # 本周实验进展摘要                      | | |
-|  |  [在安全窗口中审阅并授权 ↗]      [取消任务]   |  | |  (运行于隔离源 nlos-surface://...        | | |
-|  |  -------------------------------------------  |  | |   物理裁剪于此内框，无法越界绘制到 Z3/Z4)| | |
-|  |  [● 正在执行] 本地代码仓库索引增量同步        |  | |                                          | | |
-|  |  应用: RepoIndexer · 消耗: 6 / 15 [████░░░░]  |  | |                                          | | |
-|  |  [暂停 ⌘.]  [展开详情]                        |  | +------------------------------------------+ | |
-|  |                                               |  +----------------------------------------------+ |
-|  |  [◌ 等待网络] 远端论文引用元数据补全          |                                                   |
-|  |  本地草稿已就绪；恢复联网后自动续传           |                                                   |
-|  +-----------------------------------------------+                                                   |
-|                                                                                                      |
-|                  +----------------------------------------------------------------+                  |
-|                  |  [Apps ⊞] | [Notes ●] [RepoIndexer ●] [Files] | [📊 系统与任务] |                  | <- Z3 Launcher Dock (56px)
-|                  +----------------------------------------------------------------+                  |
-+------------------------------------------------------------------------------------------------------+
-
-=== 当点击 [在安全窗口中审阅并授权] 或触发权限/ChooserGrant 时，Z4 全屏不可遮挡幕布接管焦点 ===
-
-+------------------------------------------------------------------------------------------------------+
-| [∞ NLOS]  [🔒 TRUSTED SECURITY PROMPT · Z4 ACTIVE — 应用窗口输入已物理隔离]           [Seal: 蓝鲸-07] | <- Z3 顶栏硬件信标同步点亮
-+------------------------------------------------------------------------------------------------------+
-|  ░░░░░░░░░░░░░░░░░░░░░░░ Z4 SECURITY SCRIM (backdrop-filter: blur(22px)) ░░░░░░░░░░░░░░░░░░░░░░░░░░  |
-|  ░░               +--------------------------------------------------------------+               ░░  |
-|  ░░               |                   [  Canvas Gerono ∞ Seal  ]                 |               ░░  |
-|  ░░               |              系统可信授权确认 · TRUSTED CONSENT              |               ░░  |
-|  ░░               |  请求应用: Notes (ApplicationId: 8f2a...c901 · gen 3 · 已验签)|               ░░  |
-|  ░░               |  操作目的: 读取 3 份实验日志 Artifact 并创建《周报草稿.md》  |               ░░  |
-|  ░░               |  权限范围: Artifact.Read (仅限选定 3 项) · 有效期: 本任务内  |               ░░  |
-|  ░░               |  资源上限: <= 20 积分 (GuaranteeTier: BOUNDED)               |               ░░  |
-|  ░░               |  副作用级: REVERSIBLE (生成新草稿修订版，不覆盖原日志)       |               ░░  |
-|  ░░               |                                                              |               ░░  |
-|  ░░               |  [ 拒绝 (Esc) ]            [ 仅本次任务批准 (350ms 防劫持) ] |               ░░  |
-|  ░░               +--------------------------------------------------------------+               ░░  |
-+------------------------------------------------------------------------------------------------------+
++--------------------------------------------------+--------------------------------------------------+
+| [≡] Notes - 周报草稿.md              [_][□][×] | [≡] CodeCompare - 실험结果对比.csv     [_][□][×] | <- 30px Solid Chrome (#1E2024)
++--------------------------------------------------+--------------------------------------------------+
+| # 本周实验进展摘要                               | 指标项          | 基线组   | 实验组   | 变化率   | <- Z2 Tiled App Windows
+|                                                  | ----------------+----------+----------+--------- |    (#18191C, 0px radius,
+| 1. 完成单机控制面与桌面桥接压测记录整理          | 尾延迟 P99 (ms) |   14.2   |   11.8   |  -16.9%  |     4px crisp gap between panes,
+| 2. 待核对远端引用文献元数据后定稿导出            | 内存峰值 (MB)   |  128.0   |  119.5   |   -6.6%  |     clipped strictly above 36px bar)
+|                                                  | 错误计数        |    0     |    0     |    0.0%  |
+| (运行于隔离应用表面，物理裁剪于本矩形窗框内)     |                                                  |
++--------------------------------------------------+--------------------------------------------------+
+| [≡] 后台任务面板 (3 项活跃)                              [筛选: 全部 v] [展开全屏] [诊断视图 Ctrl+⇧+E]| <- Z1 Docked Task Space Pane
++-----------------------------------------------------------------------------------------------------+
+| 状态            | 任务目标                             | 所属应用    | 资源用量      | 可撤销性   | 操作          |
+| ----------------+--------------------------------------+-------------+---------------+------------+-------------- |
+| ◆ 待您确认      | 读取 3 份实验归档并更新周报草稿      | Notes       | 0 / 20 积分   | 可无损撤销 | [审阅确认] [取消] |
+| ● 正在运行      | 本地代码仓库增量索引同步             | RepoIndexer | 6 / 15 积分   | 可无损撤销 | [暂停]     [详情] |
+| ◌ 等待网络      | 远端论文引用元数据补全 (本地不受影响)| BibHelper   | 2 / 10 积分   | 可无损撤销 | [暂停]     [取消] |
++=====================================================================================================+
+| [⊞ 应用] [ >_ 输入指令或自然语言目标... Ctrl+Space ] | [Notes] [CodeCompare] [任务 3] | [◫ 三栏] [本地就绪] [诊断:关] [深色] [通知 2] 14:32 | <- Z3 36px Bottom Taskbar
++-----------------------------------------------------------------------------------------------------+
+                                                          ^^^^^^ 2px #3B82F6 bottom active bar
 ```
 
-### 2.3 视口网格与 `Z2` 窗口磁吸平铺区（Window Snap Zones）
+#### (B) 按需唤起命令与意图面板态（按下 `Ctrl/⌘ + Space` 时居中弹出，`4px` 圆角实心 `#23252A` / `#FFFFFF`，用毕自动收起绝不常驻霸屏）
 
-工作舞台安全区严格定义为 `StageRect = { top: 36px, bottom: calc(100vh - 68px), left: 0, right: 100vw }`。`Z2` 窗口管理器支持指针拖拽至边缘磁吸与纯键盘快捷键平铺，所有预设几何均留出 `8px` 呼吸间隙（露出底层 `Z0` 流场与 `Z1` 状态边缘光）：
+```text
+          +----------------------------------------------------------------------------------+
+          | >_ 整理本周实验日志并让笔记应用生成周报草稿，费用上限 20 积分    [语音] [附件] [↵] | <- 4px-radius Solid Palette
+          +----------------------------------------------------------------------------------+
+          | 识别操作: 整理归档并生成草稿  | 目标应用: Notes  | 费用上限: <= 20 积分 | 可无损撤销 | <- 标准视图白话预览 (零行话)
+          +----------------------------------------------------------------------------------+
+          | [↵ 下一步：审阅权限与费用确认]                           [Esc 关闭面板，不执行操作] |
+          +----------------------------------------------------------------------------------+
+```
 
-| 磁吸/布局模式 | 几何区域（相对于 `StageRect`） | 交互行为与 `Z1` 协同语义 |
+#### (C) `Z4` 不可遮挡系统安全确认屏（UAC / Polkit 工作站风格：实心暗幕 `rgba(10,11,13,0.78)` + `2px` 钢蓝顶条 + `32×20` 凹陷单色精密印章）
+
+```text
++-----------------------------------------------------------------------------------------------------+
+|  ░░░░░░░░░░░░░░░ Z4 SOLID DIM SCRIM rgba(10, 11, 13, 0.78) — ZERO BLUR, Z2 INPUT SEVERED ░░░░░░░░░  |
+|  ░░                +============================================================+                ░░  | <- 2px Solid #2563EB Top Bar
+|  ░░                | [∞ 32x20] 系统安全确认 · 需要您的授权     [防伪标识: 青松-07] |                ░░  | <- 6px-radius Solid #23252A
+|  ░░                +------------------------------------------------------------+                ░░  |
+|  ░░                | 请求应用   | Notes（已验证安装签名）                       |                ░░  |
+|  ░░                | 授权范围   | 只读访问已选定的 3 份实验日志（仅本次任务有效）|                ░░  |
+|  ░░                | 资源上限   | 最多消耗 20 积分（超出自动停止）               |                ░░  |
+|  ░░                | 可撤销等级 | 可无损撤销（生成新草稿版本，不修改原始日志）   |                ░░  |
+|  ░░                +------------------------------------------------------------+                ░░  |
+|  ░░                | 有效范围: (●) 仅本次操作  ( ) 当前任务内  ( ) 本次登录会话  |                ░░  |
+|  ░░                |                                                            |                ░░  |
+|  ░░                |                              [ 拒绝 (Esc) ]  [ 批准执行 ]  |                ░░  | <- 4px Rectangular Buttons
+|  ░░                +------------------------------------------------------------+                ░░  |    (350ms Clickjacking Gate)
++=====================================================================================================+
+| [⊞ 应用] [ 安全确认进行中 — 应用窗口输入已锁定 ]                         | [安全锁定中]        14:32 | <- Z3 36px Bottom Taskbar
++-----------------------------------------------------------------------------------------------------+
+```
+
+### 2.3 工作站平铺网格与可选浮动窗口几何（Tiling-First Workspace & Snap Geometry）
+
+工作区可用几何严格定义为 `StageRect = { top: 0px, bottom: calc(100vh - 36px), left: 0px, right: 100vw }`，把屏幕顶部至底部任务栏之上的每一行像素全部交给生产力工作区：
+
+| 布局模式（底栏右侧布局切换器可一键切换） | 几何区域（相对于 `StageRect`，平铺间隙统一 `4px`） | 交互行为与 `Z1` / `Z2` 协同语义 |
 |---|---|---|
-| **Stage-Center Float（默认舞台居中悬浮）** | 宽 `72%`（最大 `1120px`），高 `82%`，居中对齐 | 打开单个应用时的默认态；两侧微露 `Z1` 任务状态边缘，点击舞台空白处可一键切回 `Z1` 全景。 |
-| **Stage-Split Hybrid（左任务空间 + 右应用窗口）** | `Z1` 固定左半屏 `44%`，活动 `Z2` 窗口磁吸右半屏 `56%` | 混合自然语言桌面的黄金工作态：左侧实时观察多任务进度或 DAG，右侧操作目标应用表面。 |
-| **Left Half / Right Half（左右二分屏）** | 左 `[8px, 50% - 4px]` / 右 `[50% + 4px, 100% - 8px]`，高 `100% - 16px` | 拖拽窗口标题栏至视口左/右边缘 `<= 16px` 触发冰蓝 `1px` 预览虚框，松手磁吸。 |
-| **Quadrants（四象限平铺 `TL / TR / BL / BR`）** | 宽 `50% - 12px`，高 `50% - 12px` | 拖拽窗口至视口四角触发，适合高分辨率屏幕（`>= 1920×1080`）多应用对比。 |
-| **Workspace Maximize（安全区内最大化）** | 占满 `StageRect`（留 `4px` 外边距） | 铺满工作舞台，但**绝不遮挡 `Z3` 顶部 36px 状态轨与底部 Dock**，防止全屏应用伪造系统壳。 |
-| **Minimize-to-Dock（最小化归槽）** | 收拢至底部 `Z3` Dock 对应 `ApplicationId` 槽位 | `Window` 状态转入 `MINIMIZED`，关联 `Surface` 转入 `HIDDEN`（停止子表面帧渲染以省电），Dock 图标下方亮起冰蓝小圆点。 |
+| **3-Pane Workstation Split（默认三栏工作站平铺）** | 上层左右双应用窗（高 `68%`，间隙 `4px`）+ 下层通栏停靠 `Task Space` 表格面板（高 `32%`），或左主窗 `60%` + 右上下双栈 `40%` | 打开多应用与后台任务时的黄金工作站形态：同屏并行编辑对比两个应用，底部高密度表格实时掌控全部任务义务；拖拽 `4px` 分割条可无级调节比例（同步裁剪子 WebView）。 |
+| **2-Column Tiled Split（左右双栏平铺）** | 左 `[0, 50% - 2px]` / 右 `[50% + 2px, 100%]`，高 `100%`，`border-radius: 0px` | 适合双应用全高并排或“左应用窗口 + 右 `Task Space` 诊断 DAG 视图”；支持 `Win/⌃ + Alt + ←/→` 键盘瞬时平铺。 |
+| **Quadrants（四象限平铺 `TL / TR / BL / BR`）** | 宽 `50% - 2px`，高 `50% - 2px`，十字 `4px` 间隙，`border-radius: 0px` | 适合 `>= 1920×1080` 显示器四窗口高密度监控与对照。 |
+| **Workspace Maximize（安全区内全屏平铺）** | 占满 `StageRect`（`100vw × calc(100vh - 36px)`，`border-radius: 0px`） | 单一应用或全屏 `Task Space` 专注态；**硬性下边界止步于 `calc(100vh - 36px)`，绝不允许覆盖底部 `Z3` 系统任务栏**。 |
+| **Optional Floating Window（可选浮动窗口模式）** | 默认 `70% × 76%` 居中或自由拖拽位置，`border-radius: 6px`，`1px solid var(--nlos-border-focused)` | 用户点击窗口标题栏切换为浮动态时启用；上限圆角严格为 `6px`，带克制中性投影，绝不越界覆盖底部 `36px` 任务栏。 |
+| **Minimize-to-Taskbar（最小化归入底栏标签）** | 收拢至底部 `36px` 任务栏对应扁平矩形窗口标签 | `Window` 转入 `MINIMIZED`，关联 `Surface` 转入 `HIDDEN`（暂停子视图渲染省电），底栏对应标签移除 `2px` 激活蓝条并保留单色运行点标。 |
 
 ### 2.4 全局键盘快捷键规范表（Global Keyboard Shortcuts）
 
-| 快捷键（macOS / Windows & Linux） | 触发平面 | 动作与规范约束 |
+| 快捷键（Windows & Linux / macOS） | 触发平面 | 动作与规范约束 |
 |---|---|---|
-| `⌘ + Space` / `Ctrl + Space` | `Z3` | 唤起或收起 **全局自然语言 Omni-Bar**（长按可进入按住说话语音输入态，受 `DevicePermissionState` 门控）。 |
-| `⌘ + K` / `Ctrl + K` | `Z3` | 唤起 **全局非权威 Spotlight 搜索与快捷跳转面板**（强制带 `NON-AUTHORITATIVE · 0x1F` 徽标）。 |
-| `⌘ + Shift + E` / `Ctrl + Shift + E` | `Z1` / `Z3` | 一键原地切换 **Consumer Clean Mode ↔ Expert X-Ray Mode**（`[CTRL-PLAN-001]`，零状态丢失）。 |
-| `⌘ + .` / `Ctrl + .` | `Z1` / `Z3` | **安全紧急暂停（Safe Pause）**：对当前焦点 `Task` 或活动 `Operation` 立即编译派发 `pause` `ControlCommand`（`[CTRL-SAFETY-001]`）。 |
-| `⌘ + Shift + M` / `Ctrl + Shift + M` | `Z2` / `Z3` | 打开或聚焦 **`TaskManagerSurface` / `ResourceMonitorSurface`** 十层系统控制台。 |
-| `⌘ + ,` / `Ctrl + ,` | `Z2` / `Z3` | 打开 **四层系统设置与密钥引用管理（`SettingsDomain` & `KeychainReference`）**。 |
-| `⌃ + ⌥ + ← / →` / `Win + Alt + ← / →` | `Z2` | 将当前焦点 `Z2` 窗口磁吸至左半屏 / 右半屏（满足 `WCAG 2.5.7` 免拖拽键盘平铺）。 |
-| `⌃ + ⌥ + ↑ / ↓` / `Win + Alt + ↑ / ↓` | `Z2` | 将当前焦点 `Z2` 窗口在安全区内最大化 / 还原或最小化至 Dock。 |
-| `⌘ + L` / `Ctrl + Alt + L` | `Z4` | 立即锁定当前 `DesktopSession`（`ACTIVE → LOCKED`，使旧会话输入代际立即失效 `[DUI-SESSION-001]`）。 |
-| `Escape` | `Z3` / `Z4` | 在 `Z4` 中始终绑定“安全拒绝 / 取消本次授权请求”（零副作用退出）；在 `Z3` 中关闭当前浮层抽屉。 |
-| `F6` / `Shift + F6` | `Z1..Z4` | 在五大无障碍地标（Top Rail → Omni-Bar → Task Space → Active App Window → Dock）间循环跳转焦点。 |
+| `Ctrl + Space` / `⌘ + Space` | `Z3` | 按需唤起或收起居中 `4px` 圆角实心 **Command & Intent Palette**（长按可进入受 `DevicePermissionState` 门控的按住说话语音转写态）。 |
+| `Ctrl + K` / `⌘ + K` | `Z3` | 唤起居中实心 **全局候选搜索面板**（代码层强制校验 `0x1F` 非权威位掩码，回车回跳权威视图重验）。 |
+| `Ctrl + Shift + E` / `⌘ + Shift + E` | `Z1` / `Z3` | 一键原地切换 **Standard Workstation View ↔ Diagnostic / Expert View**（`[CTRL-PLAN-001]`，零状态丢失）。 |
+| `Ctrl + .` / `⌘ + .` | `Z1` / `Z3` | **安全紧急暂停（Safe Pause）**：对当前焦点 `Task` 或活动 `Operation` 立即编译派发 `pause` `ControlCommand`（`[CTRL-SAFETY-001]`）。 |
+| `Ctrl + Shift + M` / `⌘ + Shift + M` | `Z2` / `Z3` | 打开或聚焦 **`TaskManagerSurface` / `ResourceMonitorSurface`** 十层系统控制台窗口。 |
+| `Ctrl + ,` / `⌘ + ,` | `Z2` / `Z3` | 打开 **四层系统设置与密钥引用管理（`SettingsDomain` & `KeychainReference`）**。 |
+| `Win + Alt + 1 / 2 / 3 / 4` / `⌃ + ⌥ + 1..4` | `Z1` / `Z2` | 一键切换工作站平铺预设：`1` 单窗最大化、`2` 左右双栏、`3` 三栏工作站、`4` 四象限平铺（满足 `WCAG 2.5.7` 免拖拽键盘平铺）。 |
+| `Win + Alt + ← / → / ↑ / ↓` / `⌃ + ⌥ + 方向键` | `Z2` | 将当前焦点窗口移入对应平铺槽位、最大化或最小化归入底部任务栏。 |
+| `Ctrl + Alt + L` / `⌘ + Ctrl + Q` | `Z4` | 立即锁定当前 `DesktopSession`（`ACTIVE → LOCKED`，使旧会话输入代际立即失效 `[DUI-SESSION-001]`）。 |
+| `Escape` | `Z3` / `Z4` | 在 `Z4` 中始终绑定“拒绝 / 取消本次授权请求”（零副作用零延迟退出）；在 `Z3` 中关闭命令面板或托盘浮层。 |
+| `F6` / `Shift + F6` | `Z1..Z4` | 在核心无障碍地标（Active App Window → Docked Task Space → Bottom Workstation Taskbar）间循环切换键盘焦点。 |
 
 ---
 
@@ -530,173 +380,167 @@ flowchart LR
 
 | # | §25.4 系统对象 | 所属平面 | 生命周期 / 核心状态机 | 权威后端归属与规格章节 |
 |---|---|---|---|---|
-| 1 | `UserProfile` | `Z3` / `Z4` | 持久身份配置（含个人防钓鱼安全印记 `security_seal_hint`、语言与无障碍偏好） | `IdentityAuthority` + `SettingsDomain`（§3.4, §3.7） |
+| 1 | `UserProfile` | `Z3` / `Z4` | 持久身份配置（含个人防钓鱼安全标识 `security_seal_hint`、语言与无障碍偏好） | `IdentityAuthority` + `SettingsDomain`（§3.4, §3.7） |
 | 2 | `DesktopSession` | `Z3` / `Z4` | `LOCKED → ACTIVE ↔ SUSPENDED → CLOSED`（锁屏递增 `session_generation`） | Rust `SessionManager` + `FocusAndInputRoute`（§3.7） |
-| 3 | `Workspace` | `Z1` / `Z3` | `CREATED → ACTIVE ↔ ARCHIVED → CLOSED`（隔离配额、通知策略与窗口布局集） | `Workspace` 控制器 + `SettingsDomain`（§3.7） |
-| 4 | `ApplicationLauncher` | `Z3` | 按 `(ApplicationId, InstallationId)` 激活应用，展示运行态与后台任务计数 | `ApplicationAuthority`（§3.3，`[DUI-LAUNCH-001]`） |
-| 5 | `SystemControlCenter` | `Z3` | 快捷控制抽屉（性能档位、后台等级暂停、设备权限总闸、工作区与会话锁） | `nlos-system-control` `ControlCommand`（§3.7，`[DUI-CONTROL-001]`） |
-| 6 | `TaskManagerSurface` | `Z2` / `Z1` | §25.3 十层对象浏览与受控调度（暂停/取消/强杀两步武装/回执核验） | `nlos-system-control`（§3.7，`[DUI-CONTROL-001]`） |
-| 7 | `ResourceMonitorSurface` | `Z2` | 三恢复域 OpenMetrics + 配额/水位/压力实时仪表盘与原始报文核对 | `nlos-system-control` + `ResourceAuthority`（§3.7） |
+| 3 | `Workspace` | `Z1` / `Z3` | `CREATED → ACTIVE ↔ ARCHIVED → CLOSED`（隔离配额、通知策略与平铺窗口布局集） | `Workspace` 控制器 + `SettingsDomain`（§3.7） |
+| 4 | `ApplicationLauncher` | `Z3` | 底部任务栏左端应用菜单与固定槽，严格按 `(ApplicationId, InstallationId)` 激活应用 | `ApplicationAuthority`（§3.3，`[DUI-LAUNCH-001]`） |
+| 5 | `SystemControlCenter` | `Z3` | 右下角任务栏实心控制弹出面板（性能档位、后台等级暂停、设备权限总闸、工作区与会话锁） | `nlos-system-control` `ControlCommand`（§3.7，`[DUI-CONTROL-001]`） |
+| 6 | `TaskManagerSurface` | `Z2` / `Z1` | §25.3 十层对象高密度表格浏览与受控调度（暂停/取消/强杀两步武装/回执核验） | `nlos-system-control`（§3.7，`[DUI-CONTROL-001]`） |
+| 7 | `ResourceMonitorSurface` | `Z2` | 三恢复域 OpenMetrics + 配额/水位/压力实心折线与表格仪表盘及原始报文核对 | `nlos-system-control` + `ResourceAuthority`（§3.7） |
 | 8 | `Surface` | `Z2` | `REGISTERED → CREATED → PRESENTED ↔ HIDDEN → CLOSED`（绑定安装代际） | `ApplicationAuthority` + [`window_lifecycle.rs`](../../../desktop/src-tauri/src/window_lifecycle.rs)（§3.3） |
-| 9 | `Window` | `Z2` | `CREATED → VISIBLE ↔ MINIMIZED → CLOSING → CLOSED`（可信外框 + 磁吸几何） | Rust `DesktopCompositor`（§2.3, §3.3，`[DUI-WINDOW-001]`） |
+| 9 | `Window` | `Z2` | `CREATED → VISIBLE ↔ MINIMIZED → CLOSING → CLOSED`（`30px` 实心标题栏 + 平铺/浮动几何） | Rust `DesktopCompositor`（§2.3, §3.3，`[DUI-WINDOW-001]`） |
 | 10 | `FocusAndInputRoute` | 宿主路由 | 跟踪 `(surface_id, surface_gen, session_gen, z4_modal_lock)` 与输入源标签 | Rust 输入路由器（§3.3, §3.4，`[DUI-INPUT-001]`） |
 | 11 | `ChooserGrant` | `Z4` | 系统文件/Artifact 选择器签发的 scoped `ArtifactCapability`（带过期时间） | `Z4` Chooser + `nlos-capability`（§3.4，`[DUI-CHOOSER-001]`） |
 | 12 | `ClipboardItem` | `Z3` / `Z4` | 绑定 `(content_type, source_app, taint, expiry, user_gesture)` 的受控剪贴项 | Rust 剪贴板守卫（§3.4，`[DUI-CLIP-001]`） |
-| 13 | `DragDropTransfer` | `Z2`..`Z4` | 跨表面/跨 Omni-Bar 拖拽事务（同源免打扰，跨应用敏感 Taint 升 `Z4` 确认） | Rust 拖拽守卫（§3.1, §3.4，`[DUI-CLIP-001]`） |
+| 13 | `DragDropTransfer` | `Z2`..`Z4` | 跨表面/跨命令面板拖拽事务（同源免打扰，跨应用敏感 Taint 升 `Z4` 确认） | Rust 拖拽守卫（§3.1, §3.4，`[DUI-CLIP-001]`） |
 | 14 | `ContentTypeAssociation` | `Z2` 设置 | MIME/Artifact 类型默认打开应用映射表（包仅能提议，用户可查看与一键撤销） | `SettingsDomain` + `ApplicationAuthority`（§3.7，`[DUI-ASSOC-001]`） |
 | 15 | `NotificationAction` | `Z3` | 绑定 `(notification_id, app_id, task_id, one_shot_action_token)` 的快捷动作 | 通知服务 + `ControlCommand`（§3.5，`[DUI-NOTIFY-001]`） |
 | 16 | `SettingsDomain` | `Z2` 设置 | `system / user / workspace / application` 四层 CAS 更新与 watch 监听 | `SettingsAuthority` IPC 面（§3.7，`[DUI-SETTINGS-001]`） |
 | 17 | `KeychainReference` | `Z2` / `Z4` | 仅向应用暴露 `keychain_ref_id` 句柄的凭据保险箱（零明文泄露） | `IdentityAuthority` / Vault（§3.7，`[DUI-SETTINGS-001]`） |
-| 18 | `DevicePermissionState` | `Z3` / `Z4` | 麦克风/摄像头/屏幕采集/位置权限状态机与 `Z3` 顶栏硬件占用指示灯 | 系统设备权限表 + `Z4` 授权（§3.1, §3.7） |
+| 18 | `DevicePermissionState` | `Z3` / `Z4` | 麦克风/摄像头/屏幕采集/位置权限状态机与 `Z3` 底部任务栏托盘硬件占用指示器 | 系统设备权限表 + `Z4` 授权（§3.1, §3.7） |
 
 ---
 
-### 3.1 全局自然语言 Omni-Bar 与多模态输入输出托盘（`D-OMNIBAR-MULTIMODAL`）
+### 3.1 按需唤起命令与意图面板（`Ctrl+Space` Command & Intent Palette，`D-OMNIBAR-MULTIMODAL`）
 
-1. **多模态输入通道与设备状态可见性**：
-   - **自然语言文本槽**：`16px` 正文字号，支持多行自动撑高（上限 `5` 行后内滚），支持 `@Application`、`#Artifact` 与 `/command` 结构化补全建议。
-   - **受控语音流（Voice Push-to-Talk）**：点击麦克风图标或长按 `⌘/Ctrl + Space` 启动本地/受控语音采集；首次使用由 `Z4` 授予 `DevicePermissionState(MICROPHONE)`，采集期间 `Z3` 顶部状态轨点亮常驻冰蓝脉冲麦克风指示灯，松开后展示实时可编辑转写文本（绝不未经用户过目直接静默执行不可逆指令）。
-   - **图像/屏幕选区与文件拖入（Multimodal Attachment Pills）**：支持粘贴截图、框选桌面局部区域或通过 `DragDropTransfer` 拖入本地文件/`Artifact`。每个附件渲染为带 MIME 类型、字节大小与 `ContentDigest` 前缀（X-Ray 模式可见）的 `6px` 圆角胶囊。
+1. **零霸屏触发与 Zed/VSCode 式紧凑实心形态**：
+   - 平时面板完全隐藏，仅在底部 `36px` 任务栏左侧保留一枚 `26px` 高、`4px` 圆角的凹槽触发按钮（`>_ 输入指令或自然语言目标... Ctrl+Space`）。
+   - 按下 `Ctrl/⌘ + Space` 或点击触发槽时，在视口中上方（`top: 14vh`，最大宽 `640px`）弹出 `4px` 圆角、`100%` 实心 `var(--nlos-bg-elevated)`、`1px solid var(--nlos-border-focused)` 的 **Command & Intent Palette**（合并结构化系统快捷命令、应用启动与自然语言多步委托）。
 
-2. **实时 `TypedIntent` 编译预览芯片（`[NL-COMPILE-001]`）**：
-   用户输入停顿 `280ms` 或按下预览键时，前端调用只读预编译接口获取候选 `TypedIntent`，在输入框正下方渲染一行高信噪比工程纹理摘要栏：
-   - **Consumer 视图**：`目标应用: Notes` · `动作: 整理并生成草稿` · `预计成本上限: <= 20 积分` · `可无损撤销`；
-   - **Expert X-Ray 视图**：额外追加 `schema: nlos.intent.v1`、`source_request_digest`、`compiler_digest` 与目标 `generation` 选择器。
+2. **多模态输入通道与设备状态可见性**：
+   - **紧凑输入槽**：`15px` 无衬线正文，支持自动增高（上限 `4` 行后内滚），支持 `@应用名`、`#文档名` 与 `>` 系统命令前缀补全。
+   - **受控语音转写（Voice Push-to-Talk）**：点击单色麦克风 SVG 按钮或长按 `Ctrl/⌘ + Space` 启动语音采集；首次使用经 `Z4` 授予 `DevicePermissionState(MICROPHONE)`，采集期间底部 `Z3` 任务栏右侧托盘点亮实心琥珀色麦克风占用指示器，松开后填入可编辑转写文本（严禁未经用户确认静默执行不可逆指令）。
+   - **截图与文件拖入（Multimodal Attachment Tags）**：支持粘贴截图、框选桌面区域或经 `DragDropTransfer` 拖入文件/`Artifact`，渲染为 `4px` 圆角实心单色文件标签（标准视图显示文件名与大小；`Diagnostic / Expert View` 额外显示 MIME 与 `ContentDigest` 前缀）。
 
-3. **`[NL-AMBIG-001]` 高风险歧义强制澄清面板**：
-   当 `TypedIntent.unresolved_ambiguities` 非空（例如用户说“清理旧备份”，同时匹配“移入可恢复归档（0 外部副作用）”与“永久物理删除 12 个归档对象（`IRREVERSIBLE`）”），Omni-Bar **严禁激活直接执行按钮**，而是在下方原地展开并列候选澄清卡：
-   - 每张候选卡显式标出：**作用范围（对象数量）**、**权限变化**、**预计成本上限** 与 **可撤销等级（`REVERSIBLE` vs `IRREVERSIBLE`）**；
-   - 默认高亮最小权限/可逆选项，用户必须显式点选其一重新绑定 `TypedIntent` 后方可进入提案准入。
+3. **实时意图编译预览与双模术语隔离（`[NL-COMPILE-001]`、`[ROAD-D-001]`）**：
+   用户输入停顿 `250ms` 或按下预览键时，调用只读预编译接口并在输入框下方以 `1px` 分割线展示紧凑结构化摘要条：
+   - **Standard Workstation View（默认零行话）**：`识别操作: 整理归档并生成草稿 | 目标应用: Notes | 费用上限: <= 20 积分 | 可无损撤销`；
+   - **Diagnostic / Expert View（`Ctrl/⌘ + Shift + E` 激活时）**：额外展开 `TypedIntent (nlos.intent.v1)`、`source_request_digest`、`compiler_digest` 与目标 `installation_generation` 选择器。
 
-4. **多模态输出托盘（Multimodal Output Tray）**：
-   对于轻量即时问答或快速 Artifact 预览，Omni-Bar 下方直接滑出结果托盘（支持结构化 Markdown/表格、生成图片缩略图、TTS 语音播报进度条及“固定到 `Task Space` 持续追踪”按钮）；一旦任务转入后台多步执行，自动下沉为 `Z1` `Task Space` 义务卡片，Omni-Bar 立即释放且不阻塞后续操作（`[TASK-NOTIFY-001]`）。
+4. **`[NL-AMBIG-001]` 高风险歧义强制澄清列表**：
+   当编译器返回非空 `unresolved_ambiguities` 时，主执行按钮锁定为禁用态，面板下方展开紧凑单选对比表：逐行列出各候选解释的 **影响对象范围**、**所需权限**、**费用上限** 与 **可撤销等级**（不可逆项标 `6px` 深绯红符号），默认预选最小权限可逆项，用户显式选定后方可继续。
+
+5. **轻量即时结果预览与自动下沉**：
+   即时查询或单步预览直接在面板下方实心结果区展示，提供 `[固定到后台任务面板]` 按钮；一旦提交进入多步后台任务，命令面板立即自动关闭并将焦点归还当前应用窗口，后台进展由停靠式 `Task Space` 与右下角通知承接（`[TASK-NOTIFY-001]`）。
 
 ---
 
-### 3.2 `Task Space` 双模空间画布（`D-TASK-SPACE-DAG`）
+### 3.2 停靠/可切换高密度 `Task Space` 工作站面板（`D-TASK-SPACE-DAG`）
 
-`Z1` `Task Space` 是桌面的常驻核心舞台，覆盖 `§25` `[TASK-STATE-001]` 全部生命周期状态，并严格遵守 `[TASK-STATE-002]`（聚合状态，单进程退出不伪造任务终态）与 `[TASK-REOPEN-001]`（终态任务“重试”创建新 `TaskAttempt`，“修改目标”创建新 `Task generation`，并保留历史回执链跳转）。
+`Z1` `Task Space` 摒弃消费级网页双列大卡片，采用 Zed / Windows Task Manager 级别的高密度实心表格与工程画布，覆盖 `§25` `[TASK-STATE-001]` 全部 16 态，并严格遵守 `[TASK-STATE-002]`（聚合状态，单进程退出不伪造任务终态）与 `[TASK-REOPEN-001]`（失败“重试”派生新 `TaskAttempt`，“修改目标”派生新 `Task generation` 并保留历史链）。
 
-#### A. Consumer Clean Mode（默认零行话义务卡片视图，`[ROAD-D-001]`）
+#### A. Standard Workstation View（默认零行话高密度表格视图，`[ROAD-D-001]`）
 
-画布按行动紧迫度分为三组垂直语义泳道（窄屏自动流式降为单列）：**① 待您决定（`WAITING_CONSENT` / `WAITING_INPUT` / `DISPUTED`）**、**② 正在进行（`RUNNING` / `WAITING_RESOURCE` / `WAITING_NETWORK` / `RECOVERING`）**、**③ 近期完成与中止（`COMPLETED` / `PARTIAL` / `FAILED` / `CANCELLED`）**。
+默认以 `0px` 外圆角、`28px–32px` 紧凑行高的实心数据表格停靠于工作区下栏或侧栏（亦可一键最大化为独立工作区标签），列结构固定包含 6 项核心事实（`[TASK-VIS-001]`）：
+1. **状态列**：`6px` 几何 SVG 状态符 + 零行话白话状态名（需用户确认项以 `#D97706` 琥珀菱形置顶排序；失败项标 `#DC2626` 叉号）。
+2. **任务目标与阶段摘要列**：主标题 + 当前步骤简述（如 `2/3：正在汇总实验数据`）。
+3. **所属应用列**：经核验的 `Application` 单色几何图标与人类可读名称。
+4. **有界资源计量列**：等宽 `tabular-nums` 数字（如 `14 / 20 积分`）配 `3px` 高实心单色细进度条（无渐变、无发光）。
+5. **`[RCPT-UNDO-001]` 可撤销性列**：显式标注三态之一——`可无损撤销`、`可补偿回滚`（悬停说明补偿动作）或带深绯红警示点的 `不可逆外部操作`（对不可逆项**物理隐藏/禁用“撤销”按钮**，仅保留“查看操作记录”）。
+6. **行内操作与 `[RCPT-PARTIAL-001]` 逐项展开**：提供 `4px` 圆角紧凑按钮（`审阅确认`、`暂停`、`继续`、`取消`、`打开结果`）；当任务处于“部分完成”态时，点击行展开内嵌子表格，逐行列出每个目标对象的成功/未成功原因，支持对失败子集一键发起重试。
 
-每张 **Consumer 义务卡** 严格包含以下 6 项核心要素（`[TASK-VIS-001]`）：
-1. **真实应用归属与自然语言目标标题**：左上角显示经核验的 `Application` 图标与人类可读名称，主标题使用 `15px` 清晰展示任务目标。
-2. **状态胶囊与阶段进度说明**：使用 §1.2 标准状态点与白话进展（如“已完成 2/3 步：正在汇总实验数据”）。
-3. **实时有界预算计量条（Bounded Cost Meter）**：以纯色 `4px` 细进度条渲染 `usage_high_water / upper_bound`（例如 `已用 14 / 上限 20 积分`），无任何呼吸霓虹渐变。
-4. **`[RCPT-UNDO-001]` 可撤销性诚实徽章**：每张卡片及操作确认框恒显三态徽章之一：
-   - `[↺ 可无损撤销 · REVERSIBLE]`：点击“撤销”可精确回退至上一 `Artifact` 代际；
-   - `[⇄ 可补偿回滚 · COMPENSATABLE]`：明确提示“外部操作已发生，点击将执行冲正/补偿流程（如发送取消通知邮件）”；
-   - `[! 不可逆外部效果 · IRREVERSIBLE]`：**物理禁用伪造的“撤销”按钮**，仅提供“查看已发生效果凭证”，杜绝 UI 假象掩盖真实外部副作用。
-5. **`[RCPT-PARTIAL-001]` 逐目标部分失败展开清单**：当状态为 `PARTIAL` 时，严禁显示笼统绿色勾号，卡片内嵌列出成功目标数与失败目标数（如 `8 项已同步 · 2 项因权限不足跳过`），支持逐项查看或对失败子集发起新 `TaskAttempt`。
-6. **直接受控动作栏**：提供 `暂停`、`继续`、`取消`、`打开产出物` 或 `审阅授权（跳转 Z4）` 按钮——后台 100% 编译为 `ControlCommand`。
+#### B. Diagnostic / Expert View（诊断与交互式 `TaskPlan` DAG 视图，`Ctrl/⌘ + Shift + E`，`[CTRL-PLAN-001]`）
 
-#### B. Expert X-Ray Mode（专家透视与交互式 `TaskPlan` DAG 编辑器，`[CTRL-PLAN-001]`）
+按下 `Ctrl/⌘ + Shift + E`（或点击底栏托盘 `[诊断]` 开关），`Task Space` 在 `< 16ms` 内原地切换为三栏工程诊断工作台：
 
-按下 `⌘/Ctrl + Shift + E`（或点击单张卡片右上角 `[X-RAY]` 切换键），卡片平滑展开为三栏工程透视工作台：
-
-1. **交互式 `TaskPlan` DAG 画布（`[PLAN-DAG-001]`、`[PLAN-LAZY-001]`、`[PLAN-CHANGE-001]`、`[PLAN-OVERRIDE-001]`）**：
-   - 使用 1px 冰蓝贝塞尔连接线与等宽节点框绘制完整有向无环图，实时标注每个 `TaskNode` 的 13 种精确状态（`DECLARED`、`BLOCKED_DEPENDENCY`、`ELIGIBLE`、`WAITING_AUTHORIZATION`、`WAITING_RESOURCE`、`MATERIALIZING`、`ACTIVE`、`CHECKPOINTED`、`EVICTED`、`REHYDRATING`、`COMPLETED`、`FAILED`、`CANCELLED`）及驻留层级（`residencyTier`）。
-   - 用冰蓝虚线围栏框出当前 **惰性物化窗口（Materialization Window，`[PLAN-LAZY-001]`）**，直观展示窗口外节点处于 `0 Process / 0 Context Pin` 仅元数据态。
+1. **交互式 `TaskPlan` 正交 DAG 画布（`[PLAN-DAG-001]`、`[PLAN-LAZY-001]`、`[PLAN-CHANGE-001]`、`[PLAN-OVERRIDE-001]`）**：
+   - 使用 `1px` 中性单色正交折线（orthogonal connectors）与 `4px` 圆角实心等宽节点框绘制完整有向无环图，精确显示 13 种 `TaskNode` 状态与驻留层级（`residencyTier`）；
+   - 以 `1px` 虚线矩形框标出当前 **惰性物化窗口（Materialization Window，`[PLAN-LAZY-001]`）**，明确区分 `0 Process / Metadata-Only` 待物化节点；
    - **图形化手工改图与双路径准入分流（`[PLAN-CHANGE-001]`）**：
-     - 已进入 `ACTIVE / COMPLETED` 的节点锁定为历史只读态（显示锁定图标与原 `declared_revision`，禁止静默篡改）；
-     - 对尚未执行的节点（`DECLARED / BLOCKED_DEPENDENCY / ELIGIBLE`），专家可执行 **暂停分支、调整显示/放置亲和性、收紧 fanout 上限、增删节点、替换节点角色或重连依赖边**；
-     - **受限 `ControlCommand` 快速通道**：若改动仅涉及显示顺序、本地 placement 建议或在不扩大权限前提下**调低**配额/并发度，工具栏显示 `[直接应用受限调度 ControlCommand]`，经认证 IPC 直接更新；
-     - **重编译与 `Z4` 重授权触发通道**：一旦改动新增了 `TaskNode`、改变了目标语义/输出契约、引入不可逆副作用、延长 deadline 或提高了资源上界，画布顶部立即亮起 `PLAN REVISION DIFF · RE-AUTHORIZATION REQUIRED` 横幅，点击提交后先生成新 `plan_digest` 提案并强制弹出 `Z4` 差异对比授权框（高亮新增权限与预算差额），签发新 `AuthorizationReceipt` 后方可生效（`[PLAN-OVERRIDE-001]`）。
-2. **`TaskAttempt` 竞速泳道与 `TaskHead` CAS 仲裁轨**：
-   - 并列展示同一任务或节点下的多个候选 `TaskAttempt`（如 `Attempt #1 [SUPERSEDED]` vs `Attempt #2 [WINNER · TaskHead CAS Committed]`），清晰标出各自快照水位、隔离域 `isolationDomainIdHex` 与 `LogicalEffect` 围栏纪元（`retry_fence_epoch`），不允许人工把失败 Attempt 强行标为已提交。
-3. **跨层资源、协程与分布式 `Cell` 页脚**：
-   - 显示绑定的 `Process`、`AgentInstance`、`ExecutionFiber`（含 `activeCpuMs`、`schedulerWaitMs`、`backpressureWaitMs` 及共享进程故障域提示）与所属 **`CellId` + `lease_epoch` 分片徽标**；
-   - 底部恒显等宽 `control_command_id`、`receipt_hex` 一键复制按钮与 `[核验 CLI 字节一致性]` 触发器。
+     - 已执行节点（`ACTIVE / COMPLETED`）只读锁定；
+     - 未执行节点（`DECLARED / BLOCKED_DEPENDENCY / ELIGIBLE`）支持暂停分支、调整放置亲和性、调低并发上限、增删替换节点与重连依赖边；
+     - **受限 `ControlCommand` 通道**：纯顺序/放置调整或不扩权资源降级直接编译为受限 `ControlCommand` 认证派发；
+     - **重编译与 `Z4` 重授权通道**：凡新增节点、改变语义目标、引入不可逆副作用、延长 deadline 或提高预算上限，顶部亮起实心琥珀提示栏 `计划变更涉及权限或预算上浮 · 需重新授权`，提交时生成新 `plan_digest` 并升入 `Z4` 展示新旧计划键值差异表，签发新 `AuthorizationReceipt` 后生效（`[PLAN-OVERRIDE-001]`）。
+2. **`TaskAttempt` 竞速泳道与 `TaskHead` CAS 仲裁表**：
+   - 表格化对比同一任务/节点下的候选 `TaskAttempt`（`Attempt #1 SUPERSEDED` vs `Attempt #2 WINNER · CAS Committed`）、`isolationDomainIdHex` 与 `retry_fence_epoch`。
+3. **十层执行拓扑与 `receipt_hex` 字节核验底栏**：
+   - 展示关联 `Process`、`AgentInstance`、`ExecutionFiber`（含 CPU/调度等待/背压毫秒读数与共享故障域提示）、所属 `CellId` + `lease_epoch`；
+   - 底栏常驻等宽 `control_command_id`、`receipt_hex` 复制键与 `[核验 CLI 字节一致性]` 按钮。
 
 ---
 
-### 3.3 `Window` & `Surface` 合成器与 `ApplicationLauncher` Dock（`D-COMPOSITOR-WM`）
+### 3.3 平铺优先窗口合成器与 `36px` 底部紧凑工作站任务栏（`D-COMPOSITOR-WM`）
 
-1. **`ApplicationLauncher` Dock 与全屏应用抽屉（`[DUI-LAUNCH-001]`）**：
-   - 底部居中悬浮 `56px` 高液态玻璃 Dock：左侧为“全部应用网格（Apps Grid）”入口，中部为用户固定与当前运行中的 `Application` 图标，右侧分隔线后为回收/归档暂存槽与“系统与任务控制台（`TaskManagerSurface`）”常驻入口。
-   - **严格身份纪律**：Dock 槽位、右键菜单与启动命令唯一绑定 `(ApplicationId, InstallationId)`，绝不以包文件 `PackageId` 或某个瞬态 `ProcessId` 作为启动键。右键悬停卡片展示该应用当前激活的窗口列表与后台 `Task` 数量（对应 `SurfacesPresentationDto.backgroundTasks`）。
-2. **`Window` 外框与沙箱 `Surface` 视口绑定（`[DUI-WINDOW-001]`）**：
-   - 每个 `Z2` 窗口顶部具有 `34px` 系统可信标题栏（由 `llmos-shell` 绘制，应用不可覆盖）：左侧显示已验证应用图标、声明 `title` 与只读代际胶囊 `gen:<N>`；右侧提供最小化、分屏磁吸菜单、安全区最大化与关闭按钮。
-   - 窗口生命周期严格驱动 [`SurfaceLifecycle`](../../../desktop/src-tauri/src/window_lifecycle.rs)：创建窗口推进 `REGISTERED → CREATED → PRESENTED`；最小化推进 `Window: MINIMIZED` + `Surface: PRESENTED → HIDDEN`；关闭窗口推进 `Window: CLOSING → CLOSED` + `Surface: CLOSED` 并通知宿主销毁对应子 WebView / 沙箱容器。
-3. **过期代际自动灰化与输入切断围栏（Stale Generation Dimming Fence）**：
-   - 当包热更新推进 `ApplicationAuthority.current_installation_generation`（如从 `gen:1` 升至 `gen:2`），或应用被禁用（`status = disabled`）时，仍打开的 `gen:1` 表面立即触发围栏：
-     - Rust `FocusAndInputRoute` 立即将该 `SurfaceId` 的输入路由置为拒绝态；
-     - 前端 `Z2` 窗框立即对内层视口施加 `filter: grayscale(0.85) opacity(0.50); pointer-events: none;`，并在系统标题栏下方弹出不可关闭的冰蓝条幅：`表面代际已过期 (gen:1 → gen:2) · 旧表面已停止接收输入 [重新加载新代际表面] [关闭窗口]`。
+1. **`36px` 底部紧凑工作站任务栏（Bottom Compact Workstation Taskbar，取代悬浮胶囊 Dock）**：
+   - 贴合视口底边全宽铺满，高 `36px`、`border-radius: 0px`、实心背景 `var(--nlos-bg-chrome)`（`#1E2024` / `#F3F4F6`），顶边 `1px solid var(--nlos-border-hairline)`，由左至右划分为三区：
+     - **左区（启动与命令入口）**：`[⊞ 应用]` 启动器按钮（点击弹出实心可搜索应用列表与分组网格，唯一按 `(ApplicationId, InstallationId)` 激活应用 `[DUI-LAUNCH-001]`，严禁混用 `PackageId` 或瞬态 `ProcessId`）+ `26px` 高紧凑命令/NL 触发框（`Ctrl+Space`）。
+     - **中左区（扁平窗口与任务标签栏）**：以 `4px` 顶/内圆角或平齐矩形排列固定应用与当前打开的 `Window` 标签（显示 `14×14px` 单色 SVG 图标 + 窗口标题），当前焦点窗口底部绘制 **`2px` 实心 `--nlos-accent-active`（`#3B82F6` / `#1D4ED8`）激活横条**；右键菜单展示该应用关联窗口与后台任务计数。
+     - **右区（工作站系统托盘）**：全部采用 `1.25px–1.5px` 单色几何 SVG 图标与紧凑文本按钮，依次为：**平铺布局切换器**（单窗 / 双栏 / 三栏 / 四象限 / 浮动）、**主机/集群连接与离线自治指示器**（`[DUI-OFFLINE-001]`）、**诊断视图开关**（`Ctrl+Shift+E`，开启时亮起 `2px` 底边蓝条）、**主题切换键**（`Graphite` / `Paper`）、**硬件采集状态灯**（麦克风/摄像头/录屏激活时显示 `DevicePermissionState` 实心点）、**通知中心弹出键**（显示未读数字角标，无铃铛 Emoji）以及 **`12px` 等宽时钟**（点击弹出日历与 `SystemControlCenter`）。
+2. **`Window` 实心可信窗框与沙箱 `Surface` 裁剪绑定（`[DUI-WINDOW-001]`）**：
+   - 每个 `Z2` 窗口顶部具有 `30px` 高实心可信标题栏（由 `llmos-shell` 绘制，应用不可覆盖）：左侧显示已验签应用单色图标与窗口标题（`Diagnostic / Expert View` 开启时额外追加等宽 `gen:<N>` 与 `SurfaceId`），右侧提供最小化、平铺槽位菜单、安全区最大化/浮动切换与关闭按钮。
+   - 窗口生命周期严格驱动 [`SurfaceLifecycle`](../../../desktop/src-tauri/src/window_lifecycle.rs)，且 Rust `SurfaceHostAdapter` 实时将子 WebView 裁剪在 `[0, viewport_height - 36px]` 内的窗口内容框中。
+3. **过期代际自动灰化与输入切断围栏（Stale Generation Fence）**：
+   - 当包升级推进 `current_installation_generation` 或应用被禁用时，Rust `FocusAndInputRoute` 立即拒绝该旧代际 `SurfaceId` 的一切输入；前端窗框将内层视口置为 `filter: grayscale(1) opacity(0.45); pointer-events: none;`，并在标题栏下方固定一条实心单色提示栏：`应用已更新至新版本，旧窗口已停止接收输入 [重新加载新版本] [关闭窗口]`（诊断视图同步显示 `gen:1 -> gen:2`）。
 
 ---
 
-### 3.4 `Z4` `Trusted UI` 安全幕布：权限确认、预算审批、`ChooserGrant` 与污染感知剪贴板（`D-TRUSTED-UI`）
+### 3.4 `Z4` UAC / Polkit 工作站级系统安全确认屏（`D-TRUSTED-UI`）
 
-`Z4` 是整套桌面的最高信任锚点，遵循统一防伪解剖结构：
-- **顶部防伪头**：居中动态 **Gerono `∞` Canvas 印章** + 右上角 `UserProfile.security_seal_hint`（用户自定义防钓鱼词/图形徽记，应用不可读）+ 同步点亮 `Z3` 顶栏硬件信标；
-- **密码学身份条**：展示 `Application` 人类可读名、图标及等宽可展开的 `ApplicationId`、`PrincipalId`、`InstallationGeneration` 与 `package_manifest_digest` 前后 8 位；
-- **350ms 输入武装保护**：弹窗挂载前 `350ms` 内，主批准按钮显示细线倒计时环并忽略点击/空格/回车，`Escape` 拒绝键全程零延迟可用。
+`Z4` 采用严肃操作系统（Windows UAC / Linux Polkit 工程级）实心对话框解剖结构，零毛玻璃、零霓虹发光：
+- **全屏实心暗化幕布**：`background: rgba(10, 11, 13, 0.78)`（无 `backdrop-filter`），挂载瞬间同步切断全部 `Z2` 子视图输入并在底部 `Z3` 任务栏显示“安全确认进行中”；
+- **对话框壳体**：宽 `520px`、`border-radius: 6px`、实心背景 `var(--nlos-bg-elevated)`（`#23252A` / `#FFFFFF`）、边框 `1px solid var(--nlos-border-focused)`，顶部贯穿一条 **`2px` 实心钢蓝安全横梁（`var(--nlos-accent-primary)`）**；
+- **防伪头部**：左侧嵌入 §1.3 定义的 **`32×20` 凹陷单色精密 Gerono 示波印章**，中部为 `16px` 半粗体标题，右侧展示用户私密防钓鱼标识 `UserProfile.security_seal_hint`（不可信应用无法读取）；
+- **350ms 防点击劫持武装门（Input Arming Guard）**：弹窗出现的前 `350ms` 内，主批准按钮处于只读武装态（忽略点击/空格/回车），`Escape` 拒绝键全程零延迟响应。
 
-`Z4` 承载三类核心安全模态框：
+`Z4` 统一承载三类高安全交互：
 
-1. **权限授予与高风险 `ActionProposal` / 预算审批框（`[TUI-CONSENT-001]`、`[NL-PROPOSE-001]`、`[NL-BIND-001]`）**：
-   - 逐行结构化列出：**为什么需要（Purpose）**、**精确作用目标与预期修订号（Target Objects & Revisions）**、**申请的 `Capability` 列表**、**资源与金额上限（Resource Upper Bound & `GuaranteeTier`）**、**有效期（`valid_until`）** 以及 **可撤销性警告（若为 `IRREVERSIBLE`，以 `--nlos-state-failed-border` 醒目框出不可逆后果）**；
-   - 提供显式范围衰减单选组（Scope Attenuation）：`仅本次操作有效（推荐）` / `在当前任务生命周期内有效` / `在当前工作区会话有效`；用户批准后签发绑定精确 `proposal_digest` 的 `AuthorizationReceipt`。
+1. **权限授予与高风险操作/费用上限确认框（`[TUI-CONSENT-001]`、`[NL-PROPOSE-001]`、`[NL-BIND-001]`）**：
+   - 核心区采用 `1px` 细线网格的**四行结构化键值规格表（Structured Key-Value Specification Table）**：
+     - **请求应用（Application）**：人类可读应用名与签名核验状态（开启诊断视图时展开 `ApplicationId`、`PrincipalId`、`InstallationGeneration` 与 `manifest_digest`）；
+     - **授权范围（Scope）**：精确操作目的、作用目标与有效期；
+     - **资源上限（Resource Ceiling）**：明确费用/算力封顶值（普通视图零 `Quota` / `GuaranteeTier` 术语，诊断视图展示完整账本字段）；
+     - **可撤销等级（Reversibility）**：明确标注 `可无损撤销`、`可补偿回滚` 或以 `#DC2626` 深绯红竖条强调 `不可逆外部操作`。
+   - 底部提供范围衰减单选组（`仅本次操作` / `当前任务内` / `本次登录会话`）与 `4px` 圆角矩形按钮（`[拒绝 (Esc)]` vs `[批准执行]`）。
 2. **Scoped 文件与 Artifact 选择器（`ChooserGrant`，`[TUI-CHOOSER-001]`、`[DUI-CHOOSER-001]`）**：
-   - 当应用请求打开、导入、导出或分享对象时，由 `Z4` 渲染系统级 `Artifact` / 文件浏览器（支持按工作区、类型、最近修改过滤与安全只读预览）；
-   - 选择器页脚明确公示将授予应用的最小权限：`将向 [Notes] 授予选定 2 个对象的只读能力 (READ_ONLY · 24h 后自动失效)，不暴露磁盘路径`；
-   - 确认后仅向调用方返回 `ChooserGrant`（scoped `ArtifactCapability` 句柄列表），应用全程无法获知 `/Users/...` 或 `D:\...` 宿主真实路径，更无法遍历未选中兄弟文件。
+   - 在 `Z4` 实心对话框内渲染双栏紧凑文件/Artifact 选择表与安全预览窗，页脚明确提示：`仅向 [Notes] 授予已选 2 项内容的只读访问权（24 小时有效），不公开磁盘目录路径`，确认后仅返回 scoped `ArtifactCapability` 句柄列表。
 3. **Taint-Aware 跨应用剪贴板与拖拽放行框（`ClipboardItem` & `DragDropTransfer`，`[DUI-CLIP-001]`）**：
-   - 系统剪贴板与拖拽通道为每次复制/拖起记录完整五元组：`(content_type, source_application_id, taint_class, expires_at, user_gesture_token)`；
-   - **免打扰快路径**：同一 `ApplicationId` 内部粘贴，或 `taint_class == PUBLIC` 且携带有效用户手势（如真实 `Ctrl+V` / 指针释放）的跨应用普通文本粘贴，直接放行并在 `Z3` 顶栏闪现 `1.2s` 轻量来源提示（`已粘贴自 Notes`）；
-   - **敏感跨应用拦截路径**：若条目携带 `SENSITIVE / CONFIDENTIAL / KEYCHAIN_HANDLE` 污染标签、缺少真实用户手势（后台脚本静默读剪贴板），或已临近 `expires_at`，立即拦截并弹出紧凑型 `Z4` 跨应用传输确认卡：`应用 [ExternalMailer] 请求读取来自 [HealthVault] 的受保护剪贴板内容 (类型: text/plain · 标签: SENSITIVE) [拒绝] [仅允许粘贴这一次]`。
+   - 同源粘贴或携带真实用户手势的 `PUBLIC` 文本跨应用粘贴免打扰直接放行；凡携带敏感污染标签（`SENSITIVE / CONFIDENTIAL / KEYCHAIN_HANDLE`）或缺失用户手势的跨应用读取，立即弹出紧凑 `Z4` 键值确认框拦截，经用户显式点击 `[仅允许粘贴这一次]` 后生成审计回执放行。
 
 ---
 
-### 3.5 通知中心、一次性 `ActionToken` 与离线自治/跨机拓扑体验（`D-NOTIFY-SEARCH-OFFLINE`）
+### 3.5 右下角通知弹出面板（一次性 `ActionToken`）与离线/集群托盘指示器（`D-NOTIFY-SEARCH-OFFLINE`）
 
-1. **右上角瞬态 Toast 与通知历史抽屉（`[TASK-NOTIFY-001]`、`[DUI-NOTIFY-001]`）**：
-   - 无论原 Omni-Bar 对话或应用窗口是否关闭，后台 `Task` 进入 `WAITING_CONSENT`、`WAITING_INPUT`、`PARTIAL`、`DISPUTED`、`FAILED`、`COMPLETED` 或三域恢复告警升级（`durable_escalated`）时，均在右上角（`Z3`）滑入非阻塞通知卡，并持久化沉淀至右侧通知中心历史流（对应 `OutcomeDto::notification_inspected` 水位）。
-   - **防伪内联动作按钮（One-Shot `NotificationAction`）**：通知卡上的快捷按钮（如 `[确认恢复告警]`、`[暂停任务]`、`[打开审批框]`）在后端严格绑定 `(notification_id, source_application_id, task_id, action_token_nonce)`。点击后一次性销毁该 `ActionToken` 并编译为认证 `ControlCommand`（若涉及新权限/成本则跳转 `Z4`），彻底阻止恶意应用伪造通知回调劫持其他应用的任务。
-2. **本地优先离线自治与跨主机 `Cell` 健康指示（`[DUI-OFFLINE-001]` + [ADR-0026](../../management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)）**：
-   - **绝对禁止全屏断网锁屏**：当宿主机断开互联网或远端物理机 `Cell` 网络分区时，`ApplicationLauncher`、本地 `Application` 窗口、本地 `Artifact` 读写、本地模型/工具驱动的 `Task`、`SettingsDomain`、本地 `nlos-search` 与通知历史保持 **100% 正常响应**。
-   - **局部精确降级徽标**：仅对明确依赖外部公网 Provider 或远端不可达 `Cell` 分片的特定 `TaskNode` / `Action` 挂载虚线边框胶囊 `[◌ WAITING_NETWORK · 本地配额与其余任务不受影响]`，支持一键切换本地后备模型或挂起等待网络恢复。
-   - **`Z3` 顶栏自治与拓扑胶囊（Autonomy & Cell Topology Pill）**：
-     - 单机模式显示 `[LOCAL · AUTONOMOUS]`（离线时切换为 `[OFFLINE · LOCAL READY]`）；
-     - 多 Cell / 跨物理机模式（衔接 `ADR-0026`）显示 `[CELLS 3/3 · EPOCH 14]`，若发生跨机分区则变为琥珀点标 `[CELLS 2/3 · PARTITION BOUNDED]`，点击可展开各 `CellId` 的租约剩余时长、本地可证明剩余额度（`DIST-LOCAL-001`）与故障分片摘要。
+1. **右下角实心通知横幅与历史弹出面板（`[TASK-NOTIFY-001]`、`[DUI-NOTIFY-001]`）**：
+   - 后台任务进入待确认、待补充输入、部分完成、结果分歧、失败或完成时，在右下角（底部 `36px` 任务栏正上方 `8px` 处）弹出 `4px` 圆角实心通知卡，并归档至底栏右侧 `[通知]` 弹出抽屉。
+   - **防伪内联动作按钮（One-Shot `NotificationAction`）**：快捷按钮严格绑定 `(notification_id, source_application_id, task_id, action_token_nonce)`，点击后后端一次性核销该 `ActionToken` 并走标准认证 `ControlCommand` 路径，防止跨应用伪造回调。
+2. **本地优先离线自治与主机/集群连接指示器（`[DUI-OFFLINE-001]` + [ADR-0026](../../management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)）**：
+   - **零全屏断网封锁**：断网或远端物理机 `Cell` 分区时，应用启动器、本地平铺窗口、本地 Artifact、本地任务、设置、本地搜索与通知历史 100% 正常可用；仅远端依赖任务行显示单色虚线圆环 `等待网络连接（本地正常可用）`。
+   - **底栏托盘连接指示器（双模渐进披露）**：
+     - 标准视图显示简洁无行话状态：`本地就绪` / `离线 · 本地可用` / `集群 3/3 在线` / 琥珀点标 `集群 2/3（部分离线）`；
+     - 点击展开实心连接详情浮层（开启 `Diagnostic / Expert View` 时完整显示各 `CellId`、`lease_epoch`、`PartitionAutonomyGate` 与本地可证明剩余额度）。
 
 ---
 
-### 3.6 全局非权威 Spotlight 搜索面板（`⌘/Ctrl + K`，`[CONS-CTRL-001]`）
+### 3.6 全局非权威候选搜索面板（`Ctrl+K`，`[CONS-CTRL-001]`）
 
-全局搜索面板悬浮于 `Z3` 中上方，直接消费 [`crates/nlos-search`](../../../crates/nlos-search/src/lib.rs) 只读查询与多 Cell 联邦候选归并接口：
+按下 `Ctrl/⌘ + K` 在视口中上方弹出 `4px` 圆角实心搜索面板，消费 [`crates/nlos-search`](../../../crates/nlos-search/src/lib.rs) 只读查询与多 Cell 联邦候选归并接口：
 
-1. **强制非权威视觉护栏（Mandatory `NON-AUTHORITATIVE · 0x1F` Pill）**：
-   - 搜索框右侧与每组候选结果页眉恒定渲染一枚不可隐藏的等宽胶囊徽标：**`CANDIDATE DISCOVERY · NON-AUTHORITATIVE (0x1F)`**；
-   - 前端解码层对返回信封执行硬断言：`nonAuthoritativeRestrictionsBits === 0x1f`（对应五项全禁布尔位 `SearchUseRestrictions::NON_AUTHORITATIVE`）。若任何响应位掩码不等于 `0x1f`，前端搜索组件立即触发 fail-closed 报错并丢弃结果。
-2. **一致性等级与联邦分片失败透明披露（`[CONS-DECL-001]`、`[DIST-FAIL-001]`）**：
-   - 搜索栏提供一致性切换开关：`快速派生索引 (Eventual / Derived)` vs `签名向量检查点有界快照 (Checkpoint-Bounded Snapshot)`；
-   - 在多 `Cell` 联邦查询（`FederatedSearchReport`）出现部分远端分片超时/断连时，顶部如实列出 `FederatedPartialEventual · 1 个远端 Cell 分片未响应 (cell_02: Timeout)`，绝不把残缺候选集伪装成全局完整结果。
-3. **一键回跳权威对象重验（One-Click Authoritative Jump，`[TASK-SNAPSHOT-003]`）**：
-   - 搜索命中项（任务、语义断言事件、Artifact、应用、设置项）**严禁提供任何直接删除、扣费、授权或提交按钮**；
-   - 回车或点击命中项唯一触发 **`JumpToAuthoritativeObject(target_kind, candidate_id, expected_checkpoint?)`**：系统自动调用对应权威读接口（`InspectTask` / `InspectApplication` / `SemanticAuthority` 事件与撤回核验）核实该对象当前未撤回且代际有效后，在 `Task Space` 或对应权威窗口中高亮定位该实体（若在索引建立后已被撤回，诚实提示“该候选断言已在权威账本中撤回 `[SEM-RETRACT-004]`”）。
+1. **代码级硬围栏与双模诚实披露（闭合 `[CONS-CTRL-001]` 且严守 `[ROAD-D-001]` 零行话禁令）**：
+   - **代码层强制校验**：前端 DTO 解码器对每份搜索响应执行硬断言 `nonAuthoritativeRestrictionsBits === 0x1f`（不等于 `0x1f` 立即 fail-closed 报错并丢弃候选集）；
+   - **标准视图文案**：面板右上角固定显示清晰日常说明 `候选搜索预览 · 回车打开原记录核实`（绝不向普通用户抛裸十六进制 `0x1F`）；当多节点查询部分超时时诚实提示 `部分远端节点未响应，当前仅显示已返回结果`；
+   - **诊断视图徽标**：开启 `Diagnostic / Expert View` 后，右上角同步追加等宽技术标签 `NON_AUTHORITATIVE · mask=0x1F · consistency=...` 与超时 `CellId` 明细。
+2. **强制回跳权威对象重验（`[TASK-SNAPSHOT-003]`）**：
+   - 搜索结果列表行严禁挂载任何删除、扣费、授权或提交写按钮；点击或回车唯一触发 `JumpToAuthoritativeObject`，先调用权威 `Inspect*` 接口核验对象未撤回且代际有效，再于对应窗口或 `Task Space` 行中高亮定位。
 
 ---
 
 ### 3.7 系统控制中心、十层任务/资源监控、四层设置域、Keychain 保险箱、无障碍与国际化（`D-CONTROL-SETTINGS-A11Y`）
 
-1. **`SystemControlCenter`（`Z3` 右上角快捷控制面板，`[DUI-CONTROL-001]`）**：
-   - 提供模块化玻璃控制磁贴：**系统性能与电源策略**（均衡 / 低功耗静默 / 高吞吐，`[CTRL-PRIORITY-001]` 显示 requested vs effective 值）、**后台任务等级一键冻结**、**四项硬件设备权限总闸**（麦克风 / 摄像头 / 屏幕录制 / 位置 `DevicePermissionState` 实时占用进程与一键切断）、**Glacier 明暗主题切换**（Abyssal / Daylight / 跟随系统）、**`Workspace` 快速切换器** 与 **锁定会话 / 切换用户（`DesktopSession`）**。
-2. **`TaskManagerSurface` 与 `ResourceMonitorSurface`（十层全量手动调度台，`§25.3`）**：
-   - 在保留现有 `W32-A..E` 恢复巡检、OpenMetrics 导出与一致性自检全部能力的基础上，升级为完整的 **10 层树状/表格联合控制台**：
-     `System/Device → Workspace/Tenant → Application → Task → TaskGroup/TaskNode → TaskAttempt → Process/AgentInstance/ExecutionFiber → ResourceGroup/Context → Topic/Channel → Operation/Device`。
-   - **层级爆炸半径预览（`[CTRL-HIER-001]`）**：对上层对象（如 `Application` 或 `TaskGroup`）点击暂停/取消时，右侧预览卡先列出将受级联影响的非分离（non-detached）子任务与进程数量；对 `kill`、`purge`（显示数据损失警告）与 `reset` 执行严格的两步 5 秒武装确认（`[CTRL-SAFETY-001]`）。
-   - **超时/断连权威状态对账（`[CTRL-RECOVERY-001]`）**：当任何 `ControlCommand` 派发超时或 IPC 瞬断时，界面将该动作标记为 `RECONCILING (UNKNOWN)` 并锁定同目标重复按钮，通过原 `control_command_id` 轮询对账权威回执，**严禁将 `UNKNOWN` 当作未执行而盲目重发**；批量控制操作逐行展示每目标 `SUCCEEDED / REJECTED / PENDING / UNKNOWN` 明细表。
+1. **`SystemControlCenter`（底栏右下角实心控制弹出面板，`[DUI-CONTROL-001]`）**：
+   - 点击底栏托盘系统区弹出 `360px` 宽、`6px` 圆角实心控制面板：包含性能策略分段开关（均衡 / 节能静音 / 高性能，`[CTRL-PRIORITY-001]`）、后台任务冻结开关、四类硬件权限总闸（麦克风 / 摄像头 / 屏幕采集 / 位置 `DevicePermissionState` 实时占用进程与一键切断）、外观主题切换（`Graphite 深色` / `Paper 浅色` / `跟随系统`）、`Workspace` 切换器与会话锁屏键。
+2. **`TaskManagerSurface` 与 `ResourceMonitorSurface`（十层全量手动调度窗口，`§25.3`）**：
+   - 作为标准 `Z2` 平铺/浮动工作站窗口运行，采用高密度实心树形数据表贯通全部 10 个控制层级：`System/Device → Workspace/Tenant → Application → Task → TaskGroup/TaskNode → TaskAttempt → Process/AgentInstance/ExecutionFiber → ResourceGroup/Context → Topic/Channel → Operation/Device`；
+   - 级联控制前在右侧实心侧栏展示后代影响清单（`[CTRL-HIER-001]`），`kill / purge / reset` 强制执行 5 秒两步武装确认（`[CTRL-SAFETY-001]`）；
+   - 命令超时或连接瞬断时锁定为 `正在核对状态` 并按原 `control_command_id` 权威对账，严禁将未知状态当作未执行盲目重发（`[CTRL-RECOVERY-001]`）。
 3. **四层 `SettingsDomain`、默认关联管理与 `KeychainReference` 保险箱（`[DUI-SETTINGS-001]`、`[DUI-ASSOC-001]`、`[DUI-SESSION-001]`）**：
-   - **四层作用域级联与 CAS 更新**：设置界面顶部提供作用域切换轨 `System · User · Workspace · Application`，每项设置显示当前生效值来源（如 `继承自 Workspace · rev:12`），修改提交携带 `expected_revision` 执行 compare-exchange（并发冲突时提示合并新值，禁止静默覆盖），并通过 watch 流实时刷新桌面外观或策略。
-   - **可审查可撤销的 `ContentTypeAssociation` 表（`[DUI-ASSOC-001]`）**：单独设立“文件与 Artifact 类型默认打开方式”专页，列出所有 MIME / schema 类型的当前绑定 `ApplicationId` 及待处理的安装包关联提议（`AssociationProposal`）。应用安装包只能提交提议卡，只有用户在设置页或首次打开时显式确认才会生效，且随时可一键撤销或重置。
-   - **`KeychainReference` 仅句柄凭据保险箱（`[DUI-SETTINGS-001]`）**：凭据管理页仅展示凭据别名、`keychain_ref_id` 句柄、允许按引用借用该句柄的已授权 `ApplicationId` 列表、最近一次使用时间戳与 `[立即吊销引用权限]` 按钮。录入新密钥通过 `Z4` 安全密码槽直接写入底层密钥库，**前端状态树、日志与任何应用 IPC 载荷中永远不出现明文密钥字节**。
-   - **多用户会话锁与代际失效（`[DUI-SESSION-001]`）**：执行锁屏（`DesktopSession → LOCKED`）或切换 `UserProfile` 时，立即清空前端内存敏感投影缓存、递增 `session_generation` 使旧会话未决输入与临时 UI 能力全部失效，并在 `Z4` 渲染极简 Glacier 锁屏界面。
+   - 左侧紧凑导航树 + 右侧实心表单行，支持 `System · User · Workspace · Application` 四层作用域对比与携带 `expected_revision` 的 CAS 更新（含 `user.appearance.theme = "graphite-workstation" | "paper-workstation" | "system"` watch 实时同步）；
+   - 独立提供可审查、可一键撤销的 `ContentTypeAssociation` 默认打开方式映射表（`[DUI-ASSOC-001]`）；
+   - `KeychainReference` 保险箱仅展示凭据名称、句柄引用、已授权按引用使用的应用列表与一键吊销键，新密钥录入经 `Z4` 直写底层密钥库，前端内存与日志零明文密钥驻留；
+   - 会话锁屏（`DesktopSession → LOCKED`）立即清空敏感投影缓存、递增 `session_generation` 废止旧会话输入路由，并在 `Z4` 渲染极简实心工作站解锁屏。
 4. **`WCAG 2.2 AA` 无障碍树与 `zh-CN / en-US` 双语国际化（`[TUI-EXT-001]`）**：
-   - **语义化无障碍树（Accessibility Tree）**：五大区域严格映射 ARIA 地标（`<header role="banner">`、`<div role="search">`、`<main aria-label="Task Space">`、`<section role="region" aria-label="Window: ...">`、`<nav aria-label="Application Dock">`、`Z4` `<dialog role="alertdialog" aria-modal="true">` 焦点陷阱）。后台任务关键跃迁与安全提示接入双通道 `aria-live`（普通进展 `polite`，`Z4` 权限拦截与故障告警 `assertive`）。所有可点击目标尺寸 `>= 28×28px`（高于 `WCAG 2.5.8` `24×24px` 要求），所有拖拽操作（分屏、DAG 连线编辑）均提供完整键盘菜单等价路径（`WCAG 2.5.7`）。
-   - **类型化国际化架构（`zh-CN` / `en-US`）**：前端建立编译期类型安全的词条目录 `I18nCatalog`（零运行时散落硬编码文案），默认提供简体中文（`zh-CN`）与英文（`en-US`）100% 键对齐覆盖；时间戳、字节量与配额数字经 `Intl.DateTimeFormat` / `Intl.NumberFormat` 格式化（数字统一启用 `font-variant-numeric: tabular-nums` 防止跳动）；后端错误统一基于类型化 `DesktopError.code` / `SabiFailure.code` 映射双语人类可读解释，同时在折叠详情中保留原始英文码供排障。
+   - 严格映射 ARIA 地标（`<main aria-label="Workspace">`、`<section role="region" aria-label="Window: ...">`、`<section role="region" aria-label="Task Space">`、`<footer role="contentinfo" aria-label="Workstation Taskbar">`、`Z4` `<dialog role="alertdialog" aria-modal="true">` 焦点陷阱）与双通道 `aria-live`；
+   - 所有交互按钮热区 `>= 26×26px`（任务栏内按钮最小 `26px` 高配水平内边距保证触控/指针命中，`WCAG 2.5.8` 合规），一切平铺分割拖拽与 DAG 连线编辑均提供完整键盘菜单等价操作（`WCAG 2.5.7`）；
+   - 编译期类型安全双语词条表 `zh-CN` / `en-US` 100% 键对齐，零 Emoji，数字全面启用 `font-variant-numeric: tabular-nums`。
 
 ---
 
@@ -704,44 +548,44 @@ flowchart LR
 
 ### 4.1 `desktop/` 阶段 D 模块化目录演进蓝图
 
-在保持 `desktop/Cargo.toml` 独立 workspace 根与既有测试集 100% 兼容的前提下，将当前单文件扁平视图重构为分层架构：
+在保持 `desktop/Cargo.toml` 独立 workspace 根与既有测试集 100% 兼容的前提下，按中性工业工作站架构组织目录：
 
 ```text
 desktop/
 ├── index.html
 ├── package.json / tsconfig.json / vite.config.ts
 ├── src/
-│   ├── main.ts                          # 壳启动器：初始化主题、i18n、Store、Z0..Z4 五平面挂载与快捷键守护
+│   ├── main.ts                          # 壳启动器：初始化 Graphite/Paper 主题、i18n、Store、Z0..Z4 挂载与全局快捷键
 │   ├── styles/
-│   │   ├── tokens.css                   # [D-TOKENS-KIT] §1.1 Glacier 双主题与无障碍回退完整 CSS 变量
-│   │   ├── glass-and-surfaces.css       # [D-TOKENS-KIT] 液态玻璃、1px 镜面描边环、卡片与表格原子样式
-│   │   └── planes-layout.css            # [D-COMPOSITOR-WM] Z0..Z4 几何网格、磁吸预览框与响应式断点
+│   │   ├── tokens.css                   # [D-TOKENS-KIT] §1.1 Graphite/Paper 实心工业工作站双主题 CSS 变量 (零 blur)
+│   │   ├── surfaces-and-borders.css     # [D-TOKENS-KIT] 100% 实心表面、1px 结构细线、0/4/6px 控件与高密度表格原子样式
+│   │   └── planes-layout.css            # [D-COMPOSITOR-WM] 4px 平铺网格、分割条、36px 底栏与浮动窗口几何样式
 │   ├── store/
 │   │   ├── projection-store.ts          # 单一权威规范化只读投影存储 (Task/Plan/Window/Notification/Settings)
-│   │   ├── view-mode.ts                 # Consumer <-> Expert X-Ray 双模纯函数选择器 (Cmd/Ctrl+Shift+E)
-│   │   └── command-reconciler.ts        # [CTRL-RECOVERY-001] ControlCommandId 在途追踪与超时/UNKNOWN 对账
+│   │   ├── view-mode.ts                 # Standard <-> Diagnostic/Expert 双模纯函数选择器 (Ctrl/Cmd+Shift+E)
+│   │   └── command-reconciler.ts        # [CTRL-RECOVERY-001] ControlCommandId 在途追踪与超时/UNKNOWN 权威对账
 │   ├── i18n/
 │   │   ├── index.ts                     # 类型安全词条解析器与 Intl tabular-nums 格式化
-│   │   ├── zh-CN.ts                     # 简体中文完整词条表
-│   │   └── en-US.ts                     # 英文完整词条表
-│   ├── components/
-│   │   ├── gerono-seal.ts               # [D-TOKENS-KIT] Gerono 双纽线 ∞ Canvas 动态印章 + 静态/Unicode 兜底
-│   │   ├── state-pill.ts                # §1.2 13 态几何符号 + 单色纪律状态胶囊
-│   │   └── receipt-audit-bar.ts         # 通用 receipt_hex 展示、复制与 CLI 字节等价核验底栏
+│   │   ├── zh-CN.ts                     # 简体中文完整词条表 (标准视图零内部架构行话、零 Emoji)
+│   │   └── en-US.ts                     # 英文完整词条表 (标准视图零内部架构行话、零 Emoji)
+│   ├── ui/
+│   │   ├── icons.ts                     # [D-TOKENS-KIT] 1.25px-1.5px 单色几何 SVG 线性图标集 (严禁 Emoji)
+│   │   ├── verification-seal.ts         # [D-TOKENS-KIT] 32x20 凹陷硬件风单色 Gerono 示波防伪印章 + 静态/U+221E 兜底
+│   │   ├── status-indicator.ts          # §1.2 6px 几何 SVG 符号 + 双极克制警示色状态单元
+│   │   └── receipt-audit-bar.ts         # 诊断视图专用 receipt_hex 展示、复制与 CLI 字节等价核验底栏
 │   ├── planes/
-│   │   ├── z0-ambient/                  # 极光细线流场背景与静态 CSS 兜底
-│   │   ├── z1-task-space/               # [D-TASK-SPACE-DAG] Consumer 义务卡泳道 + Expert TaskPlan DAG 交互编辑器
-│   │   ├── z2-compositor/               # [D-COMPOSITOR-WM] 可信 Window 外框、磁吸分屏控制与过期代际灰化围栏
+│   │   ├── z0-backdrop/                 # 纯实心 #111214 / #E5E7EB 中性工作区底板
+│   │   ├── z1-task-space/               # [D-TASK-SPACE-DAG] 停靠式高密度任务表格 + Diagnostic 正交 TaskPlan DAG 编辑器
+│   │   ├── z2-compositor/               # [D-COMPOSITOR-WM] 30px 实心可信窗框、4px 平铺分割器与过期代际灰化围栏
 │   │   ├── z3-chrome/
-│   │   │   ├── top-status-rail.ts       # 顶栏：NLOS 徽记、工作区、双模开关、Cell/离线胶囊、硬件占用灯
-│   │   │   ├── omni-bar.ts              # [D-OMNIBAR-MULTIMODAL] 自然语言/语音/拖拽输入 + TypedIntent 预览 + 歧义卡
-│   │   │   ├── launcher-dock.ts         # [D-COMPOSITOR-WM] 按 ApplicationId/InstallationId 激活的 Dock 与应用网格
-│   │   │   ├── spotlight-search.ts      # [D-NOTIFY-SEARCH-OFFLINE] 强制 0x1F 非权威全局搜索与回跳重验
-│   │   │   └── notification-drawer.ts   # [D-NOTIFY-SEARCH-OFFLINE] Toast 队列 + 通知历史 + 一次性 ActionToken 按钮
-│   │   └── z4-trusted-ui/               # [D-TRUSTED-UI] 350ms 防劫持门、权限/预算审批、ChooserGrant、Taint 剪贴板确认、锁屏
+│   │   │   ├── bottom-taskbar.ts        # [D-COMPOSITOR-WM] 36px 贴边任务栏：应用启动器、26px 命令触发槽、2px 底条窗口标签、系统托盘
+│   │   │   ├── command-palette.ts       # [D-OMNIBAR-MULTIMODAL] Ctrl+Space 按需 4px 实心命令/意图面板 + 歧义澄清表 + 多模态附件
+│   │   │   ├── search-palette.ts        # [D-NOTIFY-SEARCH-OFFLINE] Ctrl+K 候选搜索面板 (代码级 0x1F 门禁 + 权威回跳)
+│   │   │   └── notification-flyout.ts   # [D-NOTIFY-SEARCH-OFFLINE] 右下角实心通知横幅 + 历史抽屉 + 一次性 ActionToken 按钮
+│   │   └── z4-trusted-ui/               # [D-TRUSTED-UI] UAC/Polkit 实心安全确认屏、350ms 武装门、键值规格表、ChooserGrant、Taint 剪贴板门控
 │   └── views/
-│       ├── task-space/                  # (保留兼容并汇入 z1-task-space)
-│       ├── control-center/              # [D-CONTROL-SETTINGS-A11Y] SystemControlCenter + 10 层 TaskManager + ResourceMonitor
+│       ├── task-space/                  # (保留阶段 B/C 兼容导出并汇入 z1-task-space)
+│       ├── control-center/              # [D-CONTROL-SETTINGS-A11Y] 右下角控制浮层 + 10 层 TaskManager + ResourceMonitor
 │       └── settings-vault/              # [D-CONTROL-SETTINGS-A11Y] 4 层 SettingsDomain CAS + ContentTypeAssociation + KeychainReference
 └── src-tauri/
     ├── src/
@@ -751,7 +595,7 @@ desktop/
     │   ├── error.rs                     # 类型化 DesktopError (零 unwrap)
     │   ├── surfaces.rs                  # ApplicationAuthority 表面与后台任务投影
     │   ├── window_lifecycle.rs          # SurfaceLifecycle + WindowLifecycle 状态机
-    │   ├── compositor.rs                # [D-COMPOSITOR-WM] SurfaceHostAdapter、子 WebView 几何裁剪与 Z4 原生隐藏闸门
+    │   ├── compositor.rs                # [D-COMPOSITOR-WM] SurfaceHostAdapter、平铺/底栏几何裁剪与 Z3/Z4 遮挡隐藏闸门
     │   ├── input_router.rs              # [D-COMPOSITOR-WM / D-TRUSTED-UI] FocusAndInputRoute、代际围栏与 Z4 模态输入锁
     │   └── transfer_guard.rs            # [D-TRUSTED-UI] ChooserGrant 句柄签发桥与 Clipboard/DragDrop Taint 守卫
     └── tests/
@@ -765,27 +609,27 @@ desktop/
 
 ### 4.2 闭合 `TASK_SPACE_GAPS` 与支撑完整桌面所需的后端只读/订阅 IPC 补面（`D-IPC-ENUM`）
 
-为彻底消除 [`desktop/src/views/task-space/index.ts`](../../../desktop/src/views/task-space/index.ts) 登记的三项 `TASK_SPACE_GAPS` 并遵循 [ADR-0014](../../management/adrs/0014-schema-channel-freeze-v1-beta.md) additive 兼容规则，`D-IPC-ENUM` 需在 `nlos-schema` / `nlos-system-control` 及对应本地权威上补齐以下只读枚举与增量观察面（全部经 `ADR-0011` 认证入口并产出确定性 `ControlReceipt`）：
+为彻底消除 [`desktop/src/views/task-space/index.ts`](../../../desktop/src/views/task-space/index.ts) 登记的三项 `TASK_SPACE_GAPS` 并遵循 [ADR-0014](../../management/adrs/0014-schema-channel-freeze-v1-beta.md) additive 兼容规则，`D-IPC-ENUM` 在 `nlos-schema` / `nlos-system-control` 及对应本地权威上补齐以下只读枚举与增量观察面（全部经 `ADR-0011` 认证入口并产出确定性 `ControlReceipt`）：
 
 | 编号 | 新增只读 / 观察命令 | 闭合的历史缺口 / 支撑能力 | 有界性与确定性契约 |
 |---|---|---|---|
 | **IPC-D1** | `ListTasks { cursor, limit <= 64, state_filter?, workspace_id? }` & `ListTaskGroups` | **闭合 `TASK_SPACE_GAPS[0]`**（此前仅能从三域恢复巡检读取 `escalated` 告警行，无法枚举正常运行/待确认/已完成任务） | 按 `(updated_at_ms DESC, task_id ASC)` 稳定游标分页，返回 `next_cursor` 与 `truncated` 布尔位，绝无无界全表扫描。 |
 | **IPC-D2** | 扩充 `TaskSummaryProjection`（携带 `application_id`、`installation_generation`、`plan_revision`、`task_state`、`undo_class`、`reservation_id?`、`cell_id?`） | **闭合 `TASK_SPACE_GAPS[1]`**（此前 `tasks` 表已有 `application_id / plan_revision` 列但 IPC 投影未携带） | Additive 扩展消息字段；旧版 CLI/客户端忽略未知非关键扩展字段或按新子命令消费，既有 `InspectTask` 黄金回执字节零破坏。 |
-| **IPC-D3** | `ListTaskNodes { plan_id, plan_revision }`、`ListTaskAttempts { task_id }`、`ListExecutionFibers { parent_scope, cursor, limit }`、`ListOperations { parent_scope, cursor, limit }` | **闭合 `TASK_SPACE_GAPS[2]`**（支撑 `TaskPlan` DAG 全图渲染、Attempt 竞速泳道与十层控制树展开，显式区分 `NOT_FOUND` 与 `STALE_GENERATION`） | 严格限定在给定 `plan_id` / `task_id` / `process_id` 父作用域内有界分页（单页上限 `64` 条）。 |
-| **IPC-D4** | `ListInstalledApplications { cursor, limit }` & `QuerySearchCandidates`（桥接 `nlos-search`） | 支撑 `ApplicationLauncher` Dock 动态枚举全部已安装应用及 `⌘/Ctrl+K` 非权威搜索面板 | 搜索回执原样透传 `non_authoritative_restrictions_bits = 0x1F`、`achieved_consistency` 与失败分片列表。 |
-| **IPC-D5** | `PollDesktopWatermarkEvents { since_watermark, limit <= 128 }`（带可选长轮询/流式通知唤醒） | 驱动 `Task Space`、通知 Toast 与设置 watch 实时增量更新，替代全表高频轮询 | 以单调水位游标拉取变更集摘要，断线重连后从上次水位无缝补齐，回退路径仍兼容手动单点 `Inspect*`。 |
+| **IPC-D3** | `ListTaskNodes { plan_id, plan_revision }`、`ListTaskAttempts { task_id }`、`ListExecutionFibers { parent_scope, cursor, limit }`、`ListOperations { parent_scope, cursor, limit }` | **闭合 `TASK_SPACE_GAPS[2]`**（支撑诊断视图 `TaskPlan` DAG 全图渲染、Attempt 竞速泳道与十层控制树展开，显式区分 `NOT_FOUND` 与 `STALE_GENERATION`） | 严格限定在给定 `plan_id` / `task_id` / `process_id` 父作用域内有界分页（单页上限 `64` 条）。 |
+| **IPC-D4** | `ListInstalledApplications { cursor, limit }` & `QuerySearchCandidates`（桥接 `nlos-search`） | 支撑底部任务栏 `ApplicationLauncher` 动态枚举全部已安装应用及 `Ctrl+K` 候选搜索面板 | 搜索回执原样透传 `non_authoritative_restrictions_bits = 0x1F`、`achieved_consistency` 与失败分片列表。 |
+| **IPC-D5** | `PollDesktopWatermarkEvents { since_watermark, limit <= 128 }`（带可选长轮询/流式通知唤醒） | 驱动停靠式 `Task Space` 表格、右下角通知与设置 watch 实时增量更新，替代全表高频轮询 | 以单调水位游标拉取变更集摘要，断线重连后从上次水位无缝补齐，回退路径仍兼容手动单点 `Inspect*`。 |
 
 ### 4.3 阶段 D 八大工作包（`D-*`）职责、写集与验收门清洁映射表
 
-本设计规格的所有章节按最小耦合边界一对一拆解至 [阶段 D 权威进度单](../../management/stage-d-progress.md) 的 8 个独立工作包，供后续实现波次按依赖图并行派发：
+本设计规格按最小耦合边界一对一拆解至 [阶段 D 权威进度单](../../management/stage-d-progress.md) 的 8 个独立工作包：
 
 | 工作包 ID | 覆盖本规格章节 | 核心交付物与写集边界 | 前置依赖 | 对应验收门 |
 |---|---|---|---|---|
-| **`D-TOKENS-KIT`** | §1.1, §1.2, §1.3 | `tokens.css`（Abyssal + Daylight 双主题）、液态玻璃/无障碍降级样式、13 态状态胶囊组件、**Gerono 双纽线 `∞` Canvas 动态印章组件**及双主题对比度自动化单测 | 无（首波可立即启动） | `D-GATE-006`（Token & AA 对比度门） |
+| **`D-TOKENS-KIT`** | §0.1, §1.1–§1.3 | `tokens.css`（`Graphite` + `Paper` 实心工业工作站双主题）、`1px` 细线与 `0/4/6px` 控件样式、`1.25px–1.5px` 单色几何 SVG 图标集、`6px` 双极克制状态指示器、**凹陷硬件风 `32×20` 单色 Gerono 防伪印章**及反 AI 套路（零 `blur`/零 Emoji/AA 对比度）自动化单测 | 无（首波可立即启动） | `D-GATE-006`（反 AI 纪律 & AA 对比度门） |
 | **`D-IPC-ENUM`** | §4.2 | `nlos-schema` / `nlos-system-control` additive 只读分页枚举（`IPC-D1..D5`），闭合三项 `TASK_SPACE_GAPS`，配套 CLI 与认证 IPC 字节等价测试 | 无（首波与 `D-TOKENS-KIT` 并行） | `D-GATE-002`（枚举回执 CLI 等价门） |
-| **`D-COMPOSITOR-WM`** | §2.1–§2.4, §3.3 | 五平面 `Z0..Z4` 容器骨架、`SurfaceHostAdapter`（子 WebView / 沙箱容器裁剪）、`Window` 磁吸平铺管理、`ApplicationLauncher` Dock、过期代际灰化与 `FocusAndInputRoute` 基础焦点路由 | `D-TOKENS-KIT`, `D-IPC-ENUM` | `D-GATE-001`（窗口裁剪与过期代际围栏） |
-| **`D-OMNIBAR-MULTIMODAL`** | §3.1 | `Z3` 全局自然语言 Omni-Bar、受控语音/截图/文件拖入胶囊、实时 `TypedIntent` 编译芯片预览、`[NL-AMBIG-001]` 高风险歧义对比澄清卡与多模态输出托盘 | `D-TOKENS-KIT`, `D-COMPOSITOR-WM` | `D-GATE-002`（意图编译与歧义阻断测试） |
-| **`D-TASK-SPACE-DAG`** | §3.2 | `DesktopProjectionStore`、Consumer 零行话义务卡（成本条、`[RCPT-UNDO-001]` 徽章、逐目标部分失败清单）与 `⌘/Ctrl+Shift+E` Expert X-Ray（交互式 `TaskPlan` DAG 编辑器、双路径重授权触发、Attempt 竞速泳道） | `D-IPC-ENUM`, `D-COMPOSITOR-WM` | `D-GATE-002`, `D-GATE-006`（`[ROAD-D-001]` & DAG 改图门） |
-| **`D-TRUSTED-UI`** | §3.4 | `Z4` 不可遮挡安全幕布、350ms 防劫持武装门、权限与预算审批框、Scoped `ChooserGrant` 选择器、`ClipboardItem`/`DragDropTransfer` 跨应用 Taint 拦截确认框 | `D-TOKENS-KIT`, `D-COMPOSITOR-WM` | `D-GATE-001`, `D-GATE-003`（防伪、选择器与剪贴板最小权限） |
-| **`D-NOTIFY-SEARCH-OFFLINE`** | §3.5, §3.6 | 右侧通知中心与 Toast、一次性 `ActionToken` 快捷响应、`⌘/Ctrl+K` 强制 `0x1F` 非权威 Spotlight 搜索与权威回跳重验、`[DUI-OFFLINE-001]` 本地断网自治与跨机 `Cell` 拓扑胶囊（衔接 `ADR-0026`） | `D-IPC-ENUM`, `D-COMPOSITOR-WM` | `D-GATE-004`, `D-GATE-005`（非权威搜索与断网自治门） |
-| **`D-CONTROL-SETTINGS-A11Y`** | §3.7 | `SystemControlCenter`、升级版 10 层 `TaskManagerSurface` / `ResourceMonitorSurface`（含爆炸半径预览与 `UNKNOWN` 对账）、4 层 `SettingsDomain` CAS + `ContentTypeAssociation` 撤销页 + `KeychainReference` 句柄保险箱、`DesktopSession` 锁屏、`WCAG 2.2 AA` 全键盘无障碍与 `zh-CN`/`en-US` 词条验收 | `D-COMPOSITOR-WM`, `D-TRUSTED-UI` | `D-GATE-002`, `D-GATE-006`（阶段 D 完整退出门合拢） |
+| **`D-COMPOSITOR-WM`** | §2.1–§2.4, §3.3 | 五平面 `Z0..Z4` 容器骨架、`SurfaceHostAdapter`（子 WebView 平铺裁剪与底栏避让）、`4px` 间隙平铺优先窗口管理器（双栏/三栏/四象限/可选 `6px` 浮动）、`36px` 底部贴边工作站任务栏（`ApplicationLauncher` + `26px` 命令触发框 + `2px` 激活条窗口标签 + 系统托盘）、过期代际灰化与 `FocusAndInputRoute` | `D-TOKENS-KIT`, `D-IPC-ENUM` | `D-GATE-001`（窗口裁剪与过期代际围栏） |
+| **`D-OMNIBAR-MULTIMODAL`** | §3.1 | 按需唤起的 `Ctrl+Space` `4px` 圆角实心 **Command & Intent Palette**（平时隐藏零霸屏）、受控语音/截图/文件附件标签、双模意图预览（标准视图零行话，诊断视图显示 `TypedIntent`）、`[NL-AMBIG-001]` 歧义对比澄清表与即时结果预览区 | `D-TOKENS-KIT`, `D-COMPOSITOR-WM` | `D-GATE-002`, `D-GATE-006`（意图编译、歧义阻断与零行话门） |
+| **`D-TASK-SPACE-DAG`** | §3.2 | `DesktopProjectionStore`、停靠/可切换高密度实心表格 `Task Space`（零行话任务列、单色计量条、`[RCPT-UNDO-001]` 三态列、逐目标部分失败展开表）与 `Ctrl/⌘+Shift+E` Diagnostic / Expert View（正交连线 `TaskPlan` DAG 编辑器、双路径重授权触发、Attempt 竞速泳道） | `D-IPC-ENUM`, `D-COMPOSITOR-WM` | `D-GATE-002`, `D-GATE-006`（`[ROAD-D-001]` & DAG 改图门） |
+| **`D-TRUSTED-UI`** | §3.4 | `Z4` UAC/Polkit 实心系统安全确认屏（`rgba(10,11,13,0.78)` 暗幕、`6px` 实心框、`2px` 钢蓝顶条、`32×20` 凹陷单色印章、四行键值规格表、`350ms` 防劫持门）、Scoped `ChooserGrant` 选择器、`ClipboardItem`/`DragDropTransfer` 跨应用 Taint 拦截确认框 | `D-TOKENS-KIT`, `D-COMPOSITOR-WM` | `D-GATE-001`, `D-GATE-003`（防伪、选择器与剪贴板最小权限） |
+| **`D-NOTIFY-SEARCH-OFFLINE`** | §3.5, §3.6 | 右下角实心通知横幅与抽屉、一次性 `ActionToken` 快捷响应、`Ctrl+K` 实心搜索面板（代码级 `0x1F` 门禁 + 标准视图零行话提示 + 权威回跳重验）、`[DUI-OFFLINE-001]` 本地断网自治与底栏托盘主机/集群连接指示器 | `D-IPC-ENUM`, `D-COMPOSITOR-WM` | `D-GATE-004`, `D-GATE-005`（非权威搜索与断网自治门） |
+| **`D-CONTROL-SETTINGS-A11Y`** | §3.7 | 底栏右下角 `SystemControlCenter` 实心面板、10 层高密度表格 `TaskManagerSurface` / `ResourceMonitorSurface`（含爆炸半径预览与 `UNKNOWN` 对账）、4 层 `SettingsDomain` CAS + `ContentTypeAssociation` 撤销页 + `KeychainReference` 句柄保险箱、`DesktopSession` 锁屏、`WCAG 2.2 AA` 全键盘无障碍与 `zh-CN`/`en-US` 零 Emoji 词条验收 | `D-COMPOSITOR-WM`, `D-TRUSTED-UI` | `D-GATE-002`, `D-GATE-006`（阶段 D 完整退出门合拢） |
