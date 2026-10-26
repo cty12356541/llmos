@@ -1,23 +1,37 @@
-//! **退役声明（F1 / 2026-10-05）**：本演示 bin 处于退役状态——功能已被
-//! system-control-daemon（feature `daemon`）与 CLI 取代；保留仅作库消费示例，
-//! 不再随演进更新，勿在新工作中引用。
 //! `slice-k-demo` — single-process sequential run of the first
-//! longitudinal slice: happy chain, cancel path, crash recovery
-//! (drop + reopen), and the authority-sourced inspect view. One stable
-//! `[slice-k]`-prefixed line per step; every receipt line is grep-friendly.
+//! longitudinal slice and assembled `CellHost` service faces: happy chain,
+//! cancel path, second-process platform kill, crash recovery (drop + reopen),
+//! `CellHost` `[TASK-NOTIFY-001]` / `[DUI-NOTIFY-001]` / `[DUI-OFFLINE-001]`
+//! notification + action-token + offline-history flows, `SearchService`
+//! non-authoritative candidate discovery + `[TASK-SNAPSHOT-003]` signed vector
+//! checkpoint re-verification, and the authority-sourced inspect view. One
+//! stable `[slice-k]`-prefixed line per step; every receipt line is
+//! grep-friendly.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
-
-use nlos_types::PackageId;
 
 use nlos_application::DisableApplicationRequest;
 use nlos_artifact::CollectOrphanBlobsDecision;
+use nlos_cell::FailureDetectorConfig;
+use nlos_notify::{
+    IssueNotificationActionTokenRequest, NotifyError, RedeemNotificationActionRequest,
+    TaskNotificationEnvelope, TaskTransitionKind,
+};
+use nlos_operation::{CompletionOutcome, OperationState};
 use nlos_runtime::RuntimeAdapter as _;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
+use nlos_search::{AssertionSelector, ControlConsumerKind, SearchUseRestrictions};
 use nlos_slice_k::{
-    AutoOrphanGc, ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path,
+    AutoOrphanGc, CellHost, CellHostConfig, ChainQuery, HappyChain, NotificationTopicConfig,
+    OperationReceiptFact, SliceKError, SliceKRuntime, artifact_blob_path,
     plant_orphan_artifact_blob, run_cancel_path, run_happy_chain, run_recovery_prefix,
     run_second_process_pair, run_second_process_platform_kill, seeded_key, short_hex,
+};
+use nlos_topic::SubscriberKey;
+use nlos_types::{
+    ApplicationId, ArtifactId, CallbackId, DeviceId, Generation, OperationId, PackageId, ReceiptId,
+    SchedulerDomainId, TaskId,
 };
 
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
@@ -43,6 +57,7 @@ async fn main() {
     demo_cancel_path(&runtime, &adapter).await;
     demo_second_process_kill(&runtime, &adapter).await;
     demo_recovery(runtime, adapter, &root).await;
+    demo_cell_host_services(&root);
     println!("[slice-k] DONE");
 
     let _ = std::fs::remove_dir_all(&root);
@@ -506,4 +521,198 @@ async fn demo_recovery(
     for line in post.report_lines() {
         println!("[slice-k] INSPECT-RECOVERED {line}");
     }
+}
+
+fn demo_cell_host_services(root: &std::path::Path) {
+    println!("[slice-k] STEP 15 cell-host-services begin");
+    let detector = FailureDetectorConfig::new(
+        NonZeroU64::new(3).expect("suspect threshold"),
+        NonZeroU64::new(6).expect("dead threshold"),
+    )
+    .expect("detector config");
+    let host = CellHost::open(
+        root,
+        CellHostConfig::new(
+            SchedulerDomainId::from_bytes([0xD0; 16]),
+            1_000,
+            500,
+            DeviceId::from_bytes([0xD1; 16]),
+            detector,
+        ),
+    )
+    .expect("open cell-host over slice-k root");
+
+    let app_id = ApplicationId::from_bytes([0xD2; 16]);
+    demo_cell_host_notify(&host, app_id);
+    demo_cell_host_search(&host, app_id);
+    println!("[slice-k] STEP 15 cell-host-services done");
+}
+
+fn demo_cell_host_notify(host: &CellHost, app_id: ApplicationId) {
+    let task_id = TaskId::from_bytes([0xD3; 16]);
+    let subscribed_at_ms = host
+        .runtime()
+        .wall_now_ms(seeded_key(0xD0, 1))
+        .expect("wall for subscribe");
+    let subscribed = host
+        .bootstrap_and_subscribe_notification_topic(
+            &NotificationTopicConfig::for_application(app_id),
+            SubscriberKey::from_bytes([0xD4; 16]),
+            subscribed_at_ms,
+        )
+        .expect("bootstrap and subscribe task notification topic");
+
+    let occurred_at_ms = host
+        .runtime()
+        .wall_now_ms(seeded_key(0xD0, 2))
+        .expect("wall for task transition");
+    let envelope = TaskNotificationEnvelope {
+        task_id,
+        application_id: app_id,
+        task_generation: Generation::INITIAL,
+        transition: TaskTransitionKind::WaitingConsent,
+        occurred_at_ms,
+        summary_digest: [0xD5; 32],
+        requires_user_action: true,
+    };
+    let pub_receipt = host
+        .publish_task_notification(subscribed.topic_id(), &envelope, seeded_key(0xD0, 3))
+        .expect("publish task notification")
+        .receipt();
+    let delivered = host
+        .poll_task_notifications(subscribed.notification_id(), 8)
+        .expect("poll task notifications");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].envelope, envelope);
+    receipt_line(
+        "task-notification",
+        subscribed.notification_id().as_bytes(),
+        &format!(
+            "task={} seq={} transition={}",
+            short_hex(task_id.as_bytes()),
+            pub_receipt.publication.channel_sequence,
+            envelope.transition.as_str(),
+        ),
+    );
+
+    let issued_token = host
+        .issue_notification_action_token(IssueNotificationActionTokenRequest {
+            notification_id: subscribed.notification_id(),
+            application_id: app_id,
+            task_id,
+            delivery_sequence: delivered[0].sequence,
+            action_code: 1,
+            secret_nonce: [0xD6; 32],
+            issued_at_ms: occurred_at_ms,
+            expires_at_ms: occurred_at_ms + 60_000,
+            idempotency_key: seeded_key(0xD0, 4),
+        })
+        .expect("issue action token")
+        .token();
+    let redeem_req = RedeemNotificationActionRequest {
+        token_id: issued_token.token_id,
+        presented_proof: issued_token.secret_proof,
+        caller_notification_id: subscribed.notification_id(),
+        caller_application_id: app_id,
+        caller_task_id: task_id,
+        action_code: 1,
+        redeemed_at_ms: occurred_at_ms + 10,
+    };
+    let redeem_receipt = host
+        .redeem_notification_action_token(redeem_req)
+        .expect("redeem one-shot action token");
+    assert!(matches!(
+        host.redeem_notification_action_token(redeem_req),
+        Err(SliceKError::Notify(
+            NotifyError::ActionTokenAlreadyRedeemed { .. }
+        ))
+    ));
+    receipt_line(
+        "action-token-redeem",
+        redeem_receipt.receipt_id.as_bytes(),
+        &format!(
+            "token={} seq={}",
+            short_hex(issued_token.token_id.as_bytes()),
+            redeem_receipt.delivery_sequence,
+        ),
+    );
+
+    let history_page = host
+        .query_offline_notification_history(subscribed.topic_id(), 0, 8)
+        .expect("query offline notification history");
+    assert_eq!(history_page.entries.len(), 1);
+    receipt_line(
+        "offline-history-page",
+        subscribed.topic_id().as_bytes(),
+        &format!(
+            "entries={} has_more={}",
+            history_page.entries.len(),
+            history_page.has_more,
+        ),
+    );
+}
+
+fn demo_cell_host_search(host: &CellHost, app_id: ApplicationId) {
+    let appended = host
+        .runtime()
+        .semantic_writer()
+        .append_operation_receipt(
+            host.runtime(),
+            &OperationReceiptFact {
+                application_id: app_id,
+                package_id: PackageId::from_bytes([0xD7; 16]),
+                package_version: 1,
+                installation_generation: Generation::INITIAL,
+                entry_name: "bin/demo-service",
+                artifact_id: ArtifactId::from_bytes([0xD8; 16]),
+                payload_revision: 1,
+                payload_digest: [0xD9; 32],
+                payload_size_bytes: 64,
+                operation_id: OperationId::from_bytes([0xDA; 16]),
+                operation_generation: Generation::INITIAL,
+                callback_id: CallbackId::from_bytes([0xDB; 16]),
+                outcome: CompletionOutcome::Completed {
+                    receipt_id: ReceiptId::from_bytes([0xDC; 16]),
+                },
+                terminal_state: OperationState::Completed {
+                    receipt_id: ReceiptId::from_bytes([0xDC; 16]),
+                },
+            },
+        )
+        .expect("append demo semantic operation receipt");
+    let ckpt_at_ms = host
+        .runtime()
+        .wall_now_ms(seeded_key(0xD0, 5))
+        .expect("wall for signed vector checkpoint");
+    let ckpt = host
+        .export_signed_vector_checkpoint([0xDD; 32], ckpt_at_ms)
+        .expect("export signed semantic vector checkpoint");
+    let page = host
+        .query_at_signed_checkpoint(&ckpt, &AssertionSelector::new(16), None)
+        .expect("query candidates at signed checkpoint");
+    assert_eq!(
+        page.use_restrictions,
+        SearchUseRestrictions::NON_AUTHORITATIVE
+    );
+    assert!(
+        page.use_restrictions
+            .enforce_not_control_authoritative(ControlConsumerKind::TaskHeadCommit)
+            .is_err()
+    );
+    let candidate = page
+        .items
+        .iter()
+        .find(|cand| cand.hit.event_id == appended.event_id)
+        .expect("discovered appended candidate");
+    let verified = host
+        .verify_candidate_against_checkpoint(candidate, &ckpt)
+        .expect("re-verify candidate against checkpoint and live authority");
+    receipt_line(
+        "checkpoint-verified-candidate",
+        verified.event_id.as_bytes(),
+        &format!(
+            "log_seq={} watermark_max={}",
+            verified.local_log_seq, verified.watermark_max_log_seq,
+        ),
+    );
 }

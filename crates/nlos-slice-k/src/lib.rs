@@ -20,9 +20,11 @@
 //! slice's first integration proof. It invents **no** authority semantics:
 //!
 //! - [`SliceKRuntime`] only fixes sub-paths and opens the landed
-//!   authorities together (`nlos-identity`, `nlos-process`,
-//!   `nlos-artifact`, `nlos-application`, `nlos-task`, `nlos-clock`,
-//!   `nlos-store`'s operation authority);
+//!   authorities and query/notification faces together (`nlos-identity`,
+//!   `nlos-process`, `nlos-artifact`, `nlos-application`, `nlos-task`,
+//!   `nlos-clock`, `nlos-store`'s operation authority, `nlos-channel`,
+//!   `nlos-wait`, `nlos-topic`, `nlos-notify`, `nlos-semantic`, and
+//!   `nlos-search`);
 //! - [`package`] composes the landed sign/verify/install APIs
 //!   (`ed25519-dalek` appears only on the producer side of the fixture,
 //!   exactly like the `nlos-artifact` signature tests);
@@ -55,6 +57,7 @@ mod restore;
 mod runtime;
 mod semantic_stream;
 mod semantic_writer;
+pub mod service_faces;
 mod takeover_drive;
 mod teardown;
 
@@ -127,8 +130,8 @@ pub use reconciliation::{
 };
 pub use restore::{ProcessRevival, RevivalDispatch, run_process_revival};
 pub use runtime::{
-    ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
-    seeded_key, short_hex,
+    ApplicationRegistrationInspect, ChainInspect, ChainQuery, SearchServiceGuard, SliceKRuntime,
+    initial_generation, seeded_key, short_hex,
 };
 pub use semantic_stream::{
     SEMANTIC_STREAM_DOMAIN, SEMANTIC_STREAM_ENVELOPE_BYTES, SEMANTIC_STREAM_TOPIC_NAME,
@@ -139,6 +142,14 @@ pub use semantic_writer::{
     OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact,
     SEMANTIC_WRITER_ROOT_CALL_LIMIT, SemanticWriter, SemanticWriterBudgetRaise, SemanticWriterKey,
     application_namespace,
+};
+pub use service_faces::{
+    NotificationTopicBinding, NotificationTopicConfig, SubscribedNotificationTopic,
+    TASK_NOTIFICATION_TOPIC_DOMAIN, aggregate_federated_cell_candidates,
+    bootstrap_and_subscribe_notification_topic, bootstrap_notification_topic,
+    export_cell_search_shard, federated_search_across_cell_hosts,
+    query_runtime_at_checkpoint_with_verifier, query_runtime_non_authoritative_candidates,
+    remote_call_outcome_to_search_shard, verify_runtime_candidate_against_checkpoint,
 };
 pub use takeover_drive::{
     BarrierObservationDemand, BarrierObservationSource, CrossCellTakeoverOutcome,

@@ -26,7 +26,19 @@ rusqlite.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
+nlos-cell = { path = "../nlos-cell" }
+nlos-clock = { path = "../nlos-clock" }
+nlos-driver-mock = { path = "../nlos-driver-mock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-lease = { path = "../nlos-lease" }
 nlos-operation = { path = "../nlos-operation" }
+nlos-plan = { path = "../nlos-plan" }
+nlos-resource = { path = "../nlos-resource" }
+nlos-semantic = { path = "../nlos-semantic" }
+sha2.workspace = true
 
 [lints]
 workspace = true

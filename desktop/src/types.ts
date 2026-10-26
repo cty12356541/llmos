@@ -74,6 +74,27 @@ export type OutcomeDto =
       updatedAtMs: number;
     }
   | {
+      kind: "search_inspected";
+      scopeIdHex: string;
+      consistencyClass: number;
+      degradationPolicy: number;
+      nonAuthoritativeRestrictionsBits: number;
+      admittedEventCount: number;
+      activeAssertionCount: number;
+      retractedEventCount: number;
+      truncated: boolean;
+    }
+  | {
+      kind: "notification_inspected";
+      notificationIdHex: string;
+      topicIdHex: string;
+      subscriberKeyHex: string;
+      nextSequence: number;
+      historyEntryCount: number;
+      historyTruncated: boolean;
+      pruneWatermarkSequence: number;
+    }
+  | {
       kind: "task_group_inspected";
       groupIdHex: string;
       taskIdHex: string;

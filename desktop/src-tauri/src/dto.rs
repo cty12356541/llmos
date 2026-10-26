@@ -5,9 +5,9 @@
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
 use nlos_system_control::control::{
     ApplicationInspection, ControlOutcome, ControlReceipt, DurableOperationInspection,
-    ExecutionFiberInspection, ProcessInspection, RecoveryInspection, ResourceInspection,
-    ResourceRecoveryInspection, SemanticRecoveryInspection, TaskGroupInspection,
-    TaskNodeInspection, TopicInspection, receipt_to_hex,
+    ExecutionFiberInspection, NotificationInspection, ProcessInspection, RecoveryInspection,
+    ResourceInspection, ResourceRecoveryInspection, SearchInspection, SemanticRecoveryInspection,
+    TaskGroupInspection, TaskNodeInspection, TopicInspection, receipt_to_hex,
 };
 
 /// 一条 escalated 告警(artifact/semantic 共用形态)。
@@ -79,6 +79,29 @@ pub enum OutcomeDto {
         status: u8,
         created_at_ms: u64,
         updated_at_ms: u64,
+    },
+    /// W66 (`C-UNFREEZE-001`) Search 非权威查询观测形态(有界标量事实)。
+    #[serde(rename_all = "camelCase")]
+    SearchInspected {
+        scope_id_hex: String,
+        consistency_class: u8,
+        degradation_policy: u8,
+        non_authoritative_restrictions_bits: u8,
+        admitted_event_count: u64,
+        active_assertion_count: u64,
+        retracted_event_count: u64,
+        truncated: bool,
+    },
+    /// W66 (`C-UNFREEZE-001`) Notification 订阅与离线历史分页观测形态(有界标量事实)。
+    #[serde(rename_all = "camelCase")]
+    NotificationInspected {
+        notification_id_hex: String,
+        topic_id_hex: String,
+        subscriber_key_hex: String,
+        next_sequence: u64,
+        history_entry_count: u64,
+        history_truncated: bool,
+        prune_watermark_sequence: u64,
     },
     /// W32-G(SABI v1.5)五层 inspect 形态:有界标量事实;成员行以计数 +
     /// 截断标志呈现,不逐行展开。W39-D 接通 desktop 派发。
@@ -399,6 +422,31 @@ fn application_inspected_dto(inspection: &ApplicationInspection) -> OutcomeDto {
     }
 }
 
+fn search_inspected_dto(inspection: &SearchInspection) -> OutcomeDto {
+    OutcomeDto::SearchInspected {
+        scope_id_hex: hex(&inspection.scope_id),
+        consistency_class: inspection.consistency_class,
+        degradation_policy: inspection.degradation_policy,
+        non_authoritative_restrictions_bits: inspection.non_authoritative_restrictions_bits,
+        admitted_event_count: inspection.admitted_event_count,
+        active_assertion_count: inspection.active_assertion_count,
+        retracted_event_count: inspection.retracted_event_count,
+        truncated: inspection.truncated,
+    }
+}
+
+fn notification_inspected_dto(inspection: &NotificationInspection) -> OutcomeDto {
+    OutcomeDto::NotificationInspected {
+        notification_id_hex: hex(&inspection.notification_id),
+        topic_id_hex: hex(&inspection.topic_id),
+        subscriber_key_hex: hex(&inspection.subscriber_key),
+        next_sequence: inspection.next_sequence,
+        history_entry_count: inspection.history_entry_count,
+        history_truncated: inspection.history_truncated,
+        prune_watermark_sequence: inspection.prune_watermark_sequence,
+    }
+}
+
 fn task_group_inspected_dto(inspection: &TaskGroupInspection) -> OutcomeDto {
     OutcomeDto::TaskGroupInspected {
         group_id_hex: hex(&inspection.group_id),
@@ -486,6 +534,10 @@ pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
         Ok(ControlOutcome::ApplicationInspected(inspection)) => {
             application_inspected_dto(inspection)
         }
+        Ok(ControlOutcome::SearchInspected(inspection)) => search_inspected_dto(inspection),
+        Ok(ControlOutcome::NotificationInspected(inspection)) => {
+            notification_inspected_dto(inspection)
+        }
         Ok(ControlOutcome::TaskGroupInspected(inspection)) => task_group_inspected_dto(inspection),
         Ok(ControlOutcome::TaskNodeInspected(inspection)) => task_node_inspected_dto(inspection),
         Ok(ControlOutcome::ExecutionFiberInspected(inspection)) => {
@@ -560,6 +612,8 @@ fn outcome_label(outcome: &OutcomeDto) -> String {
         OutcomeDto::ResourceRecoveryInspected { .. } => "resource_recovery_inspected".to_owned(),
         OutcomeDto::ProcessInspected { .. } => "process_inspected".to_owned(),
         OutcomeDto::ApplicationInspected { .. } => "application_inspected".to_owned(),
+        OutcomeDto::SearchInspected { .. } => "search_inspected".to_owned(),
+        OutcomeDto::NotificationInspected { .. } => "notification_inspected".to_owned(),
         OutcomeDto::TaskGroupInspected { .. } => "task_group_inspected".to_owned(),
         OutcomeDto::TaskNodeInspected { .. } => "task_node_inspected".to_owned(),
         OutcomeDto::ExecutionFiberInspected { .. } => "execution_fiber_inspected".to_owned(),

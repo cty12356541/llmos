@@ -15,6 +15,13 @@ use nlos_channel::ChannelAuthority;
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
+use nlos_notify::{
+    AckNotificationRequest, DeliveredTaskNotification, IssueActionTokenDecision,
+    IssueNotificationActionTokenRequest, NotificationAckDecision, NotificationActionRedeemReceipt,
+    NotificationHistoryPage, NotificationId, NotificationPublishDecision, NotificationService,
+    NotificationSubscribeDecision, RedeemNotificationActionRequest, SubscribeNotificationRequest,
+    TaskNotificationEnvelope,
+};
 use nlos_operation::{OperationHandle, OperationSnapshot};
 use nlos_outbox::{ConsumerConfig, OutboxConsumer};
 use nlos_plan::SqlitePlanAuthority;
@@ -23,14 +30,19 @@ use nlos_runtime_tokio::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, StoreOutboxSource,
     TokioRuntimeAdapter,
 };
-use nlos_semantic::SemanticAuthority;
+use nlos_search::{
+    AssertionSelector, NonAuthoritativeCandidateHit, PaginatedAssertionSelector, SearchPage,
+    SearchService, VerifiedCheckpointCandidate,
+};
+use nlos_semantic::{SemanticAuthority, SignedSemanticVectorCheckpoint};
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
-use nlos_topic::TopicAuthority;
+use nlos_topic::{SubscriberKey, TopicAuthority, TopicId};
 use nlos_types::{
     ApplicationId, CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId,
     ProcessId, TaskAttemptId, TaskId,
 };
+use nlos_wait::WaitAuthority;
 
 use crate::error::{SliceKError, SliceKResult};
 use crate::pump::{PumpLane, ReconcileLaneSnapshot, stop_pump_bounded};
@@ -40,12 +52,21 @@ use crate::semantic_stream::{
     bootstrap_semantic_stream, stop_semantic_stream_bounded,
 };
 use crate::semantic_writer::{SemanticWriter, SemanticWriterBudgetRaise, WriterRootRegistry};
+use crate::service_faces::{
+    NotificationTopicBinding, NotificationTopicConfig, SubscribedNotificationTopic,
+    bootstrap_and_subscribe_notification_topic, bootstrap_notification_topic,
+    query_runtime_at_checkpoint_with_verifier, query_runtime_non_authoritative_candidates,
+    verify_runtime_candidate_against_checkpoint,
+};
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
 
 /// Poison-tolerant guard over the runtime's semantic stream pump slot.
 type SemanticStreamGuard<'a> = MutexGuard<'a, Option<SemanticStreamPump>>;
+
+/// Poison-tolerant guard over the runtime's read-only [`SearchService`] slot.
+pub type SearchServiceGuard<'a> = MutexGuard<'a, SearchService>;
 
 /// One assembler holding every authority of the first longitudinal slice.
 ///
@@ -99,22 +120,36 @@ pub struct SliceKRuntime {
     /// `authorize_semantic` is production-reachable through this runtime,
     /// but adds no wrapper semantics.
     capability: CapabilityAuthority,
+    /// Read-only, non-authoritative Search service face over
+    /// `<root>/semantic/semantic-authority.db` (`W66`, unfreezing
+    /// `nlos-search`). Wrapped in a `Mutex` so `Arc<SliceKRuntime>` stays
+    /// `Send + Sync` across multi-threaded Tokio fibers (`rusqlite::Connection`
+    /// is `Send` but `!Sync`), and declared before `semantic` so its read-only
+    /// `SQLite` connection closes before the owning [`SemanticAuthority`] drops
+    /// on Windows.
+    search: Mutex<SearchService>,
     /// Semantic assertion authority (`<root>/semantic/semantic-authority.db`,
     /// the daemon W46-L3 path style), opened read-exposed: the production
     /// write side lives in [`crate::semantic_writer`], which appends through
     /// this authority's admission gates. Held behind an `Arc` so the
-    /// semantic stream pump lane can drain the admission outbox through the
-    /// same connection without opening a second one.
+    /// semantic stream pump lane and [`SearchService`] share the same
+    /// authority handle without opening a second writer connection.
     semantic: Arc<SemanticAuthority>,
+    /// Managed Notification service face (`<root>/notify`, `W66`, unfreezing
+    /// `nlos-notify`) over `topics` and `waits`. Declared before `topics`,
+    /// `waits`, and `channel` for clean deterministic teardown order.
+    notify: NotificationService,
+    /// Durable Topic service-layer authority (`<root>/topics`) over the
+    /// system channel — the semantic notification stream's and task
+    /// notification service's single-log fanout owner.
+    pub topics: Arc<TopicAuthority>,
+    /// Durable Wait registry authority (`<root>/waits`, `W66`) bound to the
+    /// system [`ChannelAuthority`].
+    pub waits: Arc<WaitAuthority>,
     /// Durable system Channel endpoint authority (`<root>/channel`), the
     /// daemon W46 path style — opened for the semantic notification stream
-    /// lane (see [`crate::semantic_stream`]) and shared with the topic
-    /// authority below.
+    /// lane and [`WaitAuthority`] / [`TopicAuthority`] fanout.
     pub channel: Arc<ChannelAuthority>,
-    /// Durable Topic service-layer authority (`<root>/topics`) over the
-    /// system channel — the semantic notification stream's fanout owner
-    /// (see [`crate::semantic_stream`]).
-    pub topics: Arc<TopicAuthority>,
     /// The dedicated semantic writer principal this runtime bootstrapped
     /// (key file `<root>/keys/semantic-writer.key`, see
     /// [`crate::semantic_writer`]). Held so the payload lane's terminal
@@ -168,11 +203,24 @@ impl SliceKRuntime {
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
         let channel = Arc::new(ChannelAuthority::open(root.join("channel"))?);
+        let waits = Arc::new(WaitAuthority::open(
+            root.join("waits"),
+            Arc::clone(&channel),
+        )?);
         let topics = Arc::new(TopicAuthority::open(
             root.join("topics"),
             Arc::clone(&channel),
         )?);
+        let notify = NotificationService::open(
+            root.join("notify"),
+            Arc::clone(&topics),
+            Arc::clone(&waits),
+        )?;
         let semantic = Arc::new(SemanticAuthority::open(root.join("semantic"))?);
+        let search = Mutex::new(SearchService::open(
+            root.join("semantic"),
+            Arc::clone(&semantic),
+        )?);
         let semantic_writer = SemanticWriter::assemble(
             &identity,
             &process,
@@ -190,9 +238,12 @@ impl SliceKRuntime {
             clock,
             operations,
             capability,
+            search,
             semantic,
-            channel,
+            notify,
             topics,
+            waits,
+            channel,
             semantic_writer,
             writer_roots: Mutex::new(writer_roots),
             pump: Mutex::new(None),
@@ -274,6 +325,268 @@ impl SliceKRuntime {
     #[must_use]
     pub fn semantic_writer(&self) -> &SemanticWriter {
         &self.semantic_writer
+    }
+
+    /// Durable [`WaitAuthority`] opened under `<root>/waits` (`W66`).
+    #[must_use]
+    pub fn waits(&self) -> &Arc<WaitAuthority> {
+        &self.waits
+    }
+
+    /// Managed [`NotificationService`] opened under `<root>/notify` over the
+    /// runtime's [`TopicAuthority`] and [`WaitAuthority`] (`W66`).
+    #[must_use]
+    pub fn notify(&self) -> &NotificationService {
+        &self.notify
+    }
+
+    /// Read-only, non-authoritative [`SearchService`] guard opened over
+    /// `<root>/semantic/semantic-authority.db` (`W66`). Derefs directly to
+    /// [`SearchService`].
+    pub fn search(&self) -> SearchServiceGuard<'_> {
+        self.search
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Canonical 16-byte `control_domain_id` recorded on semantic events
+    /// admitted by this runtime's [`SemanticWriter`].
+    #[must_use]
+    pub fn semantic_control_domain_id(&self) -> [u8; 16] {
+        *self.semantic_writer.control_domain_id().as_bytes()
+    }
+
+    /// Idempotently provisions (or replays) a task/application notification
+    /// channel + topic binding (`[TASK-NOTIFY-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any clock, channel, or topic authority refusal.
+    pub fn ensure_notification_topic(
+        &self,
+        config: &NotificationTopicConfig,
+    ) -> SliceKResult<NotificationTopicBinding> {
+        bootstrap_notification_topic(self, config)
+    }
+
+    /// Subscribes `subscriber_key` to `topic_id` through [`Self::notify`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] or [`TopicAuthority`] refusal.
+    pub fn subscribe_notification_topic(
+        &self,
+        topic_id: TopicId,
+        subscriber_key: SubscriberKey,
+        subscribed_at_ms: u64,
+    ) -> SliceKResult<NotificationSubscribeDecision> {
+        Ok(self.notify.subscribe(SubscribeNotificationRequest {
+            topic_id,
+            subscriber_key,
+            subscribed_at_ms,
+        })?)
+    }
+
+    /// Idempotently provisions `config` and subscribes `subscriber_key`
+    /// through [`Self::notify`] (`[TASK-NOTIFY-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any clock, channel, topic, or notification-service error.
+    pub fn bootstrap_and_subscribe_notification_topic(
+        &self,
+        config: &NotificationTopicConfig,
+        subscriber_key: SubscriberKey,
+        subscribed_at_ms: u64,
+    ) -> SliceKResult<SubscribedNotificationTopic> {
+        bootstrap_and_subscribe_notification_topic(self, config, subscriber_key, subscribed_at_ms)
+    }
+
+    /// Publishes a canonical `[TASK-NOTIFY-001]` [`TaskNotificationEnvelope`]
+    /// transition through [`Self::notify`] (single-log `TopicAuthority` +
+    /// `WaitAuthority` `notify_commits` + compact `[DUI-OFFLINE-001]` history
+    /// reference).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal.
+    pub fn publish_task_notification(
+        &self,
+        topic_id: TopicId,
+        envelope: &TaskNotificationEnvelope,
+        idempotency_key: IdempotencyKey,
+    ) -> SliceKResult<NotificationPublishDecision> {
+        Ok(self
+            .notify
+            .publish_task_transition(topic_id, envelope, idempotency_key)?)
+    }
+
+    /// Polls unacknowledged `[TASK-NOTIFY-001]` task transition notifications
+    /// for `notification_id`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal or malformed wire error.
+    pub fn poll_task_notifications(
+        &self,
+        notification_id: NotificationId,
+        limit: usize,
+    ) -> SliceKResult<Vec<DeliveredTaskNotification>> {
+        Ok(self
+            .notify
+            .poll_task_notifications(notification_id, limit)?)
+    }
+
+    /// Advances the subscriber's token-authenticated delivery cursor through
+    /// [`Self::notify`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] or [`TopicAuthority`] refusal.
+    pub fn ack_notification(
+        &self,
+        request: AckNotificationRequest,
+    ) -> SliceKResult<NotificationAckDecision> {
+        Ok(self.notify.ack(request)?)
+    }
+
+    /// Issues a `[DUI-NOTIFY-001]` cryptographically bound one-shot
+    /// `ActionToken` through [`Self::notify`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal.
+    pub fn issue_notification_action_token(
+        &self,
+        request: IssueNotificationActionTokenRequest,
+    ) -> SliceKResult<IssueActionTokenDecision> {
+        Ok(self.notify.issue_action_token(request)?)
+    }
+
+    /// Redeems a `[DUI-NOTIFY-001]` bound one-shot `ActionToken` through
+    /// [`Self::notify`], enforcing caller application/task/notification
+    /// bindings and single-consumption tombstones.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on cross-application spoofing, binding mismatch, invalid
+    /// proof, expiry, revocation, or duplicate redemption.
+    pub fn redeem_notification_action_token(
+        &self,
+        request: RedeemNotificationActionRequest,
+    ) -> SliceKResult<NotificationActionRedeemReceipt> {
+        Ok(self.notify.redeem_action_token(request)?)
+    }
+
+    /// Queries a cursor-paginated `[DUI-OFFLINE-001]` offline notification
+    /// history page strictly after `after_sequence`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on zero or out-of-bounds `limit` or `SQLite` errors.
+    pub fn query_offline_notification_history(
+        &self,
+        topic_id: TopicId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> SliceKResult<NotificationHistoryPage> {
+        Ok(self
+            .notify
+            .query_notification_history_page(topic_id, after_sequence, limit)?)
+    }
+
+    /// Exports a [`SignedSemanticVectorCheckpoint`] signed by this runtime's
+    /// [`SemanticWriter`] over the current [`SemanticAuthority`] event log
+    /// (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`SemanticAuthority`] checkpoint signing error.
+    pub fn export_signed_vector_checkpoint(
+        &self,
+        trust_snapshot_digest: [u8; 32],
+        signed_at_ms: u64,
+    ) -> SliceKResult<SignedSemanticVectorCheckpoint> {
+        Ok(self.semantic.export_signed_vector_checkpoint(
+            &self.identity,
+            &self.semantic_writer,
+            trust_snapshot_digest,
+            signed_at_ms,
+        )?)
+    }
+
+    /// Queries a cursor-paginated page of non-authoritative candidates from
+    /// [`Self::search`], preserving
+    /// [`SearchUseRestrictions::NON_AUTHORITATIVE`](nlos_search::SearchUseRestrictions::NON_AUTHORITATIVE)
+    /// (`[CONS-DECL-001]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid limits, decode corruption, or authority
+    /// trust-view errors.
+    pub fn query_non_authoritative_candidates(
+        &self,
+        paginated: &PaginatedAssertionSelector,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        query_runtime_non_authoritative_candidates(self, paginated)
+    }
+
+    /// Queries checkpoint-bounded non-authoritative candidates verified against
+    /// this runtime's [`IdentityAuthority`] (`require_domain_present = true`,
+    /// `[SEM-CHECKPOINT-001]`, `[TASK-SNAPSHOT-003]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid checkpoint signatures/digests, missing or
+    /// mismatched domain watermarks, or `selector.limit == 0`.
+    pub fn query_at_signed_checkpoint(
+        &self,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+        selector: &AssertionSelector,
+        after_log_seq: Option<u64>,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        self.query_at_signed_checkpoint_with_options(checkpoint, selector, after_log_seq, true)
+    }
+
+    /// Queries checkpoint-bounded non-authoritative candidates with explicit
+    /// `require_domain_present` policy (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid checkpoint signatures/digests, watermark
+    /// mismatches, or missing watermark when `require_domain_present == true`.
+    pub fn query_at_signed_checkpoint_with_options(
+        &self,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+        selector: &AssertionSelector,
+        after_log_seq: Option<u64>,
+        require_domain_present: bool,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        query_runtime_at_checkpoint_with_verifier(
+            self,
+            checkpoint,
+            &self.identity,
+            selector,
+            after_log_seq,
+            require_domain_present,
+        )
+    }
+
+    /// Re-verifies a discovered [`NonAuthoritativeCandidateHit`] against
+    /// `checkpoint`, this runtime's [`IdentityAuthority`], and the live
+    /// [`SemanticAuthority`] (`[TASK-SNAPSHOT-003]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on tampered `use_restrictions`, invalid checkpoint
+    /// signature, watermark mismatch, authority record mismatch, durable
+    /// retraction, or post-checkpoint `log_seq`.
+    pub fn verify_candidate_against_checkpoint(
+        &self,
+        candidate: &NonAuthoritativeCandidateHit,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+    ) -> SliceKResult<VerifiedCheckpointCandidate> {
+        verify_runtime_candidate_against_checkpoint(self, candidate, checkpoint, &self.identity)
     }
 
     /// The remaining semantic-write budget of one application's root

@@ -4,14 +4,10 @@
 //! offline history pagination (`TASK-NOTIFY-001`, `DUI-NOTIFY-001`,
 //! `DUI-OFFLINE-001`).
 //!
-//! **冻结声明（F1 / 2026-10-05）**：本 crate 当前在 workspace 内零生产消费方
-//! （`cargo tree -i` 复核）。处置裁定：**冻结保留**——能力与测试不作废，待接线
-//! （接线前提见下行）。冻结期内禁止视为已装配能力引用；解冻 = 出现首个生产
-//! 消费方或显式接线计划落地。登记：`docs/management/stage-c-progress.md` 2026-10-05 F1 段。
-//!
-//! **状态更新（2026-10-25 W65）**：2026-10-25 W65：超最小面扩展落地（TASK-NOTIFY-001 后台任务状态通知、DUI-NOTIFY-001 一次性绑定动作令牌与离线历史分页）；生产消费方接线随 W66 紧接落地。
-//!
-//! 接线前提：语义事件/告警面出现订阅方（topic/channel 已活，本订阅面当前无调用方）。
+//! > **生产装配状态（2026-10-26 W66 / `C-UNFREEZE-001`）**：
+//! > - 已接入 `nlos-system-control`（`NotificationServiceInspector`、`SystemControlDaemon`、`system-control-cli`、`nl`），提供有界只读订阅状态与离线历史分页观测及 `[CTRL-PARITY-001]` 收据合成。
+//! > - 已接入 `nlos-slice-k`（`SliceKRuntime`、`CellHost`、`slice-k-demo`），驱动 `Task` 生命周期状态转移通知、一次性绑定动作令牌与离线历史投递。
+//! > - 通知面扩展能力（`C-NOTIFY-001`：`TASK-NOTIFY-001` 后台任务状态通知、`DUI-NOTIFY-001` 一次性绑定动作令牌与 `DUI-OFFLINE-001` 离线历史分页）已与上述生产消费面完成端到端装配。
 //!
 //! Stage-B decision point 2 (`stage-b-progress` §6.5.4) fixed the boundary:
 //! Notification is a *thin layer* over the existing Topic authority — no
@@ -849,6 +845,37 @@ impl NotificationService {
         } else {
             NotificationSubscribeDecision::Replayed(subscription)
         })
+    }
+
+    /// Inspects one thin subscription reference by its [`NotificationId`],
+    /// joined with the live [`TopicAuthority`] subscription state.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`NotifyError::NotificationNotFound`] when
+    /// `notification_id` is unknown, or on face/authority storage errors.
+    pub fn inspect_subscription(
+        &self,
+        notification_id: NotificationId,
+    ) -> Result<NotificationSubscriptionView, NotifyError> {
+        let subscription = {
+            let connection = self.lock()?;
+            resolve_subscription(&connection, notification_id)?
+        };
+        match self
+            .topic
+            .inspect_subscription(subscription.topic_id, subscription.subscriber_key)
+        {
+            Ok(authority) => Ok(NotificationSubscriptionView::Live {
+                subscription,
+                authority,
+            }),
+            Err(
+                TopicAuthorityError::TopicNotFound(_)
+                | TopicAuthorityError::SubscriptionNotFound(_),
+            ) => Ok(NotificationSubscriptionView::Dangling { subscription }),
+            Err(other) => Err(NotifyError::Topic(other)),
+        }
     }
 
     /// Lists the thin references, each joined with the live authority

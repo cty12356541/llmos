@@ -2,12 +2,10 @@
 //! face over the Semantic authority's admitted facts (`B-SEARCH-001`, W33-E /
 //! X-1 second half; `C-SEARCH-001`, W65).
 //!
-//! > **状态声明（F1 / 2026-10-05 → W65 更新）**：
-//! > - 2026-10-05 F1：本 crate 在 workspace 内零生产消费方（`cargo tree -i` 复核），
-//! >   裁定**冻结保留**——能力与测试不作废，待接线（SC inspect 族现走各权威
-//! >   inspector，未走本面；登记：`docs/management/stage-c-progress.md`
-//! >   2026-10-05 F1 段）。
-//! > - 2026-10-25 W65：超最小面扩展落地（非权威候选发现、向量检查点有界快照查询、游标分页与多 Cell 联邦候选归并）；生产消费方接线随 W66 紧接落地。
+//! > **生产装配状态（2026-10-26 W66 / `C-UNFREEZE-001`）**：
+//! > - 已接入 `nlos-system-control`（`SearchServiceInspector`、`SystemControlDaemon`、`system-control-cli`、`nl`），提供有界只读非权威查询观测与 `[CTRL-PARITY-001]` 收据合成。
+//! > - 已接入 `nlos-slice-k`（`SliceKRuntime`、`CellHost`、`slice-k-demo`），提供检查点有界候选发现与多 `Cell` 联邦候选归并。
+//! > - 非权威查询面扩展能力（`C-SEARCH-001`：非权威候选发现、向量检查点有界快照查询、游标分页与多 `Cell` 联邦候选归并）已与上述生产消费面完成端到端装配。
 //!
 //! Stage-B decision point 2 (`stage-b-progress` §6.5.4) and Stage-C `#15`
 //! (`[CONS-DECL-001]`, `[CONS-CTRL-001]`, `[TASK-SNAPSHOT-003]`,
@@ -50,15 +48,16 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 pub use federated::{
     CellSearchShardOutcome, FailedShardSummary, FederatedCandidateHit, FederatedSearchReport,
     RemoteSearchFailureReason, aggregate_federated_candidates,
 };
+pub use nlos_capability::CapabilityTarget;
 pub use nlos_capability::custody::{Ed25519PublicKey, IdentityAuthority};
-use nlos_capability::{CapabilityTarget, verify_ed25519_signature_strict};
+use nlos_capability::verify_ed25519_signature_strict;
 use nlos_semantic::{
     AdmissionReceipt, AssertionMode, DomainSemanticWaterMark, SemanticAuthority,
     SemanticAuthorityError, SemanticVectorCheckpointError, SignedSemanticVectorCheckpoint,
@@ -712,7 +711,7 @@ fn verify_candidate_matches_live_authority(
     }
 
     let stored_media_type: String = service
-        .connection
+        .lock()
         .query_row(
             "SELECT media_type FROM content_objects WHERE content_digest = ?1",
             [candidate.hit.content_digest.as_slice()],
@@ -802,7 +801,7 @@ pub fn verify_candidate_against_checkpoint<V: CheckpointVerifier>(
         .ok_or(SearchError::MissingDomainWatermark {
             domain_id: candidate.domain_id,
         })?;
-    let cut = resolve_domain_checkpoint_cut(&service.connection, candidate.domain_id, watermark)?;
+    let cut = resolve_domain_checkpoint_cut(&service.lock(), candidate.domain_id, watermark)?;
     let (local_log_seq, admission_receipt) =
         verify_candidate_matches_live_authority(service, candidate)?;
     let event_id = candidate.hit.event_id;
@@ -834,10 +833,16 @@ pub fn verify_candidate_against_checkpoint<V: CheckpointVerifier>(
 /// all — not to the authority, and no database of its own either.
 pub struct SearchService {
     authority: Arc<SemanticAuthority>,
-    connection: Connection,
+    connection: Mutex<Connection>,
 }
 
 impl SearchService {
+    fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Opens the face over `<root>/semantic-authority.db`, strictly
     /// read-only, bound to the live authority handle.
     ///
@@ -865,7 +870,7 @@ impl SearchService {
         }
         Ok(Self {
             authority,
-            connection,
+            connection: Mutex::new(connection),
         })
     }
 
@@ -1016,7 +1021,7 @@ impl SearchService {
             });
         };
 
-        let cut = resolve_domain_checkpoint_cut(&self.connection, local_domain_id, watermark)?;
+        let cut = resolve_domain_checkpoint_cut(&self.lock(), local_domain_id, watermark)?;
         let raw_page = self.scan_assertion_page(
             selector,
             Some(local_domain_id),
@@ -1088,7 +1093,7 @@ impl SearchService {
     /// Fails closed for a storage, decode, or read-integrity failure.
     pub fn build_index(&self) -> Result<SemanticIndex, SearchError> {
         let entries = fetch_assertion_rows(
-            &self.connection,
+            &self.lock(),
             &AssertionSelector::new(usize::MAX),
             &SqlScanBounds {
                 control_domain_id: None,
@@ -1141,7 +1146,7 @@ impl SearchService {
         let mut after_log_seq = initial_after_log_seq;
         loop {
             let page = fetch_assertion_rows(
-                &self.connection,
+                &self.lock(),
                 selector,
                 &SqlScanBounds {
                     control_domain_id,
@@ -1582,6 +1587,13 @@ mod tests {
 
     use super::SearchService;
 
+    const fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn search_service_is_send_and_sync() {
+        assert_send_sync::<SearchService>();
+    }
+
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
     struct TempRoot(PathBuf);
@@ -1619,7 +1631,7 @@ mod tests {
         // A valid write statement through the face's own connection must be
         // rejected by SQLite's read-only enforcement, not by policy.
         let result = service
-            .connection
+            .lock()
             .execute("UPDATE semantic_events SET key_id = key_id WHERE 0", []);
         let error = result.expect_err("write must fail");
         assert!(

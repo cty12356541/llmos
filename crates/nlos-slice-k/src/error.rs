@@ -16,16 +16,20 @@ use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
 use nlos_lease::{
     CapacityLeaseGrantError, CapacityLeaseReturnError, ExclusiveDeviceLeaseGrantError,
-    ExclusiveDeviceLeaseReturnError, QuotaLeaseGrantError, QuotaLeaseLedgerError,
+    ExclusiveDeviceLeaseReturnError, LeaseStoreError, QuotaLeaseGrantError, QuotaLeaseLedgerError,
+    QuotaWalLossError,
 };
+use nlos_notify::NotifyError;
 use nlos_plan::PlanStoreError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::ChannelWaitError;
+use nlos_search::SearchError;
 use nlos_semantic::SemanticAuthorityError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
 use nlos_topic::TopicAuthorityError;
+use nlos_wait::WaitAuthorityError;
 
 use crate::cell_host::{CellBroadcastRefusal, CellEpochBroadcastIncomplete};
 
@@ -87,6 +91,17 @@ pub enum SliceKError {
     /// rejections propagated through the topic layer stay reachable via
     /// [`std::error::Error::source`].
     Topic(TopicAuthorityError),
+    /// The durable Wait registry authority refused an open, wait registration,
+    /// or commit-sequence wake notification (`<root>/waits`, W66).
+    Wait(WaitAuthorityError),
+    /// The Notification service face refused an open, subscription, task
+    /// transition publication, one-shot `ActionToken` issuance/redemption, or
+    /// offline notification history pagination step (`<root>/notify`, W66).
+    Notify(NotifyError),
+    /// The non-authoritative Search service face refused an open, query,
+    /// checkpoint verification, candidate re-verification, or federated shard
+    /// aggregation step (`<root>/semantic`, W66).
+    Search(SearchError),
     /// The runtime's Outbox pump lifecycle refused a transition this call
     /// cannot make honestly (for example starting a second pump while one
     /// is still running — its wake lane would silently ack the first
@@ -153,6 +168,10 @@ pub enum SliceKError {
     /// an ill-state transition, or a receipt that does not bind the
     /// committed lease or head fence.
     DeviceLeaseReturn(ExclusiveDeviceLeaseReturnError),
+    /// Durable `SqliteLeaseStore` open or rehydration failed (`W66`).
+    LeaseStore(LeaseStoreError),
+    /// `[LEASE-WAL-001]` boot-generation fence or guessed-remaining refusal (`W66`).
+    QuotaWalLoss(QuotaWalLossError),
     /// The cell-local failure detector refused a heartbeat or sweep the
     /// cell host drove (W48): a logical-clock regression, or a heartbeat
     /// for an incarnation already judged dead.
@@ -212,6 +231,15 @@ impl fmt::Display for SliceKError {
             Self::Topic(error) => {
                 write!(formatter, "topic service authority: {error}")
             }
+            Self::Wait(error) => {
+                write!(formatter, "wait registry authority: {error}")
+            }
+            Self::Notify(error) => {
+                write!(formatter, "notification service face: {error}")
+            }
+            Self::Search(error) => {
+                write!(formatter, "search service face: {error}")
+            }
             Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
             Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
@@ -246,6 +274,12 @@ impl fmt::Display for SliceKError {
             }
             Self::DeviceLeaseReturn(error) => {
                 write!(formatter, "device lease ledger: {error}")
+            }
+            Self::LeaseStore(error) => {
+                write!(formatter, "durable sqlite lease store: {error}")
+            }
+            Self::QuotaWalLoss(error) => {
+                write!(formatter, "quota lease WAL-loss fence: {error}")
             }
             Self::FailureDetector(error) => write!(formatter, "cell failure detector: {error}"),
             Self::NameCache(error) => write!(formatter, "cell name cache: {error}"),
@@ -306,6 +340,9 @@ impl Error for SliceKError {
             Self::Semantic(error) => Some(error),
             Self::Channel(error) => Some(error),
             Self::Topic(error) => Some(error),
+            Self::Wait(error) => Some(error),
+            Self::Notify(error) => Some(error),
+            Self::Search(error) => Some(error),
             Self::Cell(error) => Some(error),
             Self::Lease(error) => Some(error),
             Self::LeaseLedger(error) => Some(error),
@@ -313,6 +350,8 @@ impl Error for SliceKError {
             Self::CapacityLeaseReturn(error) => Some(error),
             Self::DeviceLeaseGrant(error) => Some(error),
             Self::DeviceLeaseReturn(error) => Some(error),
+            Self::LeaseStore(error) => Some(error),
+            Self::QuotaWalLoss(error) => Some(error),
             Self::FailureDetector(error) => Some(error),
             Self::NameCache(error) => Some(error),
             Self::Federation(error) => Some(error),
@@ -396,6 +435,24 @@ impl From<TopicAuthorityError> for SliceKError {
     }
 }
 
+impl From<WaitAuthorityError> for SliceKError {
+    fn from(error: WaitAuthorityError) -> Self {
+        Self::Wait(error)
+    }
+}
+
+impl From<NotifyError> for SliceKError {
+    fn from(error: NotifyError) -> Self {
+        Self::Notify(error)
+    }
+}
+
+impl From<SearchError> for SliceKError {
+    fn from(error: SearchError) -> Self {
+        Self::Search(error)
+    }
+}
+
 impl From<StoreError> for SliceKError {
     fn from(error: StoreError) -> Self {
         Self::Operation(error)
@@ -471,6 +528,18 @@ impl From<ExclusiveDeviceLeaseGrantError> for SliceKError {
 impl From<ExclusiveDeviceLeaseReturnError> for SliceKError {
     fn from(error: ExclusiveDeviceLeaseReturnError) -> Self {
         Self::DeviceLeaseReturn(error)
+    }
+}
+
+impl From<LeaseStoreError> for SliceKError {
+    fn from(error: LeaseStoreError) -> Self {
+        Self::LeaseStore(error)
+    }
+}
+
+impl From<QuotaWalLossError> for SliceKError {
+    fn from(error: QuotaWalLossError) -> Self {
+        Self::QuotaWalLoss(error)
     }
 }
 

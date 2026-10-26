@@ -77,6 +77,18 @@ pub mod resource_inspector;
 #[cfg(feature = "application")]
 pub mod application_inspector;
 
+/// Optional [`control::SearchInspector`] adapter backed by
+/// [`nlos_search::SearchService`] and [`nlos_semantic::SemanticAuthority`]
+/// (`search` feature, `C-UNFREEZE-001`).
+#[cfg(feature = "search")]
+pub mod search_inspector;
+
+/// Optional [`control::NotificationInspector`] adapter backed by
+/// [`nlos_notify::NotificationService`] and [`nlos_topic::TopicAuthority`]
+/// (`notify` feature, `C-UNFREEZE-001`).
+#[cfg(feature = "notify")]
+pub mod notify_inspector;
+
 /// Optional [`TaskNodeInspectSource`] adapter backed by the durable
 /// [`nlos_plan::SqlitePlanAuthority`] (`plan` feature, W32-G).
 #[cfg(feature = "plan")]

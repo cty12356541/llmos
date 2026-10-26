@@ -513,6 +513,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-notify"
+version = "0.1.0"
+dependencies = [
+ "nlos-channel",
+ "nlos-topic",
+ "nlos-types",
+ "nlos-wait",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-operation"
 version = "0.1.0"
 dependencies = [
@@ -591,6 +603,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-search"
+version = "0.1.0"
+dependencies = [
+ "nlos-capability",
+ "nlos-semantic",
+ "nlos-types",
+ "rusqlite",
+]
+
+[[package]]
 name = "nlos-semantic"
 version = "0.1.0"
 dependencies = [
@@ -619,6 +641,7 @@ dependencies = [
  "nlos-driver-mock",
  "nlos-identity",
  "nlos-lease",
+ "nlos-notify",
  "nlos-operation",
  "nlos-outbox",
  "nlos-plan",
@@ -626,12 +649,14 @@ dependencies = [
  "nlos-runtime",
  "nlos-runtime-tokio",
  "nlos-schema",
+ "nlos-search",
  "nlos-semantic",
  "nlos-store",
  "nlos-system-control",
  "nlos-task",
  "nlos-topic",
  "nlos-types",
+ "nlos-wait",
  "sha2",
  "tokio",
 ]

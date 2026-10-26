@@ -67,8 +67,8 @@ use tokio::net::UnixStream;
 use tokio::net::windows::named_pipe::NamedPipeClient;
 
 use crate::control::{
-    ApplicationInspector, ControlCommand, ControlError, ControlReceipt, ProcessInspector,
-    ResourceInspector, build_request_envelope,
+    ApplicationInspector, ControlCommand, ControlError, ControlReceipt, NotificationInspector,
+    ProcessInspector, ResourceInspector, SearchInspector, build_request_envelope,
 };
 use crate::{
     RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer, SystemControlError,
@@ -258,6 +258,44 @@ pub async fn dispatch_over_authenticated_socket<S>(
 where
     S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
 {
+    dispatch_over_authenticated_socket_with_services(
+        socket,
+        principal,
+        sign,
+        command,
+        process,
+        resource,
+        application,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Dispatches one [`ControlCommand`] to an ADR-0011 authenticated control
+/// endpoint with optional search and notification inspection backends wired
+/// (`C-UNFREEZE-001`).
+///
+/// # Errors
+///
+/// Returns [`ControlError::Handshake`] for any handshake refusal,
+/// [`ControlError::Ipc`] for transport failures, and the schema/projection
+/// errors of the plain dispatch path otherwise.
+#[allow(clippy::too_many_arguments)] // Preserves explicit per-service inspector composition without trait-bundle indirection.
+pub async fn dispatch_over_authenticated_socket_with_services<S>(
+    socket: impl AsRef<Path>,
+    principal: PrincipalId,
+    sign: S,
+    command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
+) -> Result<ControlReceipt, ControlError>
+where
+    S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
+{
     let request = build_request_envelope(command)?;
     let config = TransportConfig::default();
     let framed = platform_authenticated_connect(socket, config, principal, sign)
@@ -271,6 +309,8 @@ where
         process,
         resource,
         application,
+        search,
+        notify,
     )
     .await
 }
@@ -316,6 +356,7 @@ where
 /// Platform-neutral post-handshake exchange core: one validated exchange
 /// over the authenticated stream and the shared receipt projection. The
 /// Unix path crosses exactly the same calls as before the platform split.
+#[allow(clippy::too_many_arguments)] // Mirrors the explicit inspector parameters of `compose_with_services`.
 async fn exchange_over_authenticated_stream<St>(
     stream: St,
     config: TransportConfig,
@@ -324,6 +365,8 @@ async fn exchange_over_authenticated_stream<St>(
     process: Option<&dyn ProcessInspector>,
     resource: Option<&dyn ResourceInspector>,
     application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     St: AsyncRead + AsyncWrite + Unpin + Send,
@@ -334,5 +377,13 @@ where
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope(), process, resource, application)
+    ControlReceipt::compose_with_services(
+        command,
+        response.envelope(),
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
 }

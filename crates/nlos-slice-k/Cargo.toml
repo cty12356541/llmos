@@ -23,6 +23,7 @@ nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-lease = { path = "../nlos-lease" }
+nlos-notify = { path = "../nlos-notify" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-outbox = { path = "../nlos-outbox" }
 nlos-plan = { path = "../nlos-plan" }
@@ -30,12 +31,14 @@ nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }
 nlos-schema = { path = "../nlos-schema" }
+nlos-search = { path = "../nlos-search" }
 nlos-semantic = { path = "../nlos-semantic" }
 nlos-store = { path = "../nlos-store" }
 nlos-system-control = { path = "../nlos-system-control", default-features = false, features = ["process"] }
 nlos-task = { path = "../nlos-task" }
 nlos-topic = { path = "../nlos-topic" }
 nlos-types = { path = "../nlos-types" }
+nlos-wait = { path = "../nlos-wait" }
 sha2.workspace = true
 tokio.workspace = true
 

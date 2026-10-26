@@ -31,6 +31,8 @@ daemon = [
     "topic",
     "store",
     "application",
+    "search",
+    "notify",
     "dep:nlos-artifact",
     "dep:nlos-channel",
     "dep:nlos-semantic",
@@ -44,6 +46,8 @@ runtime = ["dep:nlos-runtime", "dep:nlos-runtime-tokio"]
 topic = ["dep:nlos-topic"]
 store = ["dep:nlos-store", "dep:nlos-operation"]
 application = ["dep:nlos-application"]
+search = ["dep:nlos-search", "dep:nlos-semantic"]
+notify = ["dep:nlos-notify", "dep:nlos-topic", "dep:nlos-wait", "dep:nlos-channel"]
 
 [[bin]]
 name = "system-control-cli"
@@ -76,6 +80,9 @@ nlos-artifact = { path = "../nlos-artifact", optional = true }
 nlos-channel = { path = "../nlos-channel", optional = true }
 nlos-semantic = { path = "../nlos-semantic", optional = true }
 nlos-capability = { path = "../nlos-capability", optional = true }
+nlos-search = { path = "../nlos-search", optional = true }
+nlos-notify = { path = "../nlos-notify", optional = true }
+nlos-wait = { path = "../nlos-wait", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["signal"] }

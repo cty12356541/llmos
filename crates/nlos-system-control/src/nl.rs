@@ -44,6 +44,16 @@
 //!   | 查看应用 <32位十六进制> | 检查应用 <32位十六进制>
 //!   | 查看 应用 <32位十六进制> | 检查 应用 <32位十六进制>
 //!   | 应用状态 <32位十六进制> | 应用 状态 <32位十六进制>
+//! inspect search <64-hex> | check search <64-hex> | show search <64-hex>
+//!   | get search <64-hex> | status search <64-hex> | search status <64-hex>
+//!   | 查看搜索 <64位十六进制> | 检查搜索 <64位十六进制>
+//!   | 查看 搜索 <64位十六进制> | 检查 搜索 <64位十六进制>
+//!   | 搜索状态 <64位十六进制> | 搜索 状态 <64位十六进制>
+//! inspect notification <32-hex> | check notification <32-hex> | show notification <32-hex>
+//!   | get notification <32-hex> | status notification <32-hex> | notification status <32-hex>
+//!   | 查看通知 <32位十六进制> | 检查通知 <32位十六进制>
+//!   | 查看 通知 <32位十六进制> | 检查 通知 <32位十六进制>
+//!   | 通知状态 <32位十六进制> | 通知 状态 <32位十六进制>
 //! inspect resource <32-hex> | check resource <32-hex> | show resource <32-hex>
 //!   | get resource <32-hex> | status resource <32-hex> | resource status <32-hex>
 //!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
@@ -152,7 +162,7 @@
 //! [`ControlError::InvalidCommand`] whose message names the violated bound
 //! or the legal forms.
 
-use crate::control::{ControlCommand, ControlError, parse_hex_id};
+use crate::control::{ControlCommand, ControlError, parse_hex_32, parse_hex_id};
 
 /// Fixed bounded audit reason compiled into every natural-language
 /// acknowledgement. It names the issuing surface without embedding the raw
@@ -194,6 +204,7 @@ pub const NL_UNINSTALL_REASON: &str =
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
 \"inspect resource recovery\" | \"export resource metrics\" | \
 \"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect application <32-hex>\" | \
+\"inspect search <64-hex>\" | \"inspect notification <32-hex>\" | \
 \"inspect resource <32-hex>\" | \
 \"inspect task group <32-hex>\" | \"inspect task node <32-hex> <32-hex>\" | \
 \"inspect fiber <32-hex> generation <count>\" | \"inspect topic <32-hex>\" | \
@@ -243,6 +254,12 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_inspect_application(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_search(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_notification(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_inspect_resource(&tokens) {
@@ -362,6 +379,20 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
             if (is_read_verb(head) && second.eq_ignore_ascii_case("application"))
                 || (*head == "查看" && *second == "应用")
                 || (*head == "检查" && *second == "应用") =>
+        {
+            None
+        }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("search"))
+                || (*head == "查看" && *second == "搜索")
+                || (*head == "检查" && *second == "搜索") =>
+        {
+            None
+        }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("notification"))
+                || (*head == "查看" && *second == "通知")
+                || (*head == "检查" && *second == "通知") =>
         {
             None
         }
@@ -528,6 +559,8 @@ fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, Co
                 && (second.eq_ignore_ascii_case("task")
                     || second.eq_ignore_ascii_case("process")
                     || second.eq_ignore_ascii_case("application")
+                    || second.eq_ignore_ascii_case("search")
+                    || second.eq_ignore_ascii_case("notification")
                     || second.eq_ignore_ascii_case("resource")) =>
         {
             None
@@ -635,6 +668,91 @@ fn try_parse_inspect_application(tokens: &[&str]) -> Option<Result<ControlComman
                 "\"inspect application\" expects \"<32-hex>\"",
             )))
         }
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_search(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, scope_id] if is_read_verb(head) && second.eq_ignore_ascii_case("search") => {
+            Some(parse_hex_32(scope_id).map(|scope_id| ControlCommand::InspectSearch { scope_id }))
+        }
+        [first, second, scope_id]
+            if first.eq_ignore_ascii_case("search") && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(parse_hex_32(scope_id).map(|scope_id| ControlCommand::InspectSearch { scope_id }))
+        }
+        ["查看搜索" | "检查搜索", scope_id] | ["查看" | "检查", "搜索", scope_id] => {
+            Some(parse_hex_32(scope_id).map(|scope_id| ControlCommand::InspectSearch { scope_id }))
+        }
+        ["搜索状态", scope_id] | ["搜索", "状态", scope_id] => {
+            Some(parse_hex_32(scope_id).map(|scope_id| ControlCommand::InspectSearch { scope_id }))
+        }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("search"))
+                || (*head == "查看" && *second == "搜索")
+                || (*head == "检查" && *second == "搜索")
+                || (*head == "搜索" && *second == "状态")
+                || *head == "搜索状态"
+                || *head == "查看搜索"
+                || *head == "检查搜索" =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect search\" expects \"<64-hex>\"",
+            )))
+        }
+        ["查看搜索" | "检查搜索" | "搜索状态"] => Some(Err(
+            ControlError::InvalidCommand("\"inspect search\" expects \"<64-hex>\""),
+        )),
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_notification(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, notification_id]
+            if is_read_verb(head) && second.eq_ignore_ascii_case("notification") =>
+        {
+            Some(
+                parse_hex_id(notification_id)
+                    .map(|notification_id| ControlCommand::InspectNotification { notification_id }),
+            )
+        }
+        [first, second, notification_id]
+            if first.eq_ignore_ascii_case("notification")
+                && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(
+                parse_hex_id(notification_id)
+                    .map(|notification_id| ControlCommand::InspectNotification { notification_id }),
+            )
+        }
+        ["查看通知" | "检查通知", notification_id] | ["查看" | "检查", "通知", notification_id] => {
+            Some(
+                parse_hex_id(notification_id)
+                    .map(|notification_id| ControlCommand::InspectNotification { notification_id }),
+            )
+        }
+        ["通知状态", notification_id] | ["通知", "状态", notification_id] => Some(
+            parse_hex_id(notification_id)
+                .map(|notification_id| ControlCommand::InspectNotification { notification_id }),
+        ),
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("notification"))
+                || (*head == "查看" && *second == "通知")
+                || (*head == "检查" && *second == "通知")
+                || (*head == "通知" && *second == "状态")
+                || *head == "通知状态"
+                || *head == "查看通知"
+                || *head == "检查通知" =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect notification\" expects \"<32-hex>\"",
+            )))
+        }
+        ["查看通知" | "检查通知" | "通知状态"] => Some(Err(
+            ControlError::InvalidCommand("\"inspect notification\" expects \"<32-hex>\""),
+        )),
         _ => None,
     }
 }
@@ -2472,5 +2590,80 @@ mod tests {
             parse_nl_command("task status now"),
             Err(ControlError::InvalidCommand(_))
         ));
+    }
+
+    #[test]
+    fn english_and_chinese_search_and_notification_inspect_forms_parse() {
+        let scope_hex = "01000000000000000000000000000000a1b2c3d4e5f60718293a4b5c6d7e8f90";
+        let mut expected_scope = [0u8; 32];
+        expected_scope[0] = 0x01;
+        expected_scope[16..32].copy_from_slice(&plan_id());
+
+        for sentence in [
+            format!("inspect search {scope_hex}"),
+            format!("INSPECT SEARCH {}", scope_hex.to_ascii_uppercase()),
+            format!("check search {scope_hex}"),
+            format!("show search {scope_hex}"),
+            format!("get search {scope_hex}"),
+            format!("status search {scope_hex}"),
+            format!("search status {scope_hex}"),
+            format!("查看搜索 {scope_hex}"),
+            format!("检查搜索 {scope_hex}"),
+            format!("查看 搜索 {scope_hex}"),
+            format!("检查 搜索 {scope_hex}"),
+            format!("搜索状态 {scope_hex}"),
+            format!("搜索 状态 {scope_hex}"),
+        ] {
+            assert_eq!(
+                parse_nl_command(&sentence).unwrap(),
+                ControlCommand::InspectSearch {
+                    scope_id: expected_scope,
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+
+        for sentence in [
+            "inspect notification a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "INSPECT NOTIFICATION A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "check notification a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "show notification a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "get notification a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status notification a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "notification status a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看通知 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查通知 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看 通知 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查 通知 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "通知状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "通知 状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectNotification {
+                    notification_id: plan_id(),
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+
+        for rejected in [
+            "inspect search",
+            "inspect search a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看搜索",
+            "搜索状态",
+            "inspect notification",
+            "inspect notification a1b2c3d4e5f60718293a4b5c6d7e8f9",
+            "查看通知",
+            "通知状态",
+        ] {
+            assert!(
+                matches!(
+                    parse_nl_command(rejected),
+                    Err(ControlError::InvalidCommand(_))
+                ),
+                "expected typed rejection for {rejected:?}"
+            );
+        }
     }
 }

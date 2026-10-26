@@ -81,7 +81,13 @@ use nlos_lease::{
     CapacityReconciliationReceipt, DeviceReconcileError, DeviceReconciliationReceipt,
     DeviceResetReceipt, ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantor, LeaseInstant,
     QuotaLeaseGrant, QuotaLeaseGrantor, QuotaLeaseLedgerError, QuotaLeaseState,
-    QuotaReconcileError, QuotaReconciliationReceipt,
+    QuotaReconcileError, QuotaReconciliationReceipt, QuotaWalLossError, SqliteLeaseStore,
+};
+use nlos_notify::{
+    AckNotificationRequest, DeliveredTaskNotification, IssueActionTokenDecision,
+    IssueNotificationActionTokenRequest, NotificationAckDecision, NotificationActionRedeemReceipt,
+    NotificationHistoryPage, NotificationId, NotificationPublishDecision, NotificationService,
+    NotificationSubscribeDecision, RedeemNotificationActionRequest, TaskNotificationEnvelope,
 };
 use nlos_process::{
     MarkProcessTerminatedRequest, ProcessAuthorityError, ProcessBindingRecord,
@@ -89,14 +95,25 @@ use nlos_process::{
     SupervisorPidRegistryError,
 };
 use nlos_runtime_tokio::PumpHealth;
+use nlos_search::{
+    AssertionSelector, CellSearchShardOutcome, FederatedSearchReport, NonAuthoritativeCandidateHit,
+    PaginatedAssertionSelector, SearchPage, VerifiedCheckpointCandidate,
+};
+use nlos_semantic::SignedSemanticVectorCheckpoint;
+use nlos_topic::{SubscriberKey, TopicId};
 use nlos_types::{
     CapabilityId, CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, IdempotencyKey,
     ProcessId, QuotaLeaseId, SchedulerDomainId, TaskAttemptId, TaskId,
 };
+use nlos_wait::WaitAuthority;
 use sha2::{Digest, Sha256};
 
 use crate::error::{SliceKError, SliceKResult};
-use crate::runtime::{SliceKRuntime, seeded_key};
+use crate::runtime::{SearchServiceGuard, SliceKRuntime, seeded_key};
+use crate::service_faces::{
+    NotificationTopicBinding, NotificationTopicConfig, SubscribedNotificationTopic,
+    export_cell_search_shard, federated_search_across_cell_hosts,
+};
 
 /// Key tag of every durable tick the cell host takes for heartbeat and
 /// sweep evidence (`cellbeat ‖ sequence`), disjoint from the slice fixture's
@@ -229,7 +246,21 @@ impl CellHost {
     /// the cell data directory is unusable, or its identity is bound to a
     /// different Cell.
     pub fn open(root: impl AsRef<Path>, config: CellHostConfig) -> SliceKResult<Self> {
-        Self::open_with_federation(root.as_ref(), config, None)
+        Self::open_with_federation(root.as_ref(), config, None, false)
+    }
+
+    /// Opens the assembled Cell with all three lease sub-ledgers backed by a
+    /// shared `SQLite WAL + FULL` [`SqliteLeaseStore`] at
+    /// `<root>/leases.sqlite3` (`W62` / `W66`), so committed `QuotaLease`,
+    /// `CapacityLease`, and `ExclusiveDeviceLease` states rehydrate across hard
+    /// OS process crashes and restarts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`], plus [`SliceKError::LeaseStore`] if the durable lease
+    /// database cannot be opened or fails conservation/integrity verification.
+    pub fn open_durable(root: impl AsRef<Path>, config: CellHostConfig) -> SliceKResult<Self> {
+        Self::open_with_federation(root.as_ref(), config, None, true)
     }
 
     /// Opens the assembled Cell under one root directory **and** publishes
@@ -253,25 +284,64 @@ impl CellHost {
         config: CellHostConfig,
         federation_root: impl AsRef<Path>,
     ) -> SliceKResult<Self> {
-        Self::open_with_federation(root.as_ref(), config, Some(federation_root.as_ref()))
+        Self::open_with_federation(root.as_ref(), config, Some(federation_root.as_ref()), false)
+    }
+
+    /// Opens a federated Cell backed by durable `<root>/leases.sqlite3` storage
+    /// (`[ROAD-C-001]` / `W66` crash-restart + reconnection convergence path).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open_federated`], plus [`SliceKError::LeaseStore`] on durable
+    /// lease store open or rehydration errors.
+    pub fn open_federated_durable(
+        root: impl AsRef<Path>,
+        config: CellHostConfig,
+        federation_root: impl AsRef<Path>,
+    ) -> SliceKResult<Self> {
+        Self::open_with_federation(root.as_ref(), config, Some(federation_root.as_ref()), true)
     }
 
     fn open_with_federation(
         root: &Path,
         config: CellHostConfig,
         federation_root: Option<&Path>,
+        durable_leases: bool,
     ) -> SliceKResult<Self> {
         let runtime = SliceKRuntime::open(root)?;
         let authority =
             CellAuthority::claim_with_data_dir(config.domain, runtime.root().join("cell"))?;
         let os_process_id = authority.os_process_id();
+        let authority = authority.into_shared();
+        let (quota, capacity, device) = if durable_leases {
+            let store = Arc::new(SqliteLeaseStore::open(
+                runtime.root().join("leases.sqlite3"),
+            )?);
+            let q = QuotaLeaseGrantor::open_with_store(
+                Arc::clone(&store),
+                Arc::clone(&authority),
+                config.quota_available,
+            )?;
+            let c = CapacityLeaseGrantor::open_with_store(
+                Arc::clone(&store),
+                Arc::clone(&authority),
+                config.capacity_pool,
+            )?;
+            let d = ExclusiveDeviceLeaseGrantor::open_with_store(
+                store,
+                Arc::clone(&authority),
+                config.device,
+            )?;
+            (q, c, d)
+        } else {
+            let q = QuotaLeaseGrantor::open(Arc::clone(&authority), config.quota_available);
+            let c = CapacityLeaseGrantor::open(Arc::clone(&authority), config.capacity_pool);
+            let d = ExclusiveDeviceLeaseGrantor::open(Arc::clone(&authority), config.device);
+            (q, c, d)
+        };
         let fence = authority.fence();
         let detector = FailureDetector::new(&fence, config.detector);
         let cache = CapabilityNameCache::new(&fence);
-        let authority = authority.into_shared();
-        let quota = QuotaLeaseGrantor::open(Arc::clone(&authority), config.quota_available);
-        let capacity = CapacityLeaseGrantor::open(Arc::clone(&authority), config.capacity_pool);
-        let device = ExclusiveDeviceLeaseGrantor::open(authority, config.device);
         let gateway =
             ProviderCache::new(Arc::new(MockProvider::new(Arc::clone(&runtime.operations))));
         let federation = match federation_root {
@@ -419,6 +489,287 @@ impl CellHost {
     #[must_use]
     pub fn runtime(&self) -> &SliceKRuntime {
         &self.runtime
+    }
+
+    /// Durable [`WaitAuthority`] assembled inside this Cell's runtime (`W66`).
+    #[must_use]
+    pub fn waits(&self) -> &Arc<WaitAuthority> {
+        self.runtime.waits()
+    }
+
+    /// Managed [`NotificationService`] assembled inside this Cell's runtime
+    /// (`W66`, unfreezing `nlos-notify`).
+    #[must_use]
+    pub fn notify(&self) -> &NotificationService {
+        self.runtime.notify()
+    }
+
+    /// Read-only, non-authoritative [`SearchService`] guard assembled over this
+    /// Cell's [`SemanticAuthority`](nlos_semantic::SemanticAuthority) (`W66`,
+    /// unfreezing `nlos-search`). Derefs directly to [`SearchService`].
+    pub fn search(&self) -> SearchServiceGuard<'_> {
+        self.runtime.search()
+    }
+
+    /// Idempotently provisions (or replays) a notification channel + topic
+    /// binding on this Cell (`[TASK-NOTIFY-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any clock, channel, or topic authority refusal.
+    pub fn ensure_notification_topic(
+        &self,
+        config: &NotificationTopicConfig,
+    ) -> SliceKResult<NotificationTopicBinding> {
+        self.runtime.ensure_notification_topic(config)
+    }
+
+    /// Subscribes `subscriber_key` to `topic_id` through this Cell's
+    /// [`NotificationService`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] or [`nlos_topic::TopicAuthority`] refusal.
+    pub fn subscribe_notification_topic(
+        &self,
+        topic_id: TopicId,
+        subscriber_key: SubscriberKey,
+        subscribed_at_ms: u64,
+    ) -> SliceKResult<NotificationSubscribeDecision> {
+        self.runtime
+            .subscribe_notification_topic(topic_id, subscriber_key, subscribed_at_ms)
+    }
+
+    /// Idempotently provisions `config` and subscribes `subscriber_key` on
+    /// this Cell (`[TASK-NOTIFY-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any clock, channel, topic, or notification-service error.
+    pub fn bootstrap_and_subscribe_notification_topic(
+        &self,
+        config: &NotificationTopicConfig,
+        subscriber_key: SubscriberKey,
+        subscribed_at_ms: u64,
+    ) -> SliceKResult<SubscribedNotificationTopic> {
+        self.runtime.bootstrap_and_subscribe_notification_topic(
+            config,
+            subscriber_key,
+            subscribed_at_ms,
+        )
+    }
+
+    /// Publishes a canonical `[TASK-NOTIFY-001]` [`TaskNotificationEnvelope`]
+    /// transition on this Cell and records its `[DUI-OFFLINE-001]` offline
+    /// history reference.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal.
+    pub fn publish_task_notification(
+        &self,
+        topic_id: TopicId,
+        envelope: &TaskNotificationEnvelope,
+        idempotency_key: IdempotencyKey,
+    ) -> SliceKResult<NotificationPublishDecision> {
+        self.runtime
+            .publish_task_notification(topic_id, envelope, idempotency_key)
+    }
+
+    /// Polls unacknowledged `[TASK-NOTIFY-001]` task transition notifications
+    /// for `notification_id` on this Cell.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal or malformed wire error.
+    pub fn poll_task_notifications(
+        &self,
+        notification_id: NotificationId,
+        limit: usize,
+    ) -> SliceKResult<Vec<DeliveredTaskNotification>> {
+        self.runtime.poll_task_notifications(notification_id, limit)
+    }
+
+    /// Advances the subscriber's token-authenticated delivery cursor on this
+    /// Cell.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal.
+    pub fn ack_notification(
+        &self,
+        request: AckNotificationRequest,
+    ) -> SliceKResult<NotificationAckDecision> {
+        self.runtime.ack_notification(request)
+    }
+
+    /// Issues a `[DUI-NOTIFY-001]` cryptographically bound one-shot
+    /// `ActionToken` on this Cell.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`NotificationService`] refusal.
+    pub fn issue_notification_action_token(
+        &self,
+        request: IssueNotificationActionTokenRequest,
+    ) -> SliceKResult<IssueActionTokenDecision> {
+        self.runtime.issue_notification_action_token(request)
+    }
+
+    /// Redeems a `[DUI-NOTIFY-001]` bound one-shot `ActionToken` on this Cell.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on cross-application spoofing, binding mismatch, invalid
+    /// proof, expiry, revocation, or duplicate redemption.
+    pub fn redeem_notification_action_token(
+        &self,
+        request: RedeemNotificationActionRequest,
+    ) -> SliceKResult<NotificationActionRedeemReceipt> {
+        self.runtime.redeem_notification_action_token(request)
+    }
+
+    /// Queries a cursor-paginated `[DUI-OFFLINE-001]` offline notification
+    /// history page on this Cell strictly after `after_sequence`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on zero or out-of-bounds `limit` or `SQLite` errors.
+    pub fn query_offline_notification_history(
+        &self,
+        topic_id: TopicId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> SliceKResult<NotificationHistoryPage> {
+        self.runtime
+            .query_offline_notification_history(topic_id, after_sequence, limit)
+    }
+
+    /// Exports a [`SignedSemanticVectorCheckpoint`] signed by this Cell's
+    /// semantic writer (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`nlos_semantic::SemanticAuthority`] checkpoint signing error.
+    pub fn export_signed_vector_checkpoint(
+        &self,
+        trust_snapshot_digest: [u8; 32],
+        signed_at_ms: u64,
+    ) -> SliceKResult<SignedSemanticVectorCheckpoint> {
+        self.runtime
+            .export_signed_vector_checkpoint(trust_snapshot_digest, signed_at_ms)
+    }
+
+    /// Queries a cursor-paginated page of non-authoritative candidates over
+    /// this Cell's [`SemanticAuthority`](nlos_semantic::SemanticAuthority),
+    /// preserving [`SearchUseRestrictions::NON_AUTHORITATIVE`](nlos_search::SearchUseRestrictions::NON_AUTHORITATIVE)
+    /// (`[CONS-DECL-001]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid limits, decode corruption, or authority
+    /// trust-view errors.
+    pub fn query_non_authoritative_candidates(
+        &self,
+        paginated: &PaginatedAssertionSelector,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        self.runtime.query_non_authoritative_candidates(paginated)
+    }
+
+    /// Queries checkpoint-bounded non-authoritative candidates on this Cell
+    /// (`require_domain_present = true`, `[SEM-CHECKPOINT-001]`,
+    /// `[TASK-SNAPSHOT-003]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid checkpoint signatures/digests, missing or
+    /// mismatched domain watermarks, or `selector.limit == 0`.
+    pub fn query_at_signed_checkpoint(
+        &self,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+        selector: &AssertionSelector,
+        after_log_seq: Option<u64>,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        self.runtime
+            .query_at_signed_checkpoint(checkpoint, selector, after_log_seq)
+    }
+
+    /// Queries checkpoint-bounded non-authoritative candidates on this Cell
+    /// with explicit `require_domain_present` policy (`[SEM-CHECKPOINT-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid checkpoint signatures/digests, watermark
+    /// mismatches, or missing watermark when `require_domain_present == true`.
+    pub fn query_at_signed_checkpoint_with_options(
+        &self,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+        selector: &AssertionSelector,
+        after_log_seq: Option<u64>,
+        require_domain_present: bool,
+    ) -> SliceKResult<SearchPage<NonAuthoritativeCandidateHit>> {
+        self.runtime.query_at_signed_checkpoint_with_options(
+            checkpoint,
+            selector,
+            after_log_seq,
+            require_domain_present,
+        )
+    }
+
+    /// Re-verifies a discovered [`NonAuthoritativeCandidateHit`] against
+    /// `checkpoint` and this Cell's live [`SemanticAuthority`](nlos_semantic::SemanticAuthority)
+    /// (`[TASK-SNAPSHOT-003]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on tampered `use_restrictions`, invalid checkpoint
+    /// signature, watermark mismatch, authority record mismatch, durable
+    /// retraction, or post-checkpoint `log_seq`.
+    pub fn verify_candidate_against_checkpoint(
+        &self,
+        candidate: &NonAuthoritativeCandidateHit,
+        checkpoint: &SignedSemanticVectorCheckpoint,
+    ) -> SliceKResult<VerifiedCheckpointCandidate> {
+        self.runtime
+            .verify_candidate_against_checkpoint(candidate, checkpoint)
+    }
+
+    /// Exports this Cell's non-authoritative [`CellSearchShardOutcome`] keyed
+    /// by `self.fence().identity()` (`[SEM-CHECKPOINT-001]`,
+    /// `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any search or checkpoint verification error.
+    pub fn export_search_shard(
+        &self,
+        selector: &AssertionSelector,
+        checkpoint: Option<&SignedSemanticVectorCheckpoint>,
+    ) -> SliceKResult<CellSearchShardOutcome> {
+        export_cell_search_shard(self, selector, checkpoint)
+    }
+
+    /// Executes federated non-authoritative candidate aggregation across `self`
+    /// and `peer` (`[SEM-CHECKPOINT-001]`, `[DIST-FAIL-001]`,
+    /// `[CONS-DECL-001]`, `[CONS-CTRL-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any shard query or federated aggregation refusal.
+    pub fn federated_search_with_peer(
+        &self,
+        peer: &Self,
+        selector: &AssertionSelector,
+        max_results: usize,
+        allow_partial_on_remote_failure: bool,
+    ) -> SliceKResult<FederatedSearchReport> {
+        federated_search_across_cell_hosts(
+            self,
+            peer,
+            selector,
+            max_results,
+            allow_partial_on_remote_failure,
+        )
     }
 
     /// The fence this host last assembled or advanced to. The
@@ -589,6 +940,84 @@ impl CellHost {
     /// them into `FENCED` (`LEASE-TTL-001`, `W65`).
     pub fn sweep_expired_quota_leases(&mut self, now: LeaseInstant) -> Vec<QuotaLeaseId> {
         self.quota.sweep_expired(now)
+    }
+
+    /// Explicitly rejects any attempt to recover a WAL-lost `QuotaLease` by
+    /// guessing `remaining` from `face_value` (`[LEASE-WAL-001]`, `W66`).
+    ///
+    /// # Errors
+    ///
+    /// Always fails closed with [`QuotaWalLossError::GuessedRemainingForbidden`]
+    /// (or [`QuotaWalLossError::UnknownLease`] if the lease id does not exist).
+    pub fn refuse_guessed_remaining_on_wal_loss(
+        &self,
+        lease_id: QuotaLeaseId,
+        guessed_remaining: u64,
+    ) -> Result<QuotaLeaseGrant, QuotaWalLossError> {
+        self.quota
+            .refuse_guessed_remaining_on_wal_loss(lease_id, guessed_remaining)
+    }
+
+    /// Fences all unsettled `QuotaLease`s on `lost_boot_generation` into
+    /// `QUARANTINED` without returning balance to `AVAILABLE`, advances the
+    /// Cell epoch/fencing token, and broadcasts the new fence across this
+    /// host's detector and capability/name cache (`[LEASE-WAL-001]`, `W66`).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`SliceKError::QuotaWalLoss`] if
+    /// `reconnected_boot_generation <= lost_boot_generation` or epoch space is
+    /// exhausted, or [`SliceKError::CellBroadcast`] on mid-chain broadcast
+    /// refusal.
+    pub fn fence_boot_generation_on_wal_loss(
+        &mut self,
+        lost_boot_generation: Generation,
+        reconnected_boot_generation: Generation,
+    ) -> SliceKResult<(CellEpochAdvance, Vec<QuotaLeaseId>)> {
+        let (new_fence, quarantined_ids) = self
+            .quota
+            .fence_boot_generation_on_wal_loss(lost_boot_generation, reconnected_boot_generation)?;
+        let detector_report = match self.detector.on_epoch_advanced(&new_fence) {
+            Ok(report) => report,
+            Err(refusal) => {
+                return Err(SliceKError::CellBroadcast(Box::new(
+                    CellEpochBroadcastIncomplete {
+                        advanced_to: new_fence,
+                        detector: None,
+                        name_cache: None,
+                        refusal: CellBroadcastRefusal::Detector(refusal),
+                    },
+                )));
+            }
+        };
+        let name_cache_report = match self.cache.on_epoch_advanced(&new_fence) {
+            Ok(report) => report,
+            Err(refusal) => {
+                return Err(SliceKError::CellBroadcast(Box::new(
+                    CellEpochBroadcastIncomplete {
+                        advanced_to: new_fence,
+                        detector: Some(detector_report),
+                        name_cache: None,
+                        refusal: CellBroadcastRefusal::Cache(refusal),
+                    },
+                )));
+            }
+        };
+        self.fence = new_fence;
+        if self.partition_gate.state().is_connected() {
+            let tick = self.partition_gate.last_observed_tick();
+            let _ = self
+                .partition_gate
+                .record_control_plane_contact(new_fence, tick);
+        }
+        Ok((
+            CellEpochAdvance {
+                fence: new_fence,
+                detector: detector_report,
+                name_cache: name_cache_report,
+            },
+            quarantined_ids,
+        ))
     }
 
     /// Committed [`QuotaReconciliationReceipt`] records for `lease_id` (`W65`).

@@ -91,6 +91,35 @@ const INSPECT_SEMANTIC_CORRELATION_ID: [u8; 16] = [0x37; 16];
 const EXPORT_SEMANTIC_METRICS_CORRELATION_ID: [u8; 16] = [0x38; 16];
 const INSPECT_RESOURCE_RECOVERY_CORRELATION_ID: [u8; 16] = [0x39; 16];
 const EXPORT_RESOURCE_RECOVERY_METRICS_CORRELATION_ID: [u8; 16] = [0x3A; 16];
+const INSPECT_SEARCH_DOMAIN_MASK: [u8; 16] = [0xC6; 16];
+
+/// Fixed byte width of a 32-byte search scope identifier (`64` hex chars).
+pub const SCOPE_ID_BYTES: usize = 32;
+
+const fn is_all_zero_16(bytes: &[u8; 16]) -> bool {
+    let mut index = 0;
+    while index < 16 {
+        if bytes[index] != 0 {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+const fn search_scope_command_id(scope_id: &[u8; SCOPE_ID_BYTES]) -> [u8; 16] {
+    let mut folded = [0u8; 16];
+    let mut index = 0;
+    while index < 16 {
+        folded[index] = scope_id[index] ^ scope_id[index + 16] ^ INSPECT_SEARCH_DOMAIN_MASK[index];
+        index += 1;
+    }
+    if is_all_zero_16(&folded) {
+        INSPECT_SEARCH_DOMAIN_MASK
+    } else {
+        folded
+    }
+}
 
 /// Bounded control operations for the minimal prefix (§25.3). The read
 /// variants reuse the `get` snapshot; the mutation variant is the one real
@@ -139,6 +168,20 @@ pub enum ControlCommand {
     /// dispatch time; the recovery GET envelope is still crossed for
     /// authorization parity (mirrors [`Self::InspectProcess`]).
     InspectApplication { package_id: [u8; 16] },
+    /// Inspect non-authoritative search state for one 32-byte scope selector
+    /// (`C-UNFREEZE-001`, `[CONS-DECL-001]`, `[CONS-CTRL-001]`). The receipt
+    /// reports a bounded read-only snapshot from the pluggable
+    /// [`SearchInspector`] wired at dispatch time; the recovery GET envelope is
+    /// still crossed for authorization parity (mirrors
+    /// [`Self::InspectApplication`]).
+    InspectSearch { scope_id: [u8; SCOPE_ID_BYTES] },
+    /// Inspect one notification subscription and its bounded offline history by
+    /// its 16-byte notification identity (`C-UNFREEZE-001`, `[TASK-NOTIFY-001]`,
+    /// `[DUI-OFFLINE-001]`). The receipt reports a bounded read-only snapshot
+    /// from the pluggable [`NotificationInspector`] wired at dispatch time; the
+    /// recovery GET envelope is still crossed for authorization parity (mirrors
+    /// [`Self::InspectApplication`]).
+    InspectNotification { notification_id: [u8; 16] },
     /// Inspect one `TaskGroup` by its 16-byte group id (W32-G, B5-3). The
     /// handler reads the durable group and its bounded member list straight
     /// from the `TaskAuthority` it already owns; the receipt crosses as one
@@ -325,6 +368,8 @@ impl ControlCommand {
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
             Self::InspectApplication { package_id } => *package_id,
+            Self::InspectSearch { scope_id } => search_scope_command_id(scope_id),
+            Self::InspectNotification { notification_id } => *notification_id,
             Self::InspectTaskGroup { group_id } => *group_id,
             Self::InspectTaskNode { node_id, .. } => *node_id,
             Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
@@ -384,6 +429,8 @@ impl ControlCommand {
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
             Self::InspectApplication { package_id } => *package_id,
+            Self::InspectSearch { scope_id } => search_scope_command_id(scope_id),
+            Self::InspectNotification { notification_id } => *notification_id,
             Self::InspectTaskGroup { group_id } => *group_id,
             Self::InspectTaskNode { node_id, .. } => *node_id,
             Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
@@ -671,6 +718,101 @@ impl ApplicationInspector for UnwiredApplicationInspector {
     }
 }
 
+/// Bounded read-only facts for one non-authoritative search inspection
+/// (`C-UNFREEZE-001`, `[CONS-DECL-001]`, `[CONS-CTRL-001]`, `[PERF-CONTROL-001]`).
+///
+/// - `consistency_class` mirrors `nlos_search::SearchAchievedConsistency`:
+///   `1 = eventual_live_scan`, `2 = derived_in_memory_index`,
+///   `3 = checkpoint_bounded_snapshot`, `4 = federated_partial_eventual`.
+/// - `degradation_policy`: `0 = fail_closed_no_downgrade`,
+///   `1 = explicit_downgrade_accepted`.
+/// - `non_authoritative_restrictions_bits`: bitmask of the five
+///   `[CONS-CTRL-001]` forbidden authority gates (`0x1f` when all five gates
+///   are prohibited via `SearchUseRestrictions::NON_AUTHORITATIVE`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchInspection {
+    pub scope_id: [u8; SCOPE_ID_BYTES],
+    pub consistency_class: u8,
+    pub degradation_policy: u8,
+    pub non_authoritative_restrictions_bits: u8,
+    pub admitted_event_count: u64,
+    pub active_assertion_count: u64,
+    pub retracted_event_count: u64,
+    pub truncated: bool,
+}
+
+/// Pluggable read-only search inspection backend for
+/// [`ControlCommand::InspectSearch`]. Hosts wire a real service adapter (see
+/// `crate::search_inspector` with the `search` feature) or leave the default
+/// [`UnwiredSearchInspector`] in place until one is available.
+pub trait SearchInspector {
+    /// Returns one bounded non-authoritative search snapshot or a sanitized
+    /// failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing service or authority rejects
+    /// the read.
+    fn inspect_search(
+        &self,
+        scope_id: [u8; SCOPE_ID_BYTES],
+    ) -> Result<SearchInspection, SabiFailure>;
+}
+
+/// Default stub used when no search inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredSearchInspector;
+
+impl SearchInspector for UnwiredSearchInspector {
+    fn inspect_search(&self, _: [u8; SCOPE_ID_BYTES]) -> Result<SearchInspection, SabiFailure> {
+        Err(not_found_failure("search inspection backend is not wired"))
+    }
+}
+
+/// Bounded read-only facts for one notification subscription and offline
+/// history inspection (`C-UNFREEZE-001`, `[TASK-NOTIFY-001]`,
+/// `[DUI-OFFLINE-001]`, `[PERF-CONTROL-001]`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationInspection {
+    pub notification_id: [u8; 16],
+    pub topic_id: [u8; 16],
+    pub subscriber_key: [u8; 16],
+    pub next_sequence: u64,
+    pub history_entry_count: u64,
+    pub history_truncated: bool,
+    pub prune_watermark_sequence: u64,
+}
+
+/// Pluggable read-only notification inspection backend for
+/// [`ControlCommand::InspectNotification`]. Hosts wire a real service adapter
+/// (see `crate::notify_inspector` with the `notify` feature) or leave the
+/// default [`UnwiredNotificationInspector`] in place until one is available.
+pub trait NotificationInspector {
+    /// Returns one bounded notification subscription and history snapshot or a
+    /// sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing service or authority rejects
+    /// the read or the subscription is unknown or dangling.
+    fn inspect_notification(
+        &self,
+        notification_id: [u8; 16],
+    ) -> Result<NotificationInspection, SabiFailure>;
+}
+
+/// Default stub used when no notification inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredNotificationInspector;
+
+impl NotificationInspector for UnwiredNotificationInspector {
+    fn inspect_notification(&self, _: [u8; 16]) -> Result<NotificationInspection, SabiFailure> {
+        Err(not_found_failure(
+            "notification inspection backend is not wired",
+        ))
+    }
+}
+
 /// Bounded read-only facts for one `TaskGroup` inspection (W32-G, B5-3).
 /// Wire enum types carry the state classes; the shared decode path already
 /// rejects unspecified values, so a decoded inspection never carries one.
@@ -781,6 +923,10 @@ pub enum ControlOutcome {
     ResourceInspected(ResourceInspection),
     /// Read-only application head inspection completed (W38-A11).
     ApplicationInspected(ApplicationInspection),
+    /// Read-only non-authoritative search inspection completed (`C-UNFREEZE-001`).
+    SearchInspected(SearchInspection),
+    /// Read-only notification subscription and history inspection completed (`C-UNFREEZE-001`).
+    NotificationInspected(NotificationInspection),
     /// Read-only `TaskGroup` inspection completed (W32-G, B5-3).
     TaskGroupInspected(TaskGroupInspection),
     /// Read-only plan `TaskNode` inspection completed (W32-G, B5-3).
@@ -971,6 +1117,8 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::InspectProcess { .. }
         | ControlCommand::InspectResource { .. }
         | ControlCommand::InspectApplication { .. }
+        | ControlCommand::InspectSearch { .. }
+        | ControlCommand::InspectNotification { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
             recovery_view_payload(
@@ -1374,9 +1522,54 @@ where
     H: RecoveryHealthSource,
     A: SystemControlAuthorizer,
 {
+    dispatch_in_process_with_services(
+        control,
+        command,
+        now_monotonic_ns,
+        now_wall_ms,
+        process,
+        resource,
+        application,
+        None,
+        None,
+    )
+}
+
+/// Dispatches one command in-process with optional search and notification
+/// inspection backends wired alongside the authority inspectors
+/// (`C-UNFREEZE-001`).
+///
+/// # Errors
+///
+/// Returns [`ControlError`] when envelope compilation or receipt projection
+/// fails; handler rejections are typed receipt failures instead.
+#[allow(clippy::too_many_arguments)] // Preserves explicit per-service inspector composition without trait-bundle indirection.
+pub fn dispatch_in_process_with_services<H, A>(
+    control: &RecoverySystemControl<'_, H, A>,
+    command: &ControlCommand,
+    now_monotonic_ns: u64,
+    now_wall_ms: i64,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
+) -> Result<ControlReceipt, ControlError>
+where
+    H: RecoveryHealthSource,
+    A: SystemControlAuthorizer,
+{
     let request = build_request_envelope(command)?;
     let response = control.handle_for_ipc(&request, now_monotonic_ns, now_wall_ms);
-    ControlReceipt::compose(command, &response, process, resource, application)
+    ControlReceipt::compose_with_services(
+        command,
+        &response,
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
 }
 
 /// Dispatches one command to a real local IPC endpoint and projects the
@@ -1397,6 +1590,28 @@ pub async fn dispatch_over_socket(
     resource: Option<&dyn ResourceInspector>,
     application: Option<&dyn ApplicationInspector>,
 ) -> Result<ControlReceipt, ControlError> {
+    dispatch_over_socket_with_services(socket, command, process, resource, application, None, None)
+        .await
+}
+
+/// Dispatches one command over a Unix socket endpoint with optional search and
+/// notification inspection backends (`C-UNFREEZE-001`).
+///
+/// # Errors
+///
+/// Returns [`ControlError`] for transport, contract, or projection failures;
+/// handler rejections are typed receipt failures instead.
+#[cfg(all(unix, feature = "cli"))]
+#[allow(clippy::too_many_arguments)] // Preserves explicit per-service inspector composition without trait-bundle indirection.
+pub async fn dispatch_over_socket_with_services(
+    socket: impl AsRef<std::path::Path>,
+    command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
+) -> Result<ControlReceipt, ControlError> {
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::ExchangeRequest;
 
@@ -1412,7 +1627,15 @@ pub async fn dispatch_over_socket(
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope(), process, resource, application)
+    ControlReceipt::compose_with_services(
+        command,
+        response.envelope(),
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
 }
 
 /// Projects one completed mutation response into its authoritative receipt
@@ -1950,6 +2173,36 @@ fn compose_application_inspection(
     }
 }
 
+fn compose_search_inspection(
+    search: Option<&dyn SearchInspector>,
+    scope_id: [u8; SCOPE_ID_BYTES],
+) -> Result<ControlOutcome, SabiFailure> {
+    if let Some(inspector) = search {
+        inspector
+            .inspect_search(scope_id)
+            .map(ControlOutcome::SearchInspected)
+    } else {
+        UnwiredSearchInspector
+            .inspect_search(scope_id)
+            .map(ControlOutcome::SearchInspected)
+    }
+}
+
+fn compose_notification_inspection(
+    notify: Option<&dyn NotificationInspector>,
+    notification_id: [u8; 16],
+) -> Result<ControlOutcome, SabiFailure> {
+    if let Some(inspector) = notify {
+        inspector
+            .inspect_notification(notification_id)
+            .map(ControlOutcome::NotificationInspected)
+    } else {
+        UnwiredNotificationInspector
+            .inspect_notification(notification_id)
+            .map(ControlOutcome::NotificationInspected)
+    }
+}
+
 /// Projects the snapshot-backed read commands (aggregate/domain health and
 /// the three metrics exports) from one handler response. The plan-scoped
 /// inspection and the inspector-backed process/resource reads stay in
@@ -2016,13 +2269,42 @@ impl ControlReceipt {
     ///
     /// Returns [`ControlError`] when the response shape does not match the
     /// command or the frozen payload contract.
-    #[allow(clippy::too_many_lines)] // The per-variant outcome projections stay flat in one auditable match.
     pub fn compose(
         command: &ControlCommand,
         response: &Envelope,
         process: Option<&dyn ProcessInspector>,
         resource: Option<&dyn ResourceInspector>,
         application: Option<&dyn ApplicationInspector>,
+    ) -> Result<Self, ControlError> {
+        Self::compose_with_services(
+            command,
+            response,
+            process,
+            resource,
+            application,
+            None,
+            None,
+        )
+    }
+
+    /// Projects one handler response envelope into the typed receipt, wiring
+    /// optional search and notification inspection backends alongside the
+    /// authority inspectors (`C-UNFREEZE-001`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlError`] when the response shape does not match the
+    /// command or the frozen payload contract.
+    #[allow(clippy::too_many_arguments)] // Preserves explicit per-service inspector composition without trait-bundle indirection.
+    #[allow(clippy::too_many_lines)] // The per-variant outcome projections stay flat in one auditable match.
+    pub fn compose_with_services(
+        command: &ControlCommand,
+        response: &Envelope,
+        process: Option<&dyn ProcessInspector>,
+        resource: Option<&dyn ResourceInspector>,
+        application: Option<&dyn ApplicationInspector>,
+        search: Option<&dyn SearchInspector>,
+        notify: Option<&dyn NotificationInspector>,
     ) -> Result<Self, ControlError> {
         let Some(envelope::CommonContext::ResponseContext(context)) =
             response.common_context.as_ref()
@@ -2079,6 +2361,12 @@ impl ControlReceipt {
                 }
                 ControlCommand::InspectApplication { package_id } => {
                     compose_application_inspection(application, *package_id)
+                }
+                ControlCommand::InspectSearch { scope_id } => {
+                    compose_search_inspection(search, *scope_id)
+                }
+                ControlCommand::InspectNotification { notification_id } => {
+                    compose_notification_inspection(notify, *notification_id)
                 }
                 ControlCommand::InspectTaskGroup { .. } => Ok(ControlOutcome::TaskGroupInspected(
                     decoded_task_group_inspection(response)?,
@@ -2153,6 +2441,7 @@ impl ControlReceipt {
     /// two receipts are "the same receipt" exactly when these bytes match.
     /// Fixed-width little-endian integers, `u32` length prefixes, no schema
     /// drift surface.
+    #[allow(clippy::too_many_lines)] // Exhaustive deterministic encoding across all ControlOutcome variants.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -2204,6 +2493,27 @@ impl ControlReceipt {
                 bytes.push(inspection.status);
                 bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
                 bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+            }
+            Ok(ControlOutcome::SearchInspected(inspection)) => {
+                bytes.push(23);
+                bytes.extend_from_slice(&inspection.scope_id);
+                bytes.push(inspection.consistency_class);
+                bytes.push(inspection.degradation_policy);
+                bytes.push(inspection.non_authoritative_restrictions_bits);
+                bytes.extend_from_slice(&inspection.admitted_event_count.to_le_bytes());
+                bytes.extend_from_slice(&inspection.active_assertion_count.to_le_bytes());
+                bytes.extend_from_slice(&inspection.retracted_event_count.to_le_bytes());
+                bytes.push(u8::from(inspection.truncated));
+            }
+            Ok(ControlOutcome::NotificationInspected(inspection)) => {
+                bytes.push(24);
+                bytes.extend_from_slice(&inspection.notification_id);
+                bytes.extend_from_slice(&inspection.topic_id);
+                bytes.extend_from_slice(&inspection.subscriber_key);
+                bytes.extend_from_slice(&inspection.next_sequence.to_le_bytes());
+                bytes.extend_from_slice(&inspection.history_entry_count.to_le_bytes());
+                bytes.push(u8::from(inspection.history_truncated));
+                bytes.extend_from_slice(&inspection.prune_watermark_sequence.to_le_bytes());
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 push_tagged_receipt(&mut bytes, 2, receipt_id);
@@ -2499,6 +2809,40 @@ pub fn parse_hex_id(value: &str) -> Result<[u8; REQUEST_ID_BYTES], ControlError>
     Ok(decoded)
 }
 
+/// Parses a fixed-length 32-byte hex identifier (`64` hex chars), fail-closed
+/// on length or charset violations.
+///
+/// # Errors
+///
+/// Returns a static description of the first violated bound.
+pub fn parse_hex_32(value: &str) -> Result<[u8; SCOPE_ID_BYTES], ControlError> {
+    fn nibble(character: u8) -> Option<u8> {
+        match character {
+            b'0'..=b'9' => Some(character - b'0'),
+            b'a'..=b'f' => Some(character - b'a' + 10),
+            b'A'..=b'F' => Some(character - b'A' + 10),
+            _ => None,
+        }
+    }
+    let raw = value.as_bytes();
+    if raw.len() != SCOPE_ID_BYTES * 2 {
+        return Err(ControlError::InvalidCommand(
+            "scope identifier must be exactly 64 hex characters",
+        ));
+    }
+    let mut decoded = [0; SCOPE_ID_BYTES];
+    for (target, pair) in decoded.iter_mut().zip(raw.as_chunks::<2>().0) {
+        let high = nibble(pair[0]).ok_or(ControlError::InvalidCommand(
+            "scope identifier must contain only hex digits",
+        ))?;
+        let low = nibble(pair[1]).ok_or(ControlError::InvalidCommand(
+            "scope identifier must contain only hex digits",
+        ))?;
+        *target = (high << 4) | low;
+    }
+    Ok(decoded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2523,6 +2867,19 @@ mod tests {
             Err(ControlError::InvalidCommand(_))
         ));
         assert_eq!(parse_hex_id(&"31".repeat(16)).unwrap(), [0x31; 16]);
+        assert!(matches!(
+            parse_hex_32("31"),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            parse_hex_32(&"31".repeat(16)),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            parse_hex_32(&format!("zz{}", "31".repeat(31))),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert_eq!(parse_hex_32(&"42".repeat(32)).unwrap(), [0x42; 32]);
     }
 
     #[test]
@@ -2835,6 +3192,20 @@ mod tests {
             }
             .control_command_id(),
             [0x67; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectSearch {
+                scope_id: [0x00; 32]
+            }
+            .control_command_id(),
+            INSPECT_SEARCH_DOMAIN_MASK
+        );
+        assert_eq!(
+            ControlCommand::InspectNotification {
+                notification_id: [0x68; 16]
+            }
+            .control_command_id(),
+            [0x68; 16]
         );
         assert_eq!(
             ControlCommand::AcknowledgeRecoveryAlert {

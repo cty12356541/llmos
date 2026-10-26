@@ -994,3 +994,21 @@
   scope: "nlos-slice-k::execute_application_payload 与 SemanticWriter 载荷执行回执车道 + nlos-package CLI（keygen/build/conformance/verify/install/run/update/uninstall）+ examples/sample-app（run 与 payload 子命令真实执行 app.bin 跨代际载荷回执、lifecycle.sh 双状态根演练）+ sample_app_cli_lifecycle 跨平台端到端测试矩阵；限定确定性驱动面 Operation 与语义回执桥接，非客户机 Wasm/ELF 指令沙箱虚拟机"
   assurance: H4
   date: "2026-10-25"
+- id: c-unfreeze-001-search-notify-production-wiring
+  path: docs/evidence/stage-c/c-unfreeze-001-search-notify-production-wiring.md
+  title: "C-UNFREEZE-001 / W66-UNFREEZE-SC：nlos-search 与 nlos-notify 生产消费方全链解冻接线（SystemControlDaemon / CLI / NL / Desktop / SliceKRuntime）"
+  scope: "消除全仓最后两处 F1 冻结声明（nlos-search / nlos-notify 均接入 nlos-system-control 与 nlos-slice-k 生产消费树）+ SearchServiceInspector（CONS-DECL-001 / CONS-CTRL-001 五门禁用位 0x1F + admission 回执复核 + 有界分页）+ NotificationServiceInspector（PERF-CONTROL-001 O(1) 主键订阅自省 + DUI-OFFLINE-001 离线历史分页）+ SystemControlDaemon（WaitAuthority + NotificationService + SearchService 常驻装配）+ CTRL-PARITY-001 EN/ZH NL / CLI / 结构化 / ADR-0011 认证 IPC 四入口字节级回执等价 + Desktop Rust/TS 穷尽视图同步"
+  assurance: H4
+  date: "2026-10-26"
+- id: c-road-001-partition-restart-migration-gate
+  path: docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  title: "C-ROAD-001 / W66-UNFREEZE-SLICEK-ROADC001：阶段 C 退出门 ROAD-C-001 跨进程分区+强杀重启+迁移+重复消息复合故障注入验证与 slice-k-demo 生产激活"
+  scope: "SliceKRuntime 与 CellHost 接入 WaitAuthority + NotificationService + SearchService 生产服务面并移除 slice-k-demo 退役声明（全仓零冻结/零退役模块）+ ADR-0018 双存活子 OS 进程 H6 复合故障注入门禁（控制平面断连局部自治 DIST-LOCAL-001 + 子进程硬终止重启 WAL 重水化 + DIST-TASK-001/002/004 权威接管与八步 CellHost 进程迁移 DIST-MIGRATE-001/002 + 重复通知/一次性 ActionToken/签名事件/制品传输包/旧世代提交重放幂等拦截）+ PartitionBoundedLossProof 额度冻结与有界损耗精确守恒；限定单机多进程持久库拓扑，跨物理机网络分区与硬件掉电层 3 保留在 RISK-B-11 / U-4"
+  assurance: H6
+  date: "2026-10-26"
+- id: c-bench-001-road-c002-distributed-benchmark
+  path: docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  title: "C-BENCH-001 / W66-CBENCH-ROADC002：阶段 C 退出门 ROAD-C-002 无全局锁/无全局总序多分片规模基准与五类分布式故障负载验证"
+  scope: "PERF-CLASS-001 Fast/Streaming/Slow 三类工作负载与 PERF-BENCH-001 SQLite WAL+FULL 真实持久屏障实测 + 1->2->4->8 独立 OS 进程 Cell 分片无全局锁/无跨 Cell 全局总序 spawn/message/commit 扩展性验证（release 4.44x / dev 5.78x）+ PERF-SCALE-001/002 & SCALE-PROFILE-001 8-Cell 分片 10K_LOGICAL 与 100K_LOGICAL（1%/5%/10% 活跃工作集扫描、检查点驱逐重水化、恢复扫描有界、磁盘/RSS 披露）+ PERF-CONTROL-001 100K 负载下 p50=84us 有界控制延迟 + ROAD-C-002 五类故障全覆盖（stale TaskAuthority epoch、分区双主、fanout storm、provider stall、Cell bulkhead）；1M_LOGICAL 与跨物理机网络基准显式留界"
+  assurance: H6
+  date: "2026-10-26"

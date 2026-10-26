@@ -146,6 +146,33 @@ export function renderOutcome(outcome: OutcomeDto): HTMLElement {
       );
       break;
     }
+    case "search_inspected": {
+      card.append(el("h3", { text: "Search 非权威查询面 inspect(C-UNFREEZE-001)" }));
+      card.append(
+        fieldRow("scope_id", outcome.scopeIdHex),
+        fieldRow("consistency_class", String(outcome.consistencyClass)),
+        fieldRow("degradation_policy", String(outcome.degradationPolicy)),
+        fieldRow("non_authoritative_restrictions_bits", String(outcome.nonAuthoritativeRestrictionsBits)),
+        fieldRow("admitted_event_count", String(outcome.admittedEventCount)),
+        fieldRow("active_assertion_count", String(outcome.activeAssertionCount)),
+        fieldRow("retracted_event_count", String(outcome.retractedEventCount)),
+        fieldRow("truncated", String(outcome.truncated)),
+      );
+      break;
+    }
+    case "notification_inspected": {
+      card.append(el("h3", { text: "Notification 通知面 inspect(C-UNFREEZE-001)" }));
+      card.append(
+        fieldRow("notification_id", outcome.notificationIdHex),
+        fieldRow("topic_id", outcome.topicIdHex),
+        fieldRow("subscriber_key", outcome.subscriberKeyHex),
+        fieldRow("next_sequence", String(outcome.nextSequence)),
+        fieldRow("history_entry_count", String(outcome.historyEntryCount)),
+        fieldRow("history_truncated", String(outcome.historyTruncated)),
+        fieldRow("prune_watermark_sequence", String(outcome.pruneWatermarkSequence)),
+      );
+      break;
+    }
     case "task_group_inspected": {
       card.append(el("h3", { text: "TaskGroup 层 inspect(W32-G,SABI v1.5)" }));
       card.append(

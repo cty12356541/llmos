@@ -22,8 +22,10 @@ sha2.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-nlos-store-fault = { path = "../nlos-store-fault" }
+nlos-cell = { path = "../nlos-cell" }
+nlos-lease = { path = "../nlos-lease" }
 nlos-runtime = { path = "../nlos-runtime" }
+nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 
 [lints]

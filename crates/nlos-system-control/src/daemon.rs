@@ -117,6 +117,7 @@ use nlos_ipc::{
     OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, handshake::HandshakeError,
     serve_one,
 };
+use nlos_notify::{NotificationService, NotifyError};
 use nlos_plan::{PlanStoreError, SqlitePlanAuthority};
 #[cfg(unix)]
 use nlos_process::PosixPlatformKillAdapter;
@@ -133,11 +134,13 @@ use nlos_schema::sabi::v1::{
     ControlCommand as SabiWireCommand, ExchangeResponse, GetSystemControlRequest, SabiErrorCode,
     SabiFailure, SabiRequestContext,
 };
+use nlos_search::{SearchError, SearchService};
 use nlos_semantic::{SemanticAuthority, SemanticAuthorityError};
 use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_task::{SqliteTaskAuthority, TASK_PROFILE_10K, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
 use nlos_types::{IdempotencyKey, NamespaceId};
+use nlos_wait::{WaitAuthority, WaitAuthorityError};
 use sha2::{Digest, Sha256};
 
 use ed25519_dalek::Signer as _;
@@ -155,12 +158,14 @@ use crate::materialization_driver::{
     MaterializationDriver, MaterializationDriverConfig, MaterializationDriverHealth,
     MaterializationDriverStartError,
 };
+use crate::notify_inspector::NotificationServiceInspector;
 use crate::operation_inspector::OperationStoreSource;
 use crate::plan_inspector::PlanAuthorityTaskNodeSource;
 use crate::process_inspector::ProcessAuthorityInspector;
 use crate::process_kill_executor::ProcessAuthorityKillExecutor;
 use crate::resource_inspector::ResourceAuthorityInspector;
 use crate::resource_throttle_executor::ResourceDemandThrottleExecutor;
+use crate::search_inspector::SearchServiceInspector;
 use crate::topic_inspector::TopicAuthoritySource;
 use crate::working_set_reclaim_executor::{
     TaskAuthorityWorkingSetOccupancy, WorkingSetReclaimExecutor,
@@ -316,6 +321,9 @@ pub enum DaemonError {
     Plan(PlanStoreError),
     Channel(ChannelAuthorityError),
     Topic(TopicAuthorityError),
+    Wait(WaitAuthorityError),
+    Notify(NotifyError),
+    Search(SearchError),
     Store(StoreError),
     Runtime(RuntimeError),
     Ipc(nlos_ipc::IpcError),
@@ -348,6 +356,9 @@ impl fmt::Display for DaemonError {
             Self::Plan(error) => write!(formatter, "plan authority: {error}"),
             Self::Channel(error) => write!(formatter, "channel authority: {error}"),
             Self::Topic(error) => write!(formatter, "topic authority: {error}"),
+            Self::Wait(error) => write!(formatter, "wait authority: {error}"),
+            Self::Notify(error) => write!(formatter, "notification service: {error}"),
+            Self::Search(error) => write!(formatter, "search service: {error}"),
             Self::Store(error) => write!(formatter, "operation store: {error}"),
             Self::Runtime(error) => write!(formatter, "runtime adapter: {error}"),
             Self::Ipc(error) => write!(formatter, "ipc endpoint: {error}"),
@@ -378,6 +389,9 @@ impl Error for DaemonError {
             Self::Plan(error) => Some(error),
             Self::Channel(error) => Some(error),
             Self::Topic(error) => Some(error),
+            Self::Wait(error) => Some(error),
+            Self::Notify(error) => Some(error),
+            Self::Search(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Ipc(error) => Some(error),
@@ -809,8 +823,14 @@ pub struct SystemControlDaemon {
     pub plans: Arc<SqlitePlanAuthority>,
     /// Channel authority the topic authority is bound to.
     pub channel: Arc<ChannelAuthority>,
-    /// Topic authority behind the `Topic` inspect seam.
-    pub topics: TopicAuthority,
+    /// Topic authority behind the `Topic` inspect seam and notification face.
+    pub topics: Arc<TopicAuthority>,
+    /// Wait authority behind the notification delivery-wait registrations.
+    pub waits: Arc<WaitAuthority>,
+    /// Notification service face (`C-UNFREEZE-001`).
+    pub notify: Arc<NotificationService>,
+    /// Read-only non-authoritative search service face (`C-UNFREEZE-001`).
+    pub search: Arc<SearchService>,
     /// Operation store behind the `Operation` inspect seam.
     pub operations: SqliteOperationStore,
     /// Live runtime adapter behind the `ExecutionFiber` inspect seam.
@@ -852,6 +872,24 @@ impl SystemControlDaemon {
     /// Stops the materialization driver (idempotent stop + join).
     pub fn stop_materialization(&self) {
         self.materialization.stop();
+    }
+
+    /// Durable [`WaitAuthority`] opened under `<root>/waits`.
+    #[must_use]
+    pub fn wait_authority(&self) -> &WaitAuthority {
+        self.waits.as_ref()
+    }
+
+    /// Durable [`NotificationService`] face opened under `<root>/notify`.
+    #[must_use]
+    pub fn notification_service(&self) -> &NotificationService {
+        self.notify.as_ref()
+    }
+
+    /// Read-only [`SearchService`] face opened over `<root>/semantic`.
+    #[must_use]
+    pub fn search_service(&self) -> &SearchService {
+        self.search.as_ref()
     }
 
     /// Registers one supervisor-observed OS pid mapping for an
@@ -940,7 +978,9 @@ impl SystemControlDaemon {
         let process = ProcessAuthorityInspector::new(self.process.as_ref());
         let resource = ResourceAuthorityInspector::new(self.resource.as_ref());
         let application = ApplicationAuthorityInspector::new(self.application.as_ref());
-        crate::control::dispatch_in_process(
+        let search = SearchServiceInspector::new(self.search.as_ref(), self.semantic.as_ref());
+        let notify = NotificationServiceInspector::new(self.notify.as_ref(), self.topics.as_ref());
+        crate::control::dispatch_in_process_with_services(
             &control,
             command,
             now_monotonic_ns,
@@ -948,6 +988,8 @@ impl SystemControlDaemon {
             Some(&process),
             Some(&resource),
             Some(&application),
+            Some(&search),
+            Some(&notify),
         )
     }
 }
@@ -971,6 +1013,7 @@ pub struct DaemonEndpoints {
 ///
 /// Fails closed with [`DaemonError`] on the first authority, worker, or
 /// bind failure; nothing is served.
+#[allow(clippy::too_many_lines)] // Opens every daemon-owned authority/service under one root in deterministic dependency order.
 pub fn assemble(
     options: DaemonOptions,
     runtime_handle: tokio::runtime::Handle,
@@ -1011,8 +1054,26 @@ pub fn assemble(
     let channel = Arc::new(
         ChannelAuthority::open(options.root.join("channel")).map_err(DaemonError::Channel)?,
     );
-    let topics = TopicAuthority::open(options.root.join("topics"), Arc::clone(&channel))
-        .map_err(DaemonError::Topic)?;
+    let topics = Arc::new(
+        TopicAuthority::open(options.root.join("topics"), Arc::clone(&channel))
+            .map_err(DaemonError::Topic)?,
+    );
+    let waits = Arc::new(
+        WaitAuthority::open(options.root.join("waits"), Arc::clone(&channel))
+            .map_err(DaemonError::Wait)?,
+    );
+    let notify = Arc::new(
+        NotificationService::open(
+            options.root.join("notify"),
+            Arc::clone(&topics),
+            Arc::clone(&waits),
+        )
+        .map_err(DaemonError::Notify)?,
+    );
+    let search = Arc::new(
+        SearchService::open(options.root.join("semantic"), Arc::clone(&semantic))
+            .map_err(DaemonError::Search)?,
+    );
     let operations = SqliteOperationStore::open(options.root.join("operations.sqlite3"))
         .map_err(DaemonError::Store)?;
     let runtime = TokioRuntimeAdapter::new(runtime_handle, TokioRuntimeConfig::default())
@@ -1069,6 +1130,9 @@ pub fn assemble(
         plans,
         channel,
         topics,
+        waits,
+        notify,
+        search,
         operations,
         runtime,
         supervisor_registry: SupervisorPidRegistry::new(),

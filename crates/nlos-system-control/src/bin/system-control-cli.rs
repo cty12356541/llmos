@@ -20,6 +20,8 @@
 //! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-process <PROCESS_ID_HEX_32>
 //! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-application <PACKAGE_ID_HEX_32>
+//! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-search <SCOPE_ID_HEX_64>
+//! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-notification <NOTIFICATION_ID_HEX_32>
 //! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
 //! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task-group <GROUP_ID_HEX_32>
 //! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32>
@@ -73,7 +75,8 @@ use std::process::ExitCode;
 #[cfg(unix)]
 use nlos_system_control::control::{
     ApplicationInspector, ControlCommand, ControlError, ControlOutcome, ControlReceipt,
-    ProcessInspector, ResourceInspector, parse_hex_id, receipt_to_hex,
+    NotificationInspector, ProcessInspector, ResourceInspector, SearchInspector, parse_hex_32,
+    parse_hex_id, receipt_to_hex,
 };
 
 #[cfg(unix)]
@@ -86,6 +89,8 @@ const USAGE: &str = "usage: system-control-cli [--root <STATE_ROOT>] <SOCKET> in
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
 | inspect-application <PACKAGE_ID_HEX_32> \
+| inspect-search <SCOPE_ID_HEX_64> \
+| inspect-notification <NOTIFICATION_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
 | inspect-task-group <GROUP_ID_HEX_32> \
 | inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32> \
@@ -155,6 +160,12 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         }),
         "inspect-application" if arguments.len() == 2 => Ok(ControlCommand::InspectApplication {
             package_id: parse_hex_id(&arguments[1])?,
+        }),
+        "inspect-search" if arguments.len() == 2 => Ok(ControlCommand::InspectSearch {
+            scope_id: parse_hex_32(&arguments[1])?,
+        }),
+        "inspect-notification" if arguments.len() == 2 => Ok(ControlCommand::InspectNotification {
+            notification_id: parse_hex_id(&arguments[1])?,
         }),
         "inspect-resource" if arguments.len() == 2 => Ok(ControlCommand::InspectResource {
             reservation_id: parse_hex_id(&arguments[1])?,
@@ -437,6 +448,29 @@ fn summary(receipt: &ControlReceipt) -> String {
             inspection.current_installation_generation,
             inspection.status,
         ),
+        Ok(ControlOutcome::SearchInspected(inspection)) => format!(
+            "outcome=search_inspected scope_id={} consistency_class={} degradation_policy={} \
+             restrictions_bits={} admitted={} active={} retracted={} truncated={}",
+            hex(&inspection.scope_id),
+            inspection.consistency_class,
+            inspection.degradation_policy,
+            inspection.non_authoritative_restrictions_bits,
+            inspection.admitted_event_count,
+            inspection.active_assertion_count,
+            inspection.retracted_event_count,
+            inspection.truncated,
+        ),
+        Ok(ControlOutcome::NotificationInspected(inspection)) => format!(
+            "outcome=notification_inspected notification_id={} topic_id={} subscriber_key={} \
+             next_sequence={} history_entries={} history_truncated={} prune_watermark={}",
+            hex(&inspection.notification_id),
+            hex(&inspection.topic_id),
+            hex(&inspection.subscriber_key),
+            inspection.next_sequence,
+            inspection.history_entry_count,
+            inspection.history_truncated,
+            inspection.prune_watermark_sequence,
+        ),
         Ok(ControlOutcome::ResourceInspected(inspection)) => format!(
             "outcome=resource_inspected reservation_id={} account_id={} upper_bound={} \
              usage_high_water={} consumptions={}",
@@ -497,7 +531,13 @@ fn summary(receipt: &ControlReceipt) -> String {
 /// envelope still crosses the socket for authorization parity.
 #[cfg(all(
     unix,
-    any(feature = "process", feature = "resource", feature = "application")
+    any(
+        feature = "process",
+        feature = "resource",
+        feature = "application",
+        feature = "search",
+        feature = "notify",
+    )
 ))]
 struct RootState {
     #[cfg(feature = "process")]
@@ -506,19 +546,37 @@ struct RootState {
     resource: nlos_resource::ResourceAuthority,
     #[cfg(feature = "application")]
     application: nlos_application::ApplicationAuthority,
+    #[cfg(feature = "search")]
+    semantic: std::sync::Arc<nlos_semantic::SemanticAuthority>,
+    #[cfg(feature = "search")]
+    search: nlos_search::SearchService,
+    #[cfg(feature = "notify")]
+    notify_topics: std::sync::Arc<nlos_topic::TopicAuthority>,
+    #[cfg(feature = "notify")]
+    notify: nlos_notify::NotificationService,
 }
 
 #[cfg(all(
     unix,
-    any(feature = "process", feature = "resource", feature = "application")
+    any(
+        feature = "process",
+        feature = "resource",
+        feature = "application",
+        feature = "search",
+        feature = "notify",
+    )
 ))]
 impl RootState {
-    /// Opens the three inspector authorities under `root`. Each authority
-    /// name matches the resident daemon's assembly layout.
+    /// Opens the client-side inspector authorities/services under `root`. Each
+    /// directory name matches the resident daemon's assembly layout.
     fn open(root: &std::path::Path) -> Result<Self, String> {
-        // A build without any of the three inspector features has nothing
-        // to open; the parameter keeps the daemon-layout contract visible.
-        #[cfg(not(any(feature = "process", feature = "resource", feature = "application")))]
+        #[cfg(not(any(
+            feature = "process",
+            feature = "resource",
+            feature = "application",
+            feature = "search",
+            feature = "notify",
+        )))]
         let _ = root;
         #[cfg(feature = "process")]
         let process = nlos_process::ProcessAuthority::open(root.join("process"))
@@ -529,6 +587,42 @@ impl RootState {
         #[cfg(feature = "application")]
         let application = nlos_application::ApplicationAuthority::open(root.join("application"))
             .map_err(|error| format!("--root application authority: {error}"))?;
+        #[cfg(feature = "search")]
+        let semantic = std::sync::Arc::new(
+            nlos_semantic::SemanticAuthority::open(root.join("semantic"))
+                .map_err(|error| format!("--root semantic authority: {error}"))?,
+        );
+        #[cfg(feature = "search")]
+        let search = nlos_search::SearchService::open(
+            root.join("semantic"),
+            std::sync::Arc::clone(&semantic),
+        )
+        .map_err(|error| format!("--root search service: {error}"))?;
+        #[cfg(feature = "notify")]
+        let (notify_topics, notify) = {
+            let channel = std::sync::Arc::new(
+                nlos_channel::ChannelAuthority::open(root.join("channel"))
+                    .map_err(|error| format!("--root channel authority: {error}"))?,
+            );
+            let topics = std::sync::Arc::new(
+                nlos_topic::TopicAuthority::open(
+                    root.join("topics"),
+                    std::sync::Arc::clone(&channel),
+                )
+                .map_err(|error| format!("--root topic authority: {error}"))?,
+            );
+            let waits = std::sync::Arc::new(
+                nlos_wait::WaitAuthority::open(root.join("waits"), channel)
+                    .map_err(|error| format!("--root wait authority: {error}"))?,
+            );
+            let notify = nlos_notify::NotificationService::open(
+                root.join("notify"),
+                std::sync::Arc::clone(&topics),
+                waits,
+            )
+            .map_err(|error| format!("--root notification service: {error}"))?;
+            (topics, notify)
+        };
         Ok(Self {
             #[cfg(feature = "process")]
             process,
@@ -536,18 +630,28 @@ impl RootState {
             resource,
             #[cfg(feature = "application")]
             application,
+            #[cfg(feature = "search")]
+            semantic,
+            #[cfg(feature = "search")]
+            search,
+            #[cfg(feature = "notify")]
+            notify_topics,
+            #[cfg(feature = "notify")]
+            notify,
         })
     }
 }
 
-/// The three commands whose projection is composed client-side, with the
-/// inspector each one needs.
+/// The commands whose projection is composed client-side, with the
+/// inspector feature each one needs.
 #[cfg(unix)]
 fn composed_read_command(command: &ControlCommand) -> Option<(&'static str, &'static str)> {
     match command {
         ControlCommand::InspectProcess { .. } => Some(("inspect-process", "process")),
         ControlCommand::InspectResource { .. } => Some(("inspect-resource", "resource")),
         ControlCommand::InspectApplication { .. } => Some(("inspect-application", "application")),
+        ControlCommand::InspectSearch { .. } => Some(("inspect-search", "search")),
+        ControlCommand::InspectNotification { .. } => Some(("inspect-notification", "notify")),
         _ => None,
     }
 }
@@ -569,8 +673,9 @@ fn split_root_flag(arguments: &[String]) -> Result<(Option<PathBuf>, &[String]),
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)] // Keeps CLI flag validation, optional root opening, and IPC dispatch linear.
 async fn run() -> Result<ExitCode, ControlError> {
-    use nlos_system_control::control::dispatch_over_socket;
+    use nlos_system_control::control::dispatch_over_socket_with_services;
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let (root, positional) = split_root_flag(&arguments).inspect_err(|_| eprintln!("{USAGE}"))?;
@@ -580,13 +685,16 @@ async fn run() -> Result<ExitCode, ControlError> {
     };
     let command = parsed_command(&positional[1..]).inspect_err(|_| eprintln!("{USAGE}"))?;
 
-    // Read-surface honesty: the three client-composed reads refuse before
-    // the wire unless --root supplies the same state root the daemon owns.
+    // Read-surface honesty: client-composed reads refuse before the wire
+    // unless --root supplies the same state root the daemon owns.
     if let Some((command_name, feature)) = composed_read_command(&command) {
         let feature_enabled = match feature {
             "process" => cfg!(feature = "process"),
             "resource" => cfg!(feature = "resource"),
-            _ => cfg!(feature = "application"),
+            "application" => cfg!(feature = "application"),
+            "search" => cfg!(feature = "search"),
+            "notify" => cfg!(feature = "notify"),
+            _ => false,
         };
         if root.is_none() {
             eprintln!(
@@ -605,7 +713,13 @@ async fn run() -> Result<ExitCode, ControlError> {
             return Ok(ExitCode::from(2));
         }
     }
-    #[cfg(any(feature = "process", feature = "resource", feature = "application"))]
+    #[cfg(any(
+        feature = "process",
+        feature = "resource",
+        feature = "application",
+        feature = "search",
+        feature = "notify",
+    ))]
     let root_state = match root.as_ref() {
         None => None,
         Some(path) => match RootState::open(path) {
@@ -616,9 +730,15 @@ async fn run() -> Result<ExitCode, ControlError> {
             }
         },
     };
-    // Without any inspector feature there is nothing to open; the three
-    // composed commands have already refused above.
-    #[cfg(not(any(feature = "process", feature = "resource", feature = "application")))]
+    // Without any inspector feature there is nothing to open; the composed
+    // commands have already refused above.
+    #[cfg(not(any(
+        feature = "process",
+        feature = "resource",
+        feature = "application",
+        feature = "search",
+        feature = "notify",
+    )))]
     let _ = root.as_ref();
 
     #[cfg(feature = "process")]
@@ -656,7 +776,44 @@ async fn run() -> Result<ExitCode, ControlError> {
     #[cfg(not(feature = "application"))]
     let application: Option<&dyn ApplicationInspector> = None;
 
-    let receipt = dispatch_over_socket(&socket, &command, process, resource, application).await?;
+    #[cfg(feature = "search")]
+    let search_adapter = root_state.as_ref().map(|state| {
+        nlos_system_control::search_inspector::SearchServiceInspector::new(
+            &state.search,
+            &state.semantic,
+        )
+    });
+    #[cfg(feature = "search")]
+    let search: Option<&dyn SearchInspector> = search_adapter
+        .as_ref()
+        .map(|inspector| inspector as &dyn SearchInspector);
+    #[cfg(not(feature = "search"))]
+    let search: Option<&dyn SearchInspector> = None;
+
+    #[cfg(feature = "notify")]
+    let notify_adapter = root_state.as_ref().map(|state| {
+        nlos_system_control::notify_inspector::NotificationServiceInspector::new(
+            &state.notify,
+            &state.notify_topics,
+        )
+    });
+    #[cfg(feature = "notify")]
+    let notify: Option<&dyn NotificationInspector> = notify_adapter
+        .as_ref()
+        .map(|inspector| inspector as &dyn NotificationInspector);
+    #[cfg(not(feature = "notify"))]
+    let notify: Option<&dyn NotificationInspector> = None;
+
+    let receipt = dispatch_over_socket_with_services(
+        &socket,
+        &command,
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
+    .await?;
     println!("RECEIPT {}", receipt_to_hex(&receipt));
     println!("{}", summary(&receipt));
     if receipt.outcome.is_ok() {
