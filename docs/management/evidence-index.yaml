@@ -1012,3 +1012,9 @@
   scope: "PERF-CLASS-001 Fast/Streaming/Slow 三类工作负载与 PERF-BENCH-001 SQLite WAL+FULL 真实持久屏障实测 + 1->2->4->8 独立 OS 进程 Cell 分片无全局锁/无跨 Cell 全局总序 spawn/message/commit 扩展性验证（release 4.44x / dev 5.78x）+ PERF-SCALE-001/002 & SCALE-PROFILE-001 8-Cell 分片 10K_LOGICAL 与 100K_LOGICAL（1%/5%/10% 活跃工作集扫描、检查点驱逐重水化、恢复扫描有界、磁盘/RSS 披露）+ PERF-CONTROL-001 100K 负载下 p50=84us 有界控制延迟 + ROAD-C-002 五类故障全覆盖（stale TaskAuthority epoch、分区双主、fanout storm、provider stall、Cell bulkhead）；1M_LOGICAL 与跨物理机网络基准显式留界"
   assurance: H6
   date: "2026-10-26"
+- id: w67-stage-c-exit-gates
+  path: docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  title: "W67 阶段 C 退出门综合证据评审记录（ROAD-C-001 / ROAD-C-002 / C-core 九包 / 移交 #1–#17 / 全仓零冻结审计）"
+  scope: "ROAD-C-001 与 ROAD-C-002 逐条款 H6 证据独立核验（均裁 SATISFIED-WITH-BOUNDARIES）+ C-core 九大工作包与阶段 B->C 移交 #1-#17 逐项终局核对 + 全仓 35 workspace crates + desktop + sample-app 零冻结/零退役静态与反向依赖图审计 + §C.5.5 六条件退出就绪度与 P0=0 复核；严守 ADR-0018 单机多进程拓扑边界，待维护者按条件 4 明确批准后翻转 EXITED"
+  assurance: H6
+  date: "2026-10-26"

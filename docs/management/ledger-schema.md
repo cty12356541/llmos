@@ -1,6 +1,6 @@
-# 需求/风险/证据机器台账 Schema v1（FROZEN-additive）
+# 需求/风险/证据机器台账 Schema v1.1（FROZEN-additive）
 
-> 版本：v1，2026-09-20 冻结（W27-E / X-4，base `3d81a90`）。来源：[管理机制 §8](./README.md#8-需求与证据台账)；字段充分性已经 Slice K 起的纵切面验证（[stage-b-progress §6.5.1 X-4](./stage-b-progress.md)）。
+> 版本：v1.1，2026-10-26 增量扩域（W67 阶段 C 台账回填：`claims.yaml` `stage` 枚举新增 `"C"`，`source` 允许 [stage-c-progress.md](./stage-c-progress.md)，`risks.yaml` `id` 注明 `RISK-B-NN` / `RISK-C-NN`）；v1 于 2026-09-20 冻结（W27-E / X-4，base `3d81a90`）。来源：[管理机制 §8](./README.md#8-需求与证据台账)；字段充分性已经 Slice K 起的纵切面验证（[stage-b-progress §6.5.1 X-4](./stage-b-progress.md)）。
 >
 > **FROZEN-additive**：v1 字段名与语义冻结；后续只允许*新增可选字段或枚举值*（须在本文件登记并升 v1.x），不得改名、改语义、删字段。破坏性变更须升 v2 并迁移。
 >
@@ -10,7 +10,7 @@
 
 | 文件 | 内容 | 权威关系 |
 |---|---|---|
-| `claims.yaml` | 需求→状态→证据的 Release Claim 台账 | 只登记 [stage-b-progress §3/§4/§6](./stage-b-progress.md) 已断言的事实；全量回填等六门 Evidence 齐 |
+| `claims.yaml` | 需求→状态→证据的 Release Claim 台账 | 只登记 [stage-b-progress](./stage-b-progress.md)（§3/§4/§6）与 [stage-c-progress](./stage-c-progress.md) 已断言的事实；全量回填等对应阶段门 Evidence 齐 |
 | `risks.yaml` | 风险台账（[README §9](./README.md#9-风险管理) 九类） | 现状可稀疏，诚实优先 |
 | `evidence-index.yaml` | `docs/evidence/<stage>/` 全量索引（v2 扩域：任意 stage 目录；v1 曾限定 stage-b） | 与目录**双向一致**（lint 检查） |
 
@@ -18,7 +18,7 @@
 
 - **repo 相对路径**：以 `/` 分隔、相对仓库根，必须真实存在（文件或目录）；
 - **commit 串**：7–40 位十六进制（如 `3d81a90`）；
-- v1 不支持 URL；CI run 链接仍留在 stage-b-progress / 证据文件正文内。
+- v1 不支持 URL；CI run 链接仍留在 stage-b-progress / stage-c-progress / 证据文件正文内。
 
 ## 3. 字段定义
 
@@ -26,21 +26,21 @@
 
 | 字段 | 必填 | 类型/枚举 | 说明 |
 |---|---|---|---|
-| `requirement_id` | ✓ | str，唯一 | 需求/工作包/退出门 ID（如 `TASK-COMMIT-001`、`B-TASK-001`、`ROAD-B-003`） |
-| `stage` | ✓ | `"B"`（v1 仅阶段 B） | |
+| `requirement_id` | ✓ | str，唯一 | 需求/工作包/退出门 ID（如 `TASK-COMMIT-001`、`B-TASK-001`、`ROAD-B-003`、`ROAD-C-001`） |
+| `stage` | ✓ | `"B"` `"C"`（v1 仅 `"B"`；v1.1 新增 `"C"`） | |
 | `status` | ✓ | `DONE` `PARTIAL_PASS` `IN_PROGRESS` `READY` `BLOCKED` `NOT_STARTED`（stage-b-progress §2） | `PARTIAL_PASS` 只能声称 Evidence 覆盖的局部范围 |
 | `implementation_refs` | ✓ | list[str]，可空 | 路径或 commit 串 |
 | `test_refs` | ✓ | list[str]，可空 | 路径或 commit 串 |
 | `evidence_refs` | ✓ | list[str]，可空 | **只允许** `docs/evidence/<stage>/` 下已被索引的路径（v2 扩域） |
 | `assurance` | ✓ | `DESIGN` `H0`–`H8` | v0.5 §47 证据阶梯；`DESIGN`=仅有设计 |
 | `limitations` | ✓ | list[str] | `status=PARTIAL_PASS` 时必须非空 |
-| `source` | ✓ | str，非空 | 断言出处（stage-b-progress §3/§6 行 + 基线 commit），防无出处发明 claim |
+| `source` | ✓ | str，非空 | 断言出处（`stage-b-progress` 或 `stage-c-progress` 章节/行 + 基线 commit），防无出处发明 claim |
 
 ### 3.2 `risks.yaml`（顶层为条目列表）
 
 | 字段 | 必填 | 类型/枚举 | 说明 |
 |---|---|---|---|
-| `id` | ✓ | str，唯一（`RISK-B-NN`） | |
+| `id` | ✓ | str，唯一（`RISK-B-NN` / `RISK-C-NN`） | |
 | `category` | ✓ | `security-bypass` `durable-state-loss` `resource-oversell` `cancel-effect-unknown` `premature-format-freeze` `runtime-ui-lockin` `scale-impersonation` `single-person-dependency` `third-party-supply-chain` | 与 [README §9](./README.md#9-风险管理) 九条一一对应 |
 | `severity` | ✓ | `P0` `P1` `P2` | P0 阻止阶段退出；P1 须有缓解措施与复查点（lint v1 不强制 owner，v2 候选） |
 | `status` | ✓ | `open` `partial` `mitigated` `closed` | `partial`=有已验证缓解但未闭环 |
@@ -60,7 +60,7 @@
 | `assurance` | ✓ | `POC` `H0`–`H8` | 该工件可支撑的**最高** claim 等级（保守评定；不可为 `DESIGN`） |
 | `date` | ✓ | `"YYYY-MM-DD"` | 优先文件头声明日期；未声明取 git 首次提交日期 |
 
-## 4. Claim≤Evidence 与 lint 规则（v1）
+## 4. Claim≤Evidence 与 lint 规则（v1 / v1.1）
 
 支撑格：`rank(POC)=3`，`rank(Hn)=n`。claim 合法当且仅当：
 

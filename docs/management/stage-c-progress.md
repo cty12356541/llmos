@@ -56,7 +56,7 @@
 
 | 阶段级状态 | 含义 |
 |---|---|
-| `IN_PROGRESS / NOT EXITED` | **当前态**（2026-09-22 决策点 0 批准生效）；至 §C.5.5 全条件满足并获明确批准前不得翻 `EXITED` |
+| `IN_PROGRESS / NOT EXITED` | **当前态 — 技术与台账退出包已齐备（Ready for Maintainer Exit Approval，2026-10-26 `W67`）**：C-core 九大工作包、全仓零冻结/零退役解冻接线、`ROAD-C-001`/`ROAD-C-002` H6 评审（[W67](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)）、`claims.yaml`/`risks.yaml`/`exit-unknown-risks.md` 全量回填及 `P0=0` 均已就绪；严守规则，**待维护者按 §C.5.5 条件 4 明确批准后翻 `EXITED`** |
 
 **P0 条款（承 risks.yaml 头部纪律，逐字有效）**：P0 阻止阶段退出；P1 须有缓解措施与复查点；status 只反映已有 Evidence 支撑的缓解现状，无证据支撑的缓解不得写 mitigated。当前 P0=0（W34-C 确认）。
 
@@ -229,6 +229,17 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 4. [管理机制 §7](./README.md#7-评审与决策机制)「Stage 退出或 production claim」三件套（Evidence review + 未知风险清单 + 明确批准）完成；
 5. §C.5.3 全部车道 DONE，或经批准显式移交（阶段 D/E 或持续项）并在本表登记；
 6. 移交项处置终局登记：§6.5.6 #1–17 逐项有关闭证据或显式再移交——含 RISK-B-12 终局（常设门关闭）、#14 夜间绿、#5 生产量级声明前置闭环或维持限定口径（并按 §C.1.2 第 5 条明示其与 C 退出的关系裁定）。
+
+#### C.5.5.1 W67 退出门就绪度核对表（2026-10-26）
+
+| 条件 | W67 核验状态 | 权威载体 |
+|---|---|---|
+| 条件 1（两门 H6 Evidence review + `P0=0`） | **`READY`（技术闭合）** | [w67-stage-c-exit-gates.md](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)：`ROAD-C-001` 与 `ROAD-C-002` 均裁 `SATISFIED-WITH-BOUNDARIES`（H6），`P0=0` |
+| 条件 2（机器台账 `stage: C` 全量回填 + lint 绿） | **`READY`（机械闭合）** | [ledger-schema.md](./ledger-schema.md) `v1.1` + [claims.yaml](./claims.yaml)（新增 30 条 `stage: C` 声明，总计 101 条）+ [evidence-index.yaml](./evidence-index.yaml)（169/169），`lint_claims.py` `ERROR 0` |
+| 条件 3（未知/残余风险清单同步） | **`READY`（同源同步）** | [risks.yaml](./risks.yaml) + [exit-unknown-risks.md](./exit-unknown-risks.md)（`RISK-B-03/05/07/08/11/12` 与 `U-1/5/6/9/10/14` 分域同步） |
+| 条件 4（管理机制 §7 三件套与明确批准） | **待维护者明确批准** | Evidence review + 未知风险清单两件套已入库；第三件「维护者明确批准」按纪律不自授，获批后翻转 §C.2 `EXITED` |
+| 条件 5（波次车道终局或显式移交） | **`READY`** | W35–W67 全部阶段 C 技术车道已合入；完整桌面归阶段 D，跨物理机网络/共识归阶段 C->E 跨机扩展触发器（`RISK-B-11` / `ADR-0020`） |
+| 条件 6（移交 `#1–#17` 终局登记与全仓零冻结） | **`READY`** | `#1`/`#13` `DONE`；`#2`/`#4–#12`/`#15`/`#17` `PARTIAL_PASS`（含 `nlos-search`/`nlos-notify`/`slice-k-demo` 全仓零冻结/零退役闭环）；`#3` 常设真机观察、`#14` dispatch 闭合+夜间常设门、`#16` 硬件掉电持续项 |
 
 ## C.6 进度更新协议
 
@@ -506,3 +517,14 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | `W66-CBENCH-ROADC002` | `d0fff395` | `crates/nlos-task/tests/c_bench_task_sharded_scale.rs`、`crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs`、`docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md` | **`C-BENCH` 与阶段 C 退出门 `ROAD-C-002`（`PERF-CLASS-001`、`PERF-BENCH-001`、`PERF-SCALE-001/002`、`PERF-CONTROL-001`、`SCALE-PROFILE-001`）**：①全量真实磁盘 `SQLite WAL + synchronous=FULL` 下完成 `Fast`/`Streaming`/`Slow` 工作负载基线；②`1 -> 2 -> 4 -> 8` 独立子 OS 进程 `Cell` 分片无全局锁/无全局总序 `spawn/message/commit` 扩展实测（`--release` `994.4 -> 4,417.3 ops/s` `4.44x`，`dev` `5.78x`）；③8-`Cell` 分片 `10K_LOGICAL` 与 `100K_LOGICAL` 跨 `1%/5%/10%` 活跃工作集全链路实测（`100K` `634 B/node` 终态落盘、重启恢复扫描 `38.07 ms`、手动控制 `p50=84–85 µs`）；④`ROAD-C-002` 五大故障并发负载验证全绿（`stale TaskAuthority epoch`、`dual-primary partition`、`fanout storm`、`provider stall`、`Cell bulkhead`）；落地 Evidence [C-BENCH-001](../evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md)。`c_bench_task_sharded_scale` 4/0/1，`c_bench_road_c002_scale_and_faults` `--release --include-ignored` 5/0 |
 
 **integrator 全仓屏障验证（本机 Windows 10.0.28000，退出码直检）**：全仓 `crates/**/*.rs` 冻结/退役声明正则扫描 **0 匹配**；`cargo tree --workspace -i nlos-search --all-features` 与 `cargo tree --workspace -i nlos-notify --all-features` 双双确认 `nlos-system-control` 与 `nlos-slice-k` 生产反向依赖闭环；`python scripts/lint_claims.py` `evidence-index: 168/168 · lint: PASS 0 · ERROR 0`（exit 0）；`cargo fmt --all -- --check`、`desktop/src-tauri` 与 `examples/sample-app` `fmt --check`（exit 0）；`npx tsc --noEmit -p desktop/tsconfig.json`（exit 0）；`cargo clippy --workspace --all-targets -- -D warnings`、`nlos-system-control --all-features`、`desktop/src-tauri --features dev-fixture` 与 `examples/sample-app` `clippy -D warnings`（exit 0）；`cargo test --workspace --no-fail-fast` **2128 passed / 0 failed / 44 ignored**（427 个测试结果行，exit 0；注：首次含全量编译并发跑时 `nlos-runtime-tokio` `lifecycle_phase` 因与重磁盘压测争用固定 50ms 睡眠窗口偶发 1 次，单独复跑 4/0 且预编译后全仓复跑 2128/0 全绿），`desktop/src-tauri --features dev-fixture` **19 passed / 0 failed**（exit 0），`examples/sample-app` **3 passed / 0 failed**（exit 0）。**诚实边界**：阶段 C 全部技术工作包（`C-CELL`/`C-LEASE`/`C-SYNC`/`C-SHARD`/`C-FANOUT`/`C-MIGRATE`/`C-SCHED`/`C-PARTITION`/`C-BENCH`）与两道退出门（`ROAD-C-001` / `ROAD-C-002`）在 `ADR-0018` 单机多进程拓扑内均已取证完毕，紧接进入 `W67` 独立退出门终审、机器台账（`claims.yaml` / `risks.yaml` / `ledger-schema.md v1.1`）全量回填与阶段 C 退出评审包收官。
+
+2026-10-26（W67 波：三车道写集互斥并行 + 单一集成器收口——阶段 C 退出门综合证据评审、机器台账 `v1.1` 全量回填与夜间 `--ignored` 常设门守卫闭环）：于 `W66` 屏障提交 `9e5e0edc` 上并发派发三条写集两两互斥的子代理车道，并由单一 integrator 完成共享机器台账与退出就绪度表合并：
+
+| 车道 | 子代理 | 写集域 | 交付内容与验证 |
+|---|---|---|---|
+| `W67-HARNESS-IGNORED-GUARD` | `1efb9514` | `crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs`、`crates/nlos-slice-k/tests/dual_cell_process_migration.rs` | **夜间 `scale-probe (include-ignored)` 常设门子进程守卫补齐（沿 `W43-A` `6f2c11e` 先例）**：为 `child_partition_cell_worker`、`child_source_cell_host_worker` 与 `child_target_cell_host_driver` 三个 `#[ignore]` 子进程入口补齐裸跑无环境变量时的显式 `eprintln!("skipped: ...") + return` 守卫（父 harness 携带环境变量孵化时仍严格校验格式错误并 fail-closed）。`cargo test -p nlos-slice-k --no-fail-fast -- --ignored` **15 passed / 0 failed**，两套套件 `--include-ignored` 合计 **16 passed / 0 failed** |
+| `W67-SCHEMA-LINT` | `459c3269` | `docs/management/ledger-schema.md`、`scripts/lint_claims.py`、`scripts/test_lint_claims.py` | **机器台账 Schema `v1 -> v1.1` 纯增量升级与 Linter 门禁扩展**：按 `ledger-schema.md §7` 冻结纪律完成纯 additive 扩展（`stage` 枚举开放 `"B" \| "C"`、支持 `stage-c-progress.md` 出处引用与 `RISK-C-NN` 风险号、维持 `docs/evidence/<stage>/` 含 `reviews/` 双向索引及 `Claim <= Evidence` 规则不变），新增 `StageCV11Tests` 4 项单测（覆盖 `H6` 正向、`H6 > H4` 拒绝、`stage-c/reviews/` 双向索引与非法 `stage: Z` fail-closed）。`python -m unittest scripts.test_lint_claims -v` **33 tests（32 passed, 1 skipped, 0 failed）** |
+| `W67-EXIT-REVIEW` | `5ce5450e` | `docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md` | **阶段 C 退出门综合证据评审（`Assurance: H6`）**：逐条核对 `v0.5 §28.3` 规范原文，裁定 `[ROAD-C-001]` 与 `[ROAD-C-002]` 均为 **`SATISFIED-WITH-BOUNDARIES`（`H6`）**；核对 `C-core` 九大工作包（`9/9 PARTIAL_PASS`）与阶段 B → C 移交 `#1–#17`（`2 DONE + 12 PARTIAL_PASS + 3 显式治理归置`）；独立复跑全仓冻结/退役声明静态扫描（`0` 匹配）、四组 `cargo tree -i` 反向依赖图与三套核心退出门二进制（全部 `0 failed`），141 条相对链接 100% 校验通过 |
+| `W67-INT`（单一集成器） | 主控 | `docs/management/evidence-index.yaml`、`claims.yaml`、`risks.yaml`、`exit-unknown-risks.md`、`stage-c-progress.md`、`README.md` | **阶段 C 退出台账包统一收口（`§C.5.5` 条件 1/2/3/5/6 全部 `READY`）**：登记 `w67-stage-c-exit-gates`（`evidence-index: 169/169`），向 `claims.yaml` 新增 30 条 `stage: C` 声明（总计 `101` 条，覆盖 `ROAD-C-001/002`、九大 `C-core`、全部移交项及 `C-SEARCH-EXT`/`C-NOTIFY-EXT`），同源同步 `risks.yaml` 与 `exit-unknown-risks.md`（复核 `P0=0`、`RISK-B-12 closed`），更新 `§C.2` / `§C.5.5.1` 与管理 `README.md` L0 入口 |
+
+**integrator 屏障验证与退出诚实边界**：`python -m unittest scripts.test_lint_claims -v`（32 passed, 1 skipped, 0 failed，exit 0）；`python scripts/lint_claims.py` `claims: 101 · risks: 12 · evidence-index: 169/169 · lint: PASS（0 项 ERROR，0 项 INFO）`（exit 0）；Markdown 相对链接扫描 `BROKEN=0`；`cargo fmt --all -- --check`（exit 0）；`cargo clippy --workspace --all-targets -- -D warnings`（exit 0）；`cargo test -p nlos-slice-k --no-fail-fast -- --ignored` **15 passed / 0 failed**（exit 0）；`dual_cell_partition_recovery` + `dual_cell_process_migration` **13 passed / 0 failed / 3 ignored**（exit 0）。**诚实边界**：严守 `§C.2` 与 `§C.5.5` 条件 4 纪律，在获得维护者明确退出批准前，阶段 C 状态保持 **`IN_PROGRESS / NOT EXITED`（Ready for Maintainer Exit Approval）**，绝不自授翻转为 `EXITED`；跨物理主机网络传输/共识（`RISK-B-11` / `ADR-0020`）、Layer-3 物理断电测试台（`U-4`）、`1M_LOGICAL` 与跨平台 CI release 容量口号（`RISK-B-07` / `U-1`）及完整自然语言桌面（阶段 D）均按已登记边界如实保留。

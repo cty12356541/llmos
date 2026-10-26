@@ -1,9 +1,9 @@
-# 风险台账（risks.yaml，schema v1，W27-E 种子 + W34-B 收官波回填）
+# 风险台账（risks.yaml，schema v1.1，W27-E 种子 + W34-B 阶段 B 回填 + W67 阶段 C 退出评审同步）
 #
 # 纪律：
 # - 九类来自管理机制 README §9；severity 按 影响×发生概率×不可逆性 保守评定；
 # - status 只反映已有 Evidence 支撑的缓解现状，诚实优先；无证据支撑的缓解不得写 mitigated；
-# - P0 阻止阶段退出（当前 P0=0，正式确认见 docs/management/exit-unknown-risks.md W34-C）；
+# - P0 阻止阶段退出（当前 P0=0，经 W34-C 与 W67 阶段 C 退出评审双重确认，见 docs/management/exit-unknown-risks.md）；
 # - P1 须有缓解措施与复查点（owner 字段 v1 未强制，owner 于 exit-unknown-risks.md 逐项登记，v2 候选）；
 # - 收官波（W27–W33）登记 residual 已逐项入账：release-profile 口径（RISK-B-07）、Windows 实杀（RISK-B-10）、
 #   GUI 真机战役（RISK-B-06）、multi-cell（RISK-B-11）、单人知识（RISK-B-08）、slice-k-demo 09d defect（RISK-B-12）。
@@ -42,7 +42,7 @@
   severity: P1
   status: partial
   description: "Resource/Budget 超卖：Reservation/消耗记账旁路或高水位失效"
-  mitigation: "strict ACTIVE consume high-water、QUARANTINED freeze、finalize/refund 同事务退款与聚合回读已有单节点证据；Task 侧 cost-receipt 消费接线（schema v39/40）+ 混合 rung 双 authority 预校验 + 桥接 kill-window 矩阵；ADR-0017 Resource 跨 authority prepare/finalize 有界 coordinator（schema v43 + G1–G7）定案实现；真实 enforcement shim 与平台 Device adapter 未做"
+  mitigation: "单节点高水位/隔离冻结/同事务退款与 ADR-0017 coordinator 已证；阶段 C 补齐三族持久化租约与 FenceBarrierAck 非互换对账（C-LEASE-001）、EnforcementGatewayReconciliationAuthority 验签结算回执闭环（C-CUSTODY-001）及跨进程断网 PartitionBoundedLossProof 有界损耗精确守恒（C-PARTITION-001 / C-ROAD-001）；宿主内核级硬件配额 shim 与物理 GPU/NPU 固件重置驱动仍属部署适配边界"
   evidence_refs:
     - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
     - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
@@ -50,7 +50,10 @@
     - docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md
     - docs/evidence/stage-b/b-task-008c2g-resource-cost-commit.md
     - docs/evidence/stage-b/b-task-008c2g-resource-prepare-finalize.md
-  review_point: "阶段 B 退出评审门；真实 enforcement shim 落地时复审"
+    - docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
+    - docs/evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+  review_point: "W67 阶段 C 退出评审已复核软件账本与网关结算闭环；引入宿主硬件级资源 shim / 物理设备驱动时复审"
 
 - id: RISK-B-04
   category: cancel-effect-unknown
@@ -70,12 +73,13 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；SABI 演进只走 additive（v1.2 命令臂→v1.4 parity→v1.5 五视图，全程零 breaking）；manifest tasks 模板段以平行签名面实现 additive（旧包兼容硬门绿）；Task/Effect 语义稳定前不冻结 SABI（议题 31/32 顺序变更）；driver payload codec 未进冻结通道（ADR-0014 纪律下需显式决策——W34-A §3 residual）"
+  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；W65 经 ADR-0024 正式冻结第 8 个 SABI 通道 nlos.sabi.DriverProvider v1.0（16 KiB 有界载荷 + TS/Python/Rust 黄金向量钉死，闭合 W34-A §3 driver payload codec 残余项，C-PROVIDER-001）；W66 Search/Notify 控制探查复用既有授权通道零 .proto 破坏性变更；SABI 长期二进制兼容承诺仍按 §29.2 留阶段 E"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
     - docs/evidence/stage-b/b-plan-002-manifest-template.md
-  review_point: "每四个周期技术选型复审（README §11）；SABI 冻结决策与 driver codec 入通道决策前必复审"
+    - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
+  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；阶段 E 发布长期 SABI v1.0 兼容承诺前必复审"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
@@ -94,21 +98,23 @@
   severity: P1
   status: partial
   description: "规模目标被冷 metadata 数量冒充或以 debug/test 口径外推：以注册行/waiting Fiber 冒充 10K/100K 逻辑 TaskNode，或以单平台 debug-profile 数字冒充生产量级"
-  mitigation: "W31-G 评审 G1–G6 全 SATISFIED-WITH-BOUNDARIES：100K 逻辑 TaskNode（plan_nodes 持久计数，waiting Fiber 不作代理）惰性有界实跑（每节点 508–553B、RSS 增量≪界、点读平坦）；100K 注册维 probe 首跑；working-set 比例矩阵 5 cell + checkpoint/rehydrate 实测 + reclaim 实执行闭环；Task 注册近似已退役并显式注明——但全部数字为 debug/test profile、单平台 macOS 口径，release 复测与多平台未做，各 claim 已按口径限定（ROAD-B-004/006 limitations）；「PID 级 Agent 容量」「coroutine 级大规模并发」生产量级声明未做"
+  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死，阶段 C 新增三平台 scale-probe-release CI 管线（B-SCALE-RELEASE-001）与 Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL（1%/5%/10% 活跃工作集、634 B/node 终态落盘、p50=84-85us 手动控制响应）及 1->8 子进程分片无全局锁扩展基准（C-BENCH-001）；残余未证域为 1M_LOGICAL 档位、单分片 O(N/S) select 二级索引化以及三平台例行 CI release 汇总数字，故仍维持 partial 并严禁无边界生产容量口号"
   evidence_refs:
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+    - docs/evidence/stage-b/b-scale-release-001.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
     - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
-    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
-  review_point: "release-profile 复测 + Linux/Windows 多平台数字落证据时复审；任何生产量级声明发布前必复审"
+    - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  review_point: "W67 已核入 Windows --release 8-Cell 100K_LOGICAL 实盘基准；推进 1M_LOGICAL 或发布跨平台生产量级声明前必复审"
 
 - id: RISK-B-08
   category: single-person-dependency
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——143+ 证据文件逐车道留痕、ADR-0001..0017、机器台账（claims/risks/evidence-index + lint）、§6.5.3 全量车道编排与增量日志、W34-C 未知风险清单逐项登记 owner/缓解/退役证据；阶段 C 首个新增维护者接入前，单人依赖实质未变"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——169 份证据文件逐车道留痕、ADR-0001..0024、机器台账 v1.1（101 claims / 12 risks / 169 evidence-index + lint 机械门）、stage-b/stage-c 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 用户门对 owner 分配与阶段 C 人员接入明确表态；每四个周期复审知识分布清单"
 
@@ -136,14 +142,20 @@
   category: durable-state-loss
   severity: P1
   status: partial
-  description: "多 Cell/跨机器原子提交（分域口径 2026-10-08）：单机 bounded convergence 与统一恢复面已证；单机双进程域的跨 Cell 接管（DIST-TASK-002 CAS 链 + 四不变量收敛 + H6 六类目注入）已证（C-SHARD-001..004）；**残域显式保留**：跨机器原子性/真网络分区/跨时钟域（挂 ADR-0019 R1.4 触发器 7 再评估门，修订 2 R2.5 沿用）与远端物理 cleanup 证明（拒绝/QUARANTINE ≠ cleanup，R2.3 第 2 条）。把已证域外推为残域能力即构成状态丢失风险"
-  mitigation: "全部 claim 限定单机双进程域（C-SHARD-001..004 evidence 边界声明）；endpoint 覆盖仅 TaskStore（六类映射留 CS1-C）；kill-9=页缓存存活的进程崩溃建模不外推真实断电/跨机/三权威原子性（W31-G/W34-A 沿引）；注入「掐通道」为 harness 通道层投递拒绝，非 OS 级分区"
+  description: "多 Cell/跨机器原子提交与分区收敛（分域口径 2026-10-26，W67）：ADR-0018 单主机多 OS 进程持久库拓扑下的阶段 C 全套分布式机制——C-SHARD Phase 0+1（schema v47 三 Record + 六类 canonical endpoint 屏障 + Ed25519 快照签名接管）、三族租约持久化与非互换对账（C-LEASE-001）、跨域签名事件/向量检查点与制品传输包收敛（C-SYNC-001/002）、双进程 CellHost 八步迁移（C-MIGRATE-001/002）、断连局部自治与有界损耗守恒（C-PARTITION-001）及 ROAD-C-001 / ROAD-C-002 H6 门禁均已实证闭合；**残域显式保留**：①跨物理机器网络传输/真实网卡丢包分区/硬件跨时钟域共识（ADR-0019 触发器 7 / ADR-0020）；②远端外部副作用的物理级回滚/清理证明（QUARANTINE 围栏 ≠ 远端物理擦除）。将单机多进程证据外推为跨物理机无条件保证即构成风险"
+  mitigation: "claims.yaml 全部 stage: C 条目与 W67 退出评审记录逐项限定 ADR-0018 单机多进程拓扑边界；跨 Cell 未决副作用在 SourceFenced / 租约超期后一律转入持久化 QUARANTINED 并由 PartitionBoundedLossProof 钉死损失上界，绝不静默退回 AVAILABLE 或猜测剩余额度"
   evidence_refs:
     - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
-    - docs/evidence/stage-c/c-shard-001-cross-cell-takeover-drive.md
-    - docs/evidence/stage-c/c-shard-003-reconciliation-convergence-core.md
     - docs/evidence/stage-c/c-shard-004-h6-fault-injection-matrix.md
-  review_point: "分域退役（W56，ADR-0019 修订 2 R2.3）：partial 只覆盖单机双进程域。残域复审点：①跨机/分区/时钟域——首个真跨机证据出现时按 R1.4 触发器 7 再评估；②物理 cleanup——实际清理证据存在前不得退役；③任何跨机/多 Cell 声明发布前必复审"
+    - docs/evidence/stage-c/c-shard-005-dist-task-conformance.md
+    - docs/evidence/stage-c/c-shard-006-production-takeover-binding.md
+    - docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
+    - docs/evidence/stage-c/c-migrate-002-cell-host-process-migration.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  review_point: "W67 阶段 C 退出评审已确认 ADR-0018 单机多进程域全量闭合；残域复审触发点：①引入跨物理主机 TCP/QUIC 传输与共识基底（ADR-0018 触发器 2/4、ADR-0019 触发器 7、ADR-0020）；②引入外部物理副作用主动清理协议时"
 
 - id: RISK-B-12
   category: durable-state-loss

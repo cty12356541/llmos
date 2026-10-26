@@ -1609,10 +1609,23 @@ fn verify_source_post_conditions(
 #[ignore = "subprocess worker invoked by dual_cell_process_migration tests"]
 #[allow(clippy::too_many_lines)]
 fn child_source_cell_host_worker() {
-    let scenario = ScenarioId::from_str(&std::env::var(ENV_SCENARIO).expect("ENV_SCENARIO"));
-    let federation_root = PathBuf::from(std::env::var(ENV_FEDERATION_ROOT).expect("FED_ROOT"));
-    let cell_root = PathBuf::from(std::env::var(ENV_CELL_ROOT).expect("CELL_ROOT"));
-    let ipc_dir = PathBuf::from(std::env::var(ENV_IPC_DIR).expect("IPC_DIR"));
+    // Batch `--ignored`/`--include-ignored` runs (nightly scale-probe job)
+    // reach this entry without env; only the parent spawn makes it meaningful.
+    let (Ok(raw_scenario), Ok(federation_root), Ok(cell_root), Ok(ipc_dir)) = (
+        std::env::var(ENV_SCENARIO),
+        std::env::var(ENV_FEDERATION_ROOT),
+        std::env::var(ENV_CELL_ROOT),
+        std::env::var(ENV_IPC_DIR),
+    ) else {
+        eprintln!(
+            "skipped: {ENV_SCENARIO}/{ENV_FEDERATION_ROOT}/{ENV_CELL_ROOT}/{ENV_IPC_DIR} unset (harness entry, parent spawn only)"
+        );
+        return;
+    };
+    let scenario = ScenarioId::from_str(&raw_scenario);
+    let federation_root = PathBuf::from(federation_root);
+    let cell_root = PathBuf::from(cell_root);
+    let ipc_dir = PathBuf::from(ipc_dir);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -2154,10 +2167,23 @@ fn build_migration_request(
 #[ignore = "subprocess driver invoked by dual_cell_process_migration tests"]
 #[allow(clippy::too_many_lines)]
 fn child_target_cell_host_driver() {
-    let scenario = ScenarioId::from_str(&std::env::var(ENV_SCENARIO).expect("ENV_SCENARIO"));
-    let federation_root = PathBuf::from(std::env::var(ENV_FEDERATION_ROOT).expect("FED_ROOT"));
-    let cell_root = PathBuf::from(std::env::var(ENV_CELL_ROOT).expect("CELL_ROOT"));
-    let ipc_dir = PathBuf::from(std::env::var(ENV_IPC_DIR).expect("IPC_DIR"));
+    // Batch `--ignored`/`--include-ignored` runs (nightly scale-probe job)
+    // reach this entry without env; only the parent spawn makes it meaningful.
+    let (Ok(raw_scenario), Ok(federation_root), Ok(cell_root), Ok(ipc_dir)) = (
+        std::env::var(ENV_SCENARIO),
+        std::env::var(ENV_FEDERATION_ROOT),
+        std::env::var(ENV_CELL_ROOT),
+        std::env::var(ENV_IPC_DIR),
+    ) else {
+        eprintln!(
+            "skipped: {ENV_SCENARIO}/{ENV_FEDERATION_ROOT}/{ENV_CELL_ROOT}/{ENV_IPC_DIR} unset (harness entry, parent spawn only)"
+        );
+        return;
+    };
+    let scenario = ScenarioId::from_str(&raw_scenario);
+    let federation_root = PathBuf::from(federation_root);
+    let cell_root = PathBuf::from(cell_root);
+    let ipc_dir = PathBuf::from(ipc_dir);
 
     let mut target_host =
         CellHost::open_federated(&cell_root, target_cell_config(), &federation_root)

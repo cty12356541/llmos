@@ -1,7 +1,7 @@
-# 需求 Claim 台账（claims.yaml，schema v1，W34-B 全量回填）
+# 需求 Claim 台账（claims.yaml，schema v1.1，W34-B 阶段 B 全量回填 + W67 阶段 C 全量回填）
 #
 # 纪律：
-# - 只登记 stage-b-progress §3/§6.5 行已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
+# - 只登记 stage-b-progress §3/§6.5 与 stage-c-progress §C.3/§C.5.5 行已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
 # - assurance ≤ 被引证据可支撑等级（Claim≤Evidence，由 scripts/lint_claims.py 机械校验）；
 # - 退出门裁定约束 status：ROAD-B-001/002 按 W33-H 评审裁 PARTIAL；ROAD-B-004 六门 SATISFIED-WITH-BOUNDARIES
 #   （W31-G）仍登记 PARTIAL_PASS——具名边界随裁定带入 limitations，release 复测等开放项未清即不升 DONE；
@@ -1150,7 +1150,7 @@
     - docs/evidence/stage-b/b-notify-001-minimal-service.md
   assurance: H3
   limitations:
-    - "薄服务层（订阅/投递/ack 全链经既有 Topic 权威）；无影子 fanout 负证已钉；跨进程/多机、真实掉电未做"
+    - "阶段 B 基线口径：薄服务层（订阅/投递/ack 全链经既有 Topic 权威）且无影子 fanout；阶段 C 超最小面扩展（TASK-NOTIFY-001 / DUI-NOTIFY-001 / DUI-OFFLINE-001）与生产消费方全链解冻接线已登记于 stage: C 条目 C-NOTIFY-EXT / C-MULTICELL；跨物理机与真实掉电未做"
   source: "stage-b-progress.md §6.5.3 W33-D 行 + 第九十一增量（base a01fd57）：W33-D/X-1 前半已落"
 
 - requirement_id: X-1-SEARCH
@@ -1164,7 +1164,7 @@
     - docs/evidence/stage-b/b-search-001-minimal-service.md
   assurance: H3
   limitations:
-    - "只读查询面（断言 selector + trust-view 活 join + 派生内存索引，可重建非 canonical）；零 semantic 权威写入负证已钉；索引规模/刷新策略未扩展"
+    - "阶段 B 基线口径：只读查询面（断言 selector + trust-view 活 join + 派生内存索引）且零 semantic 权威写入；阶段 C 超最小面扩展（CONS-DECL/CTRL-001、签名向量检查点快照查询、游标分页、多 Cell 候选归并）与生产消费方全链解冻接线已登记于 stage: C 条目 C-SEARCH-EXT / C-MULTICELL"
   source: "stage-b-progress.md §6.5.3 W33-E 行 + 第九十一增量（base a01fd57）：W33-E/X-1 后半已落"
 
 - requirement_id: X-2-TASK-SPACE
@@ -1192,3 +1192,561 @@
   limitations:
     - "只读检查面（snapshot inspect + replay 事件流回放走查 + recovery 三域台账）；tripwire 三层零 mutation 纪律；无交互式调试/断点"
   source: "stage-b-progress.md §6.5.3 W33-G 行 + 第九十一增量 + W34-A §7（base a01fd57）：X-3 后半已落（W33-G），裁决 SATISFIED-WITH-BOUNDARIES（提案）"
+# ===== 阶段 C 退出门（stage-c-progress.md §C.1.1 / §C.5.5，W67 回填）=====
+
+- requirement_id: ROAD-C-001
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-cell
+    - crates/nlos-lease
+    - crates/nlos-task
+    - crates/nlos-semantic
+    - crates/nlos-artifact
+    - crates/nlos-process
+    - crates/nlos-notify
+    - crates/nlos-search
+    - crates/nlos-slice-k
+  test_refs:
+    - crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs
+    - crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs
+    - crates/nlos-slice-k/tests/dual_cell_process_migration.rs
+    - crates/nlos-lease/tests/lease_reconciliation.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
+    - docs/evidence/stage-c/c-shard-005-dist-task-conformance.md
+    - docs/evidence/stage-c/c-shard-006-production-takeover-binding.md
+    - docs/evidence/stage-c/c-sync-001-signed-event-set-merge.md
+    - docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
+    - docs/evidence/stage-c/c-migrate-002-cell-host-process-migration.md
+    - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  assurance: H6
+  limitations:
+    - "W67 评审裁定 SATISFIED-WITH-BOUNDARIES：效力域严格限定 ADR-0018 单主机多 OS 进程与独立磁盘 SQLite WAL+FULL 持久库拓扑，跨进程断连经文件邮箱通道模拟；跨物理机器真网卡 TCP/QUIC 分区与跨时钟域共识保留在 RISK-B-11 / ADR-0020"
+    - "硬崩溃采用真实子 OS 进程 Child::kill()（Layer-2 进程硬终止，页缓存存活），不外推为物理断电测试台 Layer-3 块设备写撕裂证明（U-4）"
+  source: "stage-c-progress.md §C.1.1 / §C.3.1 C-PARTITION 行 / §C.8 W66-W67 + W67 退出门评审（base 9e5e0edc）：SATISFIED-WITH-BOUNDARIES"
+
+- requirement_id: ROAD-C-002
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-plan
+    - crates/nlos-runtime
+    - crates/nlos-runtime-tokio
+    - crates/nlos-driver-mock
+  test_refs:
+    - crates/nlos-task/tests/c_bench_task_sharded_scale.rs
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+    - crates/nlos-task/tests/c_fanout_hierarchical_bulkhead.rs
+    - crates/nlos-runtime-tokio/tests/c_sched_three_tier_domain.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/c-fanout-001-hierarchical-fanout-bulkhead.md
+    - docs/evidence/stage-c/c-sched-001-three-tier-scheduler-domain.md
+    - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  assurance: H6
+  limitations:
+    - "W67 评审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（6C/12T, SQLite WAL+FULL）实测 1->2->4->8 独立 OS 子进程 Cell 分片无全局锁/无全局总序扩展（release 4.44x / dev 5.78x）、8-Cell 分片 10K_LOGICAL 与 100K_LOGICAL（1%/5%/10% 工作集）及五类故障全覆盖；1M_LOGICAL 档位与跨物理主机网络基准显式未声称"
+    - "单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 多平台 release CI 规模数字待常设门回填（RISK-B-07 / U-1），故不发布无限定生产量级口号"
+  source: "stage-c-progress.md §C.1.1 / §C.3.1 C-BENCH 行 / §C.8 W66-W67 + W67 退出门评审（base 9e5e0edc）：SATISFIED-WITH-BOUNDARIES"
+
+# ===== 阶段 C 核心工作包（stage-c-progress.md §C.3.1 C-core）=====
+
+- requirement_id: C-CELL
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-cell
+    - crates/nlos-slice-k/src/cell_host.rs
+  test_refs:
+    - crates/nlos-cell/tests
+    - crates/nlos-slice-k/tests/cell_assembly.rs
+    - crates/nlos-slice-k/tests/dual_cell_federation.rs
+    - crates/nlos-slice-k/tests/dual_cell_checkpoint.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-shard-006-production-takeover-binding.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  assurance: H6
+  limitations:
+    - "CellHost 本地七件套、boot_generation 持久化、控制面联邦三机制（CellDirectory / MigrationIntent / ReconciliationCheckpoint）与 PartitionAutonomyGate / RemoteCallOutcome 已在 ADR-0018 单机多进程域验证；跨物理主机网络传输与多写者共识基底保留于 RISK-B-11 / ADR-0020"
+  source: "stage-c-progress.md §C.3.1 C-CELL 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-LEASE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-lease
+    - crates/nlos-slice-k/src/cell_host.rs
+  test_refs:
+    - crates/nlos-lease/tests/durable_lease_store.rs
+    - crates/nlos-lease/tests/lease_reconciliation.rs
+    - crates/nlos-slice-k/tests/cell_lease_families.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
+    - docs/evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  assurance: H6
+  limitations:
+    - "Quota/Capacity/ExclusiveDevice 三族 SqliteLeaseStore（WAL+FULL）、FenceBarrierAck 非互换对账回执、跨节点 migrate_lease、WAL 丢失隔离及 PartitionBoundedLossProof 已在单机多进程持久库域验证；跨物理主机共识与真实硬件设备 DMA/VRAM 固件重置驱动保留于部署边界"
+  source: "stage-c-progress.md §C.3.1 C-LEASE 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SYNC
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-semantic
+    - crates/nlos-artifact/src/sync.rs
+    - crates/nlos-slice-k/src/partition_recovery.rs
+  test_refs:
+    - crates/nlos-semantic/tests/signed_event_set_merge.rs
+    - crates/nlos-artifact/tests/artifact_sync_policy.rs
+    - crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-sync-001-signed-event-set-merge.md
+    - docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  assurance: H6
+  limitations:
+    - "DIST-EVENT-001 签名事件集合幂等合并、DIST-AUDIT-001 跨域溯源信封、SEM-CHECKPOINT-001 签名向量检查点、DIST-ART-001 四轴策略与 ArtifactTransferPackage 跨库传输及同步感知孤儿 GC 已在单机多持久库与双存活进程域验证；跨物理主机对象存储流式网络传输未包含"
+  source: "stage-c-progress.md §C.3.1 C-SYNC 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SHARD
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-cell/src/federation.rs
+    - crates/nlos-slice-k/src/takeover_drive.rs
+    - crates/nlos-slice-k/src/reconciliation.rs
+  test_refs:
+    - crates/nlos-task/tests/c_shard_cs1a_schema_v47.rs
+    - crates/nlos-task/tests/c_shard_cs1bc_conformance.rs
+    - crates/nlos-slice-k/tests/dual_cell_takeover.rs
+    - crates/nlos-slice-k/tests/dual_cell_reconciliation.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-shard-001-cross-cell-takeover-drive.md
+    - docs/evidence/stage-c/c-shard-002-checkpoint-digest-verification.md
+    - docs/evidence/stage-c/c-shard-003-reconciliation-convergence-core.md
+    - docs/evidence/stage-c/c-shard-004-h6-fault-injection-matrix.md
+    - docs/evidence/stage-c/c-shard-005-dist-task-conformance.md
+    - docs/evidence/stage-c/c-shard-006-production-takeover-binding.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "Phase 0 + Phase 1（CS1-A..E：schema v47 三 Record、DIST-TASK-001/002/004 全语义、六类 canonical endpoint 屏障覆盖、Ed25519 快照签名与联邦绑定）已在 ADR-0018 单机多进程域闭环；按 ADR-0019 R2.3 保留跨物理机网络分区与远端外部副作用物理 cleanup 残域（RISK-B-11）"
+  source: "stage-c-progress.md §C.3.1 C-SHARD 行 + c-shard-plan.md（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-FANOUT
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task/src/fanout.rs
+  test_refs:
+    - crates/nlos-task/tests/c_fanout_hierarchical_bulkhead.rs
+    - crates/nlos-task/tests/c_bench_task_sharded_scale.rs
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-fanout-001-hierarchical-fanout-bulkhead.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "HierarchicalFanoutTree、DeterministicLocalReducer、二进制 SHA-256 MerkleResultRoot、六维 FanoutUsageLedger 背压及四域 BulkheadRegistry + SafetyTcbSystemReserve 已通过单测与多进程分片故障压测；限定单机多进程/多分片域，非跨物理主机 RPC 扇出"
+  source: "stage-c-progress.md §C.3.1 C-FANOUT 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-MIGRATE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-process/src/migration.rs
+    - crates/nlos-slice-k/src/process_migration_drive.rs
+    - crates/nlos-cell/src/federation.rs
+  test_refs:
+    - crates/nlos-process/tests/process_migration.rs
+    - crates/nlos-slice-k/tests/dual_cell_process_migration.rs
+    - crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-migrate-001-process-migration-protocol.md
+    - docs/evidence/stage-c/c-migrate-002-cell-host-process-migration.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  assurance: H6
+  limitations:
+    - "DIST-MIGRATE-001 八步状态机、DIST-MIGRATE-002 固定会话拒绝/restart-from-artifact 降级、三族租约守恒转移、Capability 衰减重绑及 SourceFenced 后崩溃隔离已在双存活 OS 进程 CellHost 上验证；不含跨物理主机网络传输、操作系统内核 CRIU 内存页热迁移或全球跨组织联邦清算（§29.2）"
+  source: "stage-c-progress.md §C.3.1 C-MIGRATE 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SCHED
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime/src/scheduler_domain.rs
+    - crates/nlos-runtime-tokio/src/distributed_scheduler.rs
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/c_sched_three_tier_domain.rs
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-sched-001-three-tier-scheduler-domain.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "Global->Cell->Worker 三层无全局锁热路径、DRR 公平队列与饥饿老化、禁止窃取活跃 EffectPermit/Reservation/DeviceLease 的原子窃取、Context 亲和路由及反向背压跨 Cell 卸载已在 8-Cell 100K_LOGICAL 压测下验证；跨物理主机远程调度 RPC 保留于 RISK-B-11"
+  source: "stage-c-progress.md §C.3.1 C-SCHED 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-PARTITION
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-cell/src/partition.rs
+    - crates/nlos-slice-k/src/partition_recovery.rs
+  test_refs:
+    - crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs
+    - crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+  assurance: H6
+  limitations:
+    - "DIST-LOCAL-001 局部自治、DIST-FAIL-001 四态远程失败分类、PartitionBoundedLossProof 额度冻结与有界损耗精确守恒及重连四阶段收敛已在双存活子 OS 进程 + 强杀重启复合门禁验证；跨物理主机网卡丢包/路由黑洞注入保留于 RISK-B-11"
+  source: "stage-c-progress.md §C.3.1 C-PARTITION 行（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-BENCH
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-plan
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-task/tests/c_bench_task_sharded_scale.rs
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "已在单机 Windows 11 x86_64 6C/12T（SQLite WAL+FULL）验证 PERF-CLASS-001、1->8 子进程分片无全局锁扩展、8-Cell 10K/100K_LOGICAL（1%/5%/10% 工作集）、PERF-CONTROL-001（p50=84-85us）及 ROAD-C-002 五类故障；1M_LOGICAL 与跨物理机网络基准显式未声称"
+  source: "stage-c-progress.md §C.3.1 C-BENCH 行（base 9e5e0edc）：PARTIAL_PASS"
+
+# ===== 阶段 B -> C 移交项工作包与服务解冻扩展（stage-c-progress.md §C.3.2 #1-#17）=====
+
+- requirement_id: C-REG-12
+  stage: C
+  status: DONE
+  implementation_refs:
+    - crates/nlos-slice-k/src/bin/slice-k-demo.rs
+  test_refs:
+    - crates/nlos-slice-k/tests/lifecycle_uninstall.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+    - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
+  assurance: H3
+  limitations: []
+  source: "stage-c-progress.md §C.3.2 C-REG-12（移交#1，merge 87ef288，base 9e5e0edc）：DONE，RISK-B-12 closed"
+
+- requirement_id: C-APP-PAYLOAD
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-package/src/main.rs
+    - crates/nlos-slice-k/src/payload.rs
+    - examples/sample-app
+  test_refs:
+    - crates/nlos-package/tests/sample_app_cli_lifecycle.rs
+    - examples/sample-app/src/main.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-app-payload-001-sample-cli-execution.md
+    - docs/evidence/stage-b/b-application-007-third-party-sample.md
+  assurance: H4
+  limitations:
+    - "nlos-package CLI 全周期（keygen/build/conformance/verify/install/run/update/uninstall）与 examples/sample-app 跨代际 app.bin 载荷回执执行已端到端闭环；载荷执行经确定性 Driver Operation 与语义回执桥承载，不含客户机 Wasm/ELF 字节码虚拟机直接执行"
+  source: "stage-c-progress.md §C.3.2 C-APP-PAYLOAD（移交#2，W65-CAPP-PAYLOAD，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-GUI-CAMPAIGN
+  stage: C
+  status: NOT_STARTED
+  implementation_refs:
+    - desktop
+  test_refs:
+    - desktop/src-tauri/tests
+  evidence_refs: []
+  assurance: DESIGN
+  limitations:
+    - "按 §C.5.4 决策点 3(ii) 归置为常设人工真机观察项（与阶段 D 桌面演进邻接），不阻塞阶段 C 分布式内核退出；当前桌面壳验证由命令层集成测试、Windows 认证命名管道测试与 Rust/TS 类型穷尽门承载（RISK-B-06 / U-3）"
+  source: "stage-c-progress.md §C.3.2 C-GUI-CAMPAIGN（移交#3）+ §C.5.4 决策点 3(ii)（base 9e5e0edc）：NOT_STARTED（显式归置常设观察项）"
+
+- requirement_id: C-WIN-KILL
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-process/tests/platform_kill.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-process-003-crash-propagation.md
+  assurance: H3
+  limitations:
+    - "已在真实 Windows 宿主验证 taskkill /F /T 终止同权限父+子双活进程树及 B2-1 双活兄弟树 100% 存活（RISK-B-10 降级为 partial）；跨权限/UAC 子进程与 Job Object breakaway 脱离进程树残余边界保留"
+  source: "stage-c-progress.md §C.3.2 C-WIN-KILL（移交#4，W62-CWINKILL，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SCALE-RELEASE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-plan
+    - crates/nlos-task
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-scale-release-001.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "已具备三平台 release-probe CI 管线（B-SCALE-RELEASE-001）及 Windows 11 x86_64 --release 8-Cell 分片 10K/100K_LOGICAL 实盘数字（C-BENCH-001）；按 §C.1.2 第 5 条生产量级口号与阶段 C 退出解耦，在三平台 CI release 常设数字齐备前维持限定口径、不发布无边界生产容量声明（RISK-B-07 / U-1）"
+  source: "stage-c-progress.md §C.3.2 C-SCALE-RELEASE（移交#5）+ §C.1.2 第 5 条（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-RUNTIME-SCALE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/batch_cancel_scale.rs
+    - crates/nlos-runtime-tokio/tests/wake_fairness.rs
+    - crates/nlos-runtime-tokio/tests/scale.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+  assurance: H6
+  limitations:
+    - "100K batch-cancel 比值、多 worker wake fairness 与墙钟分布首割（B-RUNTIME-002 §6.19）及 8-Cell 100K_LOGICAL M:N Fiber 压测（C-BENCH-001）已落地；durable-wait 全量挂起下终态 purge 二次复杂度与单点 100K 同时唤醒风暴留后续优化"
+  source: "stage-c-progress.md §C.3.2 C-RUNTIME-SCALE（移交#6，merge 4df55d6，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SELECTOR
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-plan
+  test_refs:
+    - crates/nlos-plan/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+  assurance: H3
+  limitations:
+    - "Application/Artifact 类型化 selector 与 G3 三条件结构化字段已验证（B-PLAN-001 §12）；Topic/Skill/Tool/Model/外部服务类型化 selector 解析与 G3 运行时强制绑定递延至阶段 D/E 生态扩展（U-7 / U-8）"
+  source: "stage-c-progress.md §C.3.2 C-SELECTOR（移交#7，merge 8b91419，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-PLAN-HARDEN
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-plan
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-plan/tests/scheduler_scale_probe.rs
+    - crates/nlos-task/tests/working_set_ratio_probe.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+    - docs/evidence/stage-b/b-task-scale-001.md
+  assurance: H3
+  limitations:
+    - "apply 侧 TaskNode admission consult、Task-reclaim × plan-residency 互连、PINNED tier、调度器规模探针与 100K@50% 回收再入场已验证（merge 8ed592a）；nlos-system-control 测试夹具 ungated 辅助入口与 PINNED SABI 投影递延"
+  source: "stage-c-progress.md §C.3.2 C-PLAN-HARDEN（移交#8，merge 8ed592a，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-PROVIDER-REAL
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/driver_provider.proto
+    - crates/nlos-schema
+    - crates/nlos-driver-mock
+  test_refs:
+    - crates/nlos-driver-mock/tests/out_of_process_provider.rs
+    - crates/nlos-schema/tests
+  evidence_refs:
+    - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
+  assurance: H5
+  limitations:
+    - "ADR-0024 冻结 nlos.sabi.DriverProvider v1.0 载荷通道、独立子 OS 进程 nlos-provider-worker、跨平台 Unix Socket / Windows Named Pipe ADR-0011 认证 IPC、kill/respawn 降级重放与 PROVIDER_ISOLATION_UNVERIFIED 门控均已闭环；外部公有云商用 LLM HTTP SDK 与硬件 TEE 远程证明根证书验真属部署适配层边界（U-10 分域保留）"
+  source: "stage-c-progress.md §C.3.2 C-PROVIDER-REAL（移交#9，W65-CPROVIDER-REAL，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-RUNTIME-PROC
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime
+    - crates/nlos-runtime-tokio
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/kill_receipt.rs
+    - crates/nlos-runtime-tokio/tests/birth_decision.rs
+    - crates/nlos-process/tests/supervisor.rs
+  evidence_refs:
+    - docs/evidence/stage-b/w36-p10-c-runtime-proc.md
+  assurance: H3
+  limitations:
+    - "consume_platform_kill × Activation meter 联动、ProcessSupervisor 复用 pid registry 与合同层 BirthDecision/BirthRejection 已验证（merge c45bd10）；跨 authority BirthDecision 全量编排与 5 项次要测试/文档打磨递延"
+  source: "stage-c-progress.md §C.3.2 C-RUNTIME-PROC（移交#10，merge c45bd10，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-APP-CONTROL
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-system-control
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-system-control/tests
+    - crates/nlos-process/tests/supervisor_pid_registry.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-control-003-nl-prefix.md
+  assurance: H3
+  limitations:
+    - "disable/uninstall application NL 动词（f49c5a8）、InspectApplication GET 控制接线（ce06746 / 3560800）与 supervisor 按代次 unregister（7e975d7）已落地；宿主 OS 内核态自动陌生子 PID 枚举发现留后续切片"
+  source: "stage-c-progress.md §C.3.2 C-APP-CONTROL（移交#11，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-LIFECYCLE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-slice-k
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-slice-k/tests/application_teardown.rs
+    - crates/nlos-process/tests/process_authority.rs
+  evidence_refs: []
+  assurance: DESIGN
+  limitations:
+    - "clean_shutdown->FiberExit::Completed（cb51acb）、restore_process 过期代次拒绝（d391ba7）与 teardown 采纳已提交 platform-kill 回执（3d8da80）已入主干测试，但无独立专题 Evidence 文档，按规则保守定级 DESIGN；反向 NL 时间戳同源与非迁移本地进程原地复活链递延"
+  source: "stage-c-progress.md §C.3.2 C-LIFECYCLE（移交#12，base 9e5e0edc）：PARTIAL_PASS（无独立 Evidence 文件，定级 DESIGN）"
+
+- requirement_id: C-CONFORMANCE-GOLDEN
+  stage: C
+  status: DONE
+  implementation_refs:
+    - schema
+    - gen/typescript
+    - gen/python
+    - crates/nlos-schema
+  test_refs:
+    - crates/nlos-schema/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
+    - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
+  assurance: H5
+  limitations: []
+  source: "stage-c-progress.md §C.3.2 C-CONFORMANCE-GOLDEN（移交#13，merge 5c6f4c7 + W65 ADR-0024 golden 同步，base 9e5e0edc）：DONE，U-14 退役"
+
+- requirement_id: C-SCALE-PROBE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime-tokio
+    - crates/nlos-cell
+    - crates/nlos-slice-k
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/scale.rs
+    - crates/nlos-runtime-tokio/tests/lifecycle_scale.rs
+    - crates/nlos-cell/tests/boot_generation.rs
+    - crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs
+    - crates/nlos-slice-k/tests/dual_cell_process_migration.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+  assurance: H3
+  limitations:
+    - "测量串行化修复（ebbeddc）、子进程 harness 裸 --ignored 跳过守卫（W43-A 6f2c11e + W67 补齐 dual_cell_partition_recovery / dual_cell_process_migration）及 workflow_dispatch 全绿复证（run 35560466719 / 36520084111）已闭合；例行夜间 schedule 常设观察门持续保留，不以 dispatch 冒充 schedule"
+  source: "stage-c-progress.md §C.3.2 C-SCALE-PROBE（移交#14，base 9e5e0edc）：PARTIAL_PASS（dispatch 已闭合，schedule 常设门持续）"
+
+- requirement_id: C-MULTICELL
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-cell
+    - crates/nlos-lease
+    - crates/nlos-search
+    - crates/nlos-notify
+    - crates/nlos-system-control
+    - crates/nlos-slice-k
+    - desktop
+  test_refs:
+    - crates/nlos-system-control/tests/search_notify_wiring.rs
+    - crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs
+    - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-search-001-non-authoritative-checkpoint-search.md
+    - docs/evidence/stage-c/c-notify-001-task-lifecycle-action-token.md
+    - docs/evidence/stage-c/c-unfreeze-001-search-notify-production-wiring.md
+    - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
+    - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+  assurance: H6
+  limitations:
+    - "多 Cell C-core 九包、ROAD-C-001/002 两门、以及 nlos-search / nlos-notify 超最小面扩展与双生产消费线全链解冻（全仓零冻结/零退役模块）均已闭环；跨物理主机网络保留于 RISK-B-11，完整消费级桌面按 §C.5.4 决策点 3(i) 归属阶段 D"
+  source: "stage-c-progress.md §C.3.2 C-MULTICELL（移交#15，W65-W67，base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-SEARCH-EXT
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-search/src/lib.rs
+    - crates/nlos-system-control/src/search_inspector.rs
+    - crates/nlos-slice-k/src/service_faces.rs
+  test_refs:
+    - crates/nlos-search/tests/c_search_non_authoritative_checkpoint.rs
+    - crates/nlos-system-control/tests/search_notify_wiring.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-search-001-non-authoritative-checkpoint-search.md
+    - docs/evidence/stage-c/c-unfreeze-001-search-notify-production-wiring.md
+  assurance: H4
+  limitations:
+    - "已解除 F1 冻结声明并实现 CONS-DECL/CTRL-001 五门非权威守卫（0x1F）、SignedSemanticVectorCheckpoint 有界快照候选发现与二次权威核验、有界游标分页及多 Cell 候选归并，且已接入 SystemControlDaemon/CLI/NL/Desktop 与 SliceKRuntime/CellHost/slice-k-demo；严格保持 SQLITE_OPEN_READ_ONLY 非权威边界与客户端/守护进程侧合成收据（未新增远程 SABI .proto 搜索消息）"
+  source: "stage-c-progress.md §C.3.2 C-MULTICELL + §C.8 W65-SEARCH-EXT / W66-UNFREEZE-SC（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-NOTIFY-EXT
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-notify/src/lib.rs
+    - crates/nlos-system-control/src/notify_inspector.rs
+    - crates/nlos-slice-k/src/service_faces.rs
+  test_refs:
+    - crates/nlos-notify/tests/c_notify_task_action_token.rs
+    - crates/nlos-system-control/tests/search_notify_wiring.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-notify-001-task-lifecycle-action-token.md
+    - docs/evidence/stage-c/c-unfreeze-001-search-notify-production-wiring.md
+  assurance: H4
+  limitations:
+    - "已解除 F1 冻结声明并实现 schema v2（WAL+FULL）、TASK-NOTIFY-001 16 态任务通知、DUI-NOTIFY-001 一次性绑定 ActionToken、DUI-OFFLINE-001 离线游标分页历史与 O(1) inspect_subscription，且已接入 SystemControlDaemon/CLI/NL/Desktop 与 SliceKRuntime/CellHost/slice-k-demo；跨物理主机推送网关与系统原生 OS 通知中心弹窗归阶段 D"
+  source: "stage-c-progress.md §C.3.2 C-MULTICELL + §C.8 W65-NOTIFY-EXT / W66-UNFREEZE-SC（base 9e5e0edc）：PARTIAL_PASS"
+
+- requirement_id: C-POWER-LOSS
+  stage: C
+  status: NOT_STARTED
+  implementation_refs:
+    - crates/nlos-store
+    - crates/nlos-store-fault
+  test_refs: []
+  evidence_refs: []
+  assurance: DESIGN
+  limitations:
+    - "按 §C.5.4 决策点 3(iii) 归置为硬件持续项（遇物理掉电测试台即执行，不设纯软件阶段硬阻塞）；软件可达层 1（APFS fault-VFS 校准）与层 2（dm-flakey + Child::kill() WAL+FULL 强杀重水化）已在库，不冒充层 3 物理断电证明（U-4）"
+  source: "stage-c-progress.md §C.3.2 C-POWER-LOSS（移交#16）+ §C.5.4 决策点 3(iii)（base 9e5e0edc）：NOT_STARTED（硬件持续项）"
+
+- requirement_id: C-CUSTODY-GATEWAY
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-capability/src/custody.rs
+    - crates/nlos-commit-coordinator/src/gateway_reconcile.rs
+  test_refs:
+    - crates/nlos-commit-coordinator/tests/custody_gateway_reconciliation.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md
+  assurance: H3
+  limitations:
+    - "SigningKeyCustodyVault（KEK 封装 Ed25519 种子零明文导出、审计日志、轮换与泄露吊销墓碑）与 EnforcementGatewayReconciliationAuthority（Provisional vs FinalNonSupersedeable 验签结算回执驱动双域收敛）已验证；物理硬件 HSM / 云 KMS enclave 后端属生产部署边界"
+  source: "stage-c-progress.md §C.3.2 C-CUSTODY-GATEWAY（移交#17，W64-CCUSTODY，base 9e5e0edc）：PARTIAL_PASS"

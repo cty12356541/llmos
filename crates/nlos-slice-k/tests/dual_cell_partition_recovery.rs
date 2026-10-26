@@ -747,10 +747,22 @@ fn detector_config() -> FailureDetectorConfig {
 #[test]
 #[ignore = "spawned as live child OS process by dual_cell_partition_recovery coordinator tests"]
 fn child_partition_cell_worker() {
-    let role = std::env::var(ENV_WORKER_ROLE).expect("worker role env");
-    let cell_root = PathBuf::from(std::env::var(ENV_CELL_ROOT).expect("cell root env"));
-    let federation_root = PathBuf::from(std::env::var(ENV_FEDERATION_ROOT).expect("fed root env"));
-    let mailbox_dir = PathBuf::from(std::env::var(ENV_MAILBOX_DIR).expect("mailbox dir env"));
+    // Batch `--ignored`/`--include-ignored` runs (nightly scale-probe job)
+    // reach this entry without env; only the parent spawn makes it meaningful.
+    let (Ok(role), Ok(cell_root), Ok(federation_root), Ok(mailbox_dir)) = (
+        std::env::var(ENV_WORKER_ROLE),
+        std::env::var(ENV_CELL_ROOT),
+        std::env::var(ENV_FEDERATION_ROOT),
+        std::env::var(ENV_MAILBOX_DIR),
+    ) else {
+        eprintln!(
+            "skipped: {ENV_WORKER_ROLE}/{ENV_CELL_ROOT}/{ENV_FEDERATION_ROOT}/{ENV_MAILBOX_DIR} unset (harness entry, parent spawn only)"
+        );
+        return;
+    };
+    let cell_root = PathBuf::from(cell_root);
+    let federation_root = PathBuf::from(federation_root);
+    let mailbox_dir = PathBuf::from(mailbox_dir);
 
     let (domain_bytes, device_bytes) = match role.as_str() {
         "alpha" => (CELL_ALPHA_DOMAIN, DEVICE_ALPHA_BYTES),

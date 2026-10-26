@@ -244,6 +244,97 @@ class LintRuleTests(unittest.TestCase):
         self.assertEqual([f for f in findings if f[0] == "ERROR"], [])
 
 
+STAGE_C_CLAIM_H6 = """\
+
+- requirement_id: C-TEST-001
+  stage: C
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 3d81a90
+  evidence_refs:
+    - docs/evidence/stage-c/c-demo-001.md
+  assurance: H6
+  limitations: []
+  source: "stage-c-progress.md §C.3 C-TEST-001 行（base 9e5e0ed）"
+"""
+
+STAGE_C_INDEX_H6 = """\
+
+- id: c-demo-001
+  path: docs/evidence/stage-c/c-demo-001.md
+  title: "C-DEMO-001：阶段 C 故障注入证据"
+  scope: "阶段 C 故障注入证据"
+  assurance: H6
+  date: "2026-10-26"
+"""
+
+STAGE_C_REVIEW_INDEX = """\
+
+- id: w67-demo
+  path: docs/evidence/stage-c/reviews/w67-demo.md
+  title: "W67-DEMO：阶段 C 评审证据"
+  scope: "阶段 C 评审证据"
+  assurance: H6
+  date: "2026-10-26"
+"""
+
+
+class StageCV11Tests(unittest.TestCase):
+    def test_stage_c_claim_with_h6_evidence_passes(self):
+        root = make_repo(
+            claims=GOOD_CLAIMS + STAGE_C_CLAIM_H6,
+            index=GOOD_INDEX + STAGE_C_INDEX_H6,
+        )
+        ev_c = root / "docs/evidence/stage-c"
+        ev_c.mkdir(parents=True)
+        (ev_c / "c-demo-001.md").write_text("# C-DEMO-001\n", encoding="utf-8")
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(stats["index"], 2)
+        self.assertEqual(stats["on_disk"], 2)
+
+    def test_stage_c_claim_h6_over_h4_evidence_fails_closed(self):
+        root = make_repo(
+            claims=GOOD_CLAIMS + STAGE_C_CLAIM_H6,
+            index=GOOD_INDEX + STAGE_C_INDEX_H6.replace("assurance: H6", "assurance: H4"),
+        )
+        ev_c = root / "docs/evidence/stage-c"
+        ev_c.mkdir(parents=True)
+        (ev_c / "c-demo-001.md").write_text("# C-DEMO-001\n", encoding="utf-8")
+        errs = errors(root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0][1], "claims/C-TEST-001")
+        self.assertIn("Claim≤Evidence 违例", errs[0][2])
+
+    def test_unapproved_stage_z_fails_closed(self):
+        errs = errors(make_repo(claims=GOOD_CLAIMS.replace("stage: B", "stage: Z", 1)))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0][1], "claims/TEST-001")
+        self.assertIn("stage 非法", errs[0][2])
+
+    def test_stage_c_reviews_subdir_bidirectional_index_passes(self):
+        # 正向：已收录的 docs/evidence/stage-c/reviews/w67-demo.md 通过双向校验（0 ERROR）
+        root = make_repo(index=GOOD_INDEX + STAGE_C_REVIEW_INDEX)
+        rev_dir = root / "docs/evidence/stage-c/reviews"
+        rev_dir.mkdir(parents=True)
+        (rev_dir / "w67-demo.md").write_text("# W67-DEMO\n", encoding="utf-8")
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(stats["index"], 2)
+        self.assertEqual(stats["on_disk"], 2)
+        # 反向门禁：磁盘存在未收录的 reviews 子目录证据时 fail-closed
+        (rev_dir / "w67-unindexed.md").write_text("# UNINDEXED\n", encoding="utf-8")
+        unindexed_errs = errors(root)
+        self.assertTrue(
+            any("目录文件未收录: docs/evidence/stage-c/reviews/w67-unindexed.md" in f[2] for f in unindexed_errs),
+            unindexed_errs,
+        )
+
+
 class RealRepoTests(unittest.TestCase):
     def test_real_ledger_lints_clean(self):
         """仓库自检门：三份台账 + 索引双向一致必须全绿。"""
