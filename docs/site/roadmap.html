@@ -1,90 +1,707 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>路线与现状 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 从启动微内核到单机通用应用平台、分布式现代系统、自然语言桌面和应用生态的路线与证据状态。">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#040a14">
+<title>阶段路线与工程实证 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.5 阶段路线与工程实证（2026-10-26 · W68）：Stage B 已正式退出，Stage C 闭合 9/9 C-core 单机多进程 H6 并开启 C-XHOST 跨物理主机扩展，与 Stage D 完整自然语言桌面双轨并行推进；涵盖 35 个 Rust Crate、26 份 ADR 与 101 条 H0–H8 机器可读证据台账。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="阶段路线与工程实证 · NLOS — 自然语言操作系统">
+<meta property="og:description" content="A → B → (C ∥ D) → E 非瀑布演进路线与 W68 工程治理台账：35 个 Rust Crate、2,128+ 测试、26 份 ADR、101 条 Claims 与 H0–H8 九级证据保证阶梯。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="阶段路线与工程实证 · NLOS — 自然语言操作系统">
+<meta name="twitter:description" content="A → B → (C ∥ D) → E 非瀑布演进路线与 W68 工程治理台账：35 个 Rust Crate、2,128+ 测试、26 份 ADR、101 条 Claims 与 H0–H8 九级证据保证阶梯。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1"><link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
+
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<nav class="nav" id="nav"><div class="nav-inner">
-  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
-  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
-  <div class="nav-links" id="navLinks"><a href="index.html">首页</a><a href="vision.html">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html" aria-current="page">路线</a></div>
-  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
-</div></nav>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="mark" aria-hidden="true">∞</span>
+      <span>NLOS</span>
+    </a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="vision.html">系统哲学</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="execution.html">执行与控制</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+      <a href="roadmap.html" aria-current="page">阶段路线</a>
+    </div>
+    <span class="nav-badge">
+      <span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span>
+      <span class="b-short">v0.5 · W68</span>
+    </span>
+  </div>
+</nav>
+
 <main id="top">
-<header class="page-head container">
-  <span class="eyebrow reveal">Roadmap · Evidence · Stage B</span>
-  <h1 class="page-title reveal"><span class="title-line">终局保持完整，</span><span class="title-line accent">证据逐层累积</span></h1>
-  <p class="page-desc reveal">路线不是把愿景缩成一个 Agent 中间件，而是从最小可信系统权威出发，依次长出单机应用平台、分布式现代系统、完整自然语言桌面和兼容生态。当前已进入阶段 B 的技术选择与运行时骨架实施。</p>
-  <nav class="page-toc reveal" aria-label="本页目录"><a href="#topology">路线拓扑</a><a href="#stage-b">阶段 B</a><a href="#stack">技术基线</a><a href="#evidence">证据等级</a><a href="#now">当前状态</a></nav>
+
+<!-- ================= 页头 ================= -->
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part V · 路线、工程与证据 · Roadmap</span>
+    <h1 class="page-title reveal"><span class="title-line">终局保持完整，</span><span class="title-line accent">证据逐层锁死</span></h1>
+    <p class="page-desc reveal">NLOS 遵循 <code>A → B → (C ∥ D) → E</code> 非瀑布演进架构，绝不将 Windows/macOS 级通用自然语言操作系统的终局压缩为 Agent 编排中间件。截至 <strong>2026-10-26（W68）</strong>：阶段 B 单机应用平台已正式 <code>EXITED</code>；阶段 C 在单主机多 OS 进程域完成全部 <strong>9/9 <code>C-core</code></strong> 工作包的 <code>H6</code> 实证闭合，并依维护者裁定启动 <strong><code>C-XHOST</code> 跨物理主机扩展（<code>ADR-0026</code>）</strong>，与阶段 D <strong>完整自然语言桌面（<code>ADR-0025</code>）</strong>按写集严格互斥进入双轨并行冲刺。</p>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#topology">五阶段拓扑</a>
+      <a href="#stage-b">阶段B与C/D矩阵</a>
+      <a href="#stack">35库与技术栈</a>
+      <a href="#evidence">H0–H8证据梯</a>
+      <a href="#now">现状与边界</a>
+    </nav>
+  </div>
 </header>
 
-<section class="section band" id="topology"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Route Topology<span class="sec-no">/ 01</span></span><h2>五个阶段，<em>一个不可变终局</em></h2></div>
-  <div class="timeline reveal-group">
-    <div class="tl-row highlight"><div class="tl-era">阶段 A<small>Bootstrap Kernel</small></div><div class="tl-cell">strict sandbox · Capability · Resource · durable ledger · Driver</div><div class="tl-cell"><b>建立不可绕过的系统权威</b></div><span class="tl-status now">设计完成 / 实现早期</span></div>
-    <div class="tl-row highlight"><div class="tl-era">阶段 B<small>Single-node Platform</small></div><div class="tl-cell">Application · Task · Package · Fiber · Artifact · SDK · Task Manager</div><div class="tl-cell"><b>第三方可编写和运行单机 NLOS 应用</b></div><span class="tl-status gap">当前主线</span></div>
-    <div class="tl-row"><div class="tl-era">阶段 C<small>Distributed Modern</small></div><div class="tl-cell">Cell · lease/fence · placement · migration · federation · anti-entropy</div><div class="tl-cell"><b>跨节点、设备和组织运行</b></div><span class="tl-status now">规范目标</span></div>
-    <div class="tl-row"><div class="tl-era">阶段 D<small>Natural Language Desktop</small></div><div class="tl-cell">Task Space · windows · notifications · settings · multimodal · trusted UI</div><div class="tl-cell"><b>普通用户面对的完整系统产品</b></div><span class="tl-status now">规范目标</span></div>
-    <div class="tl-row"><div class="tl-era">阶段 E<small>Ecosystem</small></div><div class="tl-cell">stable ABI · app distribution · compatibility · tooling · governance</div><div class="tl-cell"><b>形成可持续第三方生态</b></div><span class="tl-status now">长期目标</span></div>
-  </div>
-</div></section>
+<!-- ================= 01 · 五阶段拓扑与工程遥测 ================= -->
+<section class="section band" id="topology" data-nav-label="五阶段拓扑">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Route Topology<span class="sec-no">/ 01</span></span>
+      <h2><span class="title-line">五个演进阶段，</span><span class="title-line"><em>同一完整系统终局</em></span></h2>
+      <p>微内核参考监控器、持久状态机与单机平台只是系统启动基座，而非永久产品边界。安全能力、契约兼容与 <code>H0–H8</code> 机器可读证据分级全程横切五个阶段；自阶段 B 退出后，分布式现代系统（Stage C）与完整自然语言桌面（Stage D）正交并行推进。</p>
+    </div>
 
-<section class="section" id="stage-b"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Stage B<span class="sec-no">/ 02</span></span>
-    <h2>第一次成为真正的<em>通用操作环境</em></h2>
-    <p>阶段 B 不是“更多 Agent 功能”，而是从可信 runtime 迈向第三方应用平台。</p>
-  </div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>应用与数据</h4><p>Application、Package、Installation、Update、Artifact、UserData container、Identity、Search、Notification。</p></div>
-    <div class="card"><h4>任务与执行</h4><p>TaskPlan/TaskNode、TaskGroup/Attempt、Process、AgentInstance、ExecutionFiber/Activation、async Operation。</p></div>
-    <div class="card"><h4>资源与恢复</h4><p>ResourceGroup/Account、Context residency、checkpoint/evict/rehydrate、single-node SchedulerDomain。</p></div>
-    <div class="card"><h4>用户与开发者</h4><p>SDK、CLI、debugger、conformance kit、Task Space、Task Manager、Resource Monitor、可信权限 UI。</p></div>
-  </div>
-  <div class="callout reveal"><strong>阶段 B 退出门不是“页面能跑”。</strong><p>第三方必须能在不修改内核的情况下安装和运行陌生 Application；10K/100K TaskNode、100K waiting Fiber、取消竞态、唯一提交、压力回收和 GUI/NL/CLI/API 控制同路都必须有 Evidence。</p></div>
-</div></section>
+    <!-- 顶部核心工程遥测条 -->
+    <div class="metric-strip reveal-group" aria-label="W68 工程与证据核心遥测">
+      <div class="metric-item">
+        <strong class="metric-value" data-count="35">35</strong>
+        <span class="metric-label">Rust 工作区 Crates</span>
+        <small class="metric-scope">0 冻结模块 · unsafe_code = "forbid"</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value" data-count="2128" data-suffix="+">2,128+</strong>
+        <span class="metric-label">Workspace 自动化测试</span>
+        <small class="metric-scope">+ 15 项 H6 多进程常设测试门禁（14 条 H6 声明）</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value"><span data-count="101">101</span> / <span data-count="169">169</span></strong>
+        <span class="metric-label">Claims / Evidence 档案</span>
+        <small class="metric-scope">lint_claims.py 机械校验零违例</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value"><span data-count="26">26</span> / <span data-count="35">35</span></strong>
+        <span class="metric-label">ADR 决策 / 架构讨论议题</span>
+        <small class="metric-scope">P0 风险 = 0 · 3 份 ADR VERIFIED</small>
+      </div>
+    </div>
 
-<section class="section light" id="stack"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Candidate Baseline<span class="sec-no">/ 03</span></span>
-    <h2>技术栈服务于对象模型，<em>不能反向定义系统</em></h2>
-    <p>当前技术选择属于 candidate/PoC。Tokio task、SQLite row、Wasmtime resource 或 Tauri command 都不能替代 NLOS 的稳定身份和契约。</p>
-  </div>
-  <div class="control-table reveal">
-    <div class="control-row"><strong>Rust</strong><span>核心 TCB、nominal ID、状态机、Resource、Supervisor、Driver host 与 CLI</span></div>
-    <div class="control-row"><strong>Tokio + RuntimeAdapter</strong><span>M:N Fiber/异步执行引擎；NLOS identity、cancel、metering 留在 facade</span></div>
-    <div class="control-row"><strong>Process + Wasmtime/WASI</strong><span>第三方组件的 capability-oriented、跨语言、双层隔离候选</span></div>
-    <div class="control-row"><strong>SQLite WAL + CAS Artifact</strong><span>阶段 B 单机权威状态与内容寻址数据；必须通过 kill/torn-write/recovery</span></div>
-    <div class="control-row"><strong>Protobuf / WIT / CBOR</strong><span>服务 IDL、组件接口与签名 canonical object 各司其职</span></div>
-    <div class="control-row"><strong>Tauri + Web UI</strong><span>Task Manager/Resource Monitor 候选；最终授权仍由 SystemControl 校验</span></div>
-  </div>
-</div></section>
+    <!-- A -> B -> (C || D) -> E 五阶段演进矩阵 -->
+    <div class="stage-strip interactive-structure reveal-group" aria-label="NLOS A 至 E 五阶段演进状态">
+      <article class="stage-card">
+        <div class="stage-head">
+          <span class="stage-code">Stage A</span>
+          <span class="badge badge-implemented">基座已内化 · H3/H4</span>
+        </div>
+        <h3 class="stage-title">启动微内核</h3>
+        <div class="stage-progress-bar" aria-hidden="true"><i style="width:100%"></i></div>
+        <p class="stage-summary"><code>Capability</code> 衰减/吊销、<code>ResourceAccount</code> 封闭域守恒与多维容量控制器、严格沙箱边界与 <code>SQLite WAL+FULL</code> 持久权威机制已内化进 Rust 核心库；早期 <code>experiments/exp1..7</code> 历史原型完成使命并沉淀为反例教训，宿主 <code>cgroup</code> / 硬件 <code>HSM</code> 纳入 <code>RISK-B-10</code> 与 <code>U-10</code> 追踪。</p>
+        <div class="stage-meta">
+          <span>exp1..7 已退役内化</span>
+          <span>Gate · H3/H4 持久门</span>
+        </div>
+      </article>
 
-<section class="section" id="evidence"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Evidence Ladder<span class="sec-no">/ 04</span></span><h2>所有能力声明都有<em>证据等级</em></h2></div>
-  <div class="tier-list reveal-group">
-    <div class="tier-row"><span class="tier-id">D</span><div><h4>DESIGN</h4><p>规范中定义了对象、不变量、状态机和验收条件；不代表代码存在。</p></div></div>
-    <div class="tier-row"><span class="tier-id">T</span><div><h4>TESTED</h4><p>在明确 commit、环境和 workload 下通过测试；不得外推到未测平台和规模。</p></div></div>
-    <div class="tier-row"><span class="tier-id">C</span><div><h4>CONFORMANT</h4><p>满足 profile applicability、golden vectors、故障测试和 Evidence registry。</p></div></div>
-    <div class="tier-row"><span class="tier-id">P</span><div><h4>PRODUCTION EVIDENCE</h4><p>具备真实工作负载、长期运行、故障恢复、安全和运维证据。</p></div></div>
-  </div>
-</div></section>
+      <article class="stage-card is-verified">
+        <div class="stage-head">
+          <span class="stage-code">Stage B</span>
+          <span class="badge badge-verified">EXITED · 2026-09-21 W34-D</span>
+        </div>
+        <h3 class="stage-title">单机通用应用平台</h3>
+        <div class="stage-progress-bar" aria-hidden="true"><i style="width:100%"></i></div>
+        <p class="stage-summary">兑现 <code>Slice K</code> 端到端第三方应用全生命周期（签名包构建/安装 → 任务与纤程执行 → 制品落盘 → 崩溃恢复）；退出时 <strong>1,536</strong> 项测试全绿，<code>ROAD-B-002/003/004/006</code> 获 <code>SATISFIED-WITH-BOUNDARIES</code> 评审通过，17 项具名移交项转入 Stage C/D 持续治理。</p>
+        <div class="stage-meta">
+          <span>Slice K 端到端闭环</span>
+          <span>1,536 Tests @ Exit</span>
+        </div>
+      </article>
 
-<section class="section band" id="now"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Current State<span class="sec-no">/ 05</span></span><h2>现在已经有什么，<em>还缺什么</em></h2></div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>已经完成</h4><p>v0.5 当前规范、最高目标、对象模型、海量执行与控制、现代系统迁移矩阵、项目管理与渐进知识 CRUD、阶段 B 技术讨论、Rust workspace 与 RuntimeAdapter 骨架。</p></div>
-    <div class="card"><h4>正在实施</h4><p>Tokio Fiber scale PoC、nominal contract、单机 authority store、Process/Wasmtime 隔离、typed IPC、SystemControl CLI 与最小 Task Manager。</p></div>
-    <div class="card"><h4>尚未证明</h4><p>100K Fiber 的目标 ScaleProfile、真实 provider 成本上界、宿主 hard resource controller、完整 durable recovery、可信桌面与分布式分区恢复。</p></div>
-    <div class="card"><h4>不会走的捷径</h4><p>不会用登记 Agent 数冒充同时推理，不会用 prompt 代替权限，不会用余额代替物理隔离，不会用“测试通过”冒充生产系统。</p></div>
+      <article class="stage-card is-active">
+        <div class="stage-head">
+          <span class="stage-code">Stage C</span>
+          <span class="badge badge-active">IN_PROGRESS / NOT EXITED · W68</span>
+        </div>
+        <h3 class="stage-title">分布式现代系统</h3>
+        <div class="stage-progress-bar" aria-hidden="true"><i style="width:78%"></i></div>
+        <p class="stage-summary"><code>W35–W67</code> 已在单主机多 OS 进程域（<code>ADR-0018</code>）完成全部 <strong>9/9 <code>C-core</code> 工作包</strong>并通过 <code>ROAD-C-001/002</code> <code>H6</code> 评审（<code>SATISFIED-WITH-BOUNDARIES</code>）；<code>W68</code> 立项 <strong><code>C-XHOST</code> 跨物理主机 5 工作包（<code>ADR-0026 CANDIDATE</code>）</strong>，排入 <code>W69–W73</code> 收官。</p>
+        <div class="stage-meta">
+          <span>9/9 C-core H6 已证</span>
+          <span>W69–W73 · C-XHOST</span>
+        </div>
+      </article>
+
+      <article class="stage-card is-active">
+        <div class="stage-head">
+          <span class="stage-code">Stage D</span>
+          <span class="badge badge-candidate">IN_PROGRESS / NOT EXITED · W68 并行</span>
+        </div>
+        <h3 class="stage-title">完整自然语言桌面</h3>
+        <div class="stage-progress-bar" aria-hidden="true"><i style="width:24%"></i></div>
+        <p class="stage-summary"><code>W68</code> 正式锁定 <strong><code>ADR-0025 (W68-R1 &amp; W68-R2)</code></strong>：确立与外部展示站 Glacier 视觉显式分叉的 <strong><code>Graphite / Paper Workstation</code> 100% 实心不透明中性工业工作站双主题</strong>、平铺优先多窗口工作区 + <code>36px</code> 贴边任务栏 + <code>Ctrl+Space</code> 按需命令/意图面板、<code>Z4</code> 实心 UAC/Polkit 级安全确认屏（含 <code>32×20</code> 凹陷硬件风单色精密防伪印章）、<code>L0 → L1 → L2 → L3</code> 四级渐进式披露与视口惰性取数模型，以及 <code>[UI-PARITY-001]</code> 12 域显控同构；<strong>8 个 <code>D-core</code> 包</strong>排入 <code>W69–W74</code> 迈向 <code>[ROAD-D-001]</code>。</p>
+        <div class="stage-meta">
+          <span>ADR-0025 W68-R1/R2</span>
+          <span>Gate · ROAD-D-001</span>
+        </div>
+      </article>
+
+      <article class="stage-card">
+        <div class="stage-head">
+          <span class="stage-code">Stage E</span>
+          <span class="badge badge-design">PLANNED · 远期规划</span>
+        </div>
+        <h3 class="stage-title">长期兼容与应用生态</h3>
+        <div class="stage-progress-bar" aria-hidden="true"><i style="width:8%"></i></div>
+        <p class="stage-summary">锁定 <code>SABI v1.0</code> 长期二进制兼容 SLA、跨语言官方 <code>SDK-4</code> 承诺、Application Store 签名审核与分发治理、<code>H7</code> 全量一致性套件，以及 <code>v0.5 §29.2</code> 全球联邦与跨组织清算所（<code>NLOS-DEFER-001</code> 预留接口，严禁提前锁死）。</p>
+        <div class="stage-meta">
+          <span>NLOS-DEFER-001 预留</span>
+          <span>Gate · ROAD-E-001</span>
+        </div>
+      </article>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">架构治理纪要 · W68 (2026-10-26)</span>
+      <span>演进拓扑严格遵循 <code>v0.5 §28</code>：<code>Stage C (C-XHOST)</code> 与 <code>Stage D (D-core)</code> 在各自独立写集（<code>W69/W70 C-XHOST DESIGN</code> 规划新建 <code>nlos-net</code> + <code>nlos-consensus</code> vs <code>desktop/</code> + <code>nlos-system-control</code> 投影面）内双轨并行，波次屏障统一执行全仓测试与 <code>lint_claims.py</code> 校验。</span>
+    </div>
   </div>
-</div></section>
+</section>
+
+<!-- ================= 02 · Stage B 退出、9/9 C-core 实证与 C/D 双轨矩阵 ================= -->
+<section class="section" id="stage-b" data-nav-label="阶段B与C/D矩阵">
+  <span id="delivery" aria-hidden="true"></span>
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Verified Delivery &amp; Dual-Track Matrix<span class="sec-no">/ 02</span></span>
+      <h2><span class="title-line">从单机平台退出，</span><span class="title-line"><em>到双轨工程冲刺</em></span></h2>
+      <p>阶段 B 于 <code>2026-09-21 (W34-D)</code> 凭 <code>Slice K</code> 全生命周期闭环与 <code>1,536</code> 项测试正式退出后，工程主线在 <code>W35–W67</code> 完成了阶段 C 全部 <strong>9 个 <code>C-core</code> 工作包</strong>的单机多进程 <code>H6</code> 实证，并于 <code>W68</code> 展开 <code>C-XHOST 5 包 ∥ D-core 8 包</code> 正交双轨执行矩阵。</p>
+    </div>
+
+    <!-- Sub-block A: Stage C 9/9 C-core Verified Matrix -->
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">Sub-block A · Stage C 9/9 C-core</span>
+      <span>单主机多 OS 进程拓扑（<code>ADR-0018</code>）全部实证闭合 · <code>ROAD-C-001 / ROAD-C-002 SATISFIED-WITH-BOUNDARIES</code> · 跨物理主机网络残域显式归入 <code>RISK-B-11</code></span>
+    </div>
+
+    <div class="wp-matrix interactive-structure reveal-group" aria-label="Stage C 9/9 C-core 工作包实证矩阵">
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">01 · C-CELL</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">CellHost 7 件套自治单元与生命周期隔离</h3>
+        <p class="wp-detail">装配本地 supervisor、能力/名字缓存、三族子账本、Driver 网关、持久外发箱、制品缓存与故障探测器；持久化 <code>boot_generation</code> / Epoch 围栏与控制面联邦三机制（<code>nlos-cell</code> 40/0、<code>nlos-slice-k</code> 114/0）。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">02 · C-LEASE</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">三族持久化租约与 FenceBarrierAck 对账</h3>
+        <p class="wp-detail"><code>SqliteLeaseStore</code>（<code>WAL+FULL</code>，11 张 <code>STRICT</code> 表 + 22 条触发器）承载 Membership/Quota、Capacity/Shard 与 Placement/ExclusiveDevice 租约，强制 <code>FenceBarrierAck</code> 门控、非互换对账回执与 WAL 丢失自动隔离。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">03 · C-SYNC</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">签名向量检查点与四轴制品同步策略</h3>
+        <p class="wp-detail">实现 <code>SignedSemanticVectorCheckpoint</code> 跨库幂等事件集合并（拒绝无签名 CRDT 造义），以及四轴 <code>ArtifactSyncPolicy</code>、<code>ArtifactTransferPackage</code> SHA-256 逐字节验真与同步根保护孤儿 GC。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">04 · C-SHARD</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">nlos-task v47 分片接管与六道切换屏障</h3>
+        <p class="wp-detail"><code>ADR-0019 VERIFIED</code>：完成 <code>nlos-task</code> schema <code>v47</code> 三 Record 对齐、未决写集并集围栏与 §26.1 六道 canonical 切换屏障，由 <code>TaskPermitClosureReceipt</code> 推进新 <code>OPEN</code> 代际并联动未决副作用隔离根。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">05 · C-FANOUT</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">层级扇出树、Merkle 对账与四域舱壁</h3>
+        <p class="wp-detail"><code>HierarchicalFanoutTree</code> 消除 <code>O(N²)</code> 全连接，配合顺序无关局部归约与二进制 <code>MerkleResultRoot</code> 包含证明、六维 <code>FanoutUsageLedger</code> 背压及四域 <code>BulkheadRegistry</code>（<code>SafetyTcbSystemReserve</code> 零侵占）。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">06 · C-MIGRATE</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">八步受控跨 CellHost 双进程迁移</h3>
+        <p class="wp-detail"><code>ProcessMigrationCoordinator</code> 八步严格有序状态机串联双真实子 OS 进程：静默/检查点 → 源围栏 → Ed25519 Capability 无放大重绑 → 租约先关后授 → 目标恢复与新代际 <code>PMIGRCPT</code> 检查点验真。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">07 · C-SCHED</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">ThreeTierScheduler 无锁 DRR 与安全窃取</h3>
+        <p class="wp-detail"><code>Global / Cell / Worker</code> 三层调度器实现稳态零全局锁本地热路径、有界 DRR 公平队列与饥饿老化、字典序代际安全工作窃取（严拒窃取持活跃 <code>EffectPermit</code> / <code>Reservation</code> 项）及跨 Cell 反向背压。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">08 · C-PARTITION</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">断网自治门控与有界损耗零双提交证明</h3>
+        <p class="wp-detail"><code>PartitionAutonomyGate</code> 三态门控与显式四态 <code>RemoteCallOutcome</code>，四阶段重连收敛产出 <code>PartitionBoundedLossProof</code> 精确守恒证明，联合强杀/接管/迁移通过 13 进程 <code>ROAD-C-001</code> 零双提交门禁。</p>
+      </article>
+
+      <article class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">09 · C-BENCH</span>
+          <span class="badge badge-verified">PARTIAL_PASS · H6 单机多进程</span>
+        </div>
+        <h3 class="wp-name">8-Cell 4.44x 扩展与 100K_LOGICAL 压测</h3>
+        <p class="wp-detail">在 <code>SQLite WAL+FULL</code> 持久屏障下实测 <code>1→8 Cell</code> <strong>4.44x</strong> 吞吐扩展（<code>--release</code>）；<code>100K_LOGICAL</code> 终态落盘 <strong>634 B/node</strong>、恢复扫描 <strong>38.07ms</strong>、控制面 <code>p50 = 84µs</code>，五类分布式故障全覆盖。</p>
+      </article>
+    </div>
+
+    <!-- Sub-block B: W68-W74 Dual-Track Parallel Execution -->
+    <div class="evidence-strip reveal">
+      <span class="badge badge-candidate">Sub-block B · W68–W74 双轨并行编排</span>
+      <span><code>Track C (C-XHOST 5 包 · ADR-0026 CANDIDATE)</code> ∥ <code>Track D (D-core 8 包 · ADR-0025 ACCEPTED)</code> · 写集正交零碰撞</span>
+    </div>
+
+    <div class="bento-grid interactive-structure reveal-group" aria-label="W68–W74 双轨并行执行矩阵">
+      <article class="bento-card span-6 featured">
+        <span class="bento-kicker">Track C · Cross-Physical-Host Expansion (5 Packages)</span>
+        <div class="wp-top">
+          <h3>Stage C 收官扩展：<code>C-XHOST</code></h3>
+          <span class="badge badge-candidate">ADR-0026 CANDIDATE · DESIGN</span>
+        </div>
+        <p>面向真实跨物理主机网络、独立硬件时钟与节点掉电场景，闭合 <code>RISK-B-11</code> 残余边界并冲刺 Stage C 正式 <code>EXITED</code>：</p>
+        <p><strong>W69 · <code>C-NET-TRANSPORT</code></strong>：规划新建 <code>nlos-net</code>（<code>W69 C-XHOST DESIGN</code>），落地 TLS 1.3 mTLS 五轴认证传输、多路复用帧与 <code>PoC-XHOST-001</code>。<br>
+        <strong>W70 · <code>C-NET-CLOCK-LEASE</code> + <code>C-CONSENSUS-CP</code></strong>：跨机时钟不确定度包络远程租约围栏，并行规划新建 <code>nlos-consensus</code>（<code>W70 C-XHOST DESIGN</code>）确定性多数派控制面日志（严守 <code>CONS-SCOPE-001</code> 禁入数据面）。<br>
+        <strong>W71 · <code>C-NET-SYNC-MIGRATE</code></strong>：跨网络流式 <code>ArtifactTransferPackage</code> 分块验签、向量检查点增量拉取与双物理机八步进程迁移。<br>
+        <strong>W72–W73 · <code>C-XHOST-GATE</code></strong>：<code>ChaosTcpProxy</code> 套接字混沌代理、跨主机 <code>ROAD-C-001/002</code> <code>H6</code> 复合门禁与 <code>RISK-B-11</code> 退役评审。</p>
+      </article>
+
+      <article class="bento-card span-6 featured">
+        <span class="bento-kicker">Track D · Complete Natural-Language Desktop (8 Packages)</span>
+        <div class="wp-top">
+          <h3>Stage D 完整自然语言桌面：<code>D-core</code></h3>
+          <span class="badge badge-design">ADR-0025 (W68-R1/R2) ACCEPTED · DESIGN / NOT_STARTED</span>
+        </div>
+        <p>依 <code>ADR-0025 (W68-R1 &amp; W68-R2)</code> 将现有 Tauri 2 认证薄壳升级为与展示站 Glacier 视觉显式分叉的中性工业工作站桌面（<code>SurfaceProfile=DESKTOP</code>），直指退出门 <code>[ROAD-D-001]</code>：</p>
+        <p><strong>W69 · <code>D-TOKENS-KIT</code> + <code>D-IPC-ENUM</code></strong>：<code>Graphite / Paper Workstation</code> 100% 实心不透明中性工业双主题 Token 库与 <code>32×20</code> 凹陷硬件风单色精密防伪印章原语；并行补齐 <code>IPC-D1..D8</code> 游标分页枚举与 <code>[UI-PARITY-001]</code> 12 域显控同构（无盲控、无哑看、五大法定不可篡改禁区）。<br>
+        <strong>W70 · <code>D-COMPOSITOR-WM</code></strong>：<code>Z0–Z4</code> 五平面混合合成器、平铺优先多窗口工作区 + <code>36px</code> 贴边任务栏与 <code>DesktopSession</code> 锁屏代际失效。<br>
+        <strong>W71 · <code>D-OMNIBAR-MULTIMODAL</code> + <code>D-TRUSTED-UI</code></strong>：<code>Ctrl+Space</code> 按需唤起命令/意图面板与多模态附件；<code>Z4</code> 实心 UAC/Polkit 级安全确认屏（含 <code>32×20</code> 凹陷硬件风单色防伪印章与 <code>350ms</code> 防劫持门）、<code>ChooserGrant</code> 衰减选择器与带污点剪贴板门控。<br>
+        <strong>W72–W74 · <code>D-TASK-SPACE-DAG</code> + <code>D-NOTIFY-SEARCH-OFFLINE</code> + <code>D-CONTROL-SETTINGS-A11Y</code></strong>：<code>L0 → L1 → L2 → L3</code> 四级渐进式披露与视口惰性取数模型（<code>O(visible_rows)</code>）及可折叠惰性 DAG、一次性 <code>ActionToken</code> 通知与 <code>0x1F</code> 法定只读全局搜索、<code>WCAG 2.2 AA</code> 无障碍、真机 GUI 战役及 <code>[ROAD-D-001]</code> 终验。</p>
+      </article>
+    </div>
+
+    <div class="table-wrap reveal">
+      <table class="spec-table" aria-label="W68 至 W74 波次屏障与双轨写集正交排程">
+        <thead>
+          <tr>
+            <th>波次窗口</th>
+            <th>Track C · C-XHOST（分布式跨主机域）</th>
+            <th>Track D · D-core（完整自然语言桌面域）</th>
+            <th>波次屏障与门禁焦点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th><code>W68</code>（当前基线）</th>
+            <td>维护者裁定 A4 暂缓 Stage C <code>EXITED</code>；立项 <code>ADR-0026 CANDIDATE</code></td>
+            <td>锁定 <code>ADR-0025 (W68-R1/R2 ACCEPTED)</code>：<code>Graphite/Paper</code> 实心工业双主题、<code>L0–L3</code> 披露与 <code>[UI-PARITY-001]</code></td>
+            <td><code>2,128+</code> 测试全绿 · <code>101</code> Claims 零违例 · 双轨写集锁确立</td>
+          </tr>
+          <tr>
+            <th><code>W69</code></th>
+            <td><code>C-NET-TRANSPORT</code>（规划新建 <code>nlos-net</code> · <code>C-XHOST DESIGN</code>）</td>
+            <td><code>D-TOKENS-KIT</code>（<code>Graphite/Paper</code> 实心 Token）∥ <code>D-IPC-ENUM</code>（12 域显控同构）</td>
+            <td><code>PoC-XHOST-001</code> 解锁 <code>ADR-0026</code> 转正；<code>IPC-D1..D8</code> 游标分页对等性校验</td>
+          </tr>
+          <tr>
+            <th><code>W70</code></th>
+            <td><code>C-NET-CLOCK-LEASE</code> ∥ <code>C-CONSENSUS-CP</code>（规划新建 <code>nlos-consensus</code> · <code>C-XHOST DESIGN</code>）</td>
+            <td><code>D-COMPOSITOR-WM</code>（<code>Z0–Z4</code> 合成、平铺优先多窗口 + <code>36px</code> 贴边任务栏）</td>
+            <td>时钟偏斜围栏不变量；<code>Surface</code> 代际输入路由与锁屏失效测试</td>
+          </tr>
+          <tr>
+            <th><code>W71</code></th>
+            <td><code>C-NET-SYNC-MIGRATE</code>（跨机制品流与八步迁移）</td>
+            <td><code>D-OMNIBAR-MULTIMODAL</code>（<code>Ctrl+Space</code> 面板）∥ <code>D-TRUSTED-UI</code>（<code>Z4</code> 实心确认屏 + <code>ChooserGrant</code>）</td>
+            <td>双机端到端迁移回执；<code>Z4</code> <code>32×20</code> 单色硬件印章、防遮挡/防点击劫持与宿主路径零泄露</td>
+          </tr>
+          <tr>
+            <th><code>W72–W74</code></th>
+            <td><code>C-XHOST-GATE</code>（<code>ChaosTcpProxy</code> 跨机 <code>H6</code> 收官评审）</td>
+            <td><code>D-TASK-SPACE-DAG</code>（<code>L0–L3</code> 渐进披露与视口惰性取数）∥ <code>D-NOTIFY-SEARCH-OFFLINE</code> ∥ <code>D-CONTROL-SETTINGS-A11Y</code></td>
+            <td>闭合 <code>RISK-B-11</code> 与 <code>U-3</code> 真机 GUI 战役；呈请 Stage C / D 退出评审</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 03 · 35 个 Rust Crate 与多语言 SDK 权威版图 ================= -->
+<section class="section light" id="stack" data-nav-label="35库与技术栈">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Workspace Crates &amp; Polyglot SDKs<span class="sec-no">/ 03</span></span>
+      <h2><span class="title-line">35 个 Rust Crate</span> <span class="title-line"><em>与多语言 SDK 权威版图</em></span></h2>
+      <p>底层技术选型严格服务于 <code>v0.5</code> 标称对象模型，禁止用 Tokio task、SQLite 行号或 Tauri 私有命令冒充系统权威身份。根工作区（<code>Rust 1.97 · Edition 2024</code>）全局强制 <code>unsafe_code = "forbid"</code>，<strong>35 个工作区 Crate 100% 活跃且零冻结模块</strong>。</p>
+    </div>
+
+    <!-- 35 个工作区 Crate 六大架构平面（与根 Cargo.toml [workspace].members 100% 逐字精确对应） -->
+    <div class="crate-planes interactive-structure reveal-group" aria-label="Cargo.toml 35 个工作区 Rust Crate 六平面架构图谱">
+      <div class="crate-plane is-tcb">
+        <div class="crate-plane-head">
+          <small>Plane 01 · TCB Foundations (7)</small>
+          <h4>微内核原语与契约基座</h4>
+          <p>零依赖标称 ID、确定性 CBOR 规范化、跨语言 Schema、单调世代时钟、Ed25519 密钥托管与认证 IPC</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill is-tcb">nlos-types</code>
+          <code class="crate-pill is-tcb">nlos-canonical</code>
+          <code class="crate-pill is-tcb">nlos-schema</code>
+          <code class="crate-pill is-tcb">nlos-clock</code>
+          <code class="crate-pill is-tcb">nlos-identity</code>
+          <code class="crate-pill is-tcb">nlos-capability</code>
+          <code class="crate-pill is-tcb">nlos-ipc</code>
+        </div>
+      </div>
+
+      <div class="crate-plane">
+        <div class="crate-plane-head">
+          <small>Plane 02 · Execution &amp; Isolation (6)</small>
+          <h4>执行、隔离与调度面</h4>
+          <p>进程/Agent 生命周期与八步迁移、M:N 纤程门面、Tokio 三层无锁调度器、流式异步操作、持久等待与封闭域守恒/多维资源治理</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill">nlos-process</code>
+          <code class="crate-pill">nlos-runtime</code>
+          <code class="crate-pill">nlos-runtime-tokio</code>
+          <code class="crate-pill">nlos-operation</code>
+          <code class="crate-pill">nlos-wait</code>
+          <code class="crate-pill">nlos-resource</code>
+        </div>
+      </div>
+
+      <div class="crate-plane">
+        <div class="crate-plane-head">
+          <small>Plane 03 · Task, Plan &amp; Control (6)</small>
+          <h4>任务、计划与控制面</h4>
+          <p>惰性物化计划图、<code>v47</code> 唯一提交许可与扇出舱壁、跨表组结算协调器、四路同源系统控制、跨代接管与长等待控制</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill">nlos-plan</code>
+          <code class="crate-pill">nlos-task</code>
+          <code class="crate-pill">nlos-commit-coordinator</code>
+          <code class="crate-pill">nlos-system-control</code>
+          <code class="crate-pill">nlos-takeover-control</code>
+          <code class="crate-pill">nlos-wait-control</code>
+        </div>
+      </div>
+
+      <div class="crate-plane">
+        <div class="crate-plane-head">
+          <small>Plane 04 · Data &amp; System Services (7)</small>
+          <h4>数据、认知与系统服务面</h4>
+          <p><code>SQLite WAL+FULL</code> 存储引擎、内容寻址制品库、语义断言与五关系图、能力通道、事件主题、一次性令牌通知与非权威搜索</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill">nlos-store</code>
+          <code class="crate-pill">nlos-artifact</code>
+          <code class="crate-pill">nlos-semantic</code>
+          <code class="crate-pill">nlos-channel</code>
+          <code class="crate-pill">nlos-topic</code>
+          <code class="crate-pill">nlos-notify</code>
+          <code class="crate-pill">nlos-search</code>
+        </div>
+      </div>
+
+      <div class="crate-plane">
+        <div class="crate-plane-head">
+          <small>Plane 05 · Distributed Cell &amp; Lease (4)</small>
+          <h4>分布式 Cell、租约与弹性面</h4>
+          <p><code>CellHost</code> 本地七件套与断网自治门、三族持久化租约与围栏对账、系统服务发现目录及事务性持久化外发箱</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill">nlos-cell</code>
+          <code class="crate-pill">nlos-lease</code>
+          <code class="crate-pill">nlos-service-directory</code>
+          <code class="crate-pill">nlos-outbox</code>
+        </div>
+      </div>
+
+      <div class="crate-plane">
+        <div class="crate-plane-head">
+          <small>Plane 06 · Drivers, Slice &amp; Tooling (5)</small>
+          <h4>驱动、纵切验证与宿主 CLI 工具面</h4>
+          <p>第三方应用安装/升级/回滚权威、<code>nlos-package</code> CLI、独立子进程 Provider 驱动、VFS 断电故障注入垫片与 <code>Slice K</code> 全栈纵切驱动</p>
+        </div>
+        <div class="crate-pills">
+          <code class="crate-pill">nlos-application</code>
+          <code class="crate-pill">nlos-package</code>
+          <code class="crate-pill">nlos-driver-mock</code>
+          <code class="crate-pill">nlos-store-fault</code>
+          <code class="crate-pill">nlos-slice-k</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- 多语言 SDK 分级、伴随工作区与 26 份 ADR 台账 -->
+    <div class="table-wrap reveal">
+      <table class="spec-table" aria-label="多语言 SDK 等级、伴随工作区与 26 份 ADR 治理台账">
+        <thead>
+          <tr>
+            <th>工作区 / 治理台账</th>
+            <th>当前成熟度与契约分级</th>
+            <th>实证状态</th>
+            <th>已验证能力与显式声明边界</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="is-nlos">
+            <th><code>sdk/rust</code> · <code>sdk/ts</code> · <code>sdk/python</code></th>
+            <td><strong><code>SDK-3 SABI-CAPABLE</code></strong></td>
+            <td><span class="badge badge-implemented">PARTIAL_PASS · H3/H5 黄金向量互操作</span></td>
+            <td>支持 8 个已实现 SABI 通道编解码（7 个 <code>v1-beta</code> 已冻结 + <code>PrincipalHandshake</code> v1.0 未冻结，含 <code>ADR-0024</code> <code>DriverProvider</code> v1.0）与 7 组确定性 CBOR 黄金向量字节级锁死；<strong>非 <code>SDK-4</code> 长期二进制兼容承诺</strong>（留归 Stage E）。</td>
+          </tr>
+          <tr>
+            <th><code>sdk/go</code> · <code>sdk/csharp</code></th>
+            <td><strong><code>SDK-1 COMPAT-VERIFIED</code></strong></td>
+            <td><span class="badge badge-design">PARTIAL_PASS · H2 Envelope 编解码探针</span></td>
+            <td>已在 Ubuntu / Windows / macOS 三平台 CI 通过 Protobuf Envelope 与核心契约字段探针；完整认证传输客户端与流式重试待后续阶段建设。</td>
+          </tr>
+          <tr>
+            <th><code>desktop/</code>（Tauri 2 + TS + Rust）</th>
+            <td><strong>可信桌面壳基座</strong></td>
+            <td><span class="badge badge-candidate">PARTIAL_PASS · H3 · 19 Rust 测试</span></td>
+            <td>全量经 <code>ADR-0011</code> 挑战-响应认证 IPC（Unix Socket + Windows Named Pipe）与后端通信，<code>ControlReceipt</code> 与 CLI 字节级对等；正按 Stage D <code>ADR-0025 (W68-R1/R2)</code> 升级为 <code>Graphite/Paper</code> 实心五平面工业工作站桌面。</td>
+          </tr>
+          <tr>
+            <th><code>fuzz/</code>（<code>libfuzzer-sys</code>）</th>
+            <td><strong>不可信输入模糊测试工作区</strong></td>
+            <td><span class="badge badge-verified">3 Fuzz Targets · CI Smoke 常设</span></td>
+            <td>针对 <code>protobuf_envelope</code>、<code>canonical_body</code> 与 <code>signing_preimage</code> 三个核心解析/验签入口维护持久种子语料库并执行常设模糊筛查。</td>
+          </tr>
+          <tr>
+            <th><code>ADR-0001</code>–<code>ADR-0026</code>（26 份）</th>
+            <td><strong>架构决策记录权威台账</strong></td>
+            <td><span class="badge badge-verified">3 VERIFIED · 18 ACCEPTED</span></td>
+            <td><code>3 VERIFIED</code>（<code>0019</code> 跨 Cell 提交、<code>0023</code>、<code>0024</code> Provider 载荷冻结），<code>18 ACCEPTED</code>（含 <code>0025</code> <code>W68-R1/R2</code> 桌面混合合成器、<code>Graphite/Paper</code> 工业工作站、<code>L0–L3</code> 披露与 <code>[UI-PARITY-001]</code>），<code>3 POC</code>，<code>2 CANDIDATE</code>（<code>0020</code> OTel/控制面共识时机、<code>0026</code> 跨物理机扩展）。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 04 · H0–H8 九级证据保证阶梯 ================= -->
+<section class="section" id="evidence" data-nav-label="H0-H8证据梯">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Assurance Ladder · H0–H8<span class="sec-no">/ 04</span></span>
+      <h2><span class="title-line">H0–H8 九级保证阶梯，</span><span class="title-line"><em>锁死每一条能力声明</em></span></h2>
+      <p>淘汰粗放的四格占位分级，严格执行 <code>v0.5 §30</code> 九级证据阶梯与 <code>ledger-schema v1.1</code>。全仓 <strong><code>101</code> 条机器可读 Claims</strong>（71 条 Stage B + 30 条 Stage C）、<strong><code>169</code> 份证据档案</strong>与 <strong><code>12</code> 项登记风险（<code>P0 = 0</code>）</strong>逐波经 <code>scripts/lint_claims.py</code> 强制核验：<code>rank(Claim) ≤ max(rank(Evidence))</code>。</p>
+    </div>
+
+    <ol class="h-ladder interactive-structure reveal-group" aria-label="v0.5 §30 H0 至 H8 九级验证保证阶梯">
+      <li class="h-row">
+        <span class="h-id">H0</span>
+        <strong>愿景与纸面推演</strong>
+        <p class="h-desc">研究问题边界、死因剖析与早期探索实验（<code>experiments/exp1..7</code>）纸面/反例证伪；仅作架构推演来源，不直接支撑运行时能力声明。</p>
+        <span class="badge badge-design">纸面与反例基线</span>
+      </li>
+
+      <li class="h-row">
+        <span class="h-id">H1</span>
+        <strong>结构化规范与不变量（规范化设计）</strong>
+        <p class="h-desc">标称对象、状态机、失败语义与可证伪验收条款写入 <code>v0.5</code> 总纲及 ADR；<code>claims.yaml</code> 中 <strong><code>4</code> 条 <code>DESIGN</code> 态声明</strong>诚实置空证据引用（<code>evidence_refs: []</code>）。</p>
+        <span class="badge badge-design">4 DESIGN Claims</span>
+      </li>
+
+      <li class="h-row is-verified">
+        <span class="h-id">H2</span>
+        <strong>单元与模型测试</strong>
+        <p class="h-desc">覆盖零依赖核心类型不变量与跨语言 SDK 契约编解码探针（<code>B-TYPES DONE</code>、<code>B-SDK-LANG-EVAL PARTIAL_PASS</code>）。</p>
+        <span class="badge badge-verified">已达标 · 2 Claims</span>
+      </li>
+
+      <li class="h-row is-verified">
+        <span class="h-id">H3</span>
+        <strong>单进程原型</strong>
+        <p class="h-desc">主力单节点权威闭环：含 <code>B-STORE</code>、<code>B-STORE-FAULT DONE</code>（VFS 断电撕裂写故障注入与 Linux <code>dm-flakey</code> CI 门禁）、Ed25519 能力衰减、<code>ResourceAccount</code> 守恒、<code>nlos-package</code> CLI 与 <code>ADR-0011</code> 认证 IPC 等。</p>
+        <span class="badge badge-verified">已达标 · 76 Claims</span>
+      </li>
+
+      <li class="h-row is-verified">
+        <span class="h-id">H4</span>
+        <strong>单节点强制纵切面</strong>
+        <p class="h-desc">跨组件强制门禁与端到端纵切闭环：覆盖第三方包载荷 CLI 全周期执行（<code>C-APP-PAYLOAD</code>）、签名检查点 <code>0x1F</code> 扩展检索（<code>C-SEARCH-EXT</code>）与 16 态一次性令牌通知（<code>C-NOTIFY-EXT</code>）。</p>
+        <span class="badge badge-verified">已达标 · 3 Claims</span>
+      </li>
+
+      <li class="h-row is-verified">
+        <span class="h-id">H5</span>
+        <strong>真实 Provider/Tool 集成</strong>
+        <p class="h-desc">真实跨进程 <code>nlos-provider-worker</code> 认证编解码与隔离回执门控（<code>C-PROVIDER-REAL</code>，<code>ADR-0024</code>），以及 Rust / TS / Python 7 组确定性 CBOR 黄金向量字节锁（<code>C-CONFORMANCE-GOLDEN</code>）。</p>
+        <span class="badge badge-verified">已达标 · 2 Claims</span>
+      </li>
+
+      <li class="h-row is-active">
+        <span class="h-id">H6</span>
+        <strong>分布式故障注入</strong>
+        <p class="h-desc"><strong>当前最高已达等级</strong>：<code>14</code> 条台账声明 + <code>15</code> 项 <code>--ignored</code> 多进程常设测试门禁——涵盖 <code>ADR-0018</code> <code>13</code> 个独立 OS 进程联合分区/强杀/接管/八步迁移（<code>ROAD-C-001</code>）与 8-Cell <code>100K_LOGICAL</code> 故障压测（<code>ROAD-C-002</code>）。</p>
+        <span class="badge badge-active">14 Claims · 15 常设测试门</span>
+      </li>
+
+      <li class="h-row is-unreached">
+        <span class="h-id">H7</span>
+        <strong>安全/兼容 Conformance（跨平台/跨主机一致性与可用性实证）</strong>
+        <p class="h-desc">真实跨物理主机网络混沌一致性门禁、Windows/macOS 真机桌面可用性战役与 <code>SABI v1.0</code> 全量跨平台 Conformance Suite；待 <code>C-XHOST</code> 与阶段 D 真机战役达成。</p>
+        <span class="badge badge-design">0 Claims · 待 C-XHOST / 阶段 D</span>
+      </li>
+
+      <li class="h-row is-unreached">
+        <span class="h-id">H8</span>
+        <strong>长期生产运行证据（Production Field Evidence）</strong>
+        <p class="h-desc">真实多租户长期生产运行、物理 NVMe 硬件掉电台架、硬件 HSM/TEE 根密钥托管与现场可用性运维证据；<strong>尚未进入生产运行，绝不冒充已验证</strong>。</p>
+        <span class="badge badge-design">0 Claims · 尚未进入生产运行</span>
+      </li>
+    </ol>
+
+    <!-- 机械治理与台账核验命令展示 -->
+    <div class="code-showcase reveal" data-tabs style="margin-top:var(--sp-6)">
+      <div class="code-tablist-bar">
+        <div class="code-tablist" role="tablist" aria-label="证据门禁与台账核验示例">
+          <button class="code-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-verify-cli" id="tab-verify-cli">波次验证门禁 CLI</button>
+          <button class="code-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-claim-yaml" id="tab-claim-yaml" tabindex="-1">claims.yaml 台账契约</button>
+        </div>
+        <button class="code-copy" type="button" data-copy="auto">复制</button>
+      </div>
+      <div class="code-panel" id="panel-verify-cli" role="tabpanel" aria-labelledby="tab-verify-cli">
+<pre><code><span class="c"># 1. 全工作区 35 个 Rust Crate 确定性与集成测试（2,128+ tests）</span>
+<span class="prompt">$ </span>cargo test --workspace --no-fail-fast
+
+<span class="c"># 2. H6 单机多 OS 进程分布式退出门（13 进程联合分区/强杀/接管/八步迁移 + 8-Cell 压测）</span>
+<span class="prompt">$ </span>cargo test -p nlos-slice-k --test c_road_001_h6_partition_restart_migration_gate -- --nocapture
+<span class="prompt">$ </span>cargo test -p nlos-runtime-tokio --release --test c_bench_road_c002_scale_and_faults -- --nocapture
+
+<span class="c"># 3. 机器可读台账双向一致性与 Claim ≤ Evidence 等级不变量校验（101 Claims / 169 Evidence）</span>
+<span class="prompt">$ </span>python3 scripts/lint_claims.py</code></pre>
+      </div>
+      <div class="code-panel" id="panel-claim-yaml" role="tabpanel" aria-labelledby="tab-claim-yaml" hidden>
+<pre><code><span class="c"># docs/management/claims.yaml (schema v1.1 节选结构示例)</span>
+- <span class="k">requirement_id</span>: <span class="s">ROAD-C-001</span>
+  <span class="k">stage</span>: <span class="s">C</span>
+  <span class="k">status</span>: <span class="t">PARTIAL_PASS</span>
+  <span class="k">test_refs</span>:
+    - <span class="s">crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs</span>
+    - <span class="s">crates/nlos-lease/tests/lease_reconciliation.rs</span>
+  <span class="k">evidence_refs</span>:
+    - <span class="s">docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md</span>
+    - <span class="s">docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md</span>
+    - <span class="s">docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md</span>
+  <span class="k">assurance</span>: <span class="n">H6</span>
+  <span class="k">limitations</span>:
+    - <span class="s">"W67 评审裁定 SATISFIED-WITH-BOUNDARIES：效力域严格限定 ADR-0018 单主机多 OS 进程拓扑；跨物理主机真网络分区与时钟偏斜保留在 RISK-B-11"</span>
+  <span class="k">source</span>: <span class="s">"stage-c-progress.md §C.1.1 / §C.3.1 C-PARTITION 行 + W67 退出门评审（base 9e5e0edc）：SATISFIED-WITH-BOUNDARIES"</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 05 · 现状、已知硬边界与工程红线 ================= -->
+<section class="section band" id="now" data-nav-label="现状与边界">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Current State &amp; Open Risks<span class="sec-no">/ 05</span></span>
+      <h2><span class="title-line">已完成、推进中，</span><span class="title-line"><em>与显式留界的工程实情</em></span></h2>
+      <p>NLOS 将负面结果、适用范围限制与未闭合硬件边界视为一等工程资产（<code>[EVID-NEG-001]</code>）。以下四栏如实区分截至 <code>2026-10-26 (W68)</code> 已锁定的实证成果、正在推进的双轨工作包、挂牌追踪的开放风险与不可逾越的架构红线。</p>
+    </div>
+
+    <div class="split-2 reveal-group" aria-label="W68 四维诚实工程盘点">
+      <div class="card">
+        <h4>已完成并取证锁定</h4>
+        <p>确立 <code>v0.5</code> 唯一权威总纲（<code>35</code> 篇深度讨论蒸馏、<code>26</code> 份 ADR）；<strong>Stage B 单机应用平台已正式 <code>EXITED</code></strong>（<code>Slice K</code> 全周期闭环、退出时 <code>1,536</code> 测试）；<strong>Stage C 全部 9/9 <code>C-core</code> 工作包</strong>在单主机多进程拓扑下完成 <code>H6</code> 验证（<code>1→8 Cell</code> <strong>4.44x</strong> 扩展、<code>100K_LOGICAL</code> <strong>634 B/node</strong>、<strong>38.07ms</strong> 恢复扫描）；全仓 <strong>35 个 Rust Crate 零冻结模块</strong>、<code>2,128+</code> 测试与 <code>101</code> 条 Claims 机械锁死。</p>
+      </div>
+
+      <div class="card">
+        <h4>正在双轨推进（W68–W74）</h4>
+        <p>两条写集互不相交的主线同步冲刺：<strong>Track C（<code>C-XHOST</code> 5 包 · <code>ADR-0026 CANDIDATE</code> · <code>W69/W70 C-XHOST DESIGN</code>）</strong>规划新建 <code>nlos-net</code> mTLS 五轴认证传输、跨机时钟不确定度租约围栏、<code>nlos-consensus</code> 控制面多数派日志与 <code>ChaosTcpProxy</code> 跨机 <code>H6</code> 门禁；<strong>Track D（<code>D-core</code> 8 包 · <code>ADR-0025 W68-R1/R2 ACCEPTED</code>）</strong>建设与展示站 Glacier 视觉显式分叉的 <code>Graphite / Paper Workstation</code> 100% 实心工业双主题、平铺优先多窗口 + <code>36px</code> 贴边任务栏 + <code>Ctrl+Space</code> 按需命令/意图面板、<code>Z4</code> 实心 UAC/Polkit 级安全确认屏（含 <code>32×20</code> 凹陷硬件风单色精密防伪印章）、<code>L0 → L1 → L2 → L3</code> 四级渐进式披露与视口惰性取数模型及 <code>[UI-PARITY-001]</code> 12 域显控同构，迈向 <code>[ROAD-D-001]</code>。</p>
+      </div>
+
+      <div class="card">
+        <h4>已知硬边界与未决风险</h4>
+        <p>全仓 <code>P0 = 0</code>，具名风险与未知项公开挂牌：<strong><code>RISK-B-11</code></strong> 跨物理主机网络、时钟偏斜与拜占庭/远端清理故障待 <code>C-XHOST</code> 闭合；<strong><code>RISK-B-10</code></strong> 宿主 <code>cgroup / Job Object</code> 四维硬隔离与脱离进程树残余边界；<strong><code>U-3</code> / <code>RISK-B-06</code></strong> Windows/macOS 真机桌面交互战役待 <code>W73</code> 闭合；<strong><code>U-4</code></strong> 真实 NVMe 掉电台架未测；<strong><code>U-10</code></strong> 硬件 HSM/TEE 未接入；<strong><code>RISK-B-05</code></strong> 外部闭源模型内部隔离不可观测，强制标记 <code>PROVIDER_ISOLATION_UNVERIFIED</code>。</p>
+      </div>
+
+      <div class="card">
+        <h4>绝不妥协的工程红线</h4>
+        <p>绝不用“数据库登记的逻辑 Agent 数”冒充并发推理能力；绝不用系统提示词代替 Ed25519 <code>Capability</code> 签名与代际围栏；绝不用账面代币配额代替宿主进程与 <code>Cell</code> 舱壁物理隔离；绝不允许携带 <code>0x1F</code> 守卫的非权威搜索结果直接驱动权限或账本提交；绝不把单机多进程 <code>H6</code> 测试外推冒充 <code>H7</code> 跨物理机一致性或 <code>H8</code> 生产运行保证。</p>
+      </div>
+    </div>
+
+    <div class="callout reveal">
+      <strong>单一事实源原则</strong>
+      <p>任何阶段状态翻转（如 Stage C 或 Stage D 晋升 <code>EXITED</code>）必须同时满足退出门独立评审记录、<code>claims.yaml</code> / <code>evidence-index.yaml</code> / <code>risks.yaml</code> 双向零误差校验、<code>P0 = 0</code> 常设门复核与维护者显式批准——任何营销页面或摘要概览均无权超越权威台账提前宣告完成。</p>
+    </div>
+  </div>
+</section>
+
 </main>
-<nav class="pager" aria-label="页面顺序"><div class="container pager-inner"><a class="pager-link prev" href="modern.html"><span><small>上一页</small>现代系统</span></a><a class="pager-link next" href="index.html"><span><small>回到</small>首页 · 总览</span></a></div></nav>
-<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 路线与现状</span><span>终局完整，实施克制，Evidence 决定声明边界</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
-<script src="js/main.js?v=10.6.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=10.1.0"></script>
-</body></html>
+
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="modern.html">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span><small>上一页</small>现代系统</span>
+    </a>
+    <a class="pager-link next" href="index.html">
+      <span><small>下一页</small>返回首页总览</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </a>
+  </div>
+</nav>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span>
+    </div>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
+  </div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
+</footer>
+
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
+</body>
+</html>

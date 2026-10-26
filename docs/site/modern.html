@@ -1,29 +1,34 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>现代系统 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.5 · 现代系统：分层调度、资源管理、lease/fence、一致性、服务治理、可观测性和 Windows/macOS 式控制。">
+<meta name="theme-color" content="#040a14">
+<title>现代系统 · 分布式与现代机制 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.5 (W68) · Part IV 分布式与现代机制：Plan 9 私有命名空间、Stage C 多 Cell 分片与三族租约、SABI 冻结通道与外部生态桥、三层 DRR 背压调度、因果观测与八原语认知环。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="现代系统 · 分布式与现代机制 · NLOS — 自然语言操作系统">
+<meta property="og:description" content="Stage C 蜂窝式分布式架构（9/9 C-core H6 已证 + C-XHOST 跨机立项）、SABI v1-beta 冻结总线、ThreeTierScheduler 背压与八原语语义闭环。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="现代系统 · 分布式与现代机制 · NLOS">
+<meta name="twitter:description" content="v0.5 规范 · B EXITED · C/D W68 并行：私有命名空间、多 Cell 租约围栏、协议分层、背压弹性与因果检索。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1">
-<link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
 
-<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
 
-<!-- ================= 导航 ================= -->
+<!-- ================= 顶栏导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
-    <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">NL</span>
-      <span>NLOS</span>
-    </a>
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
     <button class="nav-toggle" id="navToggle" type="button"
-            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
       <span></span><span></span><span></span>
     </button>
     <div class="nav-links" id="navLinks">
@@ -33,460 +38,569 @@
       <a href="execution.html">执行与控制</a>
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html" aria-current="page">现代系统</a>
-      <a href="roadmap.html">路线</a>
+      <a href="roadmap.html">阶段路线</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
   </div>
 </nav>
 
 <main id="top">
 
 <!-- ================= 页头 ================= -->
-<header class="page-head container">
-  <span class="eyebrow reveal">Part III · 现代系统 · Modern</span>
-  <h1 class="page-title reveal"><span class="title-line">现代系统：</span><span class="title-line accent">通用内核之上</span></h1>
-  <p class="page-desc reveal">NLOS 不重新发明并发和分布式历史：直接迁移现代 OS、runtime、数据库与云系统的调度、隔离、WAL、MVCC、lease/fence、backpressure、bulkhead 和可观测性，再对 Context、模型槽和语义状态做必要适配。</p>
-  <nav class="page-toc reveal" aria-label="本页目录">
-    <a href="#namespace">namespace</a>
-    <a href="#distributed">分布式内核</a>
-    <a href="#protocol">协议栈</a>
-    <a href="#elasticity">弹性多租户</a>
-    <a href="#observability">可观测性</a>
-    <a href="#principles">设计原则</a>
-    <a href="#resource-system">资源平面</a>
-  </nav>
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part IV · 分布式与现代机制 · Modern</span>
+    <h1 class="page-title reveal"><span class="title-line">蜂窝式分布式架构与</span><span class="title-line accent">现代系统机制</span></h1>
+    <p class="page-desc reveal">NLOS 不重新发明操作系统与分布式数据库走过的五十年工程规律：直接继承 Plan 9 私有命名空间、租约与围栏（Lease &amp; Fencing）、确定性分片接管、信用流控背压、四域舱壁与因果追踪，再针对模型上下文、语义血缘与非权威检索做精确扩展。</p>
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">ADR-0018 · 9/9 C-core H6 单机多进程已取证</span>
+      <span class="badge badge-verified">ADR-0019 VERIFIED · nlos-task v47 六屏障接管</span>
+      <span class="badge badge-candidate">ADR-0026 C-XHOST · W69–W73 跨物理主机扩展</span>
+      <span class="badge badge-design">NLOS-DEFER-001 · 跨组织清算所延后至阶段 E</span>
+    </div>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#namespace">01 · 私有命名空间</a>
+      <a href="#distributed">02 · 多Cell与分片</a>
+      <a href="#protocol">03 · 协议与生态桥</a>
+      <a href="#elasticity">04 · 弹性与背压</a>
+      <a href="#observability">05 · 因果与检索</a>
+      <a href="#principles">06 · 系统设计戒律</a>
+      <a href="#resource-system">07 · 语义与原语环</a>
+    </nav>
+  </div>
 </header>
 
-<!-- ================= 1. namespace（现代系统 1/5） ================= -->
-<section class="section" id="namespace">
+<!-- ================= 1. 私有命名空间 ================= -->
+<section class="section" id="namespace" data-nav-label="私有命名空间">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Namespace · 现代系统 1/5<span class="sec-no">/ 01</span></span>
-      <h2>命名即权限——agent 诞生在一个<em>恰好和权限一样大的世界</em></h2>
-      <p>Plan 9 遗产：每 Process 私有名字空间，发现与授权分离。namespace 负责“在当前域中是否可寻址、可行动”；它不能保证模型不会从预训练知识中想到某个外部对象，也不能代替 Capability 和真实 egress enforcement。</p>
+      <span class="eyebrow">Private Namespace · Plan 9 Heritage · nlos-capability &amp; nlos-operation<span class="sec-no">/ 01</span></span>
+      <h2>私有命名空间：<em>不可命名即不可寻址</em>，句柄跨 Cell 位置透明</h2>
+      <p>继承 Plan 9 每进程私有 <code>Namespace</code> 思想，NLOS 将对象发现与能力授权显式解耦。每个 <code>Process</code> 启动时仅挂载应用清单与父级能力信封交集内的受控 <code>Handle</code>（<code>nlos-capability</code>、<code>nlos-operation</code>、<code>nlos-driver-mock</code>），让进程诞生在一个恰好与其授权边界等大的可寻址世界里。</p>
     </div>
+
     <div class="ns-quote reveal">
-      <p class="ns-quote-line">不可命名 <span>=</span> 在该 Namespace 中不可寻址、不可行动</p>
-      <p class="ns-quote-sub">渐进式披露只向 Agent 暴露当前任务需要的目录与 handle；真正安全仍由 Capability、凭证托管、网络策略和 reference monitor 同步强制。上下文缩减降低攻击面，但不被宣传为“控制模型想象”。</p>
+      <p class="ns-quote-line">does-not-exist <span>&gt;</span> permission-denied</p>
+      <p class="ns-quote-sub">未挂载对象在当前私有 <code>Namespace</code> 中根本无法解析为合法 <code>Handle</code>，不泄露宿主目录或邻近租户对象的存在性；与此同时，真正的安全执行边界仍由 Ed25519 能力验签、密钥引用托管与引用监控器出口门禁同步强制。</p>
     </div>
+
     <div class="split-2 reveal-group" style="margin-top: var(--sp-7);">
       <div class="card">
-        <h4>错误模型：does-not-exist，而非 permission-denied</h4>
-        <p>spawn 时内核按 <b>ELF permissions ∩ 父信封</b>静态构造子 namespace。agent 永远不会对界外事物得到「拒绝访问」——那些事物<b>对它不存在</b>。</p>
-        <p class="sub">信息隐藏强度对比：permission-denied 泄露「东西存在但你不能碰」；does-not-exist 什么都不泄露。运行期变更走常备重授权通道（议题 10 L1），边界清晰可审计。</p>
+        <h4>错误语义：<code>does-not-exist</code> 消除拓扑侧信道</h4>
+        <p><code>spawn</code> 阶段按签名权限请求与父进程当前能力信封求交集，静态构造子进程私有绑定表。越界名称直接返回未绑定错误，避免像传统全局路径空间那样通过“拒绝访问”暴露敏感服务或文件的存在；运行期临时授权则经 Stage D <code>ADR-0025 (W68-R1/R2)</code> <code>Z4</code> 实心 UAC/Polkit 级安全确认屏与 <code>ChooserGrant</code> 动态注入最小作用域句柄。</p>
       </div>
       <div class="card">
-        <h4>七项旧决策在此收敛</h4>
-        <div class="chips">
-          <span class="chip">能力表 = namespace 绑定表</span>
-          <span class="chip">衰减 = 子 namespace ⊆ 父</span>
-          <span class="chip">spawn = 构造子 namespace</span>
-          <span class="chip">污点 = 标记区（/untrusted/*）</span>
-          <span class="chip">ELF permissions = 绑定请求清单</span>
-          <span class="chip">工具注册中心 = 设备仓库</span>
-          <span class="chip">控制面只有结构化输入源可命名</span>
+        <h4><code>Handle</code> 间接寻址：本地与远端 <code>Cell</code> 位置透明</h4>
+        <p>用户态持有的永远是绑定代际（<code>generation</code>）与权限摘要的间接 <code>Handle</code>，而非裸宿主路径、进程 PID 或物理节点地址。当任务跨本地与远端 <code>Cell</code> 路由或迁移时，<code>nlos-operation</code>、<code>nlos-service-directory</code> 与 <code>CellDirectory</code> 在底层重绑端点，名字保持不变，同时忠实保留远程调用的超时、预留结算与污点标记。</p>
+        <div class="chips" style="margin-top: 12px;">
+          <span class="chip">每进程私有挂载表</span>
+          <span class="chip">子 Namespace ⊆ 父信封</span>
+          <span class="chip">Handle 代际隔离</span>
+          <span class="chip">跨 Cell 位置透明</span>
+          <span class="chip">/untrusted/* 污点挂载区</span>
         </div>
-        <p class="sub">外部资源（A2A / 远程）与本地同一 namespace，绑定在污点标记区——位置透明 + 信任可见。</p>
-      </div>
-    </div>
-    <div class="callout reveal">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-      <p><b>为后续议题铺路的红利。</b>/proc 类比：内核统计与 agent 状态作为只读名字绑定（/sys/agents/*）——可观测性的形状（<a class="xref" href="#observability">见本页可观测性</a>）。import：把远程资源绑进本地名字空间，位置透明从 namespace 间接性免费得来——<a class="xref" href="#distributed">分布式</a>与<a class="xref" href="#protocol">联邦</a>的地基。</p>
-    </div>
-  </div>
-</section>
-
-<!-- ================= 2. 分布式内核（现代系统 2/5，band） ================= -->
-<section class="section band" id="distributed">
-  <div class="container">
-    <div class="sec-head reveal">
-      <span class="eyebrow">Distributed Kernel · 现代系统 2/5<span class="sec-no">/ 02</span></span>
-      <h2>蜂窝式内核：<em>本地数据面 + 集中控制面</em></h2>
-      <p>先算账：跨机陷阱的额外延迟（LAN 0.5ms / 跨机房 50ms）相对 LLM 调用仍是噪声，集中式「算得过来」——但可用性与 10k 以上扩展是算术解决不了的问题。答案是被 service mesh（Envoy + Istio）与 Kubernetes（kubelet + 控制面）在万级规模验证过的拓扑；现代系统 4/5（service mesh 同构）的核心内容即此，不单立。</p>
-    </div>
-    <figure class="idea-map reveal" data-idea-map aria-labelledby="mesh-map-title">
-      <div class="idea-map-heading">
-        <span>INTERACTIVE MODEL · 04</span>
-        <div>
-          <h3 id="mesh-map-title">蜂窝内核的一次远程调用</h3>
-          <p>控制面只发权威与租约，热路径始终留在节点本地。</p>
-        </div>
-      </div>
-      <div class="idea-map-stage">
-        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
-          <path data-map-link="control local" d="M210 72 C340 72 390 154 470 164"/>
-          <path data-map-link="lease local" d="M210 268 C340 268 390 184 470 174"/>
-          <path data-map-link="local remote" d="M530 164 C610 154 660 72 790 72"/>
-          <path data-map-link="local event" d="M530 174 C610 184 660 268 790 268"/>
-          <path data-map-link="event control" d="M850 292 C850 330 150 330 150 292"/>
-        </svg>
-        <button class="idea-node pos-a" type="button" data-map-node="control"
-                data-map-title="集中控制面"
-                data-map-copy="Raft 复制的控制面维护预算账本、注册表和策略权威，但不参与每一次模型或工具调用，因此不会成为热路径瓶颈。">
-          <span>01 · CONTROL</span><strong>集中控制面</strong><small>ledger · registry · policy</small>
-        </button>
-        <button class="idea-node pos-b" type="button" data-map-node="lease"
-                data-map-title="份额与绑定租约"
-                data-map-copy="控制面把预算份额和 namespace 绑定作为带 TTL 的租约下发。断联后节点可在租约内继续滑行，过期则自动收敛。">
-          <span>02 · LEASE</span><strong>份额与绑定租约</strong><small>quota · binding · TTL</small>
-        </button>
-        <button class="idea-node pos-core is-active" type="button" data-map-node="local"
-                data-map-title="本地内核代理"
-                data-map-copy="能力检查、预算预扣、污点标记和驱动转发都在本机完成。Agent 看到稳定名字，代理负责把调用路由到本地或远程资源。">
-          <span>03 · DATA PLANE</span><strong>本地内核代理</strong><small>check · debit · route</small>
-        </button>
-        <button class="idea-node pos-c" type="button" data-map-node="remote"
-                data-map-title="可替换远程资源"
-                data-map-copy="模型、工具和另一个 Agent 通过绑定类型选择协议栈。MCP、A2A 或本地 IPC 都只是驱动，内核系统调用保持稳定。">
-          <span>04 · ENDPOINT</span><strong>可替换远程资源</strong><small>MCP · A2A · local IPC</small>
-        </button>
-        <button class="idea-node pos-d" type="button" data-map-node="event"
-                data-map-title="事件与观测回流"
-                data-map-copy="扣减、故障、迁移与延迟被压缩成事件回流控制面。权威账本不迁移，迁移只是归还旧份额并签发新份额。">
-          <span>05 · TELEMETRY</span><strong>事件与观测回流</strong><small>debit · fault · migrate</small>
-        </button>
-      </div>
-      <figcaption class="idea-map-readout" aria-live="polite">
-        <span class="idea-map-index">03</span>
-        <div><strong>本地内核代理</strong><p>能力检查、预算预扣、污点标记和驱动转发都在本机完成。Agent 看到稳定名字，代理负责把调用路由到本地或远程资源。</p></div>
-        <span class="idea-map-hint">HOVER / CLICK</span>
-      </figcaption>
-    </figure>
-    <div class="topo reveal-group">
-      <div class="arch-layer kernel">
-        <div class="layer-label"><span>控制面 · 逻辑集中 · Raft 复制</span><span class="ring">权威状态</span></div>
-        <div class="chips">
-          <span class="chip">预算账本</span>
-          <span class="chip">注册表</span>
-          <span class="chip">策略</span>
-        </div>
-      </div>
-      <div class="trap-divider">份额租约 · 绑定 TTL · 私有 9P 式控制协议（bind / lease / debit / event）</div>
-      <div class="grid-3">
-        <div class="card">
-          <span class="node-title">节点 A · 本地内核代理</span>
-          <div class="chips">
-            <span class="chip">能力检查（缓存 namespace）</span>
-            <span class="chip">预算预扣（本地份额）</span>
-            <span class="chip">污点标记</span>
-            <span class="chip">转发驱动</span>
-          </div>
-          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
-        </div>
-        <div class="card">
-          <span class="node-title">节点 B · 本地内核代理</span>
-          <div class="chips">
-            <span class="chip">能力检查（缓存 namespace）</span>
-            <span class="chip">预算预扣（本地份额）</span>
-            <span class="chip">污点标记</span>
-            <span class="chip">转发驱动</span>
-          </div>
-          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
-        </div>
-        <div class="card">
-          <span class="node-title">节点 C · 本地内核代理</span>
-          <div class="chips">
-            <span class="chip">能力检查（缓存 namespace）</span>
-            <span class="chip">预算预扣（本地份额）</span>
-            <span class="chip">污点标记</span>
-            <span class="chip">转发驱动</span>
-          </div>
-          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
-        </div>
-      </div>
-    </div>
-    <div class="grid-3 reveal-group" style="margin-top: var(--sp-6);">
-      <div class="card">
-        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利一 · 优雅降级</h4>
-        <p style="font-size:0.86rem;color:var(--text-2);">控制面宕机，系统靠<b style="color:var(--text);">未到期的租约滑行</b>：运行中的 agent 不受影响，只是不能 spawn / 迁移。DHCP 租约、Kerberos 票据同款设计。</p>
-      </div>
-      <div class="card">
-        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利二 · 故障域自动封闭</h4>
-        <p style="font-size:0.86rem;color:var(--text-2);">父 agent / 节点死亡 → 子的份额到期自动耗尽 → 自动挂起。<b style="color:var(--text);">没有孤儿失控 agent</b>——TTL 就是自动收容所。</p>
-      </div>
-      <div class="card">
-        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利三 · 迁移账本不动</h4>
-        <p style="font-size:0.86rem;color:var(--text-2);">账本权威在控制面，永远不「搬」：迁移 = 归还源节点份额 + 目标节点发新份额。<b style="color:var(--text);">透支上界 = 份额大小</b>，max_tokens 硬顶在分布式下完整保留。</p>
-      </div>
-    </div>
-    <div class="split-2 reveal-group">
-      <div class="card">
-        <h4>迁移语义 · drain 优先</h4>
-        <p><b>默认 drain</b>：等到步边界（在途调用完成并结算）再迁，与协作式调度模型一致。<b>紧急 evacuate</b>（节点将死）：取消传播掐断在途调用，按实际发生结算记损耗，立即迁。</p>
-        <p class="sub">namespace 重绑定：名称稳定、端点可变——目标机注册表把同一名称解析到本地端点（位置透明，namespace 的红利）。机器专属资源用 pinned 绑定（K8s node-affinity 类比）：要么禁止迁移，要么迁移后代理回源。</p>
-      </div>
-      <div class="card">
-        <h4>一致性档位 = 分布策略</h4>
-        <p>议题 12 的档位直接就是分布策略：</p>
-        <ol class="steps">
-          <li><b>强</b>：主副本串行化——每个黑板有 home 节点，写路由到 home 排序；命名空间分片天然负载均衡</li>
-          <li><b>最终</b>：多主 + merge driver——git 式合并模型天然就是多主</li>
-          <li><b>无</b>：本地黑板，不跨机。Raft 仅用于控制面小状态——Raft-per-blackboard 被否</li>
-        </ol>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= 3. 网络协议栈（现代系统 3/5） ================= -->
-<section class="section" id="protocol">
+<!-- ================= 2. 多 Cell 与分片 ================= -->
+<section class="section band" id="distributed" data-nav-label="多Cell与分片">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Protocol Stack · 现代系统 3/5<span class="sec-no">/ 03</span></span>
-      <h2>内核不说 MCP 也不说 A2A——<em>只说名字和绑定</em></h2>
-      <p>协议的位置不是内核，是栈。内核的一等公民是 namespace 绑定；协议是绑定下面的可替换栈层——协议死了换一个，内核不变。协议演进独立性 = 通用性保全（议题 13 判据：对负载与实现的无知）。支线「MCP vs A2A 协议位置」在此一并关闭。</p>
+      <span class="eyebrow">Cellular Distributed Runtime · Stage C (W35–W68)<span class="sec-no">/ 02</span></span>
+      <h2>多 Cell 蜂窝架构：<em>七件套自治单元</em>、三族租约与确定性接管</h2>
+      <p>Stage C（<code>W35–W68</code>）摒弃全局大锁与跨节点同步热路径，以蜂窝单元 <code>CellHost</code> 作为独立的故障域、调度域与存储域：稳态 <code>spawn / message / commit</code> 在本地无全局锁完成，跨单元协同由显式纪元（<code>Epoch</code>）、围栏令牌（<code>FenceToken</code>）与签名检查点驱动。</p>
     </div>
+
+    <!-- 显式作用域对比条 -->
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">ADR-0018 单机多 OS 进程拓扑 H6 已取证（9/9 C-core · 1→8 Cell 4.44x）</span>
+      <span class="badge badge-candidate">ADR-0026 C-XHOST 跨物理主机扩展立项推进中（W69–W73：mTLS 传输 / 跨机时钟包络 / Quorum 控制面共识，RISK-B-11）</span>
+    </div>
+
+    <!-- CellHost 蜂窝拓扑图 -->
+    <div class="cell-topology reveal interactive-structure" aria-label="Stage C CellHost 分布式租约、分片与迁移拓扑">
+      <div class="cell-bus">
+        <span>CONTROL &amp; LEASE BUS · CellDirectory / MigrationIntent / ReconciliationCheckpoint</span>
+        <span>Epoch + FenceToken · FenceBarrierAck · Zero Global Total-Order</span>
+      </div>
+
+      <article class="cell-node is-primary" data-tilt>
+        <small>CELL-01 · LOCAL AUTONOMY HOST</small>
+        <h4><code>CellHost</code> 七件套运行域（<code>nlos-cell</code>）</h4>
+        <p>完整装配本地 supervisor、能力与名字缓存、租约子账本、Driver 网关、持久事件发件箱、Artifact 缓存与故障探测器，绑定单调 <code>boot_generation</code>、显式 <code>Epoch</code> 与 <code>FenceToken</code>。</p>
+        <div class="cell-shards">
+          <span class="cell-tag">7-Piece Kit</span>
+          <span class="cell-tag">Epoch #42</span>
+          <span class="cell-tag">SQLite WAL+FULL</span>
+        </div>
+      </article>
+
+      <article class="cell-node is-active" data-tilt>
+        <small>CELL-02 · SHARDED TAKEOVER</small>
+        <h4>分片接管与六道屏障（<code>ADR-0019 VERIFIED</code>）</h4>
+        <p><code>nlos-task v47</code> 冻结旧分片代际并对未决写集求并集围栏，收齐六类权威端点 <code>FenceBarrierAck</code> 后签发 <code>TaskPermitClosureReceipt</code> 推进新代，实现零丢失、零重复 <code>TaskHead</code> 跃迁。</p>
+        <div class="cell-shards">
+          <span class="cell-tag">nlos-task v47</span>
+          <span class="cell-tag">6 Barriers</span>
+          <span class="cell-tag">0 Split-Brain</span>
+        </div>
+      </article>
+
+      <article class="cell-node is-migrating" data-tilt>
+        <small>CELL-03 · LIVE MIGRATION &amp; PARTITION</small>
+        <h4>八步在线迁移与分区有界损耗</h4>
+        <p><code>ProcessMigrationCoordinator</code> 执行静默、检查点、源围栏、能力衰减重绑、租约先关后授与新代恢复八步状态机；断连期间靠 <code>PartitionAutonomyGate</code> 租约滑行，重连产出 <code>PartitionBoundedLossProof</code>。</p>
+        <div class="cell-shards">
+          <span class="cell-tag">8-Step Migrate</span>
+          <span class="cell-tag">Bounded Loss</span>
+          <span class="cell-tag">0 Double-Commit</span>
+        </div>
+      </article>
+
+      <div class="cell-topology-foot">
+        <span>H6 多进程实证：跨 13 个真实 OS 进程 · 1→2→4→8 Cell 吞吐扩展 4.44x (--release)</span>
+        <span>24 路双主分区故障注入 0 脑裂 · 100K_LOGICAL 控制面 p50 = 84µs</span>
+      </div>
+    </div>
+
+    <!-- Stage C 六大核心机制矩阵 -->
+    <div class="wp-matrix reveal-group interactive-structure">
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-CELL · NLOS-CELL</span>
+          <span class="badge badge-verified">H6 已取证</span>
+        </div>
+        <h4 class="wp-name"><code>CellHost</code> 七件套独立运行单元</h4>
+        <p class="wp-detail">每个 Cell 拥有独立故障边界、本地调度队列与持久库，持久化维护 <code>boot_generation</code>、控制纪元 <code>Epoch</code> 与单调递增 <code>FenceToken</code>。</p>
+      </article>
+
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-LEASE · NLOS-LEASE</span>
+          <span class="badge badge-verified">H6 已取证</span>
+        </div>
+        <h4 class="wp-name">三族租约与 <code>FenceBarrierAck</code> 防脑裂</h4>
+        <p class="wp-detail">以 <code>CellMembershipLease</code>、<code>ShardOwnershipLease</code>、<code>ExecutionPlacementLease</code> 治理成员存活、分片归属与放置容量；未收齐源端 <code>FenceBarrierAck</code> 严禁重授，彻底拦截旧代僵尸写入。</p>
+      </article>
+
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-SHARD · ADR-0019</span>
+          <span class="badge badge-verified">VERIFIED</span>
+        </div>
+        <h4 class="wp-name"><code>nlos-task v47</code> 分片接管与六屏障</h4>
+        <p class="wp-detail">跨 Cell 确定性移交强制核验六类权威端点屏障并由 SQLite 触发器封禁原地解冻，确保故障接管期间零遗失、零重复 <code>TaskHead</code> 状态迁移。</p>
+      </article>
+
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-SYNC · ANTI-ENTROPY</span>
+          <span class="badge badge-verified">H6 已取证</span>
+        </div>
+        <h4 class="wp-name">签名向量检查点与四轴制品同步</h4>
+        <p class="wp-detail">采用 <code>SignedSemanticVectorCheckpoint</code> 幂等合并跨域签名事件集，配合四轴 <code>ArtifactSyncPolicy</code>（<code>MetadataOnly / OnDemand / EagerPinned / AirgappedLocal</code>）与落盘前 SHA-256 逐字节验真。</p>
+      </article>
+
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-FANOUT · MERKLE &amp; BULKHEAD</span>
+          <span class="badge badge-verified">H6 已取证</span>
+        </div>
+        <h4 class="wp-name">层级扇出树与四域舱壁注册表</h4>
+        <p class="wp-detail"><code>HierarchicalFanoutTree</code> 消除 <code>O(N²)</code> 全连接通信，结合 Merkle 摘要对账归约与四域 <code>BulkheadRegistry</code>（<code>Tenant / Workspace / TaskGroup / Provider</code> + 系统保留池）。</p>
+      </article>
+
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">C-MIGRATE &amp; C-PARTITION</span>
+          <span class="badge badge-verified">H6 已取证</span>
+        </div>
+        <h4 class="wp-name">八步在线进程迁移与断连自治门控</h4>
+        <p class="wp-detail"><code>ProcessMigrationCoordinator</code> 串联双 Cell 租约先关后授与能力衰减重绑；<code>PartitionAutonomyGate</code> 与 <code>PartitionBoundedLossProof</code> 证明断网重连后额度与损耗精确守恒。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 协议与生态桥 ================= -->
+<section class="section" id="protocol" data-nav-label="协议与生态桥">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Protocol &amp; Ecosystem Bridges · ADR-0014 / 0024 · v0.5 §29.2<span class="sec-no">/ 03</span></span>
+      <h2>协议分层：<em>冻结系统内权威线规</em>，把外部协议关在驱动边界</h2>
+      <p>内核只认签名句柄、冻结系统消息与密码学回执，不将任何外部行业协议升格为内核身份。NLOS 清晰划定三道协议边界：主权域内权威通信由 <code>SABI</code> 冻结保护，外部工具与 Agent 生态经非信任适配器接入，跨组织清算与开放联邦明确延后至阶段 E。</p>
+    </div>
+
     <div class="arch-wrap">
-      <div class="arch-stack reveal-group">
-        <div class="arch-layer">
-          <div class="layer-label"><span>agent · harness</span><span class="ring">业务</span></div>
-          <h3>用户态程序</h3>
+      <div class="arch-stack reveal-group interactive-structure">
+        <div class="arch-layer kernel" data-tilt>
+          <div class="layer-label"><span>INTRA-OS AUTHORITY WIRE · ADR-0014 / ADR-0024</span><span class="ring">FROZEN SABI</span></div>
+          <h3>系统内冻结权威总线（<code>SABI</code> 8 通道：7 个 <code>v1-beta</code> 已冻结 + <code>PrincipalHandshake</code> 未冻结）</h3>
           <div class="chips">
-            <span class="chip">不关心本地 / 远程</span>
+            <span class="chip trap">7 冻结 + 1 开放 Protobuf 权威通道</span>
+            <span class="chip trap">CBOR Canonical Signing</span>
+            <span class="chip">DriverProvider v1.0 通道冻结 (ADR-0024)</span>
+            <span class="chip">Rust / TS / Python Golden Vectors</span>
           </div>
         </div>
-        <div class="trap-divider">系统调用（陷阱）：msg_send / tool_call · 参数是「名字」</div>
-        <div class="arch-layer kernel">
-          <div class="layer-label"><span>内核</span><span class="ring">ring 0</span></div>
-          <h3>绑定层</h3>
+
+        <div class="trap-divider">引用监控器网关 · 能力核验 · 预留冻结 · 污点染色 · RemoteCallOutcome</div>
+
+        <div class="arch-layer" data-tilt>
+          <div class="layer-label"><span>EXTERNAL ECOSYSTEM ADAPTERS · UNTRUSTED BOUNDARY</span><span class="ring">DRIVER LAYER</span></div>
+          <h3>外部生态非信任适配桥（<code>MCP</code> 工具驱动 / <code>A2A</code> 对等桥）</h3>
           <div class="chips">
-            <span class="chip trap">namespace 解析</span>
-            <span class="chip">能力校验</span>
-            <span class="chip">预算扣减</span>
-            <span class="chip">污点标记</span>
+            <span class="chip">MCP 工具访问适配器（设备驱动层）</span>
+            <span class="chip">A2A 外部 Agent 协作桥接器</span>
+            <span class="chip">永不充当内核 Principal 身份</span>
+            <span class="chip">强制输入/输出污点标记</span>
           </div>
         </div>
-        <div class="trap-divider">绑定类型决定栈 · 可替换</div>
-        <div class="arch-layer">
-          <div class="layer-label"><span>栈 · 用户态</span><span class="ring">协议</span></div>
-          <h3>协议栈层</h3>
-          <div class="chips">
-            <span class="chip">MCP 客户端栈（= 设备访问协议，NFS 客户端的位置）</span>
-            <span class="chip">A2A 客户端栈（= 互联协议，TCP/IP + TLS 的位置）</span>
-            <span class="chip">本地 IPC</span>
+
+        <div class="trap-divider">组织主权域外边界 · v0.5 §29.2 契约预留与阶段解耦</div>
+
+        <div class="arch-layer" data-tilt>
+          <div class="layer-label"><span>CROSS-ORG CLEARINGHOUSE &amp; FEDERATION · v0.5 §29.2</span><span class="ring">STAGE E</span></div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;">
+            <h3 style="margin-bottom:0;">跨组织清算所与全球联邦互认</h3>
+            <span class="badge badge-design">DESIGN / DEFERRED · 阶段 E (NLOS-DEFER-001)</span>
           </div>
-        </div>
-        <div class="trap-divider">线路</div>
-        <div class="arch-layer">
-          <div class="layer-label"><span>外部</span><span class="ring">世界</span></div>
-          <h3>组织之外</h3>
           <div class="chips">
-            <span class="chip">MCP server</span>
-            <span class="chip">他组织内核下的 A2A agent</span>
+            <span class="chip">跨组织周期净额清算所</span>
+            <span class="chip">跨域联邦身份与信任锚</span>
+            <span class="chip">契约钩子保留 · 阶段 C/D 显式不实现</span>
           </div>
         </div>
       </div>
+
       <aside class="arch-side reveal-group">
         <div class="card">
           <h4>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2 2 21"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/></svg>
-            名字透明 + 语义显式
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            为什么 <code>SABI</code> 冻结而外部协议可替换
           </h4>
-          <p>外部 agent 以本地名字绑进 namespace（位置透明的<b>命名</b>），但绑定类型可见。调用外部绑定产生<b>远程任务</b>：显式超时 / escrow 支付 / 污点结果 / 部分失败状态——不是假装它是一条本地 Message。POSIX 同款智慧：一切都是 fd，但 socket 的 read() 和文件的 read() 返回不同的错误。不欺骗，也不分两个世界。</p>
+          <p><code>nlos-schema</code> 注册 8 条 SABI 通道（7 条 <code>v1-beta</code> 已冻结含 <code>ADR-0024</code> <code>DriverProvider</code> v1.0 + <code>PrincipalHandshake</code> v1.0 未冻结）并以确定性 CBOR 生成 Ed25519 签名原像，保证跨语言 SDK 与守护进程升级零歧义；而 <code>MCP</code> 与 <code>A2A</code> 作为外围适配器挂载在 <code>nlos-operation</code> 与 <code>nlos-driver-mock</code> 驱动边界外，外部生态更替永远不会动摇内核 ABI。</p>
         </div>
         <div class="card">
           <h4>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            「分布式计算注记」一半失效
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            边界适配器绝不拥有内核身份
           </h4>
-          <p>1994 年 Sun 论文的四差异逐项检查：<b>延迟差异淹没在 LLM 延迟里——失效</b>（本地调用秒级 vs 远程秒级 + ms）；<b>部分失败、信任域、结算依然成立——必须显式</b>（外部可中途死亡；远程输出是异组织污点数据；跨组织是真结算）。</p>
+          <p>经由 <code>MCP</code> 或 <code>A2A</code> 返回的数据一律被视为异域非信任输入：引用监控器强制附加外部污点、绑定 <code>Reservation</code> 成本上限与四态 <code>RemoteCallOutcome</code>，杜绝外部服务反向劫持本地控制面。</p>
         </div>
         <div class="card">
           <h4>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-            跨组织结算 · 清算所净额
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            跨组织清算诚实延后（<code>NLOS-DEFER-001</code>）
           </h4>
-          <p>B 的 agent 调用 A 的 agent：付 <b>B 的本地 credits</b>，内核只记本地账不变；控制面之间按周期<b>净额轧差</b>（客户各自交易，银行间清算所轧差）。每调用实时 escrow 被否。信任引导：A2A 签名 Agent Card + DID；导出 / 导入 + TTL 租约，吊销 = 解绑。</p>
+          <p><code>v0.5 §29.2</code> 明确将跨组织清算所与全球联邦列为保留接口的延后特性（<code>STAGE E</code>）。当前已取证范围严格限定为同一主权域内的多 Cell 租约对账，不虚构跨组织金融结算。</p>
         </div>
       </aside>
     </div>
   </div>
 </section>
 
-<!-- ================= 4. 弹性与多租户（现代系统 5/5，浅区） ================= -->
-<section class="section glacier" id="elasticity">
+<!-- ================= 4. 弹性与背压 ================= -->
+<section class="section glacier" id="elasticity" data-nav-label="弹性与背压">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Elasticity &amp; Tenancy · 现代系统 5/5<span class="sec-no">/ 04</span></span>
-      <h2>弹性有三个维度，<em>预算是天然刹车</em></h2>
-      <p>经典云弹性只有一个维度：实例数（HPA）。agent OS 有三个。机制在内核（spawn / suspend / tick / 档位），策略在用户态——弹性策略 agent 是 sysctl writer 家族的新成员，监视结构信号（Topic 队列深度、Message 积压、预算燃烧率 vs 进展）慢循环调参，零新机制。</p>
+      <span class="eyebrow">Elasticity &amp; Backpressure · C-SCHED &amp; C-FANOUT<span class="sec-no">/ 04</span></span>
+      <h2>弹性、背压与舱壁：<em>信用流控</em>与三层 DRR 工作窃取</h2>
+      <p>面对突发万级任务扇出或上游 Provider 限流故障，NLOS 拒绝无界内存排队：通过入队前信用流控（credit-based flow control）、<code>ThreeTierScheduler</code> 分层公平调度、四域舱壁隔离与预授权降级策略，确保局部拥塞绝不演变为全系统雪崩或账单失控。</p>
     </div>
-    <div class="tier-ladder three reveal-group">
-      <div class="card tier">
-        <span class="t-no">1</span>
-        <h4>实例数</h4>
-        <span class="t-cost">spawn / suspend / resume</span>
-        <p>水平扩缩。记忆烘焙让弹性实例<b style="color:var(--light-text);">带经验上岗</b>：从 ELF 镜像 spawn 新实例 = 带 seed 记忆 + COW——云的 cold start 痛点被化解为「新实例从组织经验开始」。</p>
-        <span class="t-fit">负载高峰：先升 tick，再增实例</span>
-        <div class="tier-bar"><i style="width:80%"></i></div>
+
+    <div class="tier-ladder three reveal-group interactive-structure">
+      <div class="card tier" data-tilt>
+        <span class="t-no">01</span>
+        <h4>信用流控与反向背压</h4>
+        <span class="t-cost">Credit-Based Flow Control</span>
+        <p>Topic 发布与层级扇出在入队前扣减发送者信用窗口与级联预算；下游队列饱和时，<code>WaitingResourceBackpressure</code> 沿 <code>Worker → Cell → Global</code> 反向传导，源头减速而非撑爆内存。</p>
+        <span class="t-fit">机制：<code>SCHED-BACKPRESSURE-001</code></span>
+        <div class="tier-bar"><i style="width:100%"></i></div>
       </div>
-      <div class="card tier">
-        <span class="t-no">2</span>
-        <h4>tick 速率</h4>
-        <span class="t-cost">调度机制 · 降 tick</span>
-        <p>不增实例，降背景 agent 的推理频率让出槽位。成本压力下的第二档手段。</p>
-        <span class="t-fit">成本压力：先降档，再降 tick</span>
-        <div class="tier-bar"><i style="width:55%"></i></div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">02</span>
+        <h4><code>ThreeTierScheduler</code> DRR + 窃取</h4>
+        <span class="t-cost">零全局锁热路径 · 安全窃取</span>
+        <p><code>Global / Cell / Worker</code> 三层调度器采用有界赤字轮转（DRR）、饥饿老化与热 <code>Context</code> 亲和放置；跨队列字典序工作窃取严格跳过持有活跃 <code>EffectPermit</code>、<code>Reservation</code> 或排他设备租约的任务。</p>
+        <span class="t-fit">机制：<code>SCHED-HIER / QUEUE / STEAL-001</code></span>
+        <div class="tier-bar"><i style="width:74%"></i></div>
       </div>
-      <div class="card tier">
-        <span class="t-no">3</span>
-        <h4>模型档位</h4>
-        <span class="t-cost">LOD 调度</span>
-        <p>高峰期关键路径用大模型、背景降小模型。成本压力下的第一响应——减实例有状态成本，排在最后。</p>
-        <span class="t-fit">顺序：降档 → 降 tick → 减实例</span>
-        <div class="tier-bar"><i style="width:35%"></i></div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">03</span>
+        <h4>四域舱壁与优雅降级</h4>
+        <span class="t-cost">4-Domain BulkheadRegistry</span>
+        <p>按 <code>Tenant / Workspace / TaskGroup / Provider</code> 四维独立设定容量舱壁并锁定不可侵占的 <code>SafetyTcbSystemReserve</code>；Provider 限流或中断时按签名回退链降档、走缓存或安全挂起。</p>
+        <span class="t-fit">机制：<code>DIST-BULKHEAD-001</code></span>
+        <div class="tier-bar"><i style="width:52%"></i></div>
       </div>
     </div>
-    <div class="callout reveal">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
-      <p><b>serverless bill shock 在本架构中结构性不可能。</b>弹性扩缩在预算继承树内进行，总量被根预算物理封死——最多把预算烧完，然后 80% 预警、挂起（议题 8 语义接管）。scale-to-zero = 挂起而非销毁：checkpoint 保留，回暖即恢复，记忆连续；预热池 = 预 spawn + KV 前缀缓存预热。</p>
-    </div>
+
     <div class="split-2 reveal-group">
       <div class="card">
-        <h4>多租户 · 租户 = 三棵树的根</h4>
-        <p>组织 = spawn 树、预算树、namespace 三棵树的根。租户接入 = 签发根信封 + 根预算 + 根 namespace（衰减链的顶端）。<b style="color:var(--light-text);">隔离天然成立</b>：namespace 互相不可见，预算互不可动。</p>
-        <p class="sub">计量归账：账本天然按 agent 记账，租户级汇总是用户态会计服务。</p>
+        <h4>多租户三根隔离与物理封顶</h4>
+        <p>每个租户对应独立的身份授权树、<code>ResourceGroup</code> 容量树与 <code>ResourceAccount</code> 账本树根节点。<strong>隔离与预算上限在根部物理闭合</strong>：吵闹邻居既无法窥探其他租户命名空间，也无法抢占系统救援保留池或引发超额账单冲击。</p>
       </div>
       <div class="card">
-        <h4>吵闹邻居 · 共享物理层</h4>
-        <p>逻辑隔离有了，但租户共享推理槽位与内核。<b style="color:var(--light-text);">加权公平共享</b>（cgroup shares 层级化：租户份额 → 租户内再分，权重是 sysctl 可写参数）+ <b style="color:var(--light-text);">多维配额</b>挂租户根：</p>
-        <div class="chips">
-          <span class="chip">credits</span>
-          <span class="chip">agent 数上限</span>
-          <span class="chip">spawn 速率</span>
-          <span class="chip">黑板存储</span>
-          <span class="chip">消息速率</span>
-        </div>
+        <h4>Provider 速率限制与宕机下的确定性退化</h4>
+        <p>外部模型限流、高延迟或独立 <code>nlos-provider-worker</code>（<code>nlos-driver-mock</code> 跨进程二进制）子进程崩溃会被转化为类型化 <code>PressureEvent</code>：仅当 <code>ResourceContract</code> 预先授权时才切换备用模型档位或 <code>ProviderCache</code>，否则进入 <code>WAITING_RESOURCE</code> 保全检查点，<strong>绝不静默劣化结果语义</strong>。</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= 5. 可观测性（压轴） ================= -->
-<section class="section" id="observability">
+<!-- ================= 5. 因果与检索 ================= -->
+<section class="section" id="observability" data-nav-label="因果与检索">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Observability · 压轴<span class="sec-no">/ 05</span></span>
-      <h2>确定性故障用日志，<em>概率性故障用现场</em></h2>
-      <p>spawn 树天然就是 trace 树——任务 = request，步 = span，父子 span 按 spawn 关系嵌套。但语义调试需要内容，全量记录 = 存储爆炸 + 隐私问题，于是分层 trace。内核只做四件；存储、汇总、分析、告警、可视化全在用户态。</p>
+      <span class="eyebrow">Observability &amp; Retrieval · nlos-notify v2 · nlos-search<span class="sec-no">/ 05</span></span>
+      <h2>因果追踪、生命周期通知与<em>受污点门控的检查点检索</em></h2>
+      <p>概率与并发系统的排障依赖严密的因果血缘而非零散文本日志。NLOS 原生构建对齐 OpenTelemetry 模型的四级因果追踪树、OpenMetrics 三域指标、绑定一次性防伪令牌的 <code>nlos-notify v2</code> 生命周期通知，以及强制携带 <code>0x1F NON_AUTHORITATIVE</code> 围栏的签名向量检查点检索。</p>
     </div>
+
+    <!-- 因果追踪阶梯 -->
     <div class="trace-ladder reveal-group">
       <div class="trace-row">
-        <span class="lv">L0<small>元数据</small></span>
-        <span class="what">span 结构数据：陷阱类型、模型、token 进出、成本、时长、工具、污点 / 溯源引用</span>
-        <span class="policy">常开 · 便宜可聚合</span>
+        <span class="lv">Activation → Fiber<small>执行协程层</small></span>
+        <span class="what">对齐 OpenTelemetry Span 上下文：记录调度域、唤醒原因、<code>Context</code> 工作集水位与抢占切出点，源头聚合成低开销常开遥测。</span>
+        <span class="policy">常开 · Worker 本地无锁计数</span>
       </div>
       <div class="trace-row">
-        <span class="lv">L1<small>结构化内容</small></span>
-        <span class="what">工具参数 / 结果、关键决策点</span>
-        <span class="policy">采样 · head-based N%</span>
+        <span class="lv">TaskAttempt<small>候选事务层</small></span>
+        <span class="what">关联派生血缘、<code>QuoteId / ReservationId</code>、Driver 外部调用耗时、重试分支与认知事件输入快照摘要。</span>
+        <span class="policy">结构化因果链 · 按 Attempt 隔离</span>
       </div>
       <div class="trace-row hot">
-        <span class="lv">L2<small>全量现场</small></span>
-        <span class="what"><b>agent 版 core dump</b>：checkpoint + 完整上下文 + 最近 N 步 trace——不在平时记录一切，在异常瞬间冻结现场</span>
-        <span class="policy">异常触发 · 看门狗标记 / 被杀 / 预算耗尽</span>
+        <span class="lv">Receipt &amp; Dump<small>权威存证层</small></span>
+        <span class="what"><strong>终态签名 <code>Receipt</code> 与异常瞬间现场冻结</strong>：每次状态提交产出可验真回执；看门狗超时、隔离触发或崩溃恢复时自动保存可重放检查点快照。</span>
+        <span class="policy">密码学不可抵赖 · 异常必捕获</span>
       </div>
     </div>
-    <div class="grid-4 reveal-group" style="margin-top: var(--sp-6);">
-      <div class="card budget-part">
-        <span class="owner">内核 · 常开</span>
-        <h4>计数器 / 直方图</h4>
-        <p>源头聚合，不流原始事件——Prometheus 模型的内核版：拉指标，不推事件。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner">内核</span>
-        <h4>span 发射点</h4>
-        <p>陷阱处发射 span 元数据，每个步 span 一条。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner">内核</span>
-        <h4>L2 触发器</h4>
-        <p>看门狗标记 / 被杀 / 预算耗尽时自动捕获全量现场——进程崩溃产生 core dump 的直接类比。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner">内核</span>
-        <h4>/sys 只读绑定</h4>
-        <p>/proc 类比落地：每节点内核暴露 /sys/agents/*，指标守护进程逐级汇总。</p>
-      </div>
-    </div>
-    <div class="chips block reveal" aria-label="agent 黄金信号">
-      <span class="chip">LLM 调用 /s</span>
-      <span class="chip">陷阱拒绝（能力 / 预算）</span>
-      <span class="chip">步延迟分布</span>
-      <span class="chip">推理槽位占用</span>
-      <span class="chip">预算树燃烧率</span>
-      <span class="chip">进展率（产物 / 步数）</span>
-      <span class="chip">成本效率（credits / 产物）</span>
-      <span class="chip">步骤重复度</span>
-      <span class="chip">重试率 / N 版本分歧率</span>
-      <span class="chip">污点流量 / verified 占比</span>
-      <span class="chip">L1 常备授权覆盖率</span>
-    </div>
-    <div class="callout reveal">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
-      <p><b>告警 = Topic 消息：可观测性系统用自己的原语。</b>告警发到运维 Topic，监督 agent（sysctl writer 家族）订阅裁决——背压与兴趣过滤在此自用，狗粮吃完。万级规模：采样双制（head-based + tail-based on anomaly，稀有语义故障靠尾部采样回溯保留全链）；下钻路径由 lineage ID 保持：组织指标 → 子树 → 单 agent → trace → L2 现场。语义可观测性是独有的最后一层：「种群在向目标推进吗」——可观测性系统给监督者提供语义缩放的正确视图。</p>
+
+    <!-- 三大可观测与检索组件 -->
+    <div class="bento-grid reveal-group interactive-structure">
+      <article class="bento-card span-4" data-tilt>
+        <span class="bento-kicker">OPENMETRICS · 3 TELEMETRY DOMAINS</span>
+        <h3>OpenMetrics 三域标准遥测</h3>
+        <p>导出无高基数爆炸的三域指标体系：<strong>执行调度域</strong>（Fiber 队列深度、窃取率、控制延迟）、<strong>资源持久域</strong>（<code>ResourceAccount</code> 封闭域守恒水位、<code>WAL+FULL</code> 提交耗时、三族租约状态）与<strong>语义驱动域</strong>（Provider 吞吐、验证分歧率、污点拦截数）。</p>
+      </article>
+
+      <article class="bento-card span-4" data-tilt>
+        <span class="bento-kicker">NLOS-NOTIFY V2 · 16-STATE &amp; ACTION TOKEN</span>
+        <h3>16 态生命周期通知与一次性 <code>ActionToken</code></h3>
+        <p><code>nlos-notify v2</code> 完整覆盖任务 <code>16</code> 种生命周期状态变化，后台任务无需维持对话窗口常开；通知附带的审批或恢复动作强制绑定单次有效 SHA-256 <code>ActionToken</code>，使用即销毁，杜绝跨应用伪造或重放。</p>
+      </article>
+
+      <article class="bento-card span-4" data-tilt>
+        <span class="bento-kicker">NLOS-SEARCH · SIGNED CHECKPOINT &amp; 0x1F</span>
+        <h3>签名检查点检索与 <code>0x1F</code> 五道门禁</h3>
+        <p><code>nlos-search</code> 仅从已验签的 <code>SemanticVectorCheckpoint</code> 构建只读索引，所有命中添加强制 <code>0x1F NON_AUTHORITATIVE</code> 污点并经五道防越权门禁拦截（禁赋权、禁记账、禁提交、禁升级包、禁触发外部副作用）。</p>
+      </article>
     </div>
   </div>
 </section>
 
-<!-- ================= 6. 设计原则 ================= -->
-<section class="section" id="principles">
+<!-- ================= 6. 系统设计戒律 ================= -->
+<section class="section" id="principles" data-nav-label="系统设计戒律">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Principles<span class="sec-no">/ 06</span></span>
-      <h2>从 Unix 继承的<em>四条设计原则</em></h2>
+      <span class="eyebrow">Commandments · Non-Negotiable Engineering Discipline<span class="sec-no">/ 06</span></span>
+      <h2>不可妥协的<em>四条系统工程戒律</em></h2>
+      <p>决定 NLOS 是通用现代操作系统而非脆弱 Agent 编排框架的四条底层铁律，贯穿全部 35 个 Rust Crates 与 26 份架构决策记录。</p>
     </div>
+
     <div class="principles reveal-group">
       <div class="card principle">
         <span class="p-no">01</span>
         <div>
-          <h4>机制 / 策略分离（微内核路线）</h4>
-          <p>机制在内核，策略在用户态，内核只留非留不可的。判定测试：若某机制错了或被绕过，<b>安全或核算是否失效？是否需要在陷入点上原子完成？</b>两关都过才入内核，否则一律用户态。</p>
+          <h4>机制入核，策略归还用户态</h4>
+          <p>入核唯一判据：若该逻辑被绕过，<strong>身份隔离、账本守恒或持久权威是否立即失效？是否必须在陷入点原子完成？</strong>两问皆是才进入 TCB；提示词编排、模型路由、角色组织与计费单价一律留在用户态。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">02</span>
         <div>
-          <h4>Multics 警惕：抽象少而准</h4>
-          <p>不以 syscall 数量替代正确性。当前是 27-entry 基础 KABI candidate，加可协商的 RESOURCE_ESCROW 扩展；只有纵切面、兼容性和 conformance evidence 完成后才能冻结。</p>
+          <h4>原语少而正交，总线先验冻结</h4>
+          <p>警惕 Multics 膨胀陷阱：不发明绑定特定业务工作流的特权原语，以最小正交内核对象、<code>SABI v1-beta</code> 冻结通道与跨权威 <code>verify-then-commit</code>（<code>ADR-0013</code>）支撑未预见的第三方应用生态。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">03</span>
         <div>
-          <h4>内核从不信任，只设界</h4>
-          <p><code>policy is advisory; invariants are physics</code>。内核强制不变量（预算守恒、公平性下界、衰减包含），LLM 驱动的策略只能在界内调参；内核不管信念，只管共享状态和原语。</p>
+          <h4>内核绝不信任推理，只强制物理不变量</h4>
+          <p><code>Policy is advisory; invariants are physics.</code> 自然语言与大模型只能产出类型化提议；集合包含衰减、<code>ResourceAccount</code> 封闭域守恒、代际 CAS 唯一晋升与租约围栏由确定性 Rust 代码同步裁决。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">04</span>
         <div>
-          <h4>抽象比稀缺长寿</h4>
-          <p>今天为稀缺设计的抽象，在富足时代仍是地基。Application / Process / Fiber、working set、Capability 和 ResourceGroup 如此——规模是压力测试，通用现代 NLOS 才是宗旨。</p>
+          <h4>能力声明严守证据上界（Claim ≤ Evidence）</h4>
+          <p>规范条款（<code>DESIGN</code>）、候选架构（<code>CANDIDATE</code>）、故障注入局部闭环（<code>PARTIAL_PASS H3–H6</code>）与生产运行事实严格分级记账；未获对应等级实测证据前，禁止任何跨级宣传。</p>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section band" id="resource-system">
+<!-- ================= 7. 语义与原语环 ================= -->
+<section class="section band" id="resource-system" data-nav-label="语义与原语环">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Resource Plane<span class="sec-no">/ 07</span></span>
-      <h2>现代资源管理不是一个 Budget，<em>而是一组控制器</em></h2>
-      <p>ResourceAccount 负责可转移 credit 与费用归属；ResourceGroup 负责 cgroup/job 式物理调度和容量隔离。CPU、内存、I/O、网络、加速器、模型槽与 Context 都有独立单位、强制点和回收语义。</p>
+      <span class="eyebrow">Semantic Stream &amp; Eight Primitives · nlos-artifact / nlos-semantic / nlos-task / nlos-resource<span class="sec-no">/ 07</span></span>
+      <h2>语义事件流、八原语闭环与<em>多控制器资源平面</em></h2>
+      <p>在底层多资源控制器的代数约束下，<code>nlos-artifact</code>、<code>nlos-semantic</code>、<code>nlos-task</code> 与 <code>nlos-resource</code> 协同驱动高层认知任务的完整生命周期：每条认知原子沿只追加验真—墓碑轨迹演进，每次任务循环由八个正交原语闭环组合并按驻留水位有序回收。</p>
     </div>
-    <div class="resource-map reveal" aria-label="NLOS 现代资源管理图">
-      <div class="resource-node"><strong>CPU / Activation</strong><p>preemption · fair-share · deadline · affinity</p></div>
-      <div class="resource-node"><strong>Memory / Context</strong><p>working set · pressure · reclaim · OOM</p></div>
-      <div class="resource-node"><strong>Storage / Artifact</strong><p>quota · reservation · journal · snapshot</p></div>
-      <div class="resource-node"><strong>I/O / Network</strong><p>bounded queue · rate limit · backpressure</p></div>
-      <div class="resource-node"><strong>GPU / NPU</strong><p>VRAM · slot · batch · device lease</p></div>
-      <div class="resource-core"><strong>Resource Manager</strong><span>DECLARE → ADMIT → RESERVE → BIND → CONSUME → RECLAIM → FINALIZE</span></div>
-      <div class="resource-node"><strong>Model Provider</strong><p>token bound · context bytes · inference slot</p></div>
-      <div class="resource-node"><strong>Human Attention</strong><p>prompt rate · quiet hours · trusted channel</p></div>
-      <div class="resource-node"><strong>ResourceGroup</strong><p>physical isolation · hierarchy · pressure</p></div>
-      <div class="resource-node"><strong>ResourceAccount</strong><p>credit · payer · durable conservation</p></div>
+
+    <div class="bento-grid reveal-group">
+      <!-- #atomflow 语义原子生命周期 SVG（与 anim.js initAtomflow 严格对齐） -->
+      <figure class="bento-card span-12 featured" aria-labelledby="atomflow-title">
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 16px;">
+          <div>
+            <span class="bento-kicker">MECHANISM DIAGRAM · NLOS-SEMANTIC EVENT LIFECYCLE</span>
+            <h3 id="atomflow-title" style="margin-top:4px;"><code>SemanticEvent</code> 五阶单向演进流：从观测摄入到控制域权威视图与撤回墓碑</h3>
+          </div>
+          <span class="badge badge-active">Append-Only · Zero Silent Overwrite</span>
+        </div>
+        <svg id="atomflow" viewBox="0 0 960 206" role="img" aria-label="SemanticEvent 五阶段生命周期流图" style="width:100%;height:auto;margin-top:8px;">
+          <!-- 主演进轨道 -->
+          <path class="dg-lane" d="M 106 94 L 854 94" fill="none" stroke="rgba(138, 212, 255, 0.34)" stroke-width="1.5" stroke-dasharray="5 5"/>
+          <text x="480" y="182" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10.5" fill="rgba(194, 224, 241, 0.68)">
+            ContentDigest 内容去重 · EventId 签名溯源 · 撤回仅追加 Retraction 墓碑，不篡改既有血缘链
+          </text>
+
+          <!-- 5 个语义演进阶段（严格匹配 anim.js initAtomflow 的 5 窗口 + verifyBox / tombBox） -->
+          <g class="dg-stage" transform="translate(30, 48)">
+            <rect width="152" height="92" rx="8"/>
+            <text class="dg-st-no" x="14" y="24">01 · OBSERVATION</text>
+            <text class="dg-st-title" x="14" y="48">原始观测摄入</text>
+            <text class="dg-st-sub" x="14" y="70">Provenance + Taint</text>
+          </g>
+          <g class="dg-stage" transform="translate(217, 48)">
+            <rect width="152" height="92" rx="8"/>
+            <text class="dg-st-no" x="14" y="24">02 · CLAIM / SPEC</text>
+            <text class="dg-st-title" x="14" y="48">双重身份封装</text>
+            <text class="dg-st-sub" x="14" y="70">Digest + EventId</text>
+          </g>
+          <g class="dg-stage" transform="translate(404, 48)">
+            <rect width="152" height="92" rx="8"/>
+            <text class="dg-st-no" x="14" y="24">03 · RELATION DAG</text>
+            <text class="dg-st-title" x="14" y="48">血缘边连接</text>
+            <text class="dg-st-sub" x="14" y="70">supports / contradicts</text>
+          </g>
+          <g class="dg-stage" transform="translate(591, 48)">
+            <rect class="dg-verify-box" width="152" height="92" rx="8"/>
+            <text class="dg-st-no" x="14" y="24">04 · AUTHORITY VIEW</text>
+            <text class="dg-st-title" x="14" y="48">跨域独立采信</text>
+            <text class="dg-st-sub" x="14" y="70">ControlDomainId 聚合</text>
+          </g>
+          <g class="dg-stage" transform="translate(778, 48)">
+            <rect class="dg-tomb-box" width="152" height="92" rx="8"/>
+            <text class="dg-st-no" x="14" y="24">05 · RETRACTION</text>
+            <text class="dg-st-title" x="14" y="48">撤回与墓碑归档</text>
+            <text class="dg-st-sub" x="14" y="70">Tombstone + TTL GC</text>
+          </g>
+
+          <!-- 动态语义原子脉冲 -->
+          <g class="dg-pkt-a" transform="translate(106, 94)">
+            <circle r="7.5" fill="rgba(138, 212, 255, 0.25)"/>
+            <circle class="atom-core" r="2.8" fill="#edf8ff"/>
+          </g>
+        </svg>
+      </figure>
+
+      <!-- #ring8 八原语环 SVG（与 anim.js initRing8 严格对齐） -->
+      <figure class="bento-card span-6" aria-labelledby="ring8-title">
+        <span class="bento-kicker">COGNITIVE PRIMITIVE RING · 8 ORTHOGONAL OPS</span>
+        <h3 id="ring8-title">八原语受控执行环</h3>
+        <svg id="ring8" viewBox="0 0 480 360" role="img" aria-label="NLOS 八原语认知与上下文闭环图" style="width:100%;height:auto;margin-top:4px;">
+          <!-- 外环基准轨迹 -->
+          <circle cx="240" cy="180" r="124" fill="none" stroke="rgba(164, 216, 248, 0.16)" stroke-width="1" stroke-dasharray="3 5"/>
+          <!-- 中心核标识 -->
+          <circle cx="240" cy="180" r="44" fill="rgba(9, 26, 46, 0.9)" stroke="rgba(182, 230, 255, 0.34)" stroke-width="1.2"/>
+          <text x="240" y="176" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10.5" font-weight="600" fill="#edf8ff">NLOS CORE</text>
+          <text x="240" y="192" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, monospace" font-size="8.5" fill="rgba(194, 224, 241, 0.65)">Context · Ledger</text>
+
+          <!-- 动态弦线（由 anim.js initRing8 更新端点） -->
+          <line class="dg-chord" x1="240" y1="56" x2="327.7" y2="92.3"/>
+
+          <!-- 8 个原语节点（严格包含带数值 cx/cy 的 circle 与精确 data-prim 名） -->
+          <g class="dg-prim" data-prim="acquire">
+            <circle cx="240" cy="56" r="28"/>
+            <text class="dg-prim-en" x="240" y="53">ACQUIRE</text>
+            <text class="dg-prim-zh" x="240" y="67">摄取</text>
+          </g>
+          <g class="dg-prim" data-prim="decompose">
+            <circle cx="327.7" cy="92.3" r="28"/>
+            <text class="dg-prim-en" x="327.7" y="89.3">DECOMPOSE</text>
+            <text class="dg-prim-zh" x="327.7" y="103.3">分解</text>
+          </g>
+          <g class="dg-prim" data-prim="transmit">
+            <circle cx="364" cy="180" r="28"/>
+            <text class="dg-prim-en" x="364" y="177">TRANSMIT</text>
+            <text class="dg-prim-zh" x="364" y="191">投递</text>
+          </g>
+          <g class="dg-prim" data-prim="generate">
+            <circle cx="327.7" cy="267.7" r="28"/>
+            <text class="dg-prim-en" x="327.7" y="264.7">GENERATE</text>
+            <text class="dg-prim-zh" x="327.7" y="278.7">推演</text>
+          </g>
+          <g class="dg-prim" data-prim="verify">
+            <circle cx="240" cy="304" r="28"/>
+            <text class="dg-prim-en" x="240" y="301">VERIFY</text>
+            <text class="dg-prim-zh" x="240" y="315">验真</text>
+          </g>
+          <g class="dg-prim" data-prim="relate">
+            <circle cx="152.3" cy="267.7" r="28"/>
+            <text class="dg-prim-en" x="152.3" y="264.7">RELATE</text>
+            <text class="dg-prim-zh" x="152.3" y="278.7">关联</text>
+          </g>
+          <g class="dg-prim" data-prim="aggregate">
+            <circle cx="116" cy="180" r="28"/>
+            <text class="dg-prim-en" x="116" y="177">AGGREGATE</text>
+            <text class="dg-prim-zh" x="116" y="191">归约</text>
+          </g>
+          <g class="dg-prim" data-prim="forget">
+            <circle cx="152.3" cy="92.3" r="28"/>
+            <text class="dg-prim-en" x="152.3" y="89.3">FORGET</text>
+            <text class="dg-prim-zh" x="152.3" y="103.3">驱逐</text>
+          </g>
+
+          <!-- 动态环形脉冲点 -->
+          <g class="dg-pkt-r" transform="translate(240, 56)">
+            <circle r="6" fill="rgba(138, 212, 255, 0.30)"/>
+            <circle r="2.3" fill="#ffffff"/>
+          </g>
+        </svg>
+      </figure>
+
+      <!-- 右侧：八原语到权威 Crate 的对齐说明 -->
+      <article class="bento-card span-6" data-tilt>
+        <span class="bento-kicker">CRATE ALIGNMENT · CONTEXT / SEMANTIC / RESOURCE</span>
+        <h3>原语环与三平面权威 Crate 对齐</h3>
+        <p>八原语并非松散的业务工作流提示词，而是逐项映射到受内核计量与驻留策略管控的系统原语：</p>
+        <ol class="steps" style="margin-top:8px;">
+          <li><b>摄取与分解（Acquire / Decompose）</b>：由 <code>nlos-operation</code> 与 <code>nlos-driver-mock</code> 带污点摄入外部输入，经 <code>nlos-plan</code> 编译为受准入审查的有向无环 <code>TaskPlan</code>。</li>
+          <li><b>投递与推演（Transmit / Generate）</b>：经 <code>nlos-topic</code> 单日志有界扇出投递，在 <code>nlos-runtime</code> + <code>nlos-runtime-tokio</code> 与 <code>nlos-resource</code> 预留门控下执行推理步。</li>
+          <li><b>验真、关联与归约（Verify / Relate / Aggregate）</b>：由 <code>nlos-semantic</code> 建立签名血缘边并物化 <code>AuthorityView</code>，经 <code>DeterministicLocalReducer</code> 生成 Merkle 结果根。</li>
+          <li><b>受控驱逐（Forget）</b>：由 <code>nlos-artifact</code>、<code>nlos-semantic</code> 与 <code>nlos-task</code> 按工作集水位回收 <code>RECLAIMABLE</code> 缓存并冻结检查点，保持十万级逻辑任务的极低常驻内存开销。</li>
+        </ol>
+      </article>
+    </div>
+
+    <!-- 多控制器现代资源平面总览 -->
+    <div class="resource-map reveal interactive-structure" aria-label="NLOS 多控制器现代资源平面图">
+      <div class="resource-node"><strong>CPU / Activation</strong><p>ThreeTierScheduler · DRR · 安全工作窃取</p></div>
+      <div class="resource-node"><strong>Memory / Context</strong><p>nlos-artifact / nlos-semantic / nlos-task · 分级驻留与重水化</p></div>
+      <div class="resource-node"><strong>Storage / Artifact</strong><p>nlos-store WAL+FULL · 四轴同步 · 孤儿根保护 GC</p></div>
+      <div class="resource-node"><strong>I/O / Network</strong><p>信用流控 · 有界队列 · C-XHOST mTLS 通道</p></div>
+      <div class="resource-node"><strong>Sandbox / Device</strong><p>nlos-process + Wasmtime Fuel · 排他设备租约</p></div>
+      <div class="resource-core"><strong>Resource Manager</strong><span>QUOTE → RESERVE → BIND → CONSUME → RECLAIM → FINALIZE</span></div>
+      <div class="resource-node"><strong>Model Provider</strong><p>nlos-provider-worker 子进程 · max_tokens 硬顶 · 缓存降级</p></div>
+      <div class="resource-node"><strong>Human Attention</strong><p>非同质化 NotificationBudget · ActionToken · Z4 实心安全确认屏（32×20 单色印章）</p></div>
+      <div class="resource-node"><strong>ResourceGroup</strong><p>层级容量树 · 四域 Bulkhead · 系统保留池</p></div>
+      <div class="resource-node"><strong>ResourceAccount</strong><p>v0.5 §10.1 封闭域守恒账本 · 仅限可转移 Credit</p></div>
     </div>
   </div>
 </section>
@@ -497,12 +611,12 @@
 <nav class="pager" aria-label="页面顺序">
   <div class="container pager-inner">
     <a class="pager-link prev" href="verification.html">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-      <span><small>上一页</small>支撑设施与宗旨验证</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span><small>上一页</small>支撑与验证</span>
     </a>
     <a class="pager-link next" href="roadmap.html">
-      <span><small>下一页</small>路线与现状</span>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      <span><small>下一页</small>阶段路线</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
   </div>
 </nav>
@@ -511,20 +625,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
-      <span>· 自然语言操作系统</span>
+      <span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.5 · 2026-07-29 · 现代系统机制迁移</span>
-    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 分布式能力为规范目标，尚待实现证据</span>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=10.6.0"></script>
-<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js?v=6.0.1"></script>
-<script src="vendor/gsap.min.js"></script>
-<script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js?v=10.1.0"></script>
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
 </body>
 </html>

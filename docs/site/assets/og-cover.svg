@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="NLOS — Natural Language Operating System">
+  <defs>
+    <linearGradient id="canvasBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#040a14"/>
+      <stop offset="52%" stop-color="#061224"/>
+      <stop offset="100%" stop-color="#030811"/>
+    </linearGradient>
+    <radialGradient id="auroraTop" cx="70%" cy="26%" r="58%">
+      <stop offset="0%" stop-color="#bce6ff" stop-opacity="0.18"/>
+      <stop offset="48%" stop-color="#4a98d8" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#040a14" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="auroraBottom" cx="24%" cy="82%" r="54%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0.11"/>
+      <stop offset="55%" stop-color="#1c68ae" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#040a14" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glassCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="45%" stop-color="#dceef8" stop-opacity="0.025"/>
+      <stop offset="100%" stop-color="#091628" stop-opacity="0.52"/>
+    </linearGradient>
+    <linearGradient id="geronoGlow" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0.46"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0.46"/>
+    </linearGradient>
+    <linearGradient id="axisHoriz" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#edf8ff" stop-opacity="0.56"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="axisVert" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#edf8ff" stop-opacity="0.44"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="starCore" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="38%" stop-color="#dceef8" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Base Canvas & Obsidian Glacier Aurora -->
+  <rect width="1200" height="630" fill="url(#canvasBg)"/>
+  <rect width="1200" height="630" fill="url(#auroraTop)"/>
+  <rect width="1200" height="630" fill="url(#auroraBottom)"/>
+
+  <!-- Outer Editorial Hairline Frame -->
+  <rect x="36" y="36" width="1128" height="558" rx="18" fill="none" stroke="#b6e6ff" stroke-opacity="0.18" stroke-width="1"/>
+
+  <!-- Right-Side Architectural Gerono Infinity Emblem -->
+  <g transform="translate(910, 248)">
+    <!-- 1.54:1 Coordinate Crosshairs -->
+    <line x1="-196" y1="0" x2="196" y2="0" stroke="url(#axisHoriz)" stroke-width="1.1"/>
+    <line x1="0" y1="-128" x2="0" y2="128" stroke="url(#axisVert)" stroke-width="1.1"/>
+
+    <!-- Soft Glacier Outer Glow + Crisp Gerono Curve -->
+    <path
+      d="M 0 0 C 76.2 -57.9, 138 -81.9, 138 0 C 138 81.9, 76.2 57.9, 0 0 C -76.2 -57.9, -138 -81.9, -138 0 C -138 81.9, -76.2 57.9, 0 0 Z"
+      fill="none"
+      stroke="#8ad4ff"
+      stroke-opacity="0.16"
+      stroke-width="6.5"
+    />
+    <path
+      d="M 0 0 C 76.2 -57.9, 138 -81.9, 138 0 C 138 81.9, 76.2 57.9, 0 0 C -76.2 -57.9, -138 -81.9, -138 0 C -138 81.9, -76.2 57.9, 0 0 Z"
+      fill="none"
+      stroke="url(#geronoGlow)"
+      stroke-width="2.4"
+    />
+
+    <!-- Center-Symmetric Comet Heads & Starlight Micro-Nodes -->
+    <circle cx="116" cy="-42" r="4.8" fill="#8ad4ff" fill-opacity="0.30"/>
+    <circle cx="116" cy="-42" r="2.2" fill="#ffffff"/>
+    <circle cx="-116" cy="42" r="4.8" fill="#8ad4ff" fill-opacity="0.30"/>
+    <circle cx="-116" cy="42" r="2.2" fill="#ffffff"/>
+    <circle cx="-88" cy="-34" r="1.8" fill="#edf8ff" fill-opacity="0.80"/>
+    <circle cx="88" cy="34" r="1.8" fill="#edf8ff" fill-opacity="0.80"/>
+    <circle cx="-52" cy="24" r="1.5" fill="#8ad4ff" fill-opacity="0.72"/>
+    <circle cx="52" cy="-24" r="1.5" fill="#8ad4ff" fill-opacity="0.72"/>
+
+    <!-- Central Axis Star -->
+    <circle cx="0" cy="0" r="28" fill="url(#starCore)"/>
+    <path d="M0 -16 L3 -3 L16 0 L3 3 L0 16 L-3 3 L-16 0 L-3 -3 Z" fill="#ffffff"/>
+
+    <!-- Monogram -->
+    <text x="0" y="106" text-anchor="middle" fill="#edf8ff" fill-opacity="0.92" font-family="JetBrains Mono, Consolas, monospace" font-size="30" font-weight="500" letter-spacing="6">NLOS</text>
+  </g>
+
+  <!-- Left Editorial Identity & Hierarchy -->
+  <g transform="translate(84, 92)">
+    <!-- Eyebrow Pill -->
+    <rect x="0" y="0" width="468" height="30" rx="15" fill="#081628" stroke="#8ad4ff" stroke-opacity="0.36" stroke-width="1"/>
+    <circle cx="17" cy="15" r="3.5" fill="#edf8ff"/>
+    <text x="30" y="19.5" fill="#bce6ff" font-family="JetBrains Mono, Consolas, monospace" font-size="11.5" letter-spacing="1.4">NLOS ARCHITECTURE SPEC v0.5 · 35 RUST CRATES · 26 ADRS</text>
+
+    <!-- Primary Title -->
+    <text x="0" y="96" fill="#f7fcff" font-family="Inter, -apple-system, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="60" font-weight="600" letter-spacing="-1.8">NLOS</text>
+    <text x="176" y="94" fill="#8ad4ff" font-family="Inter, -apple-system, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="30" font-weight="350" letter-spacing="-0.4">自然语言操作系统</text>
+
+    <!-- Philosophy Triad -->
+    <text x="0" y="148" fill="#edf8ff" font-family="Inter, -apple-system, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="26" font-weight="400" letter-spacing="-0.3">
+      自然表达  ·  <tspan fill="#8ad4ff">系统执行</tspan>  ·  全局可控
+    </text>
+
+    <!-- Subtitle -->
+    <text x="0" y="192" fill="#dceef8" fill-opacity="0.80" font-family="Inter, -apple-system, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="16.5">
+      Managing LLM Agents the way modern OS kernels manage processes:
+    </text>
+    <text x="0" y="218" fill="#dceef8" fill-opacity="0.80" font-family="Inter, -apple-system, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="16.5">
+      Capability tokens · 8-term resource conservation · WAL durable authorities · Cell federation
+    </text>
+
+    <!-- Execution Hierarchy Strip -->
+    <g transform="translate(0, 252)">
+      <rect x="0" y="0" width="664" height="56" rx="10" fill="url(#glassCard)" stroke="#b6e6ff" stroke-opacity="0.24" stroke-width="1"/>
+      <text x="20" y="22" fill="#8ad4ff" fill-opacity="0.82" font-family="JetBrains Mono, Consolas, monospace" font-size="10.5" letter-spacing="1.4">EXECUTION &amp; AUTHORITY HIERARCHY</text>
+      <text x="20" y="42" fill="#edf8ff" font-family="JetBrains Mono, Consolas, monospace" font-size="13" font-weight="500">
+        Application ⊇ Process ⊇ AgentInstance ⊇ ExecutionFiber ⊇ Activation
+      </text>
+    </g>
+  </g>
+
+  <!-- Bottom 5-Stage Evidence Matrix Strip (W68 Canonical Baseline) -->
+  <g transform="translate(84, 466)">
+    <line x1="0" y1="0" x2="1032" y2="0" stroke="#8ad4ff" stroke-opacity="0.18" stroke-width="1"/>
+
+    <!-- Stage A -->
+    <g transform="translate(0, 22)">
+      <rect x="0" y="0" width="192" height="68" rx="10" fill="#08172a" stroke="#bce6ff" stroke-opacity="0.42" stroke-width="1"/>
+      <circle cx="16" cy="21" r="3.2" fill="#edf8ff"/>
+      <text x="26" y="25" fill="#edf8ff" font-family="JetBrains Mono, Consolas, monospace" font-size="10.2" font-weight="600">STAGE A · INTEGRATED</text>
+      <text x="16" y="48" fill="#dceef8" font-family="Inter, Segoe UI, PingFang SC, sans-serif" font-size="13" font-weight="500">Bootstrap Mechanisms</text>
+    </g>
+
+    <!-- Stage B -->
+    <g transform="translate(204, 22)">
+      <rect x="0" y="0" width="202" height="68" rx="10" fill="#08172a" stroke="#bce6ff" stroke-opacity="0.44" stroke-width="1"/>
+      <circle cx="16" cy="21" r="3.2" fill="#edf8ff"/>
+      <text x="26" y="25" fill="#edf8ff" font-family="JetBrains Mono, Consolas, monospace" font-size="10.2" font-weight="600">STAGE B · EXITED (W34-D)</text>
+      <text x="16" y="48" fill="#dceef8" font-family="Inter, Segoe UI, PingFang SC, sans-serif" font-size="13" font-weight="500">1,536 Tests · Single-Node</text>
+    </g>
+
+    <!-- Stage C -->
+    <g transform="translate(418, 22)">
+      <rect x="0" y="0" width="214" height="68" rx="10" fill="#0b1f38" stroke="#8ad4ff" stroke-opacity="0.58" stroke-width="1.2"/>
+      <circle cx="16" cy="21" r="3.2" fill="#8ad4ff"/>
+      <text x="26" y="25" fill="#8ad4ff" font-family="JetBrains Mono, Consolas, monospace" font-size="9.8" font-weight="600">STAGE C · 2,128+ TESTS</text>
+      <text x="16" y="48" fill="#ffffff" font-family="Inter, Segoe UI, PingFang SC, sans-serif" font-size="13" font-weight="600">9/9 C-core H6 + C-XHOST</text>
+    </g>
+
+    <!-- Stage D -->
+    <g transform="translate(644, 22)">
+      <rect x="0" y="0" width="202" height="68" rx="10" fill="#081628" stroke="#bce6ff" stroke-opacity="0.36" stroke-dasharray="4 3" stroke-width="1"/>
+      <circle cx="16" cy="21" r="3.2" fill="#bce6ff"/>
+      <text x="26" y="25" fill="#bce6ff" font-family="JetBrains Mono, Consolas, monospace" font-size="10.2" font-weight="500">STAGE D · W68 PARALLEL</text>
+      <text x="16" y="48" fill="#dceef8" fill-opacity="0.90" font-family="Inter, Segoe UI, PingFang SC, sans-serif" font-size="12.5">Z0-Z4 Workstation &amp; L0-L3</text>
+    </g>
+
+    <!-- Stage E -->
+    <g transform="translate(858, 22)">
+      <rect x="0" y="0" width="174" height="68" rx="10" fill="#071323" stroke="#8ad4ff" stroke-opacity="0.22" stroke-width="1"/>
+      <circle cx="16" cy="21" r="3.2" fill="#9ec0db"/>
+      <text x="26" y="25" fill="#9ec0db" font-family="JetBrains Mono, Consolas, monospace" font-size="10.2">STAGE E · PLANNED</text>
+      <text x="16" y="48" fill="#dceef8" fill-opacity="0.78" font-family="Inter, Segoe UI, PingFang SC, sans-serif" font-size="12.5">SABI v1.0 &amp; Ecosystem</text>
+    </g>
+  </g>
+</svg>

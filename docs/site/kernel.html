@@ -1,29 +1,32 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#040a14">
 <title>通用内核 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.5 · 通用系统权威：Application、Process、AgentInstance、ExecutionFiber、Capability、Resource 与 KABI/SABI。">
+<meta name="description" content="NLOS 架构设计总纲 v0.5 · Part I 通用系统权威：五层权威边界与五域分离 TCB、八大核心系统对象族、27-Entry KABI 候选与 SABI 冻结契约、签名应用包安装与 Slice K 通用性实证。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="通用内核 · NLOS — 自然语言操作系统">
+<meta property="og:description" content="v0.5 通用系统权威：微内核五项驻留判据、五大受信任计算域、八大核心对象族、27-Entry KABI 候选与 SABI 冻结边界、签名包安装及 Slice K 通用性实证。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="通用内核 · NLOS — 自然语言操作系统">
+<meta name="twitter:description" content="v0.5 通用系统权威：微内核五项驻留判据、五大受信任计算域、八大核心对象族、27-Entry KABI 候选与 SABI 冻结边界、签名包安装及 Slice K 通用性实证。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1">
-<link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
 
-<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
 
-<!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
-    <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">NL</span>
-      <span>NLOS</span>
-    </a>
-    <button class="nav-toggle" id="navToggle" type="button"
-            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
       <span></span><span></span><span></span>
     </button>
     <div class="nav-links" id="navLinks">
@@ -33,42 +36,45 @@
       <a href="execution.html">执行与控制</a>
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html">现代系统</a>
-      <a href="roadmap.html">路线</a>
+      <a href="roadmap.html">阶段路线</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
   </div>
 </nav>
 
 <main id="top">
 
 <!-- ================= 页头 ================= -->
-<header class="page-head container">
-  <span class="eyebrow reveal">Part I · 通用系统 · Kernel</span>
-  <h1 class="page-title reveal"><span class="title-line">通用系统权威：</span><span class="title-line accent">边界、对象与执行</span></h1>
-  <p class="page-desc reveal">微内核只是完整 NLOS 的启动底座。v0.5 将 Application、Task、Process、AgentInstance、ExecutionFiber、Artifact、Resource 与 Device 分离，并以 KABI/SABI、Capability、generation 和 Receipt 建立不可绕过边界。</p>
-  <nav class="page-toc reveal" aria-label="本页目录">
-    <a href="#arch">三层架构</a>
-    <a href="#abstractions">系统对象</a>
-    <a href="#syscalls">系统调用</a>
-    <a href="#elf">ELF</a>
-    <a href="#universality">通用性论证</a>
-  </nav>
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part I · 通用系统权威 · Kernel</span>
+    <h1 class="page-title reveal"><span class="title-line">通用系统权威：</span><span class="title-line accent">边界、对象与契约</span></h1>
+    <p class="page-desc reveal">微内核不是包揽一切的业务编排器，而是完整 NLOS 的最小不可绕过执行锚点。<code>v0.5</code> 明确划定五层系统权威与五大分离 TCB 域，将应用、任务、进程、智能体角色实例、协程、能力、数据与资源解耦为八大对象族，并以 <code>27-Entry KABI</code> 候选与 <code>SABI</code> 系统服务构筑长期兼容契约。</p>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#arch">五层系统权威</a>
+      <a href="#abstractions">八大对象族</a>
+      <a href="#syscalls">KABI 与 SABI</a>
+      <a href="#elf">Package 与安装</a>
+      <a href="#universality">16 模式与 Slice K</a>
+    </nav>
+  </div>
 </header>
 
-<!-- ================= 1. 三层架构 ================= -->
-<section class="section band" id="arch">
+<!-- ================= 1. 五层系统权威与 TCB ================= -->
+<section class="section band" id="arch" data-nav-label="五层权威边界">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Architecture<span class="sec-no">/ 01</span></span>
-      <h2>三层架构：<em>陷入层</em>是内核的唯一正确物理位置</h2>
-      <p>内核卡在 agent 循环与模型之间、agent 循环与工具之间。每次 LLM 请求、每次工具调用经内核陷入（trap）——一个陷入层同时提供抢占点、预算扣减点、权限校验点、污点标记点四个机制。</p>
+      <span class="eyebrow">System Authority<span class="sec-no">/ 01</span></span>
+      <h2>五层系统权威与<em>微内核五项驻留测试</em></h2>
+      <p>NLOS 将可信桌面交互、第三方应用、稳定系统服务（<code>SABI</code>）、微内核（<code>KABI</code>）与宿主沙箱/驱动层严格解耦。依据 <code>v0.5 §5.1</code>，只有隔离、能力强制、资源守恒、纪元围栏或审计根所必需的原语才允许进入 TCB。</p>
     </div>
+
     <figure class="idea-map reveal" data-idea-map aria-labelledby="kernel-map-title">
       <div class="idea-map-heading">
         <span>INTERACTIVE MODEL · 02</span>
         <div>
-          <h3 id="kernel-map-title">内核不理解任务，只守住跨边界的瞬间</h3>
-          <p>逐个查看五类动作，理解哪些必须陷入、哪些留在用户态。</p>
+          <h3 id="kernel-map-title">微内核不理解业务语义，只守住跨边界的权威瞬间</h3>
+          <p>悬停或点击五类边界节点，查看哪些执行留在进程私有空间，哪些必须经受控门控原子裁决。</p>
         </div>
       </div>
       <div class="idea-map-stage">
@@ -80,409 +86,604 @@
           <path data-map-link="tool harness" d="M850 292 C850 330 150 330 150 292"/>
         </svg>
         <button class="idea-node pos-a" type="button" data-map-node="harness"
-                data-map-title="Agent 循环"
-                data-map-copy="harness、图编排器与策略 agent 都运行在用户态。它们负责理解任务和组织步骤，却不能直接持有模型凭证或绕过工具网关。">
-          <span>01 · USERSPACE</span><strong>Agent 循环</strong><small>理解语义 · 组织步骤</small>
+                data-index="01"
+                data-title="第三方应用与用户态编排"
+                data-desc="应用、AgentRole 与工作流编排器全部运行在受限沙箱内，通过 SABI 服务句柄请求系统能力，绝不直接持有原始模型密钥或云端控制凭证（[TCB-BYPASS-001]）。">
+          <span class="idea-node-no">01 · USERSPACE</span><strong>应用与编排层</strong><small>Application · SABI 客户端</small>
         </button>
         <button class="idea-node pos-b" type="button" data-map-node="private"
-                data-map-title="私有计算"
-                data-map-copy="思考、草稿和进程私有内存访问不陷入。NLOS 只管共享边界，避免把每个 token 的内部推理都变成内核热路径。">
-          <span>02 · PRIVATE</span><strong>私有计算</strong><small>草稿 · 内存 · 本地状态</small>
+                data-index="02"
+                data-title="进程内私有计算与协程切换"
+                data-desc="本地状态计算、中间草稿与 ExecutionFiber 协程恢复留在进程私有地址空间内，不触发跨安全域陷入，避免将高频纯计算塞入微内核热路径。">
+          <span class="idea-node-no">02 · PRIVATE</span><strong>私有内存与协程</strong><small>Fiber · 本地状态不陷入</small>
         </button>
         <button class="idea-node pos-core is-active" type="button" data-map-node="trap"
-                data-map-title="唯一陷入边界"
-                data-map-copy="跨向模型或工具的调用必须经过 NLOS。凭证托管与网络策略使边界不可绕过；抢占、计费、鉴权、污点传播在这里一次完成。">
-          <span>03 · TRAP</span><strong>唯一陷入边界</strong><small>preempt · debit · verify</small>
+                data-index="03"
+                data-title="不可绕过门控与围栏边界"
+                data-desc="跨安全域 I/O、Capability 派生、资源预留与副作用提交必须穿过微内核与受控网关，在同一线性化点完成签名鉴权、守恒记账、generation 围栏与回执锚定。">
+          <span class="idea-node-no">03 · AUTHORITY GATE</span><strong>不可绕过门控边界</strong><small>capability · conservation · fence</small>
         </button>
         <button class="idea-node pos-c" type="button" data-map-node="model"
-                data-map-title="推理引擎"
-                data-map-copy="vLLM 等推理引擎像 CPU：内核不拥有它，只中介访问。请求—响应与流式 realtime 都归一为可计量调用。">
-          <span>04 · MODEL</span><strong>推理引擎</strong><small>request · stream · chunk</small>
+                data-index="04"
+                data-title="受管模型推理驱动（Driver）"
+                data-desc="本地与云端推理引擎作为受管 Driver 接入，内核不绑定特定模型协议；请求-响应与流式 chunk 均在 Activation 边界按实测用量结算 ResourceAccount 同质信用账本（[BUD-ALG-001]）。">
+          <span class="idea-node-no">04 · MODEL DRIVER</span><strong>受管推理驱动</strong><small>DriverProvider · chunk 计量</small>
         </button>
         <button class="idea-node pos-d" type="button" data-map-node="tool"
-                data-map-title="工具与设备"
-                data-map-copy="MCP、shell、文件、沙箱和存储像设备。handle 决定能否访问，namespace 决定能看到什么，具体协议栈可以替换。">
-          <span>05 · DEVICE</span><strong>工具与设备</strong><small>MCP · shell · sandbox</small>
+                data-index="05"
+                data-title="双层沙箱与外部设备网关"
+                data-desc="OS 进程与 Wasmtime 构成双重隔离，出站网络默认拒绝（[TCB-EGRESS-001]）；外部工具与设备调用强制携带 EffectPermit 与 128-bit 幂等键。">
+          <span class="idea-node-no">05 · SANDBOX &amp; DEVICE</span><strong>沙箱与设备网关</strong><small>EffectPermit · 默认拒绝出站</small>
         </button>
       </div>
       <figcaption class="idea-map-readout" aria-live="polite">
         <span class="idea-map-index">03</span>
-        <div><strong>唯一陷入边界</strong><p>跨向模型或工具的调用必须经过 NLOS。凭证托管与网络策略使边界不可绕过；抢占、计费、鉴权、污点传播在这里一次完成。</p></div>
+        <div>
+          <h4>不可绕过门控与围栏边界</h4>
+          <p>跨安全域 I/O、Capability 派生、资源预留与副作用提交必须穿过微内核与受控网关，在同一线性化点完成签名鉴权、守恒记账、generation 围栏与回执锚定。</p>
+        </div>
         <span class="idea-map-hint">HOVER / CLICK</span>
       </figcaption>
     </figure>
+
     <div class="arch-wrap">
-      <div class="arch-stack reveal-group">
+      <div class="arch-stack interactive-structure reveal-group">
         <div class="arch-layer">
-          <div class="layer-label"><span>用户态 · Userspace</span><span class="ring">ring 3</span></div>
-          <h3>harness 程序与策略服务</h3>
+          <div class="layer-label"><span>L4 · Trusted Desktop &amp; Shell</span><span class="ring">Surface: DESKTOP</span></div>
+          <h3>自然语言桌面、Task Space 与可信安全确认屏 Z4</h3>
           <div class="chips">
-            <span class="chip">harness 程序（agent 循环）</span>
-            <span class="chip">编排器（graph / workflow）</span>
-            <span class="chip">调度策略 agent</span>
-            <span class="chip">弹性策略 agent</span>
-            <span class="chip">分页策略服务</span>
-            <span class="chip">策略守护进程</span>
-            <span class="chip">工具注册中心</span>
+            <span class="chip">NL Shell / Ctrl+Space 意图面板</span>
+            <span class="chip">Trusted UI Z4 实心确认屏</span>
+            <span class="chip">Task Space · L0–L3 渐进披露</span>
+            <span class="chip">12 域显控同构 [UI-PARITY-001]</span>
           </div>
         </div>
-        <div class="trap-divider">陷入边界 · 跨私有边界全陷入</div>
+        <div class="trap-divider">四面同源控制边界 · 统一编译至 SystemControl v1.6</div>
+        <div class="arch-layer">
+          <div class="layer-label"><span>L3 · Applications &amp; User-Space</span><span class="ring">Untrusted Sandbox</span></div>
+          <h3>第三方签名应用、AgentRole 与用户态工作流</h3>
+          <div class="chips">
+            <span class="chip">Signed Application</span>
+            <span class="chip">AgentRole 角色逻辑</span>
+            <span class="chip">DAG / 状态机编排器</span>
+            <span class="chip">纯代码 Worker</span>
+            <span class="chip">自定义 UI Surface</span>
+          </div>
+        </div>
+        <div class="trap-divider">SABI 稳定系统服务边界 · Protobuf v3 / Canonical CBOR</div>
+        <div class="arch-layer">
+          <div class="layer-label"><span>L2 · System Services (SABI)</span><span class="ring">21 Service Families</span></div>
+          <h3>可独立升级与替换的一等操作系统服务</h3>
+          <div class="chips">
+            <span class="chip">ServiceDirectory</span>
+            <span class="chip">Package / Application</span>
+            <span class="chip">Task / TaskPlan</span>
+            <span class="chip">Artifact / Context</span>
+            <span class="chip">Scheduler / SystemControl</span>
+            <span class="chip">Topic / Blackboard / Search</span>
+            <span class="chip">Semantic / Notification</span>
+          </div>
+        </div>
+        <div class="trap-divider">KABI 对象能力边界 · [KERN-BOUND-001] 五项驻留判据</div>
         <div class="arch-layer kernel">
-          <div class="layer-label"><span>内核 · Kernel</span><span class="ring">ring 0</span></div>
-          <h3>NLOS 微内核</h3>
+          <div class="layer-label"><span>L1 · NLOS Microkernel (KABI)</span><span class="ring">Minimal TCB</span></div>
+          <h3>微内核纯机制原语：隔离、能力、守恒、围栏与审计根</h3>
           <div class="chips">
-            <span class="chip trap">陷入层：llm_call / tool_call</span>
-            <span class="chip">调度机制</span>
-            <span class="chip">上下文分页机制</span>
-            <span class="chip">IPC 路由 + 背压</span>
-            <span class="chip">预算核算</span>
-            <span class="chip">污点传播</span>
-            <span class="chip">能力校验</span>
-            <span class="chip">namespace 解析</span>
+            <span class="chip trap">Process 出生与抢占门控</span>
+            <span class="chip trap">Capability 衰减与纪元吊销</span>
+            <span class="chip">Namespace E_NOENT 边界</span>
+            <span class="chip">ResourceAccount 同质信用守恒</span>
+            <span class="chip">Generic Async I/O + 背压</span>
+            <span class="chip">Generation / Epoch 围栏</span>
+            <span class="chip">不可伪造审计锚点</span>
           </div>
         </div>
-        <div class="trap-divider">硬件抽象 · 内核不拥有 CPU，只中介访问</div>
+        <div class="trap-divider">宿主强制执行与驱动中介 · OS Process + Wasmtime</div>
         <div class="arch-layer">
-          <div class="layer-label"><span>硬件态 · Hardware</span><span class="ring">设备</span></div>
-          <h3>推理引擎与执行环境</h3>
+          <div class="layer-label"><span>L0 · Host Enforcement &amp; Drivers</span><span class="ring">Host / Hardware</span></div>
+          <h3>宿主隔离原语、出站网关与受管模型/工具驱动</h3>
           <div class="chips">
-            <span class="chip">推理引擎（vLLM 等 = CPU）</span>
-            <span class="chip">沙箱执行环境（= 外设）</span>
-            <span class="chip">存储</span>
+            <span class="chip">OS Process + Job/cgroup</span>
+            <span class="chip">Wasmtime 确定性沙箱</span>
+            <span class="chip">默认拒绝 Egress 网关</span>
+            <span class="chip">Managed Model / Device Drivers</span>
           </div>
         </div>
       </div>
+
       <aside class="arch-side reveal-group">
         <div class="card">
           <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+            v0.5 §5.1 微内核五项驻留测试
+          </h4>
+          <p>任一机制必须<b>同时通过以下五项判据</b>方可进入微内核 TCB，否则留驻 <code>SABI</code> 系统服务（<code>[KERN-BOUND-001]</code>）：</p>
+          <ol class="steps">
+            <li><b>不可绕过强制</b>：一旦旁路即破坏隔离、能力执行、资源守恒或生命周期正确性；</li>
+            <li><b>状态迁移原子性</b>：必须与权威账本、纪元围栏或句柄状态原子提交；</li>
+            <li><b>零自然语言理解</b>：完全不解析 Prompt、业务意图或语义内容；</li>
+            <li><b>负载与协议中立</b>：独立于特定 LLM、Provider、MCP/A2A 协议与应用形态；</li>
+            <li><b>原语最小不可约</b>：无法由更小的内核原语在用户态无损组合实现。</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h4>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            陷入如何不可绕过
+            五大分离受信任计算域（5 Separated TCB Domains）
           </h4>
-          <p>ring 保护的软件等价物：<b>凭证托管</b>——agent 拿不到原始模型 API key，模型端点只接受内核签名的请求；<b>网络策略</b>——沙箱网络规则使工具只能经内核网关到达。不是靠硬件特权级，靠凭证加网络隔离。</p>
-        </div>
-        <div class="card">
-          <h4>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            为什么是微内核
-          </h4>
-          <p>经典微内核（Mach）死于 IPC 性能开销。agent OS 里这个死因不存在：<b>LLM 调用延迟 100ms–10s，IPC 开销微秒到毫秒</b>——IPC 税相对系统调用延迟是噪声。Mach 是对的思路错的基座，agent 给了它对基座。</p>
-        </div>
-        <div class="card">
-          <h4>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-            不站队两大阵营
-          </h4>
-          <p>harness/沙箱派与图编排派共用 MCP + A2A 协议底座。harness 程序和图编排器都是 NLOS 内核之上的<b>用户态程序</b>——内核在两者之下，这就是桥。私有草稿不陷入，对应进程访问私有内存不陷入。</p>
+          <p>拒绝把整个操作系统塞进单一特权单体，<code>v0.5</code> 按最小权限拆分五大独立审计 TCB 域：</p>
+          <div class="oci-layers">
+            <div class="oci-layer"><b>Microkernel / Capability TCB</b><span>句柄 · 衰减 · 抢占门控</span></div>
+            <div class="oci-layer"><b>Durable Authority Store TCB</b><span>守恒账本 · TaskHead CAS · 审计根</span></div>
+            <div class="oci-layer"><b>Sandbox / Isolation Host TCB</b><span>OS 进程 · Wasmtime · 出站网关</span></div>
+            <div class="oci-layer"><b>Trusted UI Shell Z4 TCB</b><span>UAC/Polkit 实心安全屏 · 32×20 单色防伪印章</span></div>
+            <div class="oci-layer cow"><b>Cryptographic Key Custody Vault TCB</b><span>Ed25519 主体密钥 · 零明文外泄</span></div>
+          </div>
         </div>
       </aside>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">Stage B EXITED · H3/H6</span>
+      <span>权威实现锚点：<code>nlos-types</code> + <code>nlos-clock</code> + <code>nlos-identity</code>（名义类型 ID、单调纪元与主体身份） · <code>nlos-capability</code>（<code>ADR-0010</code> Ed25519 不可伪造衰减令牌） · <code>nlos-process</code>（<code>ADR-0015</code> OS Process + Wasmtime 双层隔离与宿主强杀监管）</span>
     </div>
   </div>
 </section>
 
-<!-- ================= 2. 系统对象 ================= -->
-<section class="section" id="abstractions">
+<!-- ================= 2. 八大核心系统对象族 ================= -->
+<section class="section" id="abstractions" data-nav-label="八大对象族">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Abstractions<span class="sec-no">/ 02</span></span>
-      <h2>对象必须分离：<em>应用、执行、数据、资源与设备</em></h2>
-      <p>v0.5 不再让 Agent 一词同时承担应用、包、身份和进程。完整层级是 Application → Process → AgentInstance → ExecutionFiber/Activation；Task 是持久义务，Artifact 是数据本体，Context 是派生工作集，ResourceGroup 与 ResourceAccount 分别负责物理隔离和账本归属。</p>
+      <span class="eyebrow">System Objects<span class="sec-no">/ 02</span></span>
+      <h2>八大一等系统对象族：<em>彻底终结“Agent = 进程”混同</em></h2>
+      <p>早期原型曾将应用、包、角色、进程与协程混称为单一“Agent”，并把广播主题与共享黑板塞入内核原语。<code>v0.5</code> 建立正交名义类型体系（<code>[MODEL-ID-001]</code>），将系统权威拆解为八大核心对象族，每族均对应独立已实现 Rust Crate。</p>
     </div>
-    <div class="abs-grid reveal-group">
+
+    <div class="abs-grid interactive-structure reveal-group">
       <div class="card abs-card">
         <div class="abs-head">
-          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>
-          <div><span class="abs-name">Agent</span><span class="abs-unix">计算族 · Unix: <b>进程</b></span></div>
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+          <div>
+            <span class="abs-name">Application / Package / Installation</span>
+            <span class="abs-unix">软件交付族 · <b>应用身份与安装归属</b></span>
+          </div>
         </div>
-        <p class="abs-duty">可调度执行单元。<b style="color:var(--text);">通用进程抽象：LLM 能力是一种可选 handle</b>——纯代码 worker 与 LLM agent 同一抽象，拒绝第二种进程类型（议题 13）。调度粒度 = 一个推理步（计量模型下 = chunk 边界）。</p>
-        <p class="abs-kernel"><b>内核</b>　生命周期状态机 · 步边界陷入 · 身份（ID / 父系 / 版本号）</p>
+        <p class="abs-duty">分离不可变签名分发包（<code>Package</code>）、工作区安装绑定（<code>Installation</code>）与长期应用主体（<code>Application</code>），绑定独立 <code>UserDataContainer</code> 生命周期归属。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-application</code> + <code>nlos-package</code> · Ed25519 验签与升级回滚</p>
       </div>
-      <div class="card abs-card">
-        <div class="abs-head">
-          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6z"/><path d="M9 9h6M9 13h6"/></svg></span>
-          <div><span class="abs-name">Context</span><span class="abs-unix">内存族 · Unix: <b>虚拟内存</b></span></div>
-        </div>
-        <p class="abs-duty">上下文窗口 = 物理内存；RAG = 请求调页；embedding 索引 = 页表；压缩 = swap；KV 前缀共享 = 共享库。映射最精确的一块。</p>
-        <p class="abs-kernel"><b>内核</b>　页记账 · 钉住强制（mlock）· 换页执行 · KV 共享机制</p>
-      </div>
-      <div class="card abs-card">
-        <div class="abs-head">
-          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
-          <div><span class="abs-name">Tool</span><span class="abs-unix">设备族 · Unix: <b>文件/设备</b></span></div>
-        </div>
-        <p class="abs-duty">外部能力入口。MCP 就是 /dev。双设备类：MCP（结构化，RPC 语义）+ shell/文件（字节流），内核不选边。</p>
-        <p class="abs-kernel"><b>内核</b>　工具调用陷入 · 能力校验（handle）· 沙箱强制挂钩</p>
-      </div>
-      <div class="card abs-card">
-        <div class="abs-head">
-          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg></span>
-          <div><span class="abs-name">Message</span><span class="abs-unix">通信族 · Unix: <b>管道</b></span></div>
-        </div>
-        <p class="abs-duty">定向、有序、消耗品的消息流，并发语义为背压——写满阻塞写方，且必须与调度原子。投递计费：发送者预付（议题 11）。</p>
-        <p class="abs-kernel"><b>内核</b>　投递保证与排序 · 背压阻塞 · 寻址路由</p>
-      </div>
+
       <div class="card abs-card">
         <div class="abs-head">
           <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg></span>
-          <div><span class="abs-name">Topic</span><span class="abs-unix">通信族 · Unix: <b>无（新发明）</b></span></div>
+          <div>
+            <span class="abs-name">Task / TaskPlan / TaskAttempt</span>
+            <span class="abs-unix">持久义务族 · <b>16 态状态机与 DAG</b></span>
+          </div>
         </div>
-        <p class="abs-duty">群发、有序、消耗品的广播主题，并发语义为兴趣过滤——万级规模解决 O(n²) 洪水的核心机制。过滤器 = eBPF 先例：执行不理解。</p>
-        <p class="abs-kernel"><b>内核</b>　投递与排序 · 路由 · 过滤谓词的安全执行</p>
+        <p class="abs-duty">独立于聊天窗口与单进程存活的 16 态持久义务、显式版本化执行图（<code>TaskPlan</code>）、因果闭合输入切面与唯一 <code>TaskHead</code> 线性化提交。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-task</code> + <code>nlos-plan</code> · 快照隔离与准入门控</p>
       </div>
+
       <div class="card abs-card">
         <div class="abs-head">
           <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></span>
-          <div><span class="abs-name">Blackboard</span><span class="abs-unix">通信族 · Unix: <b>共享内存</b></span></div>
+          <div>
+            <span class="abs-name">Process / IsolationUnit</span>
+            <span class="abs-unix">故障隔离族 · <b>双层强制沙箱边界</b></span>
+          </div>
         </div>
-        <p class="abs-duty">共享、持久的状态区，并发语义为 git 式合并。定案：内核元数据 + 用户态字节（inode 缓存 vs 磁盘字节）。</p>
-        <p class="abs-kernel"><b>内核</b>　handle / 版本序号 · 写串行化 · wakeup 原子性 · 污点</p>
+        <p class="abs-duty">宿主可强制抢占的资源、生命周期与崩溃隔离单元，融合 OS 进程与 Wasmtime 双层沙箱（<code>ADR-0015</code>）、私有 <code>Namespace</code> 视图与默认拒绝出站策略。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-process</code> + <code>nlos-commit-coordinator</code> · <code>BirthDecision</code> 原子出生</p>
       </div>
+
       <div class="card abs-card">
         <div class="abs-head">
-          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 7v10"/><path d="M12 10.5v3"/><path d="M9.5 12h5"/></svg></span>
-          <div><span class="abs-name">Budget</span><span class="abs-unix">经济族 · Unix: <b>无（新大陆）</b></span></div>
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>
+          <div>
+            <span class="abs-name">AgentInstance / AgentRole</span>
+            <span class="abs-unix">认知角色族 · <b>Agent ≠ Unix 进程</b></span>
+          </div>
         </div>
-        <p class="abs-duty">一切行动折算统一货币消耗，陷入点原子扣减，耗尽强制执行。负载无关的计量设施——治理语义归用户态可插拔模块。</p>
-        <p class="abs-kernel"><b>内核</b>　扣减核算 · 耗尽强制 · 继承树权威记账</p>
+        <p class="abs-duty">进程内逻辑角色实例与策略绑定，关联特定 <code>TaskAttempt</code> 与 <code>ControlDomain</code>；彻底解耦智能体角色与宿主进程，纯代码 Worker 零额外负担。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-process</code> + <code>nlos-runtime</code> · 权威身份绑定与监督树</p>
       </div>
+
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+          <div>
+            <span class="abs-name">ExecutionFiber / Activation</span>
+            <span class="abs-unix">协程控制族 · <b>M:N 复用与分维计量</b></span>
+          </div>
+        </div>
+        <p class="abs-duty">轻量级用户态协程控制流、6 类 <code>Activation</code> 边界分维计量与基于确定性事件日志的跨检查点重放恢复，等待 I/O 绝不独占宿主线程。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-runtime</code> + <code>nlos-runtime-tokio</code> · <code>ADR-0009/0012</code> 事件溯源重放</p>
+      </div>
+
       <div class="card abs-card">
         <div class="abs-head">
           <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
-          <div><span class="abs-name">Policy</span><span class="abs-unix">安全族 · Unix: <b>用户/权限</b></span></div>
+          <div>
+            <span class="abs-name">Capability / Namespace / Handle</span>
+            <span class="abs-unix">能力权威族 · <b>不可伪造与单向衰减</b></span>
+          </div>
         </div>
-        <p class="abs-duty">权限、Namespace、generation 与版本门控。Capability 类似不可伪造 handle；发现、命名和授权必须分离。</p>
-        <p class="abs-kernel"><b>内核</b>　陷入点强制校验 · 污点传播 · 版本门控 · 衰减机械校验</p>
+        <p class="abs-duty">Ed25519 签名不可伪造权限令牌、只减不增的派生委派链、带 <code>slot + generation</code> 的防复活句柄与未授权对象返回 <code>E_NOENT</code>（<code>does-not-exist</code>）命名隔离。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-capability</code> + <code>nlos-identity</code> · <code>ADR-0010</code> 签名令牌与纪元吊销</p>
+      </div>
+
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6z"/><path d="M9 9h6M9 13h6"/></svg></span>
+          <div>
+            <span class="abs-name">Artifact / Context / SemanticEvent</span>
+            <span class="abs-unix">数据认知族 · <b>CAS 本体与双签名图</b></span>
+          </div>
+        </div>
+        <p class="abs-duty">内容寻址（CAS）不可变数据面（<code>Artifact</code>）、按需物化的驻留工作集视图（<code>Context</code>）与分离生产者/核验者身份的追加写语义认知图。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-artifact</code> + <code>nlos-semantic</code> · CAS 视图与双签名认知图</p>
+      </div>
+
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 7v10"/><path d="M9.5 10h5M9.5 14h5"/></svg></span>
+          <div>
+            <span class="abs-name">ResourceGroup / Account / Driver</span>
+            <span class="abs-unix">资源设备族 · <b>多维容量与守恒账本</b></span>
+          </div>
+        </div>
+        <p class="abs-duty">严格分离承载多维物理容量、速率与配额的 <code>ResourceGroup</code>（<code>[RSM-ALG-001]</code>）与仅承载同质可转移信用守恒的 <code>ResourceAccount</code>（<code>[BUD-ALG-001]</code>），配合携带 <code>EffectPermit</code> 的受管设备与模型驱动。</p>
+        <p class="abs-kernel"><b>Crate</b>　<code>nlos-resource</code> + <code>nlos-operation</code> + <code>nlos-driver-mock</code> · 零隐式透支与副作用围栏</p>
       </div>
     </div>
+
     <div class="callout reveal">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
-      <p><b>调度器不进内核热路径。</b>算术否决了 LLM 上热路径：万级 agent × 每步约 2s = 每秒数千调度事件，LLM 决策追不上。分层调度：内核 dispatcher 纯算术，零智能；用户态调度 agent 是 <b>sysctl writer</b>，慢循环写参数进内核（/proc/sys 类比）。内核强制不变量（预算守恒、公平性下界），dead-man's switch 兜底。</p>
+      <p><b>为什么 <code>Topic</code>、<code>Blackboard</code>、<code>Search</code>、<code>Notification</code> 与 <code>Planner</code> 不进微内核？</b>依据 <code>[LAYER-API-001]</code> 与 <code>[LAYER-SVC-001]</code>，“一等操作系统能力”绝不等于“微内核特权原语”。广播兴趣过滤（<code>nlos-topic</code>）、乐观并发共享状态区（<code>Blackboard</code> SABI 系统服务 · <code>v0.5 §9.3 / §13.2</code>，与 <code>nlos-semantic</code> 语义图协同）、非权威检索（<code>nlos-search</code>）、人类注意力通知（<code>nlos-notify</code>）与计划声明（<code>nlos-plan</code>）全部作为<b>可独立替换、可故障重启的 <code>SABI</code> 系统服务</b>运行在微内核通用异步通道（<code>nlos-channel</code>）、对象视图映射与 <code>Capability</code> 句柄之上——既守住微内核极小 TCB，又赋予系统服务持续演进弹性。</p>
     </div>
   </div>
 </section>
 
-<!-- ================= 3. 系统调用表（浅区） ================= -->
-<section class="section glacier" id="syscalls">
+<!-- ================= 3. KABI 与 SABI 双层契约 ================= -->
+<section class="section glacier" id="syscalls" data-nav-label="KABI与SABI">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Syscalls<span class="sec-no">/ 03</span></span>
-      <h2><em>27-entry KABI candidate</em>，先纵切面验证再冻结</h2>
-      <p>v0.5 当前是 <b>27-entry KABI candidate</b>：Process、对象映射、Namespace/Handle、generic async I/O、Resource 与可信计量。数量尚未冻结；Topic、Blackboard、Package、Semantic 与桌面属于稳定系统服务，不应被硬塞进微内核。</p>
+      <span class="eyebrow">KABI &amp; SABI<span class="sec-no">/ 03</span></span>
+      <h2>纯机制 <em>27-Entry KABI</em> 与线级冻结 <em>SABI</em></h2>
+      <p><code>v0.5</code> 严格肃清早期把消息主题广播、共享黑板读写与模型推理直接塞入微内核的层级混淆：微内核只保留 6 族 27 个纯机制候选入口；21 类高层系统服务统一穿过 <code>SABI</code> Protobuf v3 / Canonical CBOR 线级协议边界。</p>
     </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-design">Part A · DESIGN · 候选未冻结</span>
+      <span><b>27-Entry KABI Candidate（<code>v0.5 §9.2</code>）</b>：24 个按 <code>Capability</code> 授权的受控进程入口 + 3 个仅限 <code>RIGHT_METER_DRIVER</code> 的可信驱动计量入口（另含 3 个可选 <code>RESOURCE_ESCROW</code> 扩展入口）。所有变更调用强制携带 128-bit <code>IdempotencyKey</code>。</span>
+    </div>
+
     <div class="sys-grid reveal-group">
       <div class="card sys-group">
-        <h4>进程 · Process</h4>
+        <h4>01 · Process (1–8 · 8)</h4>
         <ul class="sys-list">
-          <li><b>spawn</b>(executable, budget_slice, policy_ref)</li>
-          <li><b>suspend</b> / <b>resume</b></li>
-          <li><b>checkpoint</b> / <b>restore</b></li>
-          <li><b>branch</b>(→ fork) / <b>kill</b></li>
+          <li><span><b>proc_spawn</b> / <b>proc_exit</b></span><span class="trap-tag">BirthDecision 原子出生与退出</span></li>
+          <li><span><b>proc_wait</b></span><span class="trap-tag">终态同步与核算状态</span></li>
+          <li><span><b>proc_suspend</b> / <b>proc_resume</b> / <b>proc_kill</b></span><span class="trap-tag">静止点挂起 · 恢复 · 幂等强杀</span></li>
+          <li><span><b>proc_checkpoint</b> / <b>proc_restore</b></span><span class="trap-tag">检查点与新 generation 围栏恢复</span></li>
         </ul>
       </div>
+
       <div class="card sys-group">
-        <h4>内存 · Context</h4>
+        <h4>02 · Object View Mapping (9–13 · 5)</h4>
         <ul class="sys-list">
-          <li><b>ctx_pin</b> / <b>ctx_unpin</b></li>
-          <li><b>ctx_advise</b> / <b>ctx_map</b></li>
+          <li><span><b>view_map</b> / <b>view_unmap</b></span><span class="trap-tag">授权对象字节/页映射与解除</span></li>
+          <li><span><b>view_pin</b> / <b>view_unpin</b></span><span class="trap-tag">驻留工作集锁定与释放</span></li>
+          <li><span><b>view_advise</b></span><span class="trap-tag">通用资源回收与访问提示</span></li>
         </ul>
       </div>
+
       <div class="card sys-group">
-        <h4>设备 · Tool</h4>
+        <h4>03 · Namespace / Handle (14–17 · 4)</h4>
         <ul class="sys-list">
-          <li><b>tool_call</b><span class="trap-tag">陷入</span></li>
-          <li><b>tool_grant</b> / <b>tool_revoke</b></li>
+          <li><span><b>ns_lookup</b></span><span class="trap-tag">私有视图解析 · 未授权 E_NOENT</span></li>
+          <li><span><b>ns_delegate</b> / <b>ns_revoke</b></span><span class="trap-tag">单向衰减委派 · 纪元吊销</span></li>
+          <li><span><b>handle_close</b></span><span class="trap-tag">slot + generation 句柄关闭</span></li>
         </ul>
       </div>
+
       <div class="card sys-group">
-        <h4>IPC</h4>
+        <h4>04 · Generic Async I/O (18–22 · 5)</h4>
         <ul class="sys-list">
-          <li><b>msg_send</b> / <b>msg_recv</b><span class="trap-tag">发送者预付</span></li>
-          <li><b>topic_publish</b> / <b>topic_subscribe</b>(filter)</li>
-          <li><b>bb_open</b> / <b>bb_read</b> / <b>bb_write</b></li>
+          <li><span><b>io_submit</b></span><span class="trap-tag">异步操作提交 · 128-bit 幂等键</span></li>
+          <li><span><b>io_write</b> / <b>io_read</b></span><span class="trap-tag">受控通道读写与发送者背压</span></li>
+          <li><span><b>io_poll</b> / <b>io_cancel</b></span><span class="trap-tag">OperationId 轮询与取消传播</span></li>
         </ul>
       </div>
+
       <div class="card sys-group">
-        <h4>经济 · Budget</h4>
+        <h4>05 · Resource (23–24 · 2)</h4>
         <ul class="sys-list">
-          <li><b>budget_query</b> / <b>budget_transfer</b></li>
-          <li><b>llm_call</b><span class="trap-tag">陷入 · 计量调用</span></li>
+          <li><span><b>budget_query</b></span><span class="trap-tag">ResourceAccount 守恒余额查询</span></li>
+          <li><span><b>budget_transfer</b></span><span class="trap-tag">同质信用原子划拨（[BUD-ALG-001]）</span></li>
         </ul>
       </div>
+
       <div class="card sys-group">
-        <h4>安全 · Policy</h4>
+        <h4>06 · Trusted Metering (25–27 · 3) + Optional Escrow (+3)</h4>
         <ul class="sys-list">
-          <li><b>policy_grant</b> / <b>policy_revoke</b></li>
-          <li><b>signal_register</b></li>
+          <li><span><b>meter_reserve</b> / <b>meter_consume</b></span><span class="trap-tag">RIGHT_METER_DRIVER 预留与扣减</span></li>
+          <li><span><b>meter_finalize</b></span><span class="trap-tag">RIGHT_METER_DRIVER 签名回执终结</span></li>
+          <li><span><b>resource_escrow_open</b> / <b>resource_escrow_get</b></span><span class="trap-tag">RESOURCE_ESCROW 可选托管与查询</span></li>
+          <li><span><b>resource_escrow_apply</b></span><span class="trap-tag">RESOURCE_ESCROW 可选迁移 CAS</span></li>
         </ul>
       </div>
     </div>
-    <p class="sys-note reveal">预算耗尽 = signal 投递（Unix 信号语义直接移植）；agent 注册自己的 handler 决定挂起 / 降级 / 通知。<b>每陷入只查能力表 + 预算 + 污点</b>，持有 handle 后不再每调用重估策略。预算透支由 <b>max_tokens 硬顶</b>物理截断（剩余预算折算 token 上限随调用下发）；消息投递发送者预付 = 经济背压（议题 11）。</p>
+
+    <div class="bento-grid interactive-structure reveal-group">
+      <article class="bento-card span-7 featured">
+        <div class="wp-top">
+          <span class="bento-kicker">Part B · SABI Wire Contract · nlos-schema</span>
+          <span class="badge badge-verified">8 Wire Channels Implemented · 7 Frozen v1-beta</span>
+        </div>
+        <h3>SABI 线级契约：Protobuf v3 / Canonical CBOR 与 7 组字节黄金向量</h3>
+        <p>第三方应用面向 <code>SABI</code> 编程（<code>ADR-0014</code> / <code>ADR-0024 VERIFIED</code>）。8 条核心线级通道已在 <code>nlos-schema</code> 中完整实现，其中 7 条在 <code>v1-beta</code> 冻结并通过 <b>7 组字节级锁死（byte-locked）Canonical CBOR 黄金向量</b>回归校验：</p>
+        <div class="chips">
+          <span class="chip trap">Envelope v1.1 · FROZEN</span>
+          <span class="chip trap">ServiceDirectory v1.0 · FROZEN</span>
+          <span class="chip trap">OperationControl v1.0 · FROZEN</span>
+          <span class="chip trap">SystemControl v1.6 [20 commands] · FROZEN</span>
+          <span class="chip trap">TakeoverControl v1.0 · FROZEN</span>
+          <span class="chip trap">WaitControl v1.0 · FROZEN</span>
+          <span class="chip trap">DriverProvider v1.0 · FROZEN</span>
+          <span class="chip">PrincipalHandshake v1.0 · UNFROZEN</span>
+        </div>
+      </article>
+
+      <article class="bento-card span-5">
+        <div class="wp-top">
+          <span class="bento-kicker">v0.5 §9.3 · System Service Catalog</span>
+          <span class="badge badge-implemented">21 Service Families</span>
+        </div>
+        <h3>21 类高层系统服务族（零专用内核后门）</h3>
+        <p>所有高层平台语义均经 <code>SabiEnvelope</code> 携带 <code>capability_handles</code>、<code>idempotency_key</code> 与 <code>proposal_digest</code> 访问，严禁新增 Provider 专属微内核系统调用（<code>[KABI-SVC-001]</code>）：</p>
+        <div class="chips">
+          <span class="chip">ServiceDirectory</span>
+          <span class="chip">Package</span>
+          <span class="chip">Application</span>
+          <span class="chip">Task</span>
+          <span class="chip">TaskPlan</span>
+          <span class="chip">Artifact</span>
+          <span class="chip">Context</span>
+          <span class="chip">Resource</span>
+          <span class="chip">Scheduler</span>
+          <span class="chip">SystemControl</span>
+          <span class="chip">Intent</span>
+          <span class="chip">Operation/Receipt</span>
+          <span class="chip">Semantic Settlement</span>
+          <span class="chip">Notification</span>
+          <span class="chip">Search</span>
+          <span class="chip">Settings</span>
+          <span class="chip">Keychain</span>
+          <span class="chip">Device</span>
+          <span class="chip">UI Surface</span>
+          <span class="chip">Workspace</span>
+          <span class="chip">Session</span>
+        </div>
+      </article>
+    </div>
   </div>
 </section>
 
-<!-- ================= 4. ELF（浅区） ================= -->
-<section class="section glacier" id="elf">
+<!-- ================= 4. 签名应用包与安装流水线 ================= -->
+<section class="section glacier" id="elf" data-nav-label="签名包与安装">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Executable Format<span class="sec-no">/ 04</span></span>
-      <h2>ELF：不是文件格式，是<em>三方契约</em></h2>
-      <p>v0.5 将 Package、Installation、Application、Executable 与 Process 分离。Package 是不可变签名制品，Application 是安装、授权、更新和用户数据归属单位；MCP、A2A、浏览器和本地 CLI 都只是可替换 Driver adapter，不能成为系统身份。</p>
+      <span class="eyebrow">Package &amp; Installation<span class="sec-no">/ 04</span></span>
+      <h2>从签名制品到受控运行：<em>Package、计划模板与安装契约</em></h2>
+      <p><code>v0.5</code> 告别早期以单体智能体 YAML 清单充当交付格式的原型设计，确立现代操作系统级软件交付链：<code>nlos/package-file/v1</code> 行式 <code>package.manifest</code> 与 Ed25519 域分隔签名锁死载荷摘要及 <code>ADR-0016</code> <code>tasks</code> 模板段，经 <code>nlos-package</code> 与 <code>nlos-application</code> 验签回执绑定（receipt digest-binding）完成确定性安装。</p>
     </div>
+
     <div class="elf-wrap">
-      <div class="codeblock reveal">
-        <div class="codeblock-bar">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="fname">researcher.agent.yaml — manifest 示例</span>
+      <div class="code-showcase reveal">
+        <div class="code-tablist-bar">
+          <div class="code-tablist" role="tablist" aria-label="v0.5 应用包与安装契约示例">
+            <button class="code-tab is-active" type="button" role="tab" id="tab-pkg-manifest" aria-selected="true" aria-controls="panel-pkg-manifest">package.manifest · 应用包清单</button>
+            <button class="code-tab" type="button" role="tab" id="tab-plan-tpl" aria-selected="false" aria-controls="panel-plan-tpl" tabindex="-1">tasks/* · ADR-0016 计划模板</button>
+            <button class="code-tab" type="button" role="tab" id="tab-pkg-cli" aria-selected="false" aria-controls="panel-pkg-cli" tabindex="-1">nlos-package CLI · 验签安装</button>
+          </div>
+          <button class="code-copy" type="button" data-copy="auto">复制代码</button>
         </div>
-<pre><span class="k">apiVersion</span>: <span class="s">nlos/v1alpha2</span>
-<span class="k">kind</span>: <span class="s">Agent</span>
-<span class="k">metadata</span>:
-  <span class="k">name</span>: <span class="s">researcher</span>
-  <span class="k">version</span>: <span class="n">1.2.0</span>
-  <span class="k">digest</span>: <span class="s">sha256:...</span>
-  <span class="k">signature</span>: <span class="s">&lt;开发者签名&gt;</span>
-<span class="k">spec</span>:
-  <span class="k">runtime</span>:                    <span class="c"># ABI 声明</span>
-    <span class="k">loop</span>: <span class="s">react</span>
-    <span class="k">model</span>: { <span class="k">minTier</span>: <span class="n">2</span>, <span class="k">preferred</span>: [...] }  <span class="c"># 可选：纯代码 worker 无 LLM 手柄</span>
-  <span class="k">instructions</span>:
-    <span class="k">core</span>: <span class="s">./instructions.md</span>   <span class="c"># 只读段（text segment）</span>
-  <span class="k">skills</span>:
-    - <span class="k">path</span>: <span class="s">./skills/web-research/</span>
-      <span class="k">mutable</span>: <span class="n">true</span>           <span class="c"># 允许自我修改的段</span>
-  <span class="k">tools</span>:                      <span class="c"># 动态链接（NEEDED）</span>
-    - <span class="s">mcp://.../web-search@^2.0</span>
-  <span class="k">memory</span>:
-    <span class="k">layout</span>: <span class="s">memfs</span>
-    <span class="k">seed</span>: <span class="s">./memory/seed/</span>      <span class="c"># 记忆烘焙</span>
-    <span class="k">quota</span>: <span class="n">100k</span>
-  <span class="k">budget</span>:
-    <span class="k">request</span>: <span class="n">50k/day</span>
-    <span class="k">exhaustion</span>: <span class="s">degrade</span>       <span class="c"># suspend | degrade | notify</span>
-  <span class="k">permissions</span>:                <span class="c"># namespace 绑定请求清单（安装时授权）</span>
-    <span class="k">blackboards</span>: [<span class="s">research-shared</span>]
-    <span class="k">topics</span>: { <span class="k">subscribe</span>: [<span class="s">news.*</span>], <span class="k">publish</span>: [<span class="s">findings</span>] }
-  <span class="k">interfaces</span>:                 <span class="c"># 符号表：内嵌 A2A Agent Card</span>
-    <span class="k">skills</span>: [<span class="s">deep-research</span>]
-  <span class="k">selfModification</span>:           <span class="c"># 段可变性声明（格式级）</span>
-    <span class="k">allowed</span>: [<span class="s">memory</span>, <span class="s">skills</span>]
-    <span class="k">forbidden</span>: [<span class="s">instructions.core</span>]
-    <span class="k">requiresReauth</span>: [<span class="s">tools</span>, <span class="s">permissions</span>]
-  <span class="k">lifecycle</span>:
-    <span class="k">restart</span>: <span class="s">on-failure</span></pre>
+
+        <div class="code-panel" role="tabpanel" id="panel-pkg-manifest" aria-labelledby="tab-pkg-manifest">
+<pre><span class="c"># examples/sample-app/package/package.manifest — nlos/package-file/v1 开发者包声明</span>
+<span class="c"># 行式确定性格式：无墙钟输入，同树同密钥构建产出逐字节恒等的 .nlospkg</span>
+<span class="k">package-id</span> = <span class="s">9a1c7d3e5f0b2a4c6d8e0f1a2b3c4d5e</span>
+<span class="k">version</span>    = <span class="s">1.0.0</span>
+
+<span class="c"># entries：entry = &lt;name&gt; &lt;role&gt; &lt;path&gt;（SHA-256 载荷摘要纳入 Ed25519 签名面）</span>
+<span class="k">entry</span> = <span class="s">sample-driver executable app.bin</span>
+<span class="k">entry</span> = <span class="s">sample-config data assets/config.bin</span>
+
+<span class="c"># tasks 模板段（ADR-0016 决定 1 · W28-B with-tasks 域分隔签名面）：</span>
+<span class="c"># task = &lt;node-key-HEX32&gt; &lt;kind&gt; &lt;binding&gt; &lt;inputs&gt; &lt;outputs&gt; &lt;policy&gt; &lt;ceiling&gt; [deps=...]</span>
+<span class="k">task</span> = <span class="s">01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0 agent-role tasks/main-binding.txt tasks/main-inputs.txt tasks/main-outputs.txt tasks/main-policy.txt tasks/main-ceiling.txt</span>
+<span class="k">task</span> = <span class="s">02ce7a19d5f3b1a9c7e5d3f1b9a7c5e3 executable tasks/service-binding.txt tasks/service-inputs.txt tasks/service-outputs.txt tasks/service-policy.txt tasks/service-ceiling.txt deps=01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0</span></pre>
+        </div>
+
+        <div class="code-panel" role="tabpanel" id="panel-plan-tpl" aria-labelledby="tab-plan-tpl" hidden>
+<pre><span class="c"># examples/sample-app/package/tasks/* — ADR-0016 五维摘要体（随包签名不可变）</span>
+<span class="c"># 安装/启动时实例化为 nlos-plan 的同一套 TaskPlan / TaskNode schema（[PLAN-OVERRIDE-001]）</span>
+
+<span class="t">[Node 01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0 · kind = agent-role]</span>
+<span class="k">tasks/main-binding.txt</span>  = <span class="s">"agent-role binding: sample-app main node v1.0.0"</span>
+<span class="k">tasks/main-inputs.txt</span>   = <span class="s">"input-selector: installed application view + config entry digest"</span>
+<span class="k">tasks/main-outputs.txt</span>  = <span class="s">"output-contract: one app-owned artifact revision per run"</span>
+<span class="k">tasks/main-policy.txt</span>   = <span class="s">"policy: fail-closed, no retry before durable receipt"</span>
+<span class="k">tasks/main-ceiling.txt</span>  = <span class="s">"resource-ceiling: 1 fiber, 1 operation, 1 artifact revision"</span>
+
+<span class="t">[Node 02ce7a19d5f3b1a9c7e5d3f1b9a7c5e3 · kind = executable · deps = 01fa3c57...]</span>
+<span class="k">tasks/service-binding.txt</span> = <span class="s">"executable binding: sample-app background service v1.0.0"</span>
+<span class="k">tasks/service-inputs.txt</span>  = <span class="s">"input-selector: main node output receipt"</span>
+<span class="k">tasks/service-outputs.txt</span> = <span class="s">"output-contract: service Os process registered with supervisor registry"</span>
+<span class="k">tasks/service-policy.txt</span>  = <span class="s">"policy: graceful teardown via W30-D chain on uninstall"</span>
+<span class="k">tasks/service-ceiling.txt</span> = <span class="s">"resource-ceiling: 1 Os process, 1 supervisor pid registration"</span></pre>
+        </div>
+
+        <div class="code-panel" role="tabpanel" id="panel-pkg-cli" aria-labelledby="tab-pkg-cli" hidden>
+<pre><span class="c"># 1. 由显式种子确定性派生开发者 Ed25519 签名密钥描述子</span>
+<span class="prompt">$ </span><span class="fn">nlos-package</span> keygen --seed &lt;HEX64&gt; --out publisher.key
+
+<span class="c"># 2. 从开发者目录可复现构建自包含签名包（默认 .nlospkg 帧格式）</span>
+<span class="prompt">$ </span><span class="fn">nlos-package</span> build ./examples/sample-app/package --key publisher.key --out sample-app.nlospkg
+
+<span class="c"># 3. 离线一致性门禁（PKG-CONF-### 格式/签名/摘要不变量）与权威路径验签</span>
+<span class="prompt">$ </span><span class="fn">nlos-package</span> conformance sample-app.nlospkg
+<span class="prompt">$ </span><span class="fn">nlos-package</span> verify sample-app.nlospkg --store ./state/store --identity ./state/identity
+<span class="s">VERIFIED a7ea5992540089137d455035715a495e</span>
+
+<span class="c"># 4. 经持久化验签回执摘要绑定安装至状态根（nlos-application 单事务推进代际）</span>
+<span class="prompt">$ </span><span class="fn">nlos-package</span> install sample-app.nlospkg --root ./state
+<span class="s">INSTALL 185f9e2228c1f5bead58a0d7840132b3  decision=installed  generation=1</span>
+
+<span class="c"># 5. 经 SystemControl 本地 IPC 套接字检视已安装应用并获取确定性 ControlReceipt</span>
+<span class="c">#    （例如 sample-app 的 &lt;PACKAGE_ID_HEX_32&gt; = 9a1c7d3e5f0b2a4c6d8e0f1a2b3c4d5e）</span>
+<span class="prompt">$ </span><span class="fn">system-control-cli</span> --root ./state ./state/control.sock inspect-application &lt;PACKAGE_ID_HEX_32&gt;
+<span class="s">RECEIPT 4f91c208e3a7...  application=installed  generation=1</span></pre>
+        </div>
       </div>
+
       <aside class="elf-side reveal-group">
         <div class="card">
-          <h4>OCI 分层镜像</h4>
-          <p>Docker image : container :: agent 包 : 运行实例。registry 复用 OCI 设施，等于 agent 应用商店。</p>
+          <h4>四重名义身份彻底解耦</h4>
+          <p><code>Package ≠ Installation ≠ Application ≠ Process</code>：<code>Package</code> 是由哈希与签名锁死的静态分发包；<code>Installation</code> 记录工作区授权与当前激活版本；<code>Application</code> 持有长期身份与用户资产归属；<code>Process</code> 仅代表某次具体运行实例。</p>
           <div class="oci-layers">
-            <div class="oci-layer"><b>基础层</b><span>只读指令 · text 段</span></div>
-            <div class="oci-layer"><b>技能层</b><span>skills · 可变</span></div>
-            <div class="oci-layer cow"><b>实例记忆层</b><span>copy-on-write</span></div>
+            <div class="oci-layer"><b>Package（只读签名层）</b><span>WASM / 二进制 · 静态模板</span></div>
+            <div class="oci-layer"><b>Installation（授权绑定层）</b><span>衰减 Capability · SABI 协商</span></div>
+            <div class="oci-layer cow"><b>UserDataContainer（用户数据层）</b><span>跨升级/回滚持久保留</span></div>
           </div>
-          <p style="margin-top: var(--sp-3);">「组织基础 agent + 部门定制层 + 个人记忆层」的继承链自然成立。段映射：dynamic 段 = 工具依赖声明（MCP registry = 动态链接器）；symbol table = 对外接口；note 段 = 签名与版本链。</p>
         </div>
+
         <div class="card">
-          <h4>加载流程 · spawn 时内核做什么</h4>
+          <h4><code>UserDataContainer</code> 升级与回滚保护</h4>
+          <p>应用升级或回滚只切换 <code>Installation</code> 指向的不可变 <code>Package</code> 版本与显式 schema 迁移器，绝不原地覆写或清空 <code>UserDataContainer</code>。正在执行的已冻结 <code>TaskAttempt</code> 继续引用启动时的包修订切面（<code>[PHIL-MATRIX-001]</code>），杜绝升级半途静默篡改运行语义。</p>
+        </div>
+
+        <div class="card">
+          <h4>安装与 <code>BirthDecision</code> 七步门控</h4>
           <ol class="steps">
-            <li><b>验签</b> + digest 校验（Policy）</li>
-            <li>权限请求 vs 组织 Policy 比对（超权拒绝或降权）</li>
-            <li><b>双划拨</b>：预算切片 + 按 permissions ∩ 父信封<b>构造子 namespace</b></li>
-            <li>记忆 seed 加载 + <b>COW 层建立</b>（Context）</li>
-            <li>工具依赖解析（绑定 handle = 动态链接）</li>
-            <li>注册接口（A2A card 发布到发现服务）</li>
-            <li>进入调度队列，从 entry 开始第一步</li>
+            <li>校验 <code>content_digest</code> 与发布者 <b>Ed25519 签名链</b>；</li>
+            <li>协商 <code>sabi_target = "v1-beta"</code> 与必需系统服务特性；</li>
+            <li>经可信 UI <code>Z4</code> 或工作区策略裁剪并签发<b>衰减 Capability</b>；</li>
+            <li>绑定或创建隔离 <code>UserDataContainer</code>，隔离代码段与用户状态；</li>
+            <li>启动时对 <code>ResourceAccount</code> 同质信用预留（<code>[BUD-ALG-001]</code>）、<code>ResourceGroup</code> 多维配额（<code>[RSM-ALG-001]</code>）与私有 <code>Namespace</code> 执行 <b>prepare</b>；</li>
+            <li>持久化写入原子 <code>BirthDecision = COMMIT</code> 并分配 <code>generation</code>；</li>
+            <li>拉起 <b>OS Process + Wasmtime</b> 双层沙箱进入受控调度队列。</li>
           </ol>
-        </div>
-        <div class="card">
-          <h4>记忆烘焙与 lineage 身份</h4>
-          <p>包内含 seed 记忆 = 经验分发；100 个实例共享初始记忆后各自分叉（COW）。<b>副本 = 同一 lineage 的新实例，授权随 lineage 链验证。</b>工具 + 权限声明的修改必须重授权（requiresReauth）——运行时走三级签字链（衰减 + 常备授权 + 上行，议题 10，<a class="xref" href="verification.html#security">见支撑与验证</a>）。</p>
         </div>
       </aside>
     </div>
   </div>
 </section>
 
-<!-- ================= 5. 通用性论证（band） ================= -->
-<section class="section band" id="universality">
+<!-- ================= 5. 16 模式通用性判据与 Slice K 实证 ================= -->
+<section class="section band" id="universality" data-nav-label="通用性实证">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Universality<span class="sec-no">/ 05</span></span>
-      <h2>通用性不是口号，是<em>可检验的判据</em></h2>
-      <p>方向修正后的主线第一题：设计通用系统。判据取自 Unix 通用性的来源；裁判标准是重构测试——能否用 NLOS 的原语把现有计算模式全部重构为用户态程序。压测结果：能。</p>
+      <span class="eyebrow">Universality &amp; Slice K<span class="sec-no">/ 05</span></span>
+      <h2>16 类工作流重构判据与 <em>Slice K</em> 端到端闭环实证</h2>
+      <p>通用操作系统的最终验收问题是：<b>设计者事先未预见的第三方应用能否在不修改微内核的前提下安全安装、运行与审计（<code>[NLOS-GEN-001]</code>）</b>。我们以四项通用性判据重构 16 类主流范式，并在 Stage B/C <code>Slice K</code> 纵切面完成实机闭环验证。</p>
     </div>
+
     <div class="principles reveal-group">
       <div class="card principle">
         <span class="p-no">01</span>
         <div>
-          <h4>抽象正交性</h4>
-          <p>抽象各自独立、任意组合。通用性不来自抽象数量，来自组合自由度——LangGraph 编排器 spawn CrewAI 团队内含 Letta 记忆 agent，正交组合成立。</p>
+          <h4>抽象正交可组合</h4>
+          <p>执行、能力、数据、资源与通信彼此正交。状态图编排器可在同一 <code>TaskGroup</code> 内派生多角色团队并调用纯代码 Worker，无需内核新增胶水特例。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">02</span>
         <div>
-          <h4>对负载的无知性</h4>
-          <p>内核不知道也不关心程序在算什么。它只知道能力集合、预算余额、步数、污点、路由地址——结构信号，不是语义判断；Topic 谓词「执行不理解」。</p>
+          <h4>内核对业务语义无知</h4>
+          <p>微内核只裁决 <code>Capability</code> 位图、<code>ResourceAccount</code> 同质信用守恒余额（<code>[BUD-ALG-001]</code>）、<code>generation</code> 围栏与 I/O 背压，不解析任何自然语言或领域规则。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">03</span>
         <div>
-          <h4>可组合性优先于功能</h4>
-          <p>pipe 没有「功能」，但让一切功能可组合。内核提供原语，模式在用户态组装。</p>
+          <h4>机制下沉，模式留在用户态</h4>
+          <p>ReAct、群聊辩论、层级委派或持久工作流均为用户态库或 <code>TaskPlan</code> 拓扑，内核只守住不可绕过的跨边界原语。</p>
         </div>
       </div>
       <div class="card principle">
         <span class="p-no">04</span>
         <div>
-          <h4>机制下限，生态上限</h4>
-          <p>系统提供最少机制，通用性由生态组合涌现。MVS 是反面：功能内置，越全越专用。</p>
+          <h4>单套进程模型兼容全部负载</h4>
+          <p>纯确定性 Rust/WASM 计算节点与高频调用模型的 <code>AgentInstance</code> 共享同一套 <code>Process</code> 隔离、资源配额与回执基础设施。</p>
         </div>
       </div>
     </div>
-    <div class="stats reveal-group">
-      <div class="stat">
-        <span class="num">16 / 16</span>
-        <span class="lbl">重构测试 · 现有计算模式全部可重构为用户态程序（2 裂缝已修复）</span>
+
+    <div class="chips block reveal" aria-label="16 类主流计算与智能体模式全部映射为用户态组合">
+      <span class="chip">01 · ReAct 推理循环</span>
+      <span class="chip">02 · LangGraph 式状态图</span>
+      <span class="chip">03 · AutoGen 多角色群聊</span>
+      <span class="chip">04 · CrewAI 层级委派</span>
+      <span class="chip">05 · 沙箱 Code Agent</span>
+      <span class="chip">06 · Map-Reduce 并行蜂群</span>
+      <span class="chip">07 · Human-in-the-Loop 审批</span>
+      <span class="chip">08 · 常驻工作区记忆服务</span>
+      <span class="chip">09 · Temporal 式持久恢复执行</span>
+      <span class="chip">10 · ServiceDirectory 动态能力协商</span>
+      <span class="chip">11 · 流式 Realtime 增量计量</span>
+      <span class="chip">12 · 自定义模型 Driver 接入</span>
+      <span class="chip">13 · 结构化递归子任务树</span>
+      <span class="chip">14 · Artifact CAS 协作工作区</span>
+      <span class="chip">15 · MCP / A2A 外部协议适配</span>
+      <span class="chip">16 · 零 LLM 纯代码 Worker</span>
+    </div>
+
+    <div class="wp-matrix interactive-structure reveal-group">
+      <div class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">SLICE-K · STEP 01–02</span>
+          <span class="badge badge-verified">VERIFIED</span>
+        </div>
+        <div class="wp-name">第三方签名包安装与意图编译</div>
+        <p class="wp-detail">加载 <code>examples/sample-app</code> 签名包，完成 Ed25519 验签与 <code>UserDataContainer</code> 隔离挂载；将自然语言或 CLI 请求编译为类型化 <code>TypedIntent</code> 与候选动作提议。</p>
       </div>
-      <div class="stat">
-        <span class="num">8 / 8</span>
-        <span class="lbl">抽象全部存活 · 通用核心 6 + 基础设施 2</span>
+
+      <div class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">SLICE-K · STEP 03–04</span>
+          <span class="badge badge-verified">VERIFIED</span>
+        </div>
+        <div class="wp-name">多节点 TaskPlan 准入与双层沙箱执行</div>
+        <p class="wp-detail">经 <code>nlos-plan</code> 完成无环、能力与预算 <code>AdmissionPlan</code> 门控，在 Wasmtime + OS 进程沙箱内按依赖调度多节点 <code>ExecutionFiber</code>，全程阻断未授权出站。</p>
       </div>
-      <div class="stat">
-        <span class="num">0</span>
-        <span class="lbl">第二种进程类型 · 纯代码 worker 与 LLM agent 同一抽象</span>
+
+      <div class="wp-item">
+        <div class="wp-top">
+          <span class="wp-id">SLICE-K · STEP 05–07</span>
+          <span class="badge badge-implemented">PARTIAL_PASS H3–H6</span>
+        </div>
+        <div class="wp-name">守恒结算、CAS 交付与回执闭环</div>
+        <p class="wp-detail"><code>ResourceAccount</code> 原子预留与实测扣减严守同质信用守恒（<code>[BUD-ALG-001]</code>），<code>ResourceGroup</code> 独立约束多维容量配额（<code>[RSM-ALG-001]</code>）；经 <code>CommitPermit</code> 提交不可变 <code>Artifact</code> 与双签名 <code>SemanticEvent</code>，签发可重放核验的 <code>ControlReceipt</code>。</p>
       </div>
     </div>
-    <div class="chips block reveal" aria-label="16 个重构测试通过的模式">
-      <span class="chip">ReAct 循环</span>
-      <span class="chip">LangGraph 状态机</span>
-      <span class="chip">AutoGen 群聊</span>
-      <span class="chip">CrewAI 层级组织</span>
-      <span class="chip">code agent</span>
-      <span class="chip">蜂群 map-reduce</span>
-      <span class="chip">人在环（人 = 设备）</span>
-      <span class="chip">常驻记忆 agent</span>
-      <span class="chip">Temporal 持久执行</span>
-      <span class="chip">动态工具获取（dlopen）</span>
-      <span class="chip">流式 realtime</span>
-      <span class="chip">自定义模型（= 驱动）</span>
-      <span class="chip">递归子代理</span>
-      <span class="chip">共享工作区</span>
-      <span class="chip">A2A 联邦</span>
-      <span class="chip">纯代码 worker</span>
-    </div>
+
     <div class="split-2 reveal-group">
       <div class="card">
-        <h4>裂缝 A 修复 · 计量流陷阱</h4>
-        <p>流式 / realtime 模型是持续流，不是请求-响应的「步」——步边界抢占对流失效。<b>修复：流 = 一个保持打开的长陷阱</b>，驱动按 chunk 增量回报用量，内核增量扣减预算，额度耗尽掐断流；抢占点从步边界推广为 chunk 边界。</p>
-        <p class="sub">步模型不破，推广为计量模型：请求-响应 = chunk = 1 的特例。max_tokens 硬顶同步推广为「累计计量上限」。</p>
+        <h4>架构裂缝修复 A · 流式 Chunk 区间 Activation 计量</h4>
+        <p>实时语音与流式模型输出是持续长连接而非离散回合。NLOS 将单次请求推广为带 <code>OperationId</code> 的计量流：受管 <code>Driver</code> 按流式 chunk 增量上报签名用量，账本实时核减剩余配额，一旦触达上限或收到取消纪元立即在 chunk 边界确定性截断。</p>
       </div>
       <div class="card">
-        <h4>裂缝 B 修复 · Process 与 AgentRole/AgentInstance 分离</h4>
-        <p>纯代码 worker 不应被迫伪装成 Agent，也不应被迫调用 LLM。Process 是宿主强制执行的资源、故障和生命周期单位；AgentRole 是语义角色，AgentInstance 是 thread/actor-like 执行身份，LLM 只是可选 Device capability。</p>
-        <p class="sub">通用性的代价可负担：不变量（能力 + 预算）永不旁路；陷阱成本相对 LLM 延迟是噪声，通用性买得起。</p>
+        <h4>架构裂缝修复 B · <code>Process</code> 与 <code>AgentInstance</code> 解耦</h4>
+        <p>数据处理、编译构建等纯代码 Worker 绝不被迫包装成智能体。<code>Process</code> 专司宿主级故障、内存与网络强隔离；<code>AgentInstance</code> 仅在需要认知角色与语义上下文时按需挂载，模型访问只是可选 <code>Driver</code> 能力句柄。</p>
       </div>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-implemented">PARTIAL_PASS · H3–H6</span>
+      <span>端到端纵切面证据：<code>crates/nlos-slice-k</code> + <code>examples/sample-app</code>（覆盖签名包验签安装 → 意图编译 → 多节点 <code>TaskPlan</code> 准入 → Wasm/Process 执行 → <code>ResourceAccount</code> 守恒结算 → <code>Artifact</code> + <code>SemanticEvent</code> 提交 → <code>ControlReceipt</code> 审计；跨物理机多节点保证待 Stage C <code>C-XHOST</code> 收口）</span>
     </div>
   </div>
 </section>
@@ -493,12 +694,12 @@
 <nav class="pager" aria-label="页面顺序">
   <div class="container pager-inner">
     <a class="pager-link prev" href="vision.html">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span><small>上一页</small>系统哲学</span>
     </a>
     <a class="pager-link next" href="execution.html">
       <span><small>下一页</small>执行与控制</span>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
   </div>
 </nav>
@@ -506,21 +707,18 @@
 <!-- ================= 页脚 ================= -->
 <footer class="footer">
   <div class="container footer-inner">
-    <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
-      <span>· 自然语言操作系统</span>
-    </div>
-    <span>架构设计总纲 v0.5 · 2026-07-29 · 通用系统权威与阶段 B</span>
-    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 候选 KABI 尚待纵切面验证</span>
+    <div class="f-brand"><span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span></div>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=10.6.0"></script>
-<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js?v=6.0.1"></script>
-<script src="vendor/gsap.min.js"></script>
-<script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js?v=10.1.0"></script>
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
 </body>
 </html>

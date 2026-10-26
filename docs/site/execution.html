@@ -1,138 +1,514 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#040a14">
 <title>执行与控制 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 的 Application、Task、Process、AgentInstance、ExecutionFiber 执行模型，海量 Agent 调度、语义一致性、任务隔离与多层控制。">
+<meta name="description" content="NLOS 架构设计总纲 v0.5 · Part II 执行与多层控制：五层执行模型与事件溯源协程、不可信规划门控编译、十万逻辑规模实测调度、双许可唯一提交围栏与十层四面同源控制。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="执行与控制 · NLOS — 自然语言操作系统">
+<meta property="og:description" content="Part II 执行与多层控制：Application 至 Activation 五层执行模型、意图编译门控、634 B/node 十万逻辑规模实测、CommitPermit/EffectPermit 双围栏与十层四面字节等价控制。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="执行与控制 · NLOS — 自然语言操作系统">
+<meta name="twitter:description" content="Part II 执行与多层控制：Application 至 Activation 五层执行模型、意图编译门控、634 B/node 十万逻辑规模实测、CommitPermit/EffectPermit 双围栏与十层四面字节等价控制。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1"><link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
+
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<nav class="nav" id="nav"><div class="nav-inner">
-  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
-  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
-  <div class="nav-links" id="navLinks"><a href="index.html">首页</a><a href="vision.html">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html" aria-current="page">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html">路线</a></div>
-  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
-</div></nav>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="vision.html">系统哲学</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="execution.html" aria-current="page">执行与控制</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+      <a href="roadmap.html">阶段路线</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
+  </div>
+</nav>
+
 <main id="top">
-<header class="page-head container">
-  <span class="eyebrow reveal">Execution · Scale · Control</span>
-  <h1 class="page-title reveal"><span class="title-line">像现代系统一样，</span><span class="title-line accent">管理海量智能体</span></h1>
-  <p class="page-desc reveal">用户只需在顶层表达目标，NLOS 自动生成 TaskPlan、拆分任务、选择依赖、准入并按需物化；同时，系统把 Application、Task、Process、Agent、Fiber、资源和 Operation 全部暴露为可观察、可授权控制的对象。</p>
-  <nav class="page-toc reveal" aria-label="本页目录"><a href="#hierarchy">执行层级</a><a href="#top-control">顶层自动调度</a><a href="#scale">PID 级规模</a><a href="#consistency">一致性与隔离</a><a href="#manual">手动控制</a></nav>
+
+<!-- ================= 页头 ================= -->
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part II · 执行与多层控制 · Execution</span>
+    <h1 class="page-title reveal"><span class="title-line">五层执行与多层控制：</span><span class="title-line accent">十万逻辑规模下的确定性秩序</span></h1>
+    <p class="page-desc reveal">用户只需在顶层以自然语言表达目标，NLOS 将不可信候选规划门控编译为可验证 <code>TaskPlan</code>，按需物化至五层执行栈，以双许可围栏保证共享状态唯一提交与外部副作用安全隔离，并在十层系统对象上兑现四面字节等价的实时控制。</p>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#hierarchy">五层执行模型</a>
+      <a href="#top-control">意图与计划门控</a>
+      <a href="#scale">十万逻辑规模</a>
+      <a href="#consistency">快照与双许可</a>
+      <a href="#manual">十层四面控制</a>
+    </nav>
+  </div>
 </header>
 
-<section class="section band" id="hierarchy"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Execution Hierarchy<span class="sec-no">/ 01</span></span>
-    <h2>从用户应用到一次<em>最小执行片段</em></h2>
-    <p>传统系统是 Application ⊇ Process ⊇ Thread ⊇ Coroutine。NLOS 保留这一成熟分层，但把 Agent 的身份、语义和异步外部操作显式分开。</p>
-  </div>
-  <div class="stack-diagram reveal">
-    <div class="stack-layer"><span class="layer-label">APPLICATION</span><h3>Application</h3><p>用户可见功能、安装、授权、更新和数据所有权整体；可拥有多个 Process 与长期后台 Task。</p></div>
-    <div class="stack-layer"><span class="layer-label">RESOURCE / FAILURE BOUNDARY</span><h3>Process / IsolationUnit</h3><p>宿主可抢占的资源、生命周期、故障与强隔离边界；不要求与 OS PID 一一对应。</p></div>
-    <div class="stack-layer"><span class="layer-label">THREAD / ACTOR-LIKE IDENTITY</span><h3>AgentInstance</h3><p>AgentRole 在特定 TaskAttempt 与 Process incarnation 中的一次可调度身份；不是安全边界。</p></div>
-    <div class="stack-layer"><span class="layer-label">COROUTINE / FIBER</span><h3>ExecutionFiber</h3><p>可挂起、恢复的用户态执行流，在有限宿主线程与 event loop 上 M:N 复用。</p></div>
-    <div class="stack-layer"><span class="layer-label">DISPATCH QUANTUM</span><h3>Activation</h3><p>一次实际获得执行权的 turn，用于调度、追踪和 CPU/model/tool wait 分维计量。</p></div>
-  </div>
-  <div class="callout reveal"><strong>Operation 不是 Fiber。</strong><p>Operation 是一次 future/异步 I/O/模型或工具调用，拥有独立 deadline、cancel、幂等和副作用状态；调用者消失后，外部效果仍可能需要 reconcile。</p></div>
-</div></section>
-
-<section class="section" id="top-control"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Top-level Scheduling<span class="sec-no">/ 02</span></span>
-    <h2>一句自然语言，编译成<em>可检查的系统执行图</em></h2>
-    <p>自然语言不是特权 syscall。它必须经过结构化编译、预览、授权、资源准入和稳定身份，才进入执行层。</p>
-  </div>
-  <div class="pipeline reveal">
-    <div class="pipe-step"><span>01</span><h4>Natural Language</h4><p>用户表达目标、约束、期限和可接受结果。</p></div>
-    <div class="pipe-arrow">→</div>
-    <div class="pipe-step"><span>02</span><h4>Typed Intent</h4><p>解析对象、权限、预算、风险和确认需求。</p></div>
-    <div class="pipe-arrow">→</div>
-    <div class="pipe-step"><span>03</span><h4>TaskPlan</h4><p>生成版本化 DAG、依赖、验收与资源合同。</p></div>
-    <div class="pipe-arrow">→</div>
-    <div class="pipe-step"><span>04</span><h4>Admission</h4><p>检查 Capability、Resource、deadline 和隔离。</p></div>
-    <div class="pipe-arrow">→</div>
-    <div class="pipe-step"><span>05</span><h4>Materialize</h4><p>只创建当前 ready window 需要的 Process/Agent/Fiber。</p></div>
-  </div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>应用自己调用依赖</h4><p>像 Windows/macOS 应用使用系统服务一样，Application 通过 ServiceDirectory、SABI 与 Capability 解析模型、工具、Artifact、搜索、通知和设备，不需要用户手工逐层指挥。</p></div>
-    <div class="card"><h4>用户仍保留最终控制</h4><p>计划可预览、编辑、冻结 revision 或重新授权。自动 Planner 只能在授权 Namespace、ResourceContract 和 policy 内行动。</p></div>
-  </div>
-</div></section>
-
-<section class="section light" id="scale"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">PID-scale Logical Execution<span class="sec-no">/ 03</span></span>
-    <h2>管理 PID 级逻辑实体，<em>不是同时运行十万个模型</em></h2>
-    <p>规模来自逻辑对象持久化、惰性物化、Context 工作集和分层调度。系统必须持续公开以下五个互不等价的数字。</p>
-  </div>
-  <div class="stats reveal-group">
-    <div class="stat"><strong>LOGICAL</strong><span>TaskNode</span><p>计划中存在，只占有界 metadata。</p></div>
-    <div class="stat"><strong>MATERIALIZED</strong><span>Instance</span><p>已有 Attempt、Process 或 AgentInstance。</p></div>
-    <div class="stat"><strong>RUNNABLE</strong><span>Fiber</span><p>依赖和资源满足，等待 runtime dispatch。</p></div>
-    <div class="stat"><strong>ACTIVE</strong><span>Slot</span><p>正在消耗 CPU、GPU、模型或 Driver 槽位。</p></div>
-    <div class="stat"><strong>RESIDENT</strong><span>Working Set</span><p>占用内存、KV cache 或 pinned Context。</p></div>
-  </div>
-  <div class="tier-list reveal-group">
-    <div class="tier-row"><span class="tier-id">G</span><div><h4>Global Scheduler</h4><p>Tenant/Workspace/Application fairness、Cell placement 和全局 quota；不参与每个 token 的热路径。</p></div></div>
-    <div class="tier-row"><span class="tier-id">C</span><div><h4>Cell Scheduler</h4><p>TaskAuthority、本地 capacity、bulkhead、TaskGroup queue 和跨 Worker placement。</p></div></div>
-    <div class="tier-row"><span class="tier-id">W</span><div><h4>Worker Runtime</h4><p>Process/Agent/Fiber runnable queue、work stealing、context affinity、batch 和本地 backpressure。</p></div></div>
-  </div>
-  <div class="system-graph reveal" aria-label="海量 Agent 分层调度图">
-    <div class="graph-row" style="--cols:1">
-      <div class="graph-node core"><small>GLOBAL CONTROL</small><strong>Workspace / Application policy · global admission</strong><p>全局只做 placement、quota 与公平策略，不扫描每个 Fiber。</p></div>
+<!-- ================= 1. 五层执行模型 ================= -->
+<section class="section band" id="hierarchy" data-nav-label="五层执行模型">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Execution Hierarchy<span class="sec-no">/ 01</span></span>
+      <h2>从应用归属到单次调度回合：<em>五层包含执行模型</em></h2>
+      <p>继承现代操作系统 <code>Application ⊇ Process ⊇ Thread ⊇ Coroutine</code> 的成熟演进规律，NLOS（议题 29 · <code>v0.5 §3.2 / §8</code> · <code>[MODEL-EXEC-HIER-001]</code>）将安全隔离边界、智能体角色身份、用户态控制流与分维计量回合显式拆分为五层包含关系。</p>
     </div>
-    <div class="graph-row" style="--cols:3">
-      <div class="graph-node"><small>CELL A</small><strong>TaskGroup queues</strong><p>本地 TaskAuthority、capacity 与 failure domain。</p></div>
-      <div class="graph-node"><small>CELL B</small><strong>Resource bulkheads</strong><p>隔离 provider、Topic、Context 与故障风暴。</p></div>
-      <div class="graph-node"><small>CELL C</small><strong>Placement / recovery</strong><p>迁移只移动可迁移 Attempt，并 fence 旧 incarnation。</p></div>
-    </div>
-    <div class="graph-row" style="--cols:4">
-      <div class="graph-node"><small>WORKER 01</small><strong>Process queues</strong><p>宿主隔离与强制资源。</p></div>
-      <div class="graph-node"><small>WORKER 02</small><strong>Agent queues</strong><p>身份、mailbox 与 supervisor。</p></div>
-      <div class="graph-node"><small>WORKER 03</small><strong>Fiber runtime</strong><p>M:N coroutine 与 async Operation。</p></div>
-      <div class="graph-node"><small>WORKER 04</small><strong>Driver slots</strong><p>模型 batch、工具连接与背压。</p></div>
-    </div>
-  </div>
-</div></section>
 
-<section class="section" id="consistency"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Consistency &amp; Isolation<span class="sec-no">/ 04</span></span>
-    <h2>控制得住，不等于让所有 Agent<em>想法完全一样</em></h2>
-    <p>NLOS 管理的是可验证的共享状态与提交协议，而不是强迫概率模型拥有全局统一信念。</p>
-  </div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>TaskSnapshot</h4><p>每个 Attempt 从 causal-closed、不可变输入切面开始，避免执行中读取悄悄漂移。</p></div>
-    <div class="card"><h4>独立 Attempt</h4><p>retry、hedge 和 refinement 使用不同 TaskAttemptId、generation、Capability 与 staging area。</p></div>
-    <div class="card"><h4>唯一 canonical commit</h4><p>多个候选可以并行产生，只有获得 CommitPermit 并赢得 TaskHead CAS 的 Attempt 能成为 canonical 结果。</p></div>
-    <div class="card"><h4>EffectPermit 与未知态</h4><p>副作用按 slot/幂等身份 fencing。无法证明外部效果停止时进入 PARTIAL_EFFECT 或 EFFECT_UNKNOWN，不能改名为失败前取消。</p></div>
-    <div class="card"><h4>IsolationDomain</h4><p>Namespace、Capability、ResourceGroup、Snapshot、Channel、secret、network/device、cancel 和 failure domain 共同构成隔离面。</p></div>
-    <div class="card"><h4>ControlDomain 独立性</h4><p>共识和 quorum 按独立控制域计数；复制多个同源 Agent 不能伪造认识论独立。</p></div>
-  </div>
-  <div class="commit-race reveal" aria-label="并行 TaskAttempt 唯一提交图">
-    <div class="race-lane"><h4>Attempt A</h4><p>同一 TaskSnapshot 上的一个候选执行。</p><div class="race-flow"><span>READ SNAPSHOT</span><span>STAGE ARTIFACT</span><span>REQUEST COMMIT PERMIT</span><span>WINNER · COMMIT</span></div></div>
-    <div class="commit-gate"><div><small>LINEARIZATION POINT</small><h4>TaskHead CAS</h4><p>一个 Task generation 只有一个 canonical winner。</p></div></div>
-    <div class="race-lane"><h4>Attempt B</h4><p>可并行思考，但不能覆盖 winner。</p><div class="race-flow"><span>READ SNAPSHOT</span><span>STAGE ARTIFACT</span><span>REQUEST COMMIT PERMIT</span><span>LOSER · RETAIN AS EVIDENCE</span></div></div>
-  </div>
-</div></section>
+    <div class="stack-diagram interactive-structure reveal">
+      <div class="stack-layer">
+        <span class="layer-label">01 · APPLICATION</span>
+        <h3>Application</h3>
+        <p>安装、授权、版本升级与隔离 <code>UserDataContainer</code> 数据所有权主体；可同时拥有多个受控 <code>Process</code> 与跨会话后台 <code>Task</code>。</p>
+      </div>
+      <div class="stack-layer">
+        <span class="layer-label">02 · ISOLATION UNIT</span>
+        <h3>Process / IsolationUnit</h3>
+        <p>宿主强制抢占的内存、FD、网络与崩溃隔离边界（OS 进程 + Wasmtime 双层沙箱）；互不信任的执行必须分属不同 <code>Process</code>。</p>
+      </div>
+      <div class="stack-layer">
+        <span class="layer-label">03 · ACTOR IDENTITY</span>
+        <h3>AgentInstance</h3>
+        <p><code>AgentRole</code> 在特定 <code>TaskAttempt</code> 与 <code>Process</code> 纪元内的一次可调度认知身份，绑定 <code>ControlDomain</code>，本身不冒充硬件安全边界。</p>
+      </div>
+      <div class="stack-layer">
+        <span class="layer-label">04 · COROUTINE FLOW</span>
+        <h3>ExecutionFiber</h3>
+        <p>在有限宿主线程与事件循环上 M:N 复用的轻量级用户态协程；I/O 或模型等待期间零宿主线程占用，隶属结构化并发取消树。</p>
+      </div>
+      <div class="stack-layer">
+        <span class="layer-label">05 · METERING TURN</span>
+        <h3>Activation</h3>
+        <p><code>ExecutionFiber</code> 实际获得调度权或跨出边界的最小计量片段；每次外部交互穿过显式 <code>Activation</code> 门控，重调度生成新记录绝不覆写旧账。</p>
+      </div>
+    </div>
 
-<section class="section band" id="manual"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Manual Control<span class="sec-no">/ 05</span></span>
-    <h2>像 Task Manager 一样，<em>逐层观察和干预</em></h2>
-    <p>自然语言、GUI、CLI 和结构化 API 全部编译为同一个 typed ControlCommand，经过相同 Capability、generation CAS、资源/effect fence 和 Receipt 路径。</p>
+    <div class="bento-grid interactive-structure reveal-group">
+      <article class="bento-card span-6 featured">
+        <div class="wp-top">
+          <span class="bento-kicker">[MODEL-ACTIVATION-001] / [FIBER-METER-001] · Turn Boundary</span>
+          <span class="badge badge-implemented">6 Metering Dimensions</span>
+        </div>
+        <h3>6 维 <code>Activation</code> 显式分相计量边界</h3>
+        <p>每一次调度与跨边界等待必须穿过类型化 <code>Activation</code> 边界，区分 6 类运行与等待时间并归集至 <code>Fiber → AgentInstance → Process → TaskAttempt/TaskGroup → Application/Workspace</code> 层级 <code>ResourceGroup</code>（<code>[RSM-ALG-001]</code>；同质信用费用独立经 <code>ResourceAccount</code> 守恒结算 <code>[BUD-ALG-001]</code>）：</p>
+        <div class="chips">
+          <span class="chip trap">active CPU · 实际宿主计算</span>
+          <span class="chip trap">model wait · 模型推理/流等待</span>
+          <span class="chip">tool/I/O wait · 工具与异步 I/O 等待</span>
+          <span class="chip">scheduler wait · 队列就绪等待</span>
+          <span class="chip">blocked-on-backpressure · 发送背压阻塞</span>
+          <span class="chip">suspended time · 静止点挂起时长</span>
+        </div>
+      </article>
+
+      <article class="bento-card span-6">
+        <div class="wp-top">
+          <span class="bento-kicker">ADR-0009 / ADR-0012 · nlos-runtime + nlos-runtime-tokio</span>
+          <span class="badge badge-implemented">PARTIAL_PASS H3/H6</span>
+        </div>
+        <h3>事件溯源协程重放：拒绝脆弱的 WASM 原始栈内存转储</h3>
+        <p>跨编译器升级或宿主迁移时，原始 WASM 线性内存栈快照（raw stack dump）极易因布局偏移而失效。<code>nlos-runtime</code> 与 <code>nlos-runtime-tokio</code> 将确定性协程事件日志与阶段快照持久化至 <code>SQLite</code>，在恢复或接管时沿 <code>Activation</code> 检查点精确重放控制流，并配合 <code>OperationId</code> 幂等去重阻断外部副作用重放。</p>
+      </article>
+    </div>
+
+    <div class="callout reveal">
+      <strong><code>Operation</code> 不是 <code>ExecutionFiber</code>。</strong>
+      <p><code>ExecutionFiber</code> 是进程内控制流；<code>Operation</code>（<code>[MODEL-OP-001]</code>）是一次携带独立单调截止期、取消纪元、<code>IdempotencyKey</code> 与副作用状态的异步外部操作。即使发起调用的协程或进程崩溃退出，在途 <code>Operation</code> 仍由系统追踪并对账结算。</p>
+    </div>
   </div>
-  <div class="control-table reveal">
-    <div class="control-row"><strong>System / Workspace</strong><span>总负载、pressure、性能模式、Quota、数据边界、并发和通知策略</span></div>
-    <div class="control-row"><strong>Application</strong><span>launch、activate、terminate、后台、自启动、网络/设备权限和资源上限</span></div>
-    <div class="control-row"><strong>Task / Plan</strong><span>预览、编辑、start、pause、resume、cancel、retry、deadline、预算和 revision</span></div>
-    <div class="control-row"><strong>TaskGroup / Node</strong><span>依赖图、fanout/depth、分支、materialize、checkpoint 和 evict</span></div>
-    <div class="control-row"><strong>Process / Agent / Fiber</strong><span>inspect、suspend、resume、kill/cancel、affinity、QoS 与共享故障域</span></div>
-    <div class="control-row"><strong>Resource / Context</strong><span>allocation、working set、pin、pressure、quota、reclaim 与 residency</span></div>
-    <div class="control-row"><strong>Topic / Operation / Device</strong><span>backlog、payer、throttle、drain、cancel、safe retry、reconcile 与 reset</span></div>
+</section>
+
+<!-- ================= 2. 意图与计划门控 ================= -->
+<section class="section" id="top-control" data-nav-label="意图编译门控">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Intent &amp; Admission Gate<span class="sec-no">/ 02</span></span>
+      <h2>从自然语言到准入执行：<em>不可信候选规划门控流水线</em></h2>
+      <p>在 NLOS 中，自然语言与大模型 Planner 产出永远不享有特权后门（<code>[NL-COMPILE-001]</code>）。一切高层意图必须历经五级编译、校验、签名授权与资源准入，方可物化为受控执行单元。</p>
+    </div>
+
+    <div class="pipeline reveal" aria-label="意图编译与计划准入五阶段流水线">
+      <div class="pipe-step">
+        <span>01 · INPUT</span>
+        <h4>Natural Language</h4>
+        <p>用户或调用方表达目标、偏好、截止期与可接受成本边界。</p>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <span>02 · INTENT</span>
+        <h4>TypedIntent</h4>
+        <p>解析目标对象与风险等级；高歧义请求强制澄清（<code>[NL-AMBIG-001]</code>）。</p>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <span>03 · PROPOSAL</span>
+        <h4>ActionProposal</h4>
+        <p>生成候选动作集、预估成本、读写域声明与不可变 <code>proposal_digest</code>。</p>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <span>04 · DAG SPEC</span>
+        <h4>TaskPlan</h4>
+        <p>编译版本化依赖 DAG；Planner 原始输出全量视为<b>不可信候选数据</b>。</p>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <span>05 · GATE</span>
+        <h4>AdmissionPlan</h4>
+        <p>确定性无环/Schema/能力/预算门控并绑定签名 <code>AuthorizationReceipt</code>。</p>
+      </div>
+    </div>
+
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4><code>[PLAN-UNTRUSTED-001]</code> · 规划器输出零信任校验</h4>
+        <p>无论 <code>TaskPlan</code> 来自前沿大模型、应用内置模板（<code>ADR-0016</code>）还是外部导入，<code>nlos-plan</code> 均将其视为<b>不可信候选输入</b>：在进入调度器前同步执行 Schema 结构检验、拓扑无环证明、<code>TaskWriteSet</code> 冲突预检、<code>Capability</code> 范围核验、<code>ResourceGroup</code> 多维配额核定（<code>[RSM-ALG-001]</code>）与 <code>ResourceAccount</code> 同质信用预留（<code>[BUD-ALG-001]</code>），并与锁死 <code>proposal_digest</code> 的 <code>AuthorizationReceipt</code> 绑定。</p>
+      </div>
+      <div class="card">
+        <h4><code>[PLAN-CHANGE-001]</code> / <code>[PLAN-OVERRIDE-001]</code> · 自动与手动改图同门控</h4>
+        <p>执行中途遭遇环境变化触发自动重规划（auto-replan），或人类专家在桌面上直接增删、重连 DAG 节点（manual override），都必须生成新版本 <code>plan_revision</code> 并<b>重新穿过完全相同的 <code>AdmissionPlan</code> 确定性门控</b>——既赋予用户最高控制权，又严防手动改图绕过安全与预算不变量。</p>
+      </div>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">nlos-plan · IMPLEMENTED</span>
+      <span>编译与准入证据链：<code>[NL-COMPILE-001]</code> 结构化意图编译 · <code>[NL-AMBIG-001]</code> 歧义阻断澄清 · <code>[PLAN-UNTRUSTED-001]</code> 候选图确定性验证 · <code>AuthorizationReceipt(proposal_digest)</code> 防篡改授权锚定</span>
+    </div>
   </div>
-</div></section>
+</section>
+
+<!-- ================= 3. 十万逻辑规模与分层调度 ================= -->
+<section class="section light" id="scale" data-nav-label="十万级驻留">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">100K Logical Scale<span class="sec-no">/ 03</span></span>
+      <h2>十万逻辑规模实测：<em>五级驻留阶梯与三级无锁调度</em></h2>
+      <p>操作系统管理十万级任务节点，绝不等于同时拉起十万个宿主进程或常驻十万路大模型上下文（<code>[NLOS-SCALE-001]</code>）。NLOS 通过五级按需驻留状态机与 <code>Global → Cell → Worker</code> 三级无锁调度器将逻辑规模与物理槽位彻底解耦。</p>
+    </div>
+
+    <div class="metric-strip reveal" aria-label="Stage B/C 十万级逻辑规模实测遥测">
+      <div class="metric-card">
+        <div class="wp-top">
+          <span class="bento-kicker">MEMORY FOOTPRINT</span>
+          <span class="badge badge-verified">H6 单机多进程实测</span>
+        </div>
+        <strong class="metric-value" data-count="634" data-suffix=" B">634 B</strong>
+        <span class="metric-label">单逻辑节点内存占用（634 B/node）</span>
+        <small class="metric-scope">100K_LOGICAL 规模仅占约 63.4 MB 常驻描述符内存</small>
+      </div>
+
+      <div class="metric-card">
+        <div class="wp-top">
+          <span class="bento-kicker">COLD RECOVERY</span>
+          <span class="badge badge-verified">H6 单机多进程实测</span>
+        </div>
+        <strong class="metric-value" data-count="38.07" data-suffix=" ms">38.07 ms</strong>
+        <span class="metric-label">100K 逻辑描述符冷恢复扫描</span>
+        <small class="metric-scope">SQLite WAL+FULL 崩溃重启一致性恢复与租约重建</small>
+      </div>
+
+      <div class="metric-card">
+        <div class="wp-top">
+          <span class="bento-kicker">CELL SCALING · C-BENCH</span>
+          <span class="badge badge-implemented">ADR-0018 多进程实测</span>
+        </div>
+        <strong class="metric-value" data-count="4.44" data-suffix="x">4.44x</strong>
+        <span class="metric-label">1 → 8 Cell 吞吐水平扩展比</span>
+        <small class="metric-scope">单机多 OS 进程 CellHost 分片并发压测实测加速</small>
+      </div>
+
+      <div class="metric-card">
+        <div class="wp-top">
+          <span class="bento-kicker">FAIRNESS · C-SCHED</span>
+          <span class="badge badge-verified">零饥饿验证通过</span>
+        </div>
+        <strong class="metric-value" data-count="0" data-suffix=" 饥饿">0 饥饿</strong>
+        <span class="metric-label">无锁 DRR + 纪元安全工作窃取</span>
+        <small class="metric-scope">高优交互前台与十万批处理后台混部零饥饿</small>
+      </div>
+    </div>
+
+    <div class="stats reveal-group" aria-label="五级驻留演化阶梯">
+      <div class="stat">
+        <strong>01 · METADATA_ONLY</strong>
+        <span>纯持久逻辑节点</span>
+        <p>仅在持久层与紧凑描述符中存在（<code>634 B/node</code>），零宿主进程与句柄开销。</p>
+      </div>
+      <div class="stat">
+        <strong>02 · INDEXED</strong>
+        <span>依赖就绪索引态</span>
+        <p>前置 DAG 边已满足，进入分片调度索引队列等待准入窗口。</p>
+      </div>
+      <div class="stat">
+        <strong>03 · WARM_CONTEXT</strong>
+        <span>预热上下文视图</span>
+        <p>按需从 <code>Artifact</code> CAS 投影派生工作集视图，完成前缀摘要与配额锁定。</p>
+      </div>
+      <div class="stat">
+        <strong>04 · ACTIVE_FIBER</strong>
+        <span>活跃协程与槽位</span>
+        <p>绑定 <code>TaskAttempt</code> 与沙箱 <code>Process</code>，获得模型或工具 <code>Activation</code> 执行权。</p>
+      </div>
+      <div class="stat">
+        <strong>05 · PINNED</strong>
+        <span>高优常驻锁定态</span>
+        <p>经显式配额授权锁定内存视图与低延迟通道（<code>view_pin</code>），受系统硬上限约束。</p>
+      </div>
+    </div>
+
+    <div class="system-graph interactive-structure reveal" aria-label="ThreeTierScheduler 三级无锁调度架构">
+      <div class="graph-row" style="--cols:1">
+        <div class="graph-node core">
+          <small>TIER 1 · GLOBAL SCHEDULER · nlos-runtime-tokio + nlos-runtime</small>
+          <strong>Workspace / Application 全局配额、准入预算与跨 Cell 放置策略</strong>
+          <p>只在任务组与分片粒度做低频容量裁决，绝不介入单次 Fiber 唤醒或每个 token 的热路径。</p>
+        </div>
+      </div>
+      <div class="graph-row" style="--cols:3">
+        <div class="graph-node">
+          <small>TIER 2 · CELL HOST A (ADR-0018)</small>
+          <strong>本地 TaskAuthority 与租约分片</strong>
+          <p>独立 OS 进程承载局部任务权威、SQLite WAL 状态与故障隔离舱壁。</p>
+        </div>
+        <div class="graph-node">
+          <small>TIER 2 · CELL HOST B (DRR QUEUES)</small>
+          <strong>无锁赤字轮询（Lock-Free DRR）</strong>
+          <p>按租户与任务组权重执行 O(1) 赤字公平调度，阻断大扇出任务垄断资源。</p>
+        </div>
+        <div class="graph-node">
+          <small>TIER 2 · CELL HOST C (MIGRATION)</small>
+          <strong>纪元围栏接管与分片重平衡</strong>
+          <p>节点失联或过载时递增 <code>lease_epoch</code> 围栏旧实例，安全迁移可恢复 Attempt。</p>
+        </div>
+      </div>
+      <div class="graph-row" style="--cols:4">
+        <div class="graph-node">
+          <small>TIER 3 · WORKER 01</small>
+          <strong>Epoch-Safe Work Stealing</strong>
+          <p>校验取消与代际纪元的无锁双端队列窃取，消除核间尾延迟。</p>
+        </div>
+        <div class="graph-node">
+          <small>TIER 3 · WORKER 02</small>
+          <strong>Process / Wasm 沙箱槽</strong>
+          <p>管理活跃宿主隔离单元与 CPU / 内存控制器水位。</p>
+        </div>
+        <div class="graph-node">
+          <small>TIER 3 · WORKER 03</small>
+          <strong>M:N Fiber 执行器</strong>
+          <p>高密度协程切换、异步 <code>OperationId</code> 唤醒与检查点记录。</p>
+        </div>
+        <div class="graph-node">
+          <small>TIER 3 · WORKER 04</small>
+          <strong>Driver 并发与背压门</strong>
+          <p>模型流式槽位、外部设备连接池与发送者预付背压。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="claim-note reveal">
+      <span class="badge badge-verified">100K_LOGICAL · H6 单机多进程已测</span>
+      <span class="badge badge-design">1M_LOGICAL · DESIGN 架构目标（尚未实测）</span>
+      <span>诚实边界声明（<code>[DOC-CLAIM-002]</code>）：<code>634 B/node</code>、<code>38.07 ms</code> 冷恢复与 <code>4.44x</code> 扩展比均来自单机多 OS 进程（<code>H6</code>）实测基准；百万级跨物理机分布式规模（<code>1M_LOGICAL</code>）当前仍属架构设计目标，待 Stage C <code>C-XHOST</code> 多机网络压测兑现前绝不冒充已验证事实。</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. 快照隔离与双许可围栏 ================= -->
+<section class="section" id="consistency" data-nav-label="唯一提交围栏">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Snapshot &amp; Dual-Permit Fencing<span class="sec-no">/ 04</span></span>
+      <h2>并发候选不乱序：<em>不可变快照、六域冲突代数与双许可围栏</em></h2>
+      <p>多智能体并行探索、超时重试或投机执行（hedging）是常态，但权威状态绝不允许“最后写入者静默覆盖”。<code>v0.5</code> 以因果闭合 <code>TaskSnapshot</code> 为起点，用六域冲突代数与 <code>CommitPermit</code> / <code>EffectPermit</code> 双许可协议守住内外一致性。</p>
+    </div>
+
+    <div class="commit-race interactive-structure reveal" aria-label="双许可唯一提交与副作用围栏协议图">
+      <div class="race-lane commit-lane">
+        <div class="wp-top">
+          <h4>TaskAttempt A（Winner）</h4>
+          <span class="badge badge-verified">CANONICAL COMMIT</span>
+        </div>
+        <p>基于只读 <code>TaskSnapshot (rev N)</code> 独立执行，率先通过冲突检测并赢得任务头原子交换。</p>
+        <div class="race-flow">
+          <span>01 · READ IMMUTABLE TaskSnapshot (rev N)</span>
+          <span>02 · STAGE OUTPUTS &amp; VERIFY 6-DOMAIN WriteSet</span>
+          <span>03 · ACQUIRE CommitPermit (CAS rev N → N+1)</span>
+          <span>04 · PROMOTE CANONICAL + SEAL ControlReceipt</span>
+        </div>
+      </div>
+
+      <div class="commit-gate commit-lane">
+        <div>
+          <small>DUAL-PERMIT LINEARIZATION</small>
+          <h4>TaskHead CAS &amp; Effect Fence</h4>
+          <p>内部状态靠 <code>CommitPermit</code> 保证单代唯一赢家；外部世界靠 <code>EffectPermit</code> 携带代际与幂等键精确围栏。</p>
+        </div>
+      </div>
+
+      <div class="race-lane commit-lane">
+        <div class="wp-top">
+          <h4>TaskAttempt B（Fenced / Uncertain）</h4>
+          <span class="badge badge-danger">EFFECT_UNKNOWN + QUARANTINED</span>
+        </div>
+        <p>落后竞争者被确定性中止归档；若外部驱动超时失联，立即隔离冻结，严禁盲目自动重试。</p>
+        <div class="race-flow">
+          <span>01 · READ IMMUTABLE TaskSnapshot (rev N)</span>
+          <span>02 · INTERNAL CAS LOST → ABORT &amp; RETAIN AS EVIDENCE</span>
+          <span>03 · EXTERNAL TIMEOUT WITH EffectPermit(gen, idem_key)</span>
+          <span>04 · ENTER EFFECT_UNKNOWN + QUARANTINED (NO BLIND RETRY)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="bento-grid interactive-structure reveal-group">
+      <article class="bento-card span-6">
+        <div class="wp-top">
+          <span class="bento-kicker">ADR-0013 / ADR-0017 · Conflict Algebra</span>
+          <span class="badge badge-implemented">6 WriteSet Domains</span>
+        </div>
+        <h3>六域 <code>TaskWriteSet</code> 确定性冲突代数</h3>
+        <p>每个 <code>TaskAttempt</code> 在提交前必须对其声明与实际触达的六个权威状态域执行读写/写写冲突判定，任何未声明越界写入直接拒绝：</p>
+        <div class="chips">
+          <span class="chip trap">TaskHead · 任务权威头指针</span>
+          <span class="chip trap">ArtifactNamespace · CAS 命名空间路径</span>
+          <span class="chip">BlackboardKey · 共享状态键值修订</span>
+          <span class="chip">SemanticAssertion · 语义断言主题</span>
+          <span class="chip">ResourceAccount · 同质信用守恒结算</span>
+          <span class="chip">ExternalDevice · 排他设备与外部槽位</span>
+        </div>
+      </article>
+
+      <article class="bento-card span-6 featured">
+        <div class="wp-top">
+          <span class="bento-kicker">External Side-Effect Safety · nlos-operation + nlos-driver-mock</span>
+          <span class="badge badge-danger">QUARANTINED Fence</span>
+        </div>
+        <h3><code>CommitPermit</code> 与 <code>EffectPermit</code> 内外双围栏</h3>
+        <p><b>内部状态（<code>CommitPermit</code>）</b>：通过原子 <code>TaskHead</code> generation CAS（<code>rev N → N+1</code>）确保同一义务代际至多一个赢家，失败候选转为只读 <code>Evidence</code>。<br><b>外部副作用（<code>EffectPermit</code>）</b>：向受管驱动与操作围栏面（<code>nlos-operation</code> + <code>nlos-driver-mock</code> / <code>nlos-provider-worker</code>）传递 <code>(task_id, attempt_id, generation, idempotency_key)</code>；一旦崩溃或网络超时令外部结果未知，状态机强制进入 <code>EFFECT_UNKNOWN</code> + <code>QUARANTINED</code>，<b>严禁盲目自动重试</b>，直至幂等查询或人工对账收口。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5. 十层手动控制与四面同源回执 ================= -->
+<section class="section band" id="manual" data-nav-label="十层四面控制">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">10-Layer Manual Control<span class="sec-no">/ 05</span></span>
+      <h2>十层精细干预与<em>四面字节等价回执</em></h2>
+      <p>顶层自然语言自动化绝不剥夺用户的底层掌控权。<code>v0.5 §25.3</code> 将系统从全局主机一直到单次设备异步操作拆解为十个可观察、可授权干预的控制层级，并强制所有交互入口收敛至同一条权威执行链。</p>
+    </div>
+
+    <div class="control-table interactive-structure reveal" aria-label="v0.5 §25.3 十层手动控制体系">
+      <div class="control-row">
+        <strong>01 · System</strong>
+        <span>全局负载水位、资源压力等级、性能/离线模式、TCB 清单健康度与紧急全局冻结</span>
+      </div>
+      <div class="control-row">
+        <strong>02 · Workspace</strong>
+        <span>多用户/组织命名空间隔离边界、跨域共享策略、总预算配额上限与审计保留窗口</span>
+      </div>
+      <div class="control-row">
+        <strong>03 · Application</strong>
+        <span>签名应用启动、激活、后台挂起、卸载回滚、网络/设备授权与 <code>UserDataContainer</code> 配额</span>
+      </div>
+      <div class="control-row">
+        <strong>04 · Task</strong>
+        <span>16 态持久义务检视、暂停、恢复、取消、截止期重设、预算追加与人工接管（Takeover）</span>
+      </div>
+      <div class="control-row">
+        <strong>05 · TaskGroup / Node</strong>
+        <span><code>TaskPlan</code> 版本化 DAG 在线编辑、扇出/深度阈值、按需物化窗口调整与冷节点逐出</span>
+      </div>
+      <div class="control-row">
+        <strong>06 · TaskAttempt</strong>
+        <span>并行候选对比、<code>TaskSnapshot</code> 输入审查、<code>cancel / supersede / 重验</code>（法定禁区：严禁人工宣称 <code>commit</code> 成功）</span>
+      </div>
+      <div class="control-row">
+        <strong>07 · Process / Agent / Fiber</strong>
+        <span>双层沙箱审查、排空/取消/冻结挂起（Drain/Cancel/Freeze）、强杀、核亲和与协程事件重放</span>
+      </div>
+      <div class="control-row">
+        <strong>08 · ResourceGroup / Context</strong>
+        <span>多维容量/速率/配额（<code>[RSM-ALG-001]</code>）<code>requested / effective</code> 水位、驻留工作集 <code>pin</code>、节流与 <code>reclaim / evict</code>（与 <code>ResourceAccount</code> 同质信用守恒账本 <code>[BUD-ALG-001]</code> 严格分离）</span>
+      </div>
+      <div class="control-row">
+        <strong>09 · Topic / Channel</strong>
+        <span>队列积压监控、发送者预付背压阈值、订阅过滤谓词限流、通道排空（drain）与死信隔离</span>
+      </div>
+      <div class="control-row">
+        <strong>10 · Operation / Device</strong>
+        <span>在途异步 <code>OperationId</code> 取消、原 <code>IdempotencyKey</code> 状态查询、<code>EffectPermit</code> 核销与驱动重置</span>
+      </div>
+    </div>
+
+    <div class="bento-grid interactive-structure reveal-group">
+      <article class="bento-card span-6 featured">
+        <div class="wp-top">
+          <span class="bento-kicker">[CTRL-PARITY-001] · SystemControl v1.6</span>
+          <span class="badge badge-verified">Byte-Equal Receipt · p50 = 84µs</span>
+        </div>
+        <h3>四面同源编译：字节级完全一致的 <code>receipt_hex</code></h3>
+        <p><code>NL Shell</code>、<code>Trusted GUI (desktop)</code>、<code>system-control-cli</code> 与 <code>Structured SABI API</code> 四个交互表面不存在任何“GUI 私有后门”——全部编译为完全相同的 <code>SystemControl v1.6</code>（20 个类型化命令分支），经 <code>ADR-0011</code> 挑战-响应认证本地 IPC 执行统一能力核验与纪元 CAS，产出<b>字节级一致（byte-identical）的 <code>receipt_hex</code></b>，实测本地控制往返延迟中位数仅 <code>p50 = 84µs</code>。</p>
+      </article>
+
+      <article class="bento-card span-6">
+        <div class="wp-top">
+          <span class="bento-kicker">Stage D Bridge · ADR-0025 (W68-R1 / W68-R2)</span>
+          <span class="badge badge-candidate">Stage D W68 双轨推进</span>
+        </div>
+        <h3><code>L0–L3</code> 四级渐进式披露与 <code>[UI-PARITY-001]</code> 12 域显控同构</h3>
+        <p>如何同时服务日常桌面办公与深度系统排障？Stage D（<code>ADR-0025</code> <code>W68-R1 / W68-R2</code>）废止粗糙的二元模式断崖，确立 <b><code>L0–L3</code> 四级渐进式披露</b>（<code>L0/L1</code> 零架构行话标准工作站表格视图 <code>[ROAD-D-001]</code> → <code>L2</code> 单对象非模态结构化检视抽屉与惰性折叠超节点 DAG → <code>L3</code> 深度诊断与原始审计层 <code>Ctrl/⌘+Shift+E</code>，展开 <code>TaskAttempt</code>/<code>ExecutionFiber</code> 瀑布条、<code>Cell</code> 租约与 <code>receipt_hex</code>）与 <b><code>[UI-PARITY-001]</code> 12 域显控同构</b>（无盲控、无哑看、五大法定不可篡改禁区），并以 UAC/Polkit 级实心安全确认屏（内嵌凹陷硬件风 <code>32×20</code> 单色精密防伪印章）镇守最高特权平面 <code>Z4</code>。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
 </main>
-<nav class="pager" aria-label="页面顺序"><div class="container pager-inner"><a class="pager-link prev" href="kernel.html"><span><small>上一页</small>通用内核</span></a><a class="pager-link next" href="verification.html"><span><small>下一页</small>支撑与验证</span></a></div></nav>
-<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 执行与控制</span><span>自动规划与各层手动调度共享同一系统权威</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
-<script src="js/main.js?v=10.6.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=10.1.0"></script>
-</body></html>
+
+<!-- ================= 上一页 / 下一页 ================= -->
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="kernel.html">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span><small>上一页</small>通用内核</span>
+    </a>
+    <a class="pager-link next" href="verification.html">
+      <span><small>下一页</small>支撑与验证</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </div>
+</nav>
+
+<!-- ================= 页脚 ================= -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand"><span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span></div>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
+  </div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
+</footer>
+
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
+</body>
+</html>

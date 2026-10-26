@@ -3,115 +3,403 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>系统哲学 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 的最高目标、核心设计哲学、现代系统迁移方法与自然语言操作系统边界。">
+<meta name="theme-color" content="#040a14">
+<title>系统哲学 · Part 0 — NLOS 自然语言操作系统</title>
+<meta name="description" content="NLOS Part 0 系统哲学：[NLOS-GOAL-001] Windows/macOS 级终局、模型进入计算引发的四重结构断裂、五条核心哲学轴心、A/B/C 三层机制迁移法与 W68 诚实边界。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="系统哲学 · Part 0 — NLOS 自然语言操作系统">
+<meta property="og:description" content="不把智能体当新物种，把自然语言纳入现代操作系统：[NLOS-GOAL-001] 宪法、五条核心轴心、A/B/C 现代系统机制迁移法与 [THEORY-LIMIT-001..004] 诚实边界。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="系统哲学 · Part 0 — NLOS 自然语言操作系统">
+<meta name="twitter:description" content="不把智能体当新物种，把自然语言纳入现代操作系统：[NLOS-GOAL-001] 宪法、五条核心轴心、A/B/C 现代系统机制迁移法与 [THEORY-LIMIT-001..004] 诚实边界。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1">
-<link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
+
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<nav class="nav" id="nav"><div class="nav-inner">
-  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
-  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
-  <div class="nav-links" id="navLinks">
-    <a href="index.html">首页</a><a href="vision.html" aria-current="page">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html">路线</a>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="vision.html" aria-current="page">系统哲学</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="execution.html">执行与控制</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+      <a href="roadmap.html">阶段路线</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
   </div>
-  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
-</div></nav>
+</nav>
 
 <main id="top">
-<header class="page-head container">
-  <span class="eyebrow reveal">Constitution · Philosophy · Method</span>
-  <h1 class="page-title reveal"><span class="title-line">不是更大的编排框架，</span><span class="title-line accent">而是自然语言操作系统</span></h1>
-  <p class="page-desc reveal">项目最高目标是构建达到 Windows/macOS 级别的通用、现代、系统级 NLOS。确定性执行层、Agent reference monitor、控制面和单机 MVP 都只是启动内核，不是最终产品边界。</p>
-  <nav class="page-toc reveal" aria-label="本页目录">
-    <a href="#north-star">最高目标</a><a href="#why-os">为什么是 OS</a><a href="#philosophy">核心哲学</a><a href="#method">迁移方法</a><a href="#boundaries">边界</a>
-  </nav>
+
+<!-- ================= Page Header ================= -->
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part 0 · 宪法与方法 · Vision</span>
+    <h1 class="page-title reveal"><span class="title-line">不把智能体当新物种，</span><span class="title-line accent">把自然语言纳入现代操作系统</span></h1>
+    <p class="page-desc reveal">依据架构宪法 <code>[NLOS-GOAL-001]</code>，本仓库的不可变最高目标是构建达到 <strong>Windows/macOS 级别</strong>的通用、现代、系统级自然语言操作系统。确定性 reference monitor、单机运行时与开发者 Task Manager 只是通往终局的启动载具（bootstrap vehicles），绝非最终产品边界。</p>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#north-star">终局与北极星</a>
+      <a href="#why-os">为何是系统</a>
+      <a href="#philosophy">五条轴心</a>
+      <a href="#method">机制迁移法</a>
+      <a href="#boundaries">诚实边界</a>
+    </nav>
+  </div>
 </header>
 
-<section class="section band" id="north-star"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">North Star<span class="sec-no">/ 01</span></span>
-    <h2>Windows/macOS 级别，指的是<em>系统完整性</em></h2>
-    <p>它不要求第一天重写 Linux、Darwin 或 Windows，也不要求先拥有裸机内核。它要求 NLOS 最终像现代操作系统一样，拥有稳定系统对象、不可绕过的权威、应用平台、桌面、开发工具、兼容承诺和第三方生态。</p>
-  </div>
-  <div class="stats reveal-group">
-    <div class="stat"><strong>01</strong><span>通用性</span><p>第三方可以运行设计者没有预见的 Application，而不修改内核。</p></div>
-    <div class="stat"><strong>02</strong><span>系统权威</span><p>身份、权限、资源、通信、存储和生命周期由系统裁决。</p></div>
-    <div class="stat"><strong>03</strong><span>完整界面</span><p>自然语言是首要入口，同时保留 GUI、CLI、API 和逐层控制。</p></div>
-    <div class="stat"><strong>04</strong><span>长期演进</span><p>Package、Driver、SDK、兼容性、更新回滚和应用生态共同构成 OS。</p></div>
-  </div>
-  <div class="system-graph reveal" aria-label="NLOS 完整系统分层图">
-    <div class="graph-row" style="--cols:1">
-      <div class="graph-node core"><small>HUMAN INTERFACE</small><strong>自然语言桌面 · GUI · CLI · API · 多模态</strong><p>不同入口编译为同一 typed Intent 与 ControlCommand。</p></div>
+<!-- ================= Section 1: 终局与北极星 ================= -->
+<section class="section band" id="north-star" data-nav-label="终局与北极星">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">North Star<span class="sec-no">/ 01</span></span>
+      <h2><code>[NLOS-GOAL-001]</code>：启动微内核是载具，<em>系统完整性才是终局</em></h2>
+      <p>Windows/macOS 级别不是指第一天重写裸机硬件驱动，而是指<strong>现代操作系统的完整契约</strong>：未预见的第三方应用无需改内核即可安装运行；身份、权限、预算守恒与外部副作用由不可绕过的系统权威统一裁决；普通用户与专业开发者共享完整人机界面与长期兼容生态。</p>
     </div>
-    <div class="graph-row" style="--cols:3">
-      <div class="graph-node"><small>APPLICATION</small><strong>第三方应用与 Agent 生态</strong><p>用户目标、工作流、Skill、纯代码与长期服务。</p></div>
-      <div class="graph-node"><small>SYSTEM SERVICES</small><strong>Task · Search · Update · Notification</strong><p>可替换策略、Planner、目录、同步与桌面服务。</p></div>
-      <div class="graph-node"><small>DEVELOPER PLATFORM</small><strong>Package · SDK · Debugger · SABI</strong><p>稳定接口、兼容性和第三方分发。</p></div>
+
+    <div class="table-wrap reveal">
+      <table class="compare-table" aria-label="AI 封装与编排框架、启动载具与通用现代 NLOS 终局对比">
+        <thead>
+          <tr>
+            <th scope="col">系统维度</th>
+            <th scope="col">AI Wrapper / Agent 编排框架</th>
+            <th scope="col">启动载具（Bootstrap Vehicles）</th>
+            <th scope="col">Windows/macOS 级通用现代 NLOS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">身份与应用边界</th>
+            <td>会话字符串或硬编码角色 Prompt，无独立包身份、安装隔离或升级回滚信任链。</td>
+            <td>单机 <code>Principal</code> 绑定、Ed25519 能力签名与签名包验签（Stage B 已退出）。</td>
+            <td class="is-nlos"><code>Application</code> / <code>Installation</code> / <code>Principal</code> 严格分离，支持第三方包分发、委托衰减、热升级与回滚。</td>
+          </tr>
+          <tr>
+            <th scope="row">任务空间模型</th>
+            <td>内存态对话循环或通用工作流图；进程崩溃或超时后，在途副作用状态即丢失。</td>
+            <td>SQLite WAL 持久权威账本 + <code>TaskSnapshot</code> + 单调 <code>TaskHead</code> CAS 提交门。</td>
+            <td class="is-nlos">完整 <strong>16 态 <code>Task</code> 空间</strong>（惰性 <code>TaskNode</code>、多 <code>TaskAttempt</code> 竞速、<code>WAITING_INPUT</code> / <code>QUARANTINED</code> / <code>COMPENSATING</code>）。</td>
+          </tr>
+          <tr>
+            <th scope="row">多界面控制等价</th>
+            <td>强迫一切交互退化为聊天框，或让 GUI / API 绕过安全策略成为特权后门。</td>
+            <td><code>nlos</code> CLI 与本地单向监控视图共享核心控制命令与回执校验。</td>
+            <td class="is-nlos"><strong><code>NL</code> / <code>Trusted GUI</code> / <code>CLI</code> / <code>API</code> 四入口字节等价</strong>，收敛至同一 <code>TypedIntent</code>、<code>ControlCommand</code> 与 <code>ControlReceipt</code>。</td>
+          </tr>
+          <tr>
+            <th scope="row">桌面与交互形态</th>
+            <td>浏览器侧边栏插件、单会话命令行或仅供开发者排障的 Trace 面板。</td>
+            <td>Reference monitor、单机 runtime 与开发者 Task Manager 壳（<code>ADR-0017</code>）。</td>
+            <td class="is-nlos">Stage D <strong>工作站级自然语言桌面</strong>（<code>ADR-0025 W68-R1/R2</code>）：显式与本外部 Glacier 架构门户分叉，采用零眩光实心 <strong><code>Graphite / Paper Workstation</code></strong> 双主题表面、平铺优先工作区 + <code>36px</code> 任务栏 + <code>Ctrl+Space</code> 命令/意图面板、<strong><code>Z4</code> 实心 UAC/Polkit 安全确认屏（含 <code>32×20</code> 凹陷单色防伪印章）</strong>、<strong><code>L0–L3</code> 四级渐进式披露</strong>与 <strong><code>[UI-PARITY-001]</code> 12 域显控同构</strong>。</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
-    <div class="graph-row" style="--cols:1">
-      <div class="graph-node core"><small>NLOS AUTHORITY</small><strong>Process · Capability · Resource · Artifact · Operation · Receipt</strong><p>不可绕过的身份、隔离、资源、提交、持久化和审计边界。</p></div>
+
+    <div class="system-graph reveal interactive-structure" aria-label="NLOS 完整系统分层架构图">
+      <div class="graph-row" style="--cols:1">
+        <div class="graph-node core">
+          <small>HUMAN SURFACES · PARITY ENTRY</small>
+          <strong>AI 原生自然语言桌面（Z0–Z4 实心工作站） · Trusted GUI · CLI · 结构化 API</strong>
+          <p>四种入口无特权后门，恪守 <code>[UI-PARITY-001]</code> 12 域显控同构与 <code>L0–L3</code> 四级渐进式披露，统一编译为版本化 <code>TypedIntent</code>、<code>ActionProposal</code> 与 <code>ControlCommand</code>。</p>
+        </div>
+      </div>
+      <div class="graph-row" style="--cols:3">
+        <div class="graph-node">
+          <small>ECOSYSTEM · USERSPACE</small>
+          <strong>未预见第三方 Application</strong>
+          <p>Agent 团队、LangGraph/工作流、Skill 与纯代码长驻服务共存于用户态。</p>
+        </div>
+        <div class="graph-node">
+          <small>SYSTEM SERVICES · SABI × 8</small>
+          <strong>Task · Context · Search · Event · Package</strong>
+          <p>8 大已实现 SABI 系统服务通道承载可替换规划、检索、目录与桌面协同。</p>
+        </div>
+        <div class="graph-node">
+          <small>DEVELOPER PLATFORM</small>
+          <strong>Package · WIT SDK · Replay · Inspector</strong>
+          <p>稳定契约、Ed25519 签名分发、确定性故障回放与兼容承诺。</p>
+        </div>
+      </div>
+      <div class="graph-row" style="--cols:1">
+        <div class="graph-node core">
+          <small>NLOS AUTHORITY · MINIMAL TCB</small>
+          <strong>Process · Capability · Namespace · ResourceAccount / ResourceGroup · CommitPermit / EffectPermit · Receipt</strong>
+          <p>不可绕过的身份绑定、<code>ResourceAccount</code> 可转移同质信用封闭守恒（<code>[BUD-ALG-001]</code>）与 <code>ResourceGroup</code> 容量/速率/单调计量及非可替代人类注意力治理（<code>[RSM-ALG-001]</code> / <code>[RSM-HUMAN-001]</code>）、6 域写集冲突裁决、副作用围栏与持久审计锚点。</p>
+        </div>
+      </div>
+      <div class="graph-row" style="--cols:3">
+        <div class="graph-node">
+          <small>DRIVERS &amp; SANDBOX</small>
+          <strong>Model · Tool · Wasmtime · Browser</strong>
+          <p>全部经幂等 <code>OperationId</code>、Driver 托管凭据与 fuel/epoch 沙箱接入。</p>
+        </div>
+        <div class="graph-node">
+          <small>HOST OS SUBSTRATE</small>
+          <strong>Windows · macOS · Linux</strong>
+          <p>提供底层 CPU 线程、地址空间、文件描述符、网络栈与进程级最终强杀。</p>
+        </div>
+        <div class="graph-node">
+          <small>DISTRIBUTED CELLS</small>
+          <strong>CellHost · Lease/Epoch · Anti-Entropy</strong>
+          <p>9/9 C-core 单机多进程 H6 已验证，正推进 <code>C-XHOST</code> 跨物理主机容错。</p>
+        </div>
+      </div>
     </div>
-    <div class="graph-row" style="--cols:3">
-      <div class="graph-node"><small>DEVICE</small><strong>Model · Tool · Browser · Robot</strong><p>全部经 Driver 与 capability-scoped Operation 接入。</p></div>
-      <div class="graph-node"><small>HOST OS</small><strong>Windows · Darwin · Linux</strong><p>最终 CPU、地址空间、FD、网络与强杀。</p></div>
-      <div class="graph-node"><small>DISTRIBUTED</small><strong>Cloud · Cell · Edge · GPU</strong><p>placement、lease/fence、迁移和联邦。</p></div>
+  </div>
+</section>
+
+<!-- ================= Section 2: 为何是系统 ================= -->
+<section class="section" id="why-os" data-nav-label="为何是系统">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Why an OS<span class="sec-no">/ 02</span></span>
+      <h2>当模型进入计算主回路，<em>四处底层假设同时断裂</em></h2>
+      <p>传统应用程序默认指令确定、内存按字节寻址、本地调用可同步回滚；一旦概率模型与外部世界接入主循环，这四条假设同时失效。进程内的用户态函数库无法约束自身沙箱之外的权力与副作用，必须下沉为操作系统权威。</p>
+    </div>
+
+    <div class="stats four reveal-group" aria-label="模型进入计算引发的四重结构断裂">
+      <div class="stat">
+        <strong>01 · PROBABILISTIC</strong>
+        <span>概率语义断裂</span>
+        <p>模型推理天然含噪且易受外部不可信文本诱导；安全边界绝不能建立在“Prompt 嘱咐模型守规矩”之上，必须由外部 TCB 机械裁决。</p>
+      </div>
+      <div class="stat">
+        <strong>02 · MEMORY HIERARCHY</strong>
+        <span>上下文层次断裂</span>
+        <p>活跃注意力窗口昂贵稀缺而持久知识近乎无限；必须建立类似虚拟内存的 <code>Context</code> 工作集驻留、按需换页与不改逻辑读集的驱逐机制。</p>
+      </div>
+      <div class="stat">
+        <strong>03 · EXTERNAL EFFECTS</strong>
+        <span>外部副作用断裂</span>
+        <p>支付、发信与写库一旦越过网络即不可逆；超时或断连不等于“未执行”，必须用 <code>EffectPermit</code> 与 <code>EFFECT_UNKNOWN</code> 冻结盲目重试。</p>
+      </div>
+      <div class="stat">
+        <strong>04 · MULTI-ATTEMPT</strong>
+        <span>投机并发断裂</span>
+        <p>同一任务常派生并行探索或故障接管 <code>TaskAttempt</code>；缺乏快照读集与代际围栏，慢速旧实例必静默覆盖最新权威状态。</p>
+      </div>
+    </div>
+
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>用户态库负责“怎么组织一次推理策略”</h4>
+        <p>提示模板、思维链拓扑、角色分工、检索重排与领域工具链属于高频迭代的应用智慧。NLOS 不在内核里内置特定编排学派，而是让不同框架成为系统之上的可替换用户态程序。</p>
+      </div>
+      <div class="card">
+        <h4>系统权威裁决“谁有权在有限世界中提交什么”</h4>
+        <p>主体身份、<code>Namespace</code> 可见域、<code>Capability</code> 最小权限、<code>ResourceAccount</code> 可转移信用封闭守恒（<code>[BUD-ALG-001]</code>：仅承载 Token / 金额信用）与 <code>ResourceGroup</code> 容量/速率控制及非可替代注意力门禁（<code>[RSM-ALG-001]</code> / <code>[RSM-HUMAN-001]</code>）、跨崩溃 WAL 账本与唯一 canonical 提交，由不可绕过的系统层统一强制。</p>
+      </div>
+    </div>
+
+    <div class="callout reveal">
+      <strong>主权域诚实判据（<code>[NLOS-HOST-002]</code>）</strong>
+      <p>凡不能从机制上阻止用户态直接旁路外部网络、宿主文件或账本的嵌入形态，一律只能标记为 <code>COOPERATIVE</code> 协作模式，严禁冒充 <code>STRICT</code> 系统级主权。</p>
     </div>
   </div>
-</div></section>
+</section>
 
-<section class="section" id="why-os"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Why an OS<span class="sec-no">/ 02</span></span>
-    <h2>智能体系统正在重演<em>计算机系统史</em></h2>
-    <p>当资源昂贵、任务并发、主体互不信任、状态跨越故障时，应用库无法替代系统层。Agent 编排正在重新遇到分时、虚存、进程隔离、事务、分布式租约、服务治理和桌面控制曾经解决过的问题。</p>
-  </div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>编排框架解决“怎么组织一次流程”</h4><p>图、角色、handoff、prompt 和工具链非常重要，但它们主要属于应用与用户态策略。它们不能自行成为全局资源、权限、持久化和故障恢复的权威。</p></div>
-    <div class="card"><h4>NLOS 解决“谁有权在有限世界中做什么”</h4><p>它管理 Application、Task、Process、Agent、Fiber、Artifact、Context、Resource 和 Device，并让不同框架成为同一系统中的可替换应用。</p></div>
-  </div>
-  <div class="callout reveal"><strong>规模是压力测试，通用才是宗旨。</strong><p>万级或 PID 级 Agent 不是为了追求一个华丽数字，而是检验对象模型、调度、隔离、资源和控制是否真的具有系统性。</p></div>
-</div></section>
+<!-- ================= Section 3: 五条轴心 ================= -->
+<section class="section band" id="philosophy" data-nav-label="五条轴心">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Core Philosophy<span class="sec-no">/ 03</span></span>
+      <h2>贯穿规范、内核与桌面的<em>五条系统轴心</em></h2>
+      <p>这五条轴心决定了什么必须沉入 TCB、什么必须留在用户态，以及全站每一条技术声明如何接受检验。</p>
+    </div>
 
-<section class="section band" id="philosophy"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Core Philosophy<span class="sec-no">/ 03</span></span><h2>项目真正的<em>五条轴心</em></h2></div>
-  <div class="principles reveal-group">
-    <div class="card principle"><span class="p-no">01</span><div><h4>概率智能属于用户态，确定性不变量属于系统权威</h4><p>模型理解、规划和提出行动；Capability、资源上界、generation、唯一提交和副作用 fence 由不可绕过边界强制。</p></div></div>
-    <div class="card principle"><span class="p-no">02</span><div><h4>控制不需要理解</h4><p>系统不必理解 Agent 为什么行动，只需机械判断它能否命名目标、是否有权、资源是否足够、版本是否新鲜、效果是否可安全提交。</p></div></div>
-    <div class="card principle"><span class="p-no">03</span><div><h4>自然语言是首要界面，不是裸 ABI</h4><p>自然语言先编译为 typed Intent、TaskPlan、Action 和 ControlCommand，再进入授权、准入、执行与 Receipt；prompt 本身不拥有权力。</p></div></div>
-    <div class="card principle"><span class="p-no">04</span><div><h4>自动与手动控制并重</h4><p>普通用户从顶层说“完成这个任务”，系统自动拆解和调用依赖；高级用户可以像 Task Manager/Activity Monitor 一样逐层下钻和干预。</p></div></div>
-    <div class="card principle"><span class="p-no">05</span><div><h4>终局完整，实施克制</h4><p>架构始终面向完整 NLOS；工程从最小 strict、durable、可恢复的纵切面开始，绝不把设计稿误写成已经实现的生产事实。</p></div></div>
+    <div class="principles reveal-group">
+      <div class="card principle">
+        <span class="p-no">01</span>
+        <div>
+          <h4>自然语言是首要界面而非唯一界面</h4>
+          <p>自然语言让用户直接表达目标与约束，但可信 GUI、CLI 与结构化 API 同样是一等交互面；图形与后台服务绝不被迫伪装成聊天机器人，四类入口收敛至同一契约与字节等价回执。详见 <a class="xref" href="execution.html#top-control">执行与控制 · 顶层编译</a> 与 <a class="xref" href="execution.html#manual">手动控制</a>。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">02</span>
+        <div>
+          <h4>机制在内核，语义与策略在用户态</h4>
+          <p>内核控制不依赖理解自然语言修辞，只机械核验句柄、签名能力、配额预留、代际号与写集冲突；Planner、工作流图与记忆压缩全部留在可替换用户态与系统服务。详见 <a class="xref" href="kernel.html#arch">通用内核 · 三层架构与 SABI</a>。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">03</span>
+        <div>
+          <h4>命名即视野，能力即权限</h4>
+          <p>每个进程仅拥有私有 <code>Namespace</code> 挂载表，不可命名的对象在该命名空间内天然不可寻址、不可行动；跨边界操作必须出示可单调衰减的 Ed25519 <code>Capability</code>。详见 <a class="xref" href="kernel.html#abstractions">通用内核 · 系统对象</a>。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">04</span>
+        <div>
+          <h4>先承认不确定性，再用围栏承诺边界</h4>
+          <p>系统直面模型幻觉、并发竞态与外部网络断连：内部状态用 <code>TaskSnapshot + CommitPermit</code> 保证唯一线性化提交，外部动作以 <code>EffectPermit + EFFECT_UNKNOWN</code> 阻断失控放大。详见 <a class="xref" href="verification.html#randomness">支撑与验证 · 随机性与围栏</a>。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">05</span>
+        <div>
+          <h4><code>Claim ≤ Evidence</code> 工程诚实纪律</h4>
+          <p>规范设计、单机测试、多进程故障注入与生产运行严格分级记录；全仓 101 项声明与 169 份证据由 <code>lint_claims.py</code> 持续核验，绝不把设计蓝图改写为已交付事实。详见 <a class="xref" href="verification.html#validation">支撑与验证</a> 与 <a class="xref" href="roadmap.html#evidence">阶段路线 · 证据等级</a>。</p>
+        </div>
+      </div>
+    </div>
   </div>
-</div></section>
+</section>
 
-<section class="section" id="method"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Transfer Method<span class="sec-no">/ 04</span></span>
-    <h2>优先迁移<em>现代系统成熟机制</em></h2>
-    <p>迁移的是控制回路、隔离边界、状态机和失败语义，不是把传统术语贴到 Agent 上。</p>
-  </div>
-  <div class="tier-list reveal-group">
-    <div class="tier-row"><span class="tier-id">A</span><div><h4>直接迁移</h4><p>Process isolation、Capability、Namespace、bounded queue、backpressure、WAL、MVCC、lease/fence、cgroup 与 job control。</p></div></div>
-    <div class="tier-row"><span class="tier-id">B</span><div><h4>语义适配</h4><p>Context working set、token/model slot、语义缓存、Agent checkpoint、Topic interest 与 human attention。</p></div></div>
-    <div class="tier-row"><span class="tier-id">C</span><div><h4>NLOS 新机制</h4><p>typed Intent、semantic provenance/view、EffectPermit、模型不确定性边界和外部副作用未知态。</p></div></div>
-  </div>
-</div></section>
+<!-- ================= Section 4: 机制迁移法 ================= -->
+<section class="section" id="method" data-nav-label="机制迁移法">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Transfer Method<span class="sec-no">/ 04</span></span>
+      <h2>三层机制迁移法：<em>先复用成熟控制回路，再发明独创原语</em></h2>
+      <p>依据 <code>[PHIL-TRANSFER-001..002]</code>，任何新抽象进入系统前必须先回答：最接近的现代系统机制是什么、哪些不变量可直接继承、模型在哪里造成了真实语义断裂。迁移的是状态机、隔离边界与失败语义，而非表面术语。</p>
+    </div>
 
-<section class="section light" id="boundaries"><div class="container">
-  <div class="sec-head reveal"><span class="eyebrow">Boundaries<span class="sec-no">/ 05</span></span><h2>哪些话现在<em>不能说</em></h2></div>
-  <div class="split-2 reveal-group">
-    <div class="card"><h4>不能说“Agent 就是进程”</h4><p>Application 包含 Process，Process 承载 AgentInstance，AgentInstance 运行 ExecutionFiber。名称类比不会自动带来地址空间或故障隔离。</p></div>
-    <div class="card"><h4>不能说“所有 Agent 保持同一信念”</h4><p>系统保证共享状态、snapshot、对象身份、冲突可见与唯一 canonical commit；语义认识仍是 policy-relative view。</p></div>
-    <div class="card"><h4>不能说“十万 Agent 正在同时思考”</h4><p>logical、materialized、runnable、active 和 resident 必须分开计量。规模来自惰性物化与有限工作集。</p></div>
-    <div class="card"><h4>不能说“设计定案等于实现完成”</h4><p>当前 v0.5 是规范基线；阶段 B runtime、100K Fiber、可信 UI 和故障证据仍在实施。</p></div>
+    <div class="tier-list reveal-group interactive-structure">
+      <div class="tier-row">
+        <span class="tier-id">A</span>
+        <div>
+          <h4>直接复用成熟机制（不变量与工业原语原样继承）</h4>
+          <p>凡密码学、单机事务存储、异步调度与字节码沙箱已有严密工程解的领域，直接采用经受过严苛验证的机制，零重复造轮子：使用 Ed25519 非对称签名实现不可伪造的令牌与包验签（<code>ADR-0010</code>），以 <code>SQLite WAL + FULL synchronous</code> 构筑单机断电不丢账的持久权威底座，依托 Tokio M:N 运行时承载高并发异步 I/O，通过 Wasmtime fuel 与 epoch 双重中断隔离不可信插件（<code>ADR-0015</code>），并复用 DRR 赤字轮转公平调度与 Blake3 Merkle 抗熵树完成流量与状态对账。</p>
+          <div class="node-foot">
+            <div class="chips">
+              <span class="chip">Ed25519 Capability (ADR-0010)</span>
+              <span class="chip">SQLite WAL + FULL sync</span>
+              <span class="chip">Tokio M:N Runtime</span>
+              <span class="chip">Wasmtime Fuel/Epoch (ADR-0015)</span>
+              <span class="chip">DRR Fair Scheduling</span>
+              <span class="chip">Merkle Anti-Entropy</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tier-row">
+        <span class="tier-id">B</span>
+        <div>
+          <h4>语义适配迁移（保留系统控制回路，重写模型与任务语义）</h4>
+          <p>保留传统 OS、数据库与分布式系统的骨架，针对长时异步推理与多尝试并发扩展对象语义：将传统进程/线程/协程重构为 <code>Application</code> → <code>Process</code> → <code>AgentInstance</code> → <code>Fiber</code> → <code>Activation</code> 五层执行模型（<code>Issue #29</code>）；迁移 Plan 9 进程级私有 <code>Namespace</code> 约束智能体可见域；将数据库 MVCC 扩展为面向多尝试竞速的 <code>TaskSnapshot</code> + 6 域 <code>TaskWriteSet</code> 冲突代数（<code>ADR-0013</code>）；将分片集群租约改造为分层 <code>Cell</code> 租约与单调 epoch fencing（<code>ADR-0018</code> / <code>ADR-0019</code>）。</p>
+          <div class="node-foot">
+            <div class="chips">
+              <span class="chip">5-Layer Process/Agent/Fiber (Issue #29)</span>
+              <span class="chip">Plan 9 Per-Process Namespace</span>
+              <span class="chip">MVCC TaskSnapshot + 6-Domain WriteSet (ADR-0013)</span>
+              <span class="chip">Hierarchical Cell Lease &amp; Epoch Fencing (ADR-0018/0019)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tier-row">
+        <span class="tier-id">C</span>
+        <div>
+          <h4>NLOS 独创系统机制（传统 OS 与用户态框架均未覆盖的原语）</h4>
+          <p>在概率模型与不可逆现实世界交界处，建立传统内核与现有 Agent 框架均缺失的原语（<code>Issue #31/#32</code> 横评确认该系统级生态位尚属空白）：首创 <code>CommitPermit</code> + <code>EffectPermit</code> 双重围栏与 <code>EFFECT_UNKNOWN</code> 未知副作用隔离态；严格依资源真实代数分离信用账本与多维控制器（<code>v0.5 §10 / §10.1</code>）：<code>[BUD-ALG-001]</code> 规定 <code>ResourceAccount</code> <strong>仅持有可转移同质信用（Token / Monetary credit）</strong>并服从封闭域守恒等式 <code>MINTED</code> + <code>INBOUND</code> = <code>AVAILABLE</code> + <code>RESERVATION.limit</code> + <code>RISK_RESERVATION.loss_bound</code> + <code>ESCROW</code> + <code>LEASE</code> + <code>SPENT</code> + <code>QUARANTINED</code> + <code>OUTBOUND</code>，而 CPU、内存、I/O、网络与能耗由 <code>ResourceGroup</code> / <code>ResourceController</code> 容量、速率与单调累计包络治理（<code>[RSM-ALG-001]</code>），人类注意力显式定性为非可替代资源（<code>[RSM-HUMAN-001]</code>：经 <code>NotificationBudget</code> 与中断门控约束，绝不折算为可购买同质信用）；定义 <code>SemanticEvent</code> 双身份（内容摘要 <code>ContentDigest</code> 分离于事件实例 <code>EventId</code>）配合 <code>0x1F NON_AUTHORITATIVE</code> 派生检索防提权护栏；并在 Stage D 桌面层（<code>ADR-0025 W68-R1/R2</code>）显式与外部 Glacier 架构门户分叉，确立零眩光实心 <code>Graphite / Paper Workstation</code> 表面、平铺优先工作区 + <code>36px</code> 任务栏 + <code>Ctrl+Space</code> 命令/意图面板、<code>Z4</code> 实心 UAC/Polkit 安全确认屏（内嵌 <code>32×20</code> 凹陷单色精密防伪印章）、<code>L0–L3</code> 四级渐进式披露与 <code>[UI-PARITY-001]</code> 12 域显控同构。</p>
+          <div class="node-foot">
+            <div class="chips">
+              <span class="chip trap">CommitPermit + EffectPermit + EFFECT_UNKNOWN</span>
+              <span class="chip trap">ResourceAccount Fungible Credit [BUD-ALG-001]</span>
+              <span class="chip trap">ResourceGroup &amp; Non-Fungible Attention [RSM-ALG/HUMAN-001]</span>
+              <span class="chip trap">SemanticEvent Dual ID + 0x1F Guard</span>
+              <span class="chip trap">Graphite/Paper Z0–Z4 + 32×20 Seal + L0–L3 + [UI-PARITY-001] (ADR-0025)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
-</div></section>
+</section>
+
+<!-- ================= Section 5: 诚实边界 ================= -->
+<section class="section light" id="boundaries" data-nav-label="诚实边界">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Honest Boundaries<span class="sec-no">/ 05</span></span>
+      <h2>2026-10-26（W68）<em>理论极限与工程诚实边界</em></h2>
+      <p>真正的系统工程不仅声明能保证什么，更精确划定数学上不可消除的边界与当前拓扑尚未跨越的门禁。</p>
+    </div>
+
+    <div class="bento-grid reveal-group interactive-structure">
+      <article class="bento-card span-6">
+        <span class="bento-kicker">THEORY-LIMIT · PROMPT INJECTION &amp; AUTHORITY</span>
+        <h3>提示注入无法在语义层 100% 根除，只能由权限边界封顶</h3>
+        <p>只要开放上下文同时接收指令与不可信外部输入，纯语义分类器就不存在零漏报数学保证。NLOS 不宣称“模型免疫提示注入”，而是以 <strong>私有 <code>Namespace</code>（<code>[THEORY-LIMIT-004]</code> 不可命名即不可寻址）+ 最小 <code>Capability</code> + <code>Taint</code> 污点降权 + <code>Z4</code> 实心系统安全确认屏</strong> 将诱导爆炸半径严格锁死在授权围栏内。</p>
+      </article>
+
+      <article class="bento-card span-6">
+        <span class="bento-kicker">THEORY-LIMIT-001..005 · EFFECTS &amp; EPISTEMOLOGY</span>
+        <h3>黑盒工具不可证无副作用，<code>VERIFIED</code> 不等于客观真理</h3>
+        <p>任意外部黑盒 API 在断连或超时后无法被证明未产生副作用，系统必须诚实落入 <code>EFFECT_UNKNOWN</code> 并冻结自动重试；同时，<code>VERIFIED</code> 仅代表密码学签名归属或确定性测试契约通过，绝不宣称模型推理必然符合客观事实，亦不将“拜占庭 <code>3f+1</code>”“意义=压缩”或“语义图灵完备”冒充为已证定理。</p>
+      </article>
+
+      <article class="bento-card span-6">
+        <span class="bento-kicker">SCALE HONESTY · 100K_LOGICAL (634 B/NODE)</span>
+        <h3>十万逻辑规模是持久任务与挂起协程，绝非十万路并发 GPU 推理</h3>
+        <p><code>H6</code> 实测达标的 <code>100K_LOGICAL</code>（单节点约 <code>634 B/node</code>）严格指 <strong>10 万个持久可调度 <code>TaskNode</code> 与挂起等待 <code>Fiber</code> 描述符</strong>，并将 <code>logical</code> / <code>materialized</code> / <code>runnable</code> / <code>active</code> / <code>resident</code> 分维计量，绝不等于 10 万个 Agent 同时占用 GPU 吐出 Token 流。</p>
+      </article>
+
+      <article class="bento-card span-6 featured">
+        <span class="bento-kicker">TOPOLOGY &amp; ROADMAP HONESTY · W68 STATUS</span>
+        <h3>9 大 C-core 达标于单机多进程 <code>H6</code>，跨主机与完整桌面仍在实施</h3>
+        <p>Stage B 已正式退出（<code>W34-D</code>）；Stage C 的 9 个 <code>C-core</code> 工作包已在 <strong><code>H6</code> 单机多 OS 进程拓扑（<code>ADR-0018</code>）</strong> 下全部闭环，但跨物理主机 mTLS 与多数派共识（<code>C-XHOST</code>，<code>ADR-0026 CANDIDATE</code>，<code>RISK-B-11</code>）及 Stage D 工作站级自然语言桌面（<code>ROAD-D-001</code>，<code>ADR-0025 W68-R1/R2</code>）正处于 <strong><code>W68–W74</code> 实施期（<code>NOT EXITED</code>）</strong>；真实生产环境 <code>H7</code> / <code>H8</code> 证据当前为 <strong><code>0</code></strong>。</p>
+      </article>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">STAGE B · EXITED</span>
+      <span class="badge badge-active">C-CORE 9/9 · H6 SINGLE-HOST MULTI-PROCESS</span>
+      <span class="badge badge-candidate">C-XHOST &amp; STAGE D · W68–W74 NOT EXITED</span>
+      <span class="badge badge-design">H7 / H8 PRODUCTION EVIDENCE = 0</span>
+      <span>完整保证等级与工作包核查见 <a class="xref" href="verification.html#validation">支撑与验证</a> 与 <a class="xref" href="roadmap.html">阶段路线</a>。</span>
+    </div>
+  </div>
+</section>
+
 </main>
 
-<nav class="pager" aria-label="页面顺序"><div class="container pager-inner">
-  <a class="pager-link prev" href="index.html"><span><small>上一页</small>首页 · 总览</span></a>
-  <a class="pager-link next" href="kernel.html"><span><small>下一页</small>通用内核</span></a>
-</div></nav>
-<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 系统哲学</span><span>最高目标、方法论与证据边界</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
-<script src="js/main.js?v=10.6.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=10.1.0"></script>
-</body></html>
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="index.html">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span><small>上一页</small>首页 · 总览</span>
+    </a>
+    <a class="pager-link next" href="kernel.html">
+      <span><small>下一页 · Part I</small>通用内核</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </div>
+</nav>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span>
+    </div>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
+  </div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
+</footer>
+
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
+</body>
+</html>

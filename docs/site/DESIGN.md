@@ -1,8 +1,32 @@
-# NLOS 站点设计系统（v10 · 连续画布与渐进式密度）
+# NLOS 站点设计系统（v11.0 · Obsidian Glacier 规范对齐与工程图谱契约）
 
 > 本文件是 docs/site/ 的视觉契约。所有 token 来自 2026-07-23 对
 > https://www.langchain.com（首页、/langgraph、/langsmith/observability）的
 > Playwright 实机截取（1440px 整页截图 + getComputedStyle 提取），不是凭印象的描述。
+
+## v11.0 规范对齐、阅读节奏与组件契约升级（2026-10-26 · W68）
+
+- **权威适用范围与 Stage D 桌面分叉边界（`ADR-0025 W68-R1/R2` Scope Boundary）**：本文件（`docs/site/DESIGN.md`：`Obsidian Glacier` 深海冰川底色 + `tint <= 0.07` 液态玻璃 + Gerono 中心对称双彗尾 `∞`）**仅作为外部架构展示门户（`docs/site/`）的专属视觉设计契约**；阶段 D 自然语言桌面操作系统（`desktop/`，`ADR-0025 W68-R1/R2`）为满足每日 8–12 小时高密度生产力办公的零眩光人机工效学，**显式与本外部展示门户分叉**，全面切换为 100% 实心不透明中性工业工作站表面（`Graphite / Paper Workstation`）、零 `backdrop-filter` 模糊、平铺优先多窗口工作区 + `36px` 底部任务栏 + `Ctrl+Space` 命令/意图面板、`Z4` 实心 UAC/Polkit 系统安全确认屏（内嵌 `32×20` 凹陷单色精密防伪印章）、`L0–L3` 四级渐进式披露与 `[UI-PARITY-001]` 12 域显控同构。
+- **纯冰川单色状态系统（Glacier Monochrome Status Discipline）**：全站 CSS、JS 与 SVG 资产（`favicon.svg`、`og-cover.svg`）严禁出现青绿（teal `#5ce0b8`）、琥珀（amber `#f5b971`）或紫色（purple `#b8abfa`）；除故障/尸检/隔离唯一例外色 `--danger: #e5636c` 外，全部证据等级与阶段状态均在冰蓝—冰白—深藏青单一色相家族内通过**明度、冰蓝饱和度与边框线型**区分：
+  - `--status-verified: #edf8ff`（高明度冰白 + `rgba(182,230,255,0.44)` 实线描边 + `0.14` 冰蓝底，用于已退出的 Stage B / 已达标 H6 门禁）；
+  - `--status-active: #8ad4ff`（签名冰川青 + `rgba(138,212,255,0.40)` 实线描边，用于已实现能力与当前推进主线 Stage C）；
+  - `--status-candidate: #bce6ff`（柔和冰蓝 + **虚线描边** `.badge-candidate, .badge-wip`，用于候选方案、并行试点与实验态）；
+  - `--status-design: rgba(204,233,255,0.72)`（低对比灰冰蓝细线，用于 `DESIGN` 规范态与远期规划）；
+  - `--status-prod: #ffffff`（纯白高对比细线，预留给真实生产运行证据）；
+  - 同时在 `:root` 固化 `--light-text / --light-bg / --light-2 / --light-line` 深色安全别名，杜绝任何历史浅色规则在深色画布上产生 `#030710` 暗字不可读回退。
+- **液态冰川玻璃 `tint <= 0.07` 契约对齐**：`--glass-bg`（`135deg` 白色折射微光 + `rgba(214,238,255,0.045)`）与 `--glass-bg-strong`（`rgba(214,238,255,0.068)`）严格控制在 `tint <= 0.07`，配合 `--glass-blur: 20px`（`<=768px` 降档为 `14px`）与 `--glass-saturate: 2.0`；仅在 `@supports not (backdrop-filter: blur(1px))` 与 `@media (prefers-reduced-transparency: reduce)` 下回退为 `0.94–0.98` 深藏青实心面板并关闭模糊。
+- **固定顶栏、Containing-Block 解耦与 `980px` 导航抽屉断点**：移除 `effects.css` 对 `.nav` 的 `position: relative` 覆盖；`.nav` 保持纯净 `position: fixed; top: 0; left: 0; right: 0; z-index: 60;`，将背景、底边与 `backdrop-filter` 下沉到 `.nav::before` 伪元素，彻底消除父级 `backdrop-filter` 形成 fixed containing block 把移动端 `.nav-links` 抽屉裁切在顶栏高度内的缺陷；同时将导航抽屉切换断点由 `768px` 提升至 `980px`（`style.css` 与 `main.js` 同步），防止 `769px–980px` 平板宽度下 7 个主导航项与品牌标、版本徽章挤压碰撞。
+- **原生系统光标纪律（Native OS Cursor）**：移除全站 `cursor: none` 与自定义 DOM 光标（`.cursor-dot` / `.cursor-ring`），恢复零延迟、符合无障碍与桌面工程习惯的原生 OS 光标；保留底层 `#bg-canvas` WebGL 冰川极光着色器（含 `uPointer` 弱大气光晕）、`[data-tilt]` 玻璃微倾 `.sheen` 高光及 SVG 流线交互。
+- **确定性滚动揭示与编程滚动契约（Deterministic Scroll-Reveal）**：从 `html` 移除 `scroll-behavior: smooth`，统一由 `main.js` 的 `initSmoothAnchors()` 处理带顶栏偏移的 `#anchor` 平滑跳转，避免阻塞编程式 `window.scrollTo`；`.reveal` 与 `.reveal-group > *` 采用纯 CSS `cubic-bezier(0.22, 1, 0.36, 1)` 过渡与 `--reveal-delay` 阶梯延迟，`effects.js` 在启动及 `scroll / resize / hashchange / load` 时执行同步/rAF 节流的 `sweepReveals()`，将视口内及视口上方所有目标立即置为 `.in`，配合 `IntersectionObserver` 与 HTML 2.5s `reveal-all` 保险丝，确保快速滚动或锚点跳转零隐藏残留。
+- **Gerono 双彗尾无穷标志与窄屏零溢出**：`canvas.emblem-infinity` 精确绘制 Gerono 双纽线 `x = A·cos(t), y = B·sin(2t)`（`A = min(width * 0.42, 184), B = 0.38A`）、确定性微星节点与 `4.8s` 周期的 62 段中心对称双彗尾（第二条彗尾严格使用中心反演 `P2 = 2C - P1`），`prefers-reduced-motion: reduce` 仅渲染单帧静态高光而不启动 `requestAnimationFrame` 循环；`.nlos-emblem` 与 `.orbit-a` 收敛最大视口宽度并在 `html / body / main / .hero / .home-hero` 启用 `overflow-x: clip`，消除 `390px` / `320px` 横向溢出；修正右侧滚动进度条 `.scroll-progress-bar` / `.scroll-progress-fill` 选择器对齐。
+- **v11.0 结构化工程图谱组件集**：在 `style.css` 中提供统一冰川单色组件契约，支撑全站 7 页规范与证据可视化：
+  - `.metric-strip`：桌面四列细线分隔遥测条、平板 `2×2`、移动端单列堆叠；
+  - `.stage-strip` 与 `.wp-matrix`：A–E 五阶段演进矩阵与工作包证据核查网格；
+  - `.code-showcase`：支持键盘方向键切换与一键复制的 Rust / WIT / CLI 多标签代码面板；
+  - `.conservation-eq`：`ResourceAccount` 8 项资源守恒方程水平条与运算符徽章（`.eq-term` + `.eq-op`）；
+  - `.cell-topology`：Stage C 分布式 `CellHost` / `Lease` / `Shard` / `Migration` 拓扑网格与租约总线（`.cell-bus` + `.cell-node`）；
+  - `.crate-planes`：35 个 Rust crate 的分层架构平面矩阵与内联 crate 胶囊（`.crate-plane` + `.crate-pill`）；
+  - `.h-ladder`：`H0–H8` 九级验证保证阶梯，清晰区分已达标（`.is-verified`）、当前主攻（`.is-active`）与未触达降亮虚线行（`.is-unreached`）。
 
 ## v10 连续画布与信息密度修订（2026-07-30）
 

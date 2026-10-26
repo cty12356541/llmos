@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="NLOS">
+  <defs>
+    <radialGradient id="bgGlow" cx="36%" cy="28%" r="76%">
+      <stop offset="0%" stop-color="#0f2542"/>
+      <stop offset="56%" stop-color="#071324"/>
+      <stop offset="100%" stop-color="#040a14"/>
+    </radialGradient>
+    <linearGradient id="axisH" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#edf8ff" stop-opacity="0.62"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="axisV" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#edf8ff" stop-opacity="0.52"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="geronoLoop" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#8ad4ff" stop-opacity="0.58"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0.58"/>
+    </linearGradient>
+    <radialGradient id="coreStar" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="40%" stop-color="#edf8ff" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#8ad4ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Obsidian Glacier Rounded Tile -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bgGlow)" stroke="#8ad4ff" stroke-opacity="0.30" stroke-width="1.2"/>
+
+  <!-- Precision Coordinate Crosshairs -->
+  <line x1="6" y1="32" x2="58" y2="32" stroke="url(#axisH)" stroke-width="1"/>
+  <line x1="32" y1="13" x2="32" y2="51" stroke="url(#axisV)" stroke-width="1"/>
+
+  <!-- Exact Gerono Lemniscate Soft Halo + Crisp Path -->
+  <path
+    d="M 32 32 C 43.04 23.60, 52 20.13, 52 32 C 52 43.87, 43.04 40.40, 32 32 C 20.96 23.60, 12 20.13, 12 32 C 12 43.87, 20.96 40.40, 32 32 Z"
+    fill="none"
+    stroke="#8ad4ff"
+    stroke-opacity="0.22"
+    stroke-width="4.4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M 32 32 C 43.04 23.60, 52 20.13, 52 32 C 52 43.87, 43.04 40.40, 32 32 C 20.96 23.60, 12 20.13, 12 32 C 12 43.87, 20.96 40.40, 32 32 Z"
+    fill="none"
+    stroke="url(#geronoLoop)"
+    stroke-width="2.1"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Symmetric Comet Highlights -->
+  <circle cx="49.2" cy="26.2" r="1.45" fill="#ffffff"/>
+  <circle cx="14.8" cy="37.8" r="1.45" fill="#ffffff"/>
+
+  <!-- Central Star Halo & Core -->
+  <circle cx="32" cy="32" r="8.2" fill="url(#coreStar)"/>
+  <path d="M32 23.2 L33.3 30.7 L40.8 32 L33.3 33.3 L32 40.8 L30.7 33.3 L23.2 32 L30.7 30.7 Z" fill="#ffffff"/>
+</svg>

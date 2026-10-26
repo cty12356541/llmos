@@ -1,29 +1,32 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#040a14">
 <title>NLOS — Windows/macOS 级通用现代自然语言操作系统</title>
-<meta name="description" content="NLOS 是以自然语言为首要界面、同时支持 GUI、CLI 与 API 的通用现代系统级操作系统；统一管理 Application、Task、Process、Agent、Fiber、资源、数据和设备。">
+<meta name="description" content="NLOS（Natural Language Operating System）是以自然语言为首要界面、同时支持可信 GUI、CLI 与结构化 API 的通用现代系统级操作系统；基于 v0.5 规范（2026-10-26 · W68），统一裁决 Application、Task、Process、AgentInstance、Fiber、Capability、ResourceAccount 与外部副作用。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="NLOS — Windows/macOS 级通用现代自然语言操作系统">
+<meta property="og:description" content="自然表达 · 系统执行 · 全局可控。v0.5 规范归一，Stage B 已退出，Stage C/D 双轨并行推进（35 Crates / 26 ADRs / 101 Claims）。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="NLOS — Windows/macOS 级通用现代自然语言操作系统">
+<meta name="twitter:description" content="自然表达 · 系统执行 · 全局可控。v0.5 规范归一，Stage B 已退出，Stage C/D 双轨并行推进（35 Crates / 26 ADRs / 101 Claims）。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1">
-<link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
 
-<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
 
-<!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
-    <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">NL</span>
-      <span>NLOS</span>
-    </a>
-    <button class="nav-toggle" id="navToggle" type="button"
-            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
       <span></span><span></span><span></span>
     </button>
     <div class="nav-links" id="navLinks">
@@ -33,17 +36,17 @@
       <a href="execution.html">执行与控制</a>
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html">现代系统</a>
-      <a href="roadmap.html">路线</a>
+      <a href="roadmap.html">阶段路线</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
   </div>
 </nav>
 
 <main id="top">
 
-<!-- ================= 1. Hero ================= -->
+<!-- ================= Hero (Sacred Minimalism · DESIGN.md v10/v11) ================= -->
 <header class="hero home-hero container">
-  <div class="nlos-emblem reveal" role="img" aria-label="NLOS 标志：无限曲线与十字光轴在极亮星点交汇">
+  <div class="nlos-emblem reveal" role="img" aria-label="NLOS 标志：Gerono 双彗尾无穷曲线与十字光轴在极亮星点交汇">
     <span class="emblem-orbit orbit-a"></span>
     <span class="emblem-orbit orbit-b"></span>
     <canvas class="emblem-infinity" aria-hidden="true"></canvas>
@@ -62,144 +65,172 @@
   <a class="home-enter reveal" href="#history">进入系统 <span aria-hidden="true">↓</span></a>
 </header>
 
-<!-- ================= 2. 历史论证 ================= -->
-<section class="section" id="history">
+<!-- ================= Section 1: 计算史映射 ================= -->
+<section class="section" id="history" data-nav-label="计算史映射">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">History<span class="sec-no">/ 01</span></span>
       <h2>智能体系统正在重复<em>计算机发展史</em></h2>
-      <p>智能体系统正在重新经历现代计算系统已经解决过的并发、隔离、资源、一致性、恢复和分布式问题。NLOS 优先迁移成熟 OS、runtime、数据库和分布式机制，再处理模型带来的语义断裂。</p>
+      <p>智能体系统正在重新经历现代计算系统已经解决过的并发、隔离、资源、一致性、故障恢复与分布式矛盾。NLOS 优先迁移成熟 OS、runtime、数据库与分布式控制回路，再在不可绕过的系统边界处理模型引发的语义断裂。</p>
     </div>
+
     <ol class="history-flow reveal-group" aria-label="计算系统发展阶段与 NLOS 演进映射">
       <li class="history-step">
         <span class="history-no" aria-hidden="true">01</span>
         <div class="history-era"><strong>专用机器</strong><small>ENIAC</small></div>
         <div class="history-mapping">
-          <span class="history-origin">为单一任务布线</span>
+          <span class="history-origin">为单一任务硬连线</span>
           <span class="history-arrow" aria-hidden="true"></span>
-          <strong class="history-nlos">提示词工程 + 硬编码 workflow</strong>
+          <strong class="history-nlos">提示词拼装 + 硬编码 workflow 脚本</strong>
         </div>
-        <span class="history-status is-now">当下</span>
+        <span class="history-status is-now">行业常态</span>
       </li>
       <li class="history-step">
         <span class="history-no" aria-hidden="true">02</span>
         <div class="history-era"><strong>大型机批处理</strong><small>Mainframe</small></div>
         <div class="history-mapping">
-          <span class="history-origin">昂贵、集中、专家操作</span>
+          <span class="history-origin">昂贵、集中、串行占机</span>
           <span class="history-arrow" aria-hidden="true"></span>
-          <strong class="history-nlos">贵模型 + 集中 API + 一次跑一个流程</strong>
+          <strong class="history-nlos">昂贵模型 + 集中 API + 单会话串行运行</strong>
         </div>
-        <span class="history-status is-now">当下</span>
+        <span class="history-status is-now">行业常态</span>
       </li>
-      <li class="history-step is-pivot">
+      <li class="history-step">
         <span class="history-no" aria-hidden="true">03</span>
         <div class="history-era"><strong>分时系统</strong><small>CTSS / MULTICS / Unix</small></div>
         <div class="history-mapping">
           <span class="history-origin">稀缺资源多路复用</span>
           <span class="history-arrow" aria-hidden="true"></span>
-          <strong class="history-nlos">Agent 内核：调度、上下文分页、IPC、权限</strong>
+          <strong class="history-nlos">启动微内核：Capability、Context 换页、Channel、WAL 账本</strong>
         </div>
-        <span class="history-status is-active">启动微内核 · 阶段 A</span>
+        <span class="history-status">阶段 A 基座已内化 · PARTIAL_PASS</span>
       </li>
       <li class="history-step">
         <span class="history-no" aria-hidden="true">04</span>
         <div class="history-era"><strong>PC / 通用系统</strong><small>Personal Computing</small></div>
         <div class="history-mapping">
-          <span class="history-origin">资源便宜、通用抽象</span>
+          <span class="history-origin">第三方应用与通用平台</span>
           <span class="history-arrow" aria-hidden="true"></span>
-          <strong class="history-nlos">Application / Task / Process / Agent / Fiber 通用执行层级</strong>
+          <strong class="history-nlos">Application / Task / Process / AgentInstance / Fiber 五层执行模型</strong>
         </div>
-        <span class="history-status">单机应用平台 · 阶段 B</span>
+        <span class="history-status is-active">阶段 B EXITED · W34-D (1,536 测试)</span>
       </li>
-      <li class="history-step">
+      <li class="history-step is-pivot">
         <span class="history-no" aria-hidden="true">05</span>
-        <div class="history-era"><strong>现代系统</strong><small>Network / Cloud</small></div>
+        <div class="history-era"><strong>现代系统</strong><small>Distributed / Desktop</small></div>
         <div class="history-mapping">
-          <span class="history-origin">网络、分布式、云</span>
+          <span class="history-origin">分布式集群与现代桌面</span>
           <span class="history-arrow" aria-hidden="true"></span>
-          <strong class="history-nlos">Cell 分片 · lease/fence · 调度 · 一致性 · 弹性 · 可观测性</strong>
+          <strong class="history-nlos">Cell 分片 · Lease/Fence · C-XHOST · AI 原生自然语言桌面</strong>
         </div>
-        <span class="history-status">分布式现代系统 · 阶段 C</span>
+        <span class="history-status is-active">阶段 C/D W68 双轨推进 · 9/9 C-core H6</span>
       </li>
     </ol>
+
     <div class="tl-notes reveal-group">
       <div class="tl-note">
-        <h4>抽象比稀缺长寿</h4>
-        <p>分时系统诞生于资源稀缺，但进程 / 虚存 / 文件在资源变便宜后成了 PC 地基。稀缺发明抽象，富足放大抽象。</p>
+        <h4>抽象比稀缺更长寿</h4>
+        <p>分时系统诞生于昂贵主机时代，但进程、虚存与权限模型在算力普及后成为现代计算地基。稀缺迫使系统发明正确抽象，富足放大抽象的生态复利。</p>
       </div>
       <div class="tl-note">
-        <h4>harness 派在重建 Unix 用户态</h4>
-        <p>Agent 不再被粗略等同为进程：Application 包含 Process，Process 承载 AgentInstance，AgentInstance 运行 Fiber；真正隔离仍由 Process/IsolationUnit 提供。</p>
+        <h4>五层模型取代“Agent 即进程”</h4>
+        <p>Application 包含 Process，Process 承载 AgentInstance，AgentInstance 调度 ExecutionFiber。强故障与资源隔离留在 Process/IsolationUnit，高并发复用留在 Fiber。</p>
       </div>
       <div class="tl-note warn">
-        <h4>历史警示：Multics 教训</h4>
-        <p>Multics 功能最全，输给 Unix 的「够用」；Lisp 机器的优雅败给 C/Unix 的粗暴。先找到最小正确抽象，让生态自己长。</p>
+        <h4>Multics 警示与最小权威核</h4>
+        <p>Multics 试图在内核包办一切而折戟。NLOS 坚持机制在内核、语义与策略在用户态：TCB 只守住身份、能力、预算守恒与提交围栏。</p>
+      </div>
+    </div>
+
+    <div class="metric-strip reveal-group" aria-label="NLOS 仓库工程实证遥测（2026-10-26 · W68）">
+      <div class="metric-item">
+        <strong class="metric-value" data-count="35">35</strong>
+        <span class="metric-label">Rust Workspace Crates</span>
+        <small class="metric-scope">edition 2024 · rustc 1.97 · 零 unsafe · 零冻结 crate</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value" data-count="26" data-suffix=" ADRs">26 ADRs</strong>
+        <span class="metric-label">架构决策与 35 项专题议题</span>
+        <small class="metric-scope">v0.5 规范归一 · 3 POC / 18 ACCEPTED / 3 VERIFIED / 2 CANDIDATE</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value" data-count="101">101</strong>
+        <span class="metric-label">机器校验声明 · 169 份证据</span>
+        <small class="metric-scope">lint_claims.py 零违例 · 14 条 H6 声明 · 15 项多进程常设测试 · P0=0</small>
+      </div>
+      <div class="metric-item">
+        <strong class="metric-value" data-count="2128" data-suffix="+">2128+</strong>
+        <span class="metric-label">Workspace 自动化测试</span>
+        <small class="metric-scope">含 SQLite 断电故障注入、8-Cell 4.44x 扩展与 Tauri 可信壳</small>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= 3. 问题 ================= -->
-<section class="section" id="problem">
+<!-- ================= Section 2: 框架尸检 ================= -->
+<section class="section" id="problem" data-nav-label="框架尸检">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Problem<span class="sec-no">/ 02</span></span>
-      <h2>现有框架全是库，<em>没有一个是内核</em></h2>
-      <p>立项问题：如果可供调度的资源翻万倍，现有框架能否同时调度成千上万个智能体？答案是不能——死法不是「调度不动」，而是压根没有「调度」这个概念：无准入控制、无优先级、无抢占、无配额、无资源核算。规模在这里是压力测试：它压出的是通用性缺口。</p>
+      <h2>现有框架全是用户态编排库，<em>没有一个是系统权威</em></h2>
+      <p>立项压力测试：若可调度算力与上下文翻万倍，现有框架能否同时治理万级并发智能体？议题 #31/#32 竞品横评证实，崩溃根源不在工程调优，而在抽象层级错位——用户态库只能约定流程，无法在进程边界之外强制准入、配额、快照隔离与副作用围栏。</p>
     </div>
+
     <div class="autopsy-grid reveal-group">
       <div class="card autopsy-card">
         <div class="autopsy-top"><span class="autopsy-name">CrewAI</span><span class="autopsy-scale">~100 量级</span></div>
-        <p class="autopsy-cause">顺序 / 层级 Process 语义反并发。</p>
-        <span class="autopsy-verdict">Autopsy · 编排语义</span>
+        <p class="autopsy-cause">顺序与层级角色循环将控制流绑死在同步会话内，缺乏异步 <code>ExecutionFiber</code> 挂起恢复与抢占式就绪队列。</p>
+        <span class="autopsy-verdict">Autopsy · 编排语义反并发</span>
       </div>
       <div class="card autopsy-card">
         <div class="autopsy-top"><span class="autopsy-name">LangGraph</span><span class="autopsy-scale">~1k 量级</span></div>
-        <p class="autopsy-cause">单进程 asyncio，加每 super-step 全量 checkpoint 写放大。</p>
-        <span class="autopsy-verdict">Autopsy · 状态写放大</span>
+        <p class="autopsy-cause">单进程事件循环叠加每 super-step 全量图状态 checkpoint 序列化，并发攀升即触发严重状态写放大与锁竞争。</p>
+        <span class="autopsy-verdict">Autopsy · 全量检查点写放大</span>
       </div>
       <div class="card autopsy-card">
         <div class="autopsy-top"><span class="autopsy-name">AutoGen 系</span><span class="autopsy-scale">~1k 量级</span></div>
-        <p class="autopsy-cause">pub/sub 广播 O(n²)，通信拓扑爆炸。</p>
-        <span class="autopsy-verdict">Autopsy · 通信拓扑</span>
+        <p class="autopsy-cause">群聊式 pub/sub 广播缺乏系统级有界 <code>Channel</code> 容量配额与背压控制，多主体协作迅速退化为 <code>O(n²)</code> 消息风暴。</p>
+        <span class="autopsy-verdict">Autopsy · 通信拓扑爆炸</span>
       </div>
       <div class="card autopsy-card">
         <div class="autopsy-top"><span class="autopsy-name">Letta / MemFS</span><span class="autopsy-scale">~1k 量级</span></div>
-        <p class="autopsy-cause">记忆合并走 git，万级并发写死于合并冲突。</p>
-        <span class="autopsy-verdict">Autopsy · 状态一致性</span>
+        <p class="autopsy-cause">共享记忆合并依赖文本分支检出，缺乏 <code>TaskSnapshot</code> 读集冻结、6 域写集冲突代数与单调 <code>TaskHead</code> CAS 裁决。</p>
+        <span class="autopsy-verdict">Autopsy · 缺乏事务快照</span>
       </div>
       <div class="card autopsy-card">
         <div class="autopsy-top"><span class="autopsy-name">OpenAI SDK / harness 派</span><span class="autopsy-scale">~几千</span></div>
-        <p class="autopsy-cause">万级沙箱的调度与回收无设施。</p>
-        <span class="autopsy-verdict">Autopsy · 执行环境</span>
+        <p class="autopsy-cause">擅长单会话工具循环，但万级沙箱的生命周期树、孤儿强杀回收、<code>ResourceGroup</code> 多维物理容量隔离与 <code>ResourceAccount</code> 可转移信用守恒完全缺席。</p>
+        <span class="autopsy-verdict">Autopsy · 生命周期与配额缺席</span>
       </div>
       <div class="card autopsy-card">
-        <div class="autopsy-top"><span class="autopsy-name">Dapr Agents</span><span class="autopsy-scale alive">活得最久</span></div>
-        <p class="autopsy-cause">但无 agent 专属调度语义——通用工作流引擎不解 agent 问题。</p>
-        <span class="autopsy-verdict">Autopsy · 语义缺失</span>
+        <div class="autopsy-top"><span class="autopsy-name">Dapr Agents</span><span class="autopsy-scale alive">分布式最稳</span></div>
+        <p class="autopsy-cause">具备通用持久化工作流底座，但无模型原生控制面：无 <code>Context</code> 工作集换页、无污点传播、无 <code>EffectPermit</code> 与未知态冻结。</p>
+        <span class="autopsy-verdict">Autopsy · 原生语义围栏缺失</span>
       </div>
     </div>
+
     <div class="callout reveal">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
-      <p>万级规模失效不是工程不努力，是<b>抽象层级错了</b>——应用库 vs 内核。OS 的核心职能（稀缺资源分配）在框架层完全缺席。万倍资源不会让问题消失，会让它从不存在变成核心矛盾。这六大死因的逐一闭合，见<a class="xref" href="verification.html#validation">支撑与验证 · 宗旨验证</a>。</p>
+      <p>议题 #31/#32 结论：现有框架全部驻留在<b>用户态编排层（Userspace Orchestration）</b>，而 NLOS 占据不可绕过的<b>系统级权威生态位（<code>TaskSnapshot</code> + <code>CommitPermit</code> + <code>EffectPermit</code> + <code>ResourceAccount</code> + <code>Capability</code>）</b>。六大失效模式的逐项闭合与证据见 <a class="xref" href="verification.html#validation">支撑与验证 · 宗旨验证</a> 与 <a class="xref" href="execution.html#consistency">执行与控制 · 任务一致性</a>。</p>
     </div>
   </div>
 </section>
 
-<!-- ================= 4. 方向修正（浅区） ================= -->
-<section class="section glacier" id="direction">
+<!-- ================= Section 3: 系统闭环 ================= -->
+<section class="section glacier" id="direction" data-nav-label="系统闭环">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Direction<span class="sec-no">/ 03</span></span>
-      <h2>规模是压力测试，<em>通用才是宗旨</em></h2>
-      <p>v0.5 的方向已经明确：规模不是产品定义，而是系统抽象的压力测试。主线从启动微内核进入单机通用应用平台，再并行扩展分布式现代系统与完整自然语言桌面。</p>
+      <h2>规模是压力测试，<em>通用与可控才是系统宗旨</em></h2>
+      <p>v0.5 将万级规模确立为检验系统抽象的压力测试，而非狭隘的跑分口径。自然语言、可信 GUI、CLI 与 API 统一编译为类型化契约，经同一权威内核完成能力校验、资源守恒、双重围栏提交与字节等价回执。</p>
     </div>
+
     <figure class="idea-map reveal" data-idea-map aria-labelledby="overview-map-title">
       <div class="idea-map-heading">
         <span>INTERACTIVE MODEL · 01</span>
         <div>
-          <h3 id="overview-map-title">一句自然语言，如何变成可治理的系统行为</h3>
-          <p>悬停或点击任一节点，查看意图如何经过内核形成闭环。</p>
+          <h3 id="overview-map-title">多入口意图如何经权威内核形成系统闭环</h3>
+          <p>悬停、点击或按左右方向键切换节点，查看 v0.5 从意图编译到字节等价回执的治理闭环。</p>
         </div>
       </div>
       <div class="idea-map-stage">
@@ -211,85 +242,102 @@
           <path data-map-link="control program" d="M850 292 C850 330 150 330 150 292"/>
         </svg>
         <button class="idea-node pos-a" type="button" data-map-node="intent"
-                data-map-title="自然语言目标"
-                data-map-copy="用户只表达目标、约束和可接受的结果，不需要提前把意图翻译成某个框架的节点图。自然语言是入口，不是内核里的特权语义。">
-          <span>01 · INPUT</span><strong>自然语言目标</strong><small>目标 · 约束 · 结果</small>
+                data-index="01"
+                data-title="多入口意图编译（TypedIntent → ActionProposal → TaskPlan）"
+                data-desc="原始自然语言绝不直接充当机器 ABI：NL、Trusted GUI、CLI 与 API 统一编译为版本化的 TypedIntent、显式声明副作用与成本上界的 ActionProposal 及惰性物化的 TaskPlan；高危动作经 Z4 实心系统安全确认屏放行。">
+          <span class="idea-node-no">01 · INTENT</span><strong>多入口意图编译</strong><small>TypedIntent · TaskPlan</small>
         </button>
         <button class="idea-node pos-b" type="button" data-map-node="program"
-                data-map-title="用户态程序"
-                data-map-copy="harness、graph、workflow 与纯代码 worker 都是用户态程序。它们可以理解任务语义，但所有跨私有边界的动作必须经由系统调用。">
-          <span>02 · USERSPACE</span><strong>用户态程序</strong><small>harness · graph · worker</small>
+                data-index="02"
+                data-title="用户态应用与系统服务契约（KABI / SABI）"
+                data-desc="第三方 Application、harness、LangGraph 工作流与纯代码服务均作为不可信用户态运行在五层执行模型之上；跨边界调用收敛于 KABI（27 项候选原语）与 SABI（8 大系统服务通道已实现），不改内核即可承载未预见应用。">
+          <span class="idea-node-no">02 · USERSPACE</span><strong>用户态与 SABI</strong><small>KABI(27) · SABI(8 已实现)</small>
         </button>
         <button class="idea-node pos-core is-active" type="button" data-map-node="kernel"
-                data-map-title="NLOS 陷入层"
-                data-map-copy="NLOS 把 LLM 调用与工具调用收敛为系统调用：同一个陷入点完成调度、预算扣减、权限校验与污点标记，让自然语言行为第一次具备操作系统级边界。">
-          <span>03 · KERNEL</span><strong>NLOS 陷入层</strong><small>trap · route · enforce</small>
+                data-index="03"
+                data-title="NLOS 权威陷入层（Capability · ResourceAccount / ResourceGroup · Dual Fence）"
+                data-desc="不可绕过的 TCB 陷入点原子裁决 Ed25519 Capability、Namespace 可见性、ResourceAccount 可转移信用封闭守恒（[BUD-ALG-001]，quote → reserve → finalize）与 ResourceGroup 多维资源治理（[RSM-ALG-001]），以及 TaskSnapshot + CommitPermit + EffectPermit 代际双围栏。">
+          <span class="idea-node-no">03 · AUTHORITY</span><strong>NLOS 权威陷入层</strong><small>Capability · Fence · CAS</small>
         </button>
         <button class="idea-node pos-c" type="button" data-map-node="resource"
-                data-map-title="模型与外部资源"
-                data-map-copy="模型、工具、存储和沙箱是可替换资源。内核不理解业务内容，只通过驱动与 handle 中介访问，因此上层程序不被某个模型或协议绑定。">
-          <span>04 · RESOURCE</span><strong>模型与外部资源</strong><small>model · tool · storage</small>
+                data-index="04"
+                data-title="驱动中介与隔离执行域（Model · Wasm · Host · Cell）"
+                data-desc="模型 Provider、外部工具、Wasmtime fuel/epoch 沙箱、宿主受管进程与分布式 Cell 全部经 Driver 与幂等 OperationId 接入；网络超时或崩溃无法证明未生效时强制转入 EFFECT_UNKNOWN 隔离态，阻断盲目重放。">
+          <span class="idea-node-no">04 · DRIVER &amp; CELL</span><strong>驱动中介与沙箱</strong><small>Model · Wasm · Cell H6</small>
         </button>
         <button class="idea-node pos-d" type="button" data-map-node="control"
-                data-map-title="治理反馈闭环"
-                data-map-copy="预算、能力、污点、lineage 和可观测事件回流到用户态策略。规模越大，闭环越重要：万级只是压力测试，通用、可治理才是系统宗旨。">
-          <span>05 · FEEDBACK</span><strong>治理反馈闭环</strong><small>budget · policy · trace</small>
+                data-index="05"
+                data-title="四入口字节等价回执（ControlReceipt · Provenance）"
+                data-desc="NL / Trusted GUI / CLI / API 四种控制入口经同一 ControlCommand 落盘至 SQLite WAL 权威账本，生成字节等价的 ControlReceipt、双身份 SemanticEvent 与可逐层下钻的审计追踪链。">
+          <span class="idea-node-no">05 · RECEIPT</span><strong>字节等价控制回执</strong><small>ControlReceipt · WAL</small>
         </button>
       </div>
       <figcaption class="idea-map-readout" aria-live="polite">
         <span class="idea-map-index">03</span>
-        <div><strong>NLOS 陷入层</strong><p>NLOS 把 LLM 调用与工具调用收敛为系统调用：同一个陷入点完成调度、预算扣减、权限校验与污点标记，让自然语言行为第一次具备操作系统级边界。</p></div>
-        <span class="idea-map-hint">HOVER / CLICK</span>
+        <div>
+          <h4>NLOS 权威陷入层（Capability · ResourceAccount / ResourceGroup · Dual Fence）</h4>
+          <p>不可绕过的 TCB 陷入点原子裁决 Ed25519 Capability、Namespace 可见性、ResourceAccount 可转移信用封闭守恒（[BUD-ALG-001]，quote → reserve → finalize）与 ResourceGroup 多维资源治理（[RSM-ALG-001]），以及 TaskSnapshot + CommitPermit + EffectPermit 代际双围栏。</p>
+        </div>
+        <span class="idea-map-hint">HOVER / CLICK / ←→</span>
       </figcaption>
     </figure>
-    <p class="diagram-footnote reveal">通用性四判据与 16/16 重构测试，见<a class="xref" href="kernel.html#universality">通用内核 · 通用性论证</a>。</p>
+
+    <p class="diagram-footnote reveal">通用性四判据与未预见应用重构验证，见 <a class="xref" href="kernel.html#universality">通用内核 · 通用性论证</a>。</p>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">STAGE B · EXITED (W34-D)</span>
+      <span class="badge badge-active">STAGE C · 9/9 C-CORE H6</span>
+      <span class="badge badge-candidate">C-XHOST &amp; STAGE D · W68 WIP</span>
+      <span>阶段 B 已于 W34-D 退出；阶段 C 九大核心包单机多进程 H6 全闭环并推进 <code>C-XHOST</code> 跨主机扩展；阶段 D 自然语言桌面（<code>ADR-0025</code>：<code>Z0–Z4</code> 五平面合成器、<code>Graphite/Paper</code> 实心工业工作站、<code>L0–L3</code> 渐进式披露与 12 域显控同构）于 W68 并行启动。</span>
+    </div>
   </div>
 </section>
 
-<!-- ================= 5. 阅读路线（band） ================= -->
-<section class="section band" id="tour">
+<!-- ================= Section 4: 全站导览 ================= -->
+<section class="section band" id="tour" data-nav-label="全站导览">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Reading Path<span class="sec-no">/ 04</span></span>
-      <h2>阅读路线：<em>完整 NLOS → 权威内核 → 现代系统</em></h2>
-      <p>站点按当前 v0.5 重新解释原有内容；规范、阶段管理和证据状态以仓库文档为最终权威。</p>
+      <h2>全站导览：<em>系统宪法 → 权威内核 → 现代系统与路线</em></h2>
+      <p>六大专题卷严格遵循 v0.5 架构总纲与 2026-10-26（W68）仓库实证，逐层展开设计契约、代码平面与诚实证据边界。</p>
     </div>
+
     <div class="nav-cards reveal-group">
       <a class="card nav-card" href="vision.html">
         <span class="nc-no">Part 0 · 宪法与方法</span>
         <h3>系统哲学</h3>
-        <p>Windows/macOS 级终局、为什么不是编排框架、五条核心轴心、现代系统机制迁移法，以及当前不能越界的能力声明。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <p><code>[NLOS-GOAL-001]</code> Windows/macOS 级终局、模型入计算流的四重结构断裂、五条哲学轴心、A/B/C 机制迁移法与 <code>[THEORY-LIMIT-001..004]</code> 诚实边界。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
       <a class="card nav-card" href="kernel.html">
-        <span class="nc-no">Part I · 通用系统</span>
+        <span class="nc-no">Part I · 通用内核</span>
         <h3>通用内核</h3>
-        <p>Application、Process、AgentInstance、ExecutionFiber 与 Activation；Capability、Namespace、Resource、KABI/SABI 和不可绕过执行边界。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <p>五层执行对象模型、Ed25519 Capability 与 Plan 9 Namespace、<code>KABI(27) / SABI(8)</code> 双层接口契约、Wasmtime/进程隔离及 16/16 通用性验证。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
       <a class="card nav-card" href="execution.html">
-        <span class="nc-no">Part II · 执行系统</span>
+        <span class="nc-no">Part II · 执行与控制</span>
         <h3>执行与控制</h3>
-        <p>Application→Process→AgentInstance→Fiber、自然语言顶层拆解、PID 级逻辑规模、Task 一致性与 Windows/macOS 式逐层控制。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <p><code>TypedIntent</code> → <code>ActionProposal</code> → <code>TaskPlan</code> 编译管线、16 态 Task 状态机、<code>100K_LOGICAL</code> 惰性规模、6 域写集冲突代数与四入口字节等价控制。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
       <a class="card nav-card" href="verification.html">
-        <span class="nc-no">Part III · 不变量与证据</span>
-        <h3>支撑设施与宗旨验证</h3>
-        <p>ResourceGroup 与 ResourceAccount 分离、durability、取消与副作用 fencing、任务隔离、语义一致性，以及设计—实现—证据分级。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <span class="nc-no">Part III · 支撑与验证</span>
+        <h3>支撑与验证</h3>
+        <p><code>ResourceAccount</code> 可转移信用封闭守恒（<code>[BUD-ALG-001]</code>）与 <code>ResourceGroup</code> 多维资源治理（<code>[RSM-ALG-001]</code>）分离、SQLite WAL 断电恢复、<code>CommitPermit / EffectPermit</code> 双围栏与 <code>H0–H8</code> 保证阶梯。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
       <a class="card nav-card" href="modern.html">
         <span class="nc-no">Part IV · 现代系统</span>
         <h3>现代系统</h3>
-        <p>Global/Cell/Worker 分层调度、分布式 lease/fence、Context 工作集、服务治理、手动控制和现代系统机制迁移。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <p>Stage C <code>Global / Cell / Worker</code> 分层调度、9 大 <code>C-core</code> 包单机多进程 H6 闭环（8-Cell <code>4.44x</code>）、<code>C-XHOST</code> 跨主机演进，以及 Stage D <code>Z0–Z4</code> 实心工业工作站桌面（<code>Graphite/Paper</code> · <code>L0–L3</code> 渐进式披露 · 12 域显控同构）。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
       <a class="card nav-card" href="roadmap.html">
-        <span class="nc-no">Part V · 路线与现状</span>
+        <span class="nc-no">Part V · 阶段路线</span>
         <h3>阶段路线</h3>
-        <p>A 启动内核、B 单机应用平台、C 分布式现代系统、D 自然语言桌面、E 兼容生态；技术基线、Evidence 等级与当前实施边界。</p>
-        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        <p>A–E 五阶段全局演进、Stage B 退出结项、Stage C/D W68–W74 双轨工作包矩阵、35 个 Rust Crate 分层平面、26 份 ADR 与风险台账。</p>
+        <span class="nc-arrow">进入章节<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </a>
     </div>
   </div>
@@ -297,34 +345,31 @@
 
 </main>
 
-<!-- ================= 下一页 ================= -->
 <nav class="pager" aria-label="页面顺序">
   <div class="container pager-inner">
     <a class="pager-link next" href="vision.html">
-      <span><small>下一页</small>系统哲学</span>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      <span><small>下一页 · Part 0</small>系统哲学</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
   </div>
 </nav>
 
-<!-- ================= 页脚 ================= -->
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
-      <span>· 自然语言操作系统</span>
+      <span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.5 · 2026-07-29 · Windows/macOS 级通用现代 NLOS</span>
-    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 设计已规格化，阶段 B 实现与验证进行中</span>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=10.6.0"></script>
-<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js?v=6.0.1"></script>
-<script src="vendor/gsap.min.js"></script>
-<script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js?v=10.1.0"></script>
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
 </body>
 </html>

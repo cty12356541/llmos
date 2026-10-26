@@ -1,29 +1,34 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>支撑设施与宗旨验证 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.5 · 支撑与验证：Resource、durability、任务隔离、取消、副作用 fencing、语义一致性和 Evidence 分级。">
+<meta name="theme-color" content="#040a14">
+<title>支撑与验证 · 守恒、认知与取证 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.5 (W68) · Part III 守恒、认知与取证：ResourceAccount 封闭域守恒账本（v0.5 §10.1）、SemanticEvent 认知语义平面、Ed25519 能力密码学与双层沙箱隔离、Stage B/C (H3–H6) 实测证据闭合。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="支撑与验证 · 守恒、认知与取证 · NLOS — 自然语言操作系统">
+<meta property="og:description" content="ResourceAccount §10.1 封闭域守恒方程与按代数分治的多维资源控制器、SemanticEvent 双重身份与 AuthorityView、Ed25519 能力令牌与双层沙箱隔离，以及 Stage B/C (H3–H6) 实测证据闭合矩阵。">
+<meta property="og:image" content="assets/og-cover.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="支撑与验证 · 守恒、认知与取证 · NLOS">
+<meta name="twitter:description" content="v0.5 规范 · B EXITED · C/D W68 并行：从 §10.1 封闭域守恒账本与认知语义平面到 H3–H6 实测取证闭合。">
+<meta name="twitter:image" content="assets/og-cover.svg">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.6.1">
-<link rel="stylesheet" href="css/effects.css?v=10.1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css?v=11.0.0">
+<link rel="stylesheet" href="css/effects.css?v=11.0.0">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 </head>
 <body>
 
-<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
 
-<!-- ================= 导航 ================= -->
+<!-- ================= 顶栏导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
-    <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">NL</span>
-      <span>NLOS</span>
-    </a>
+    <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">∞</span><span>NLOS</span></a>
     <button class="nav-toggle" id="navToggle" type="button"
-            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开导航菜单">
       <span></span><span></span><span></span>
     </button>
     <div class="nav-links" id="navLinks">
@@ -33,333 +38,500 @@
       <a href="execution.html">执行与控制</a>
       <a href="verification.html" aria-current="page">支撑与验证</a>
       <a href="modern.html">现代系统</a>
-      <a href="roadmap.html">路线</a>
+      <a href="roadmap.html">阶段路线</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 规范 · B EXITED · C/D W68 并行</span><span class="b-short">v0.5 · W68</span></span>
   </div>
 </nav>
 
 <main id="top">
 
 <!-- ================= 页头 ================= -->
-<header class="page-head container">
-  <span class="eyebrow reveal">Part II · 通用系统 · Infrastructure &amp; Validation</span>
-  <h1 class="page-title reveal"><span class="title-line">系统不变量与</span><span class="title-line accent">证据边界</span></h1>
-  <p class="page-desc reveal">v0.5 将 ResourceGroup 与 ResourceAccount、设计与事实、任务候选与唯一提交分离。这里展示的是当前规范和局部原型证据；未完成真实 provider、故障注入、100K Fiber 和分布式验证前，不宣称生产闭合。</p>
-  <nav class="page-toc reveal" aria-label="本页目录">
-    <a href="#budget">Budget</a>
-    <a href="#randomness">随机性管理</a>
-    <a href="#security">安全与授权</a>
-    <a href="#validation">宗旨验证</a>
-  </nav>
+<header class="page-head">
+  <div class="container">
+    <span class="eyebrow reveal">Part III · 守恒、认知与取证 · Verification</span>
+    <h1 class="page-title reveal"><span class="title-line">守恒不变量、认知平面与</span><span class="title-line accent">实测证据闭合</span></h1>
+    <p class="page-desc reveal">v0.5 规范将可转移账本 <code>ResourceAccount</code> 与物理调度组 <code>ResourceGroup</code>、概率候选推演与只追加认知事件、设计契约与实测取证严格剥离。本页呈现已于 Stage B（<code>EXITED</code>）和 Stage C（<code>9/9 C-core H6</code> 单机多进程）落档的系统级验证证据，并逐项标定残余未证边界。</p>
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">STAGE B EXITED · H3–H5 门禁闭合</span>
+      <span class="badge badge-active">STAGE C W68 · 9/9 C-core H6 单机多进程已取证</span>
+      <span class="badge badge-candidate">ADR-0026 C-XHOST · 跨物理机收官推进中</span>
+      <span class="badge badge-design">Claim ≤ Evidence · 101 Claims / 169 Evidence</span>
+    </div>
+    <nav class="page-toc reveal" aria-label="本页目录">
+      <a href="#budget">01 · 守恒账本与资源代数</a>
+      <a href="#randomness">02 · 随机与认知面</a>
+      <a href="#security">03 · 能力密码安全</a>
+      <a href="#validation">04 · 实测闭合证据</a>
+    </nav>
+  </div>
 </header>
 
-<!-- ================= 1. Budget ================= -->
-<section class="section" id="budget">
+<!-- ================= 1. 守恒账本与资源代数 ================= -->
+<section class="section" id="budget" data-nav-label="守恒账本与资源代数">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Economy · 支撑设施<span class="sec-no">/ 01</span></span>
-      <h2>Budget：<em>失控 agent 是财务事故</em>，不是性能事故</h2>
-      <p>方向修正归位：Budget 是负载无关的计量设施，不是系统灵魂。Unix 进程死循环浪费免费时间片，agent 死循环烧钱。计价单位用抽象 <b style="color:var(--white);">credits</b>：不用 token（不同模型单价不同，不是稳定货币），不用法币（内核不该碰汇率）。驱动回报实际用量，用户态定价表折算，内核只记 credits——内核与价格波动隔离。</p>
+      <span class="eyebrow">Conservation Ledger &amp; Resource Algebra · v0.5 §10 / §10.1 · ADR-0017<span class="sec-no">/ 01</span></span>
+      <h2>资源治理：<em>封闭域守恒账本</em>与按代数分治的多维控制器</h2>
+      <p>失控 Agent 首先是财务与容量双重事故。<code>v0.5 §10 / §10.1</code> 与 <code>nlos-resource</code>（配合 <code>ADR-0017</code> 跨权威 <code>prepare → finalize</code> 协调协议）严格遵守 <code>[BUD-ALG-001]</code>、<code>[RSM-ALG-001]</code> 与 <code>[RSM-HUMAN-001]</code>：<strong><code>ResourceAccount</code> 仅承载可转移同质化额度（<code>Token / Monetary credit</code>）</strong>，在 <code>SQLite WAL + synchronous=FULL</code> 整数算术下满足封闭预算域精确守恒；CPU、内存/Context、墙钟时间、I/O、网络与能源则由 <code>ResourceGroup</code> / <code>ResourceController</code> 按容量（<code>grant/lease</code>）、单调累计（<code>cumulative meter</code>）和窗口速率（<code>rate</code>）各自强制，人类注意力更作为非同质化 <code>NotificationBudget</code> 独立管控，绝不用普通 credit 混算或买通。</p>
     </div>
-    <figure class="idea-map reveal" data-idea-map aria-labelledby="budget-map-title">
-      <div class="idea-map-heading">
-        <span>INTERACTIVE MODEL · 03</span>
+
+    <!-- 封闭预算域守恒方程 (v0.5 §10.1) -->
+    <div class="conservation-eq reveal" role="region" aria-label="v0.5 §10.1 ResourceAccount 封闭预算域守恒方程">
+      <div class="eq-caption">v0.5 §10.1 · nlos-resource · Closed-Domain ResourceAccount Conservation (Transferable Fungible Credit Only · BUD-ALG-001)</div>
+      <div class="eq-term is-total">
+        <code>MINTED</code>
+        <span>根域铸造授信额</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term is-total">
+        <code>INBOUND</code>
+        <span>跨域转入信用额</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">=</span>
+      <div class="eq-term">
+        <code>AVAILABLE</code>
+        <span>账户当前可用余额</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>RESERVATION.limit</code>
+        <span>调用前预留冻结上限</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>RISK_RESERVATION.loss_bound</code>
+        <span>有界滞后风险封顶预留</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>ESCROW</code>
+        <span>跨主体有界托管额</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>LEASE</code>
+        <span>跨 Cell 预付 QuotaLease</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>SPENT</code>
+        <span>已结算终态消耗</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>QUARANTINED</code>
+        <span>溢出/未知用量隔离冻结</span>
+      </div>
+      <span class="eq-op" aria-hidden="true">+</span>
+      <div class="eq-term">
+        <code>OUTBOUND</code>
+        <span>跨账户/跨域转出额</span>
+      </div>
+    </div>
+
+    <!-- #budgetflow SVG 机制图解（与 anim.js 契约严格对齐） -->
+    <figure class="bento-card span-12 featured reveal" style="margin-top: var(--sp-6);" aria-labelledby="budgetflow-title">
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 16px;">
         <div>
-          <h3 id="budget-map-title">一次调用的预算闭环</h3>
-          <p>从父级划拨到耗尽信号，逐步查看费用如何成为可强制的不变量。</p>
+          <span class="bento-kicker">MECHANISM DIAGRAM · QUOTE → RESERVE → CONSUME → FINALIZE/RELEASE</span>
+          <h3 id="budgetflow-title" style="margin-top:4px;">单次受保护操作的预留—计量—托管—结算闭环（<code>ADR-0017</code>）</h3>
         </div>
+        <span class="badge badge-verified">WAL+FULL 并发事务 + Property Tests 已验证</span>
       </div>
-      <div class="idea-map-stage">
-        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
-          <path data-map-link="allocate debit" d="M210 72 C340 72 390 154 470 164"/>
-          <path data-map-link="preauth debit" d="M210 268 C340 268 390 184 470 174"/>
-          <path data-map-link="debit signal" d="M530 164 C610 154 660 72 790 72"/>
-          <path data-map-link="debit ledger" d="M530 174 C610 184 660 268 790 268"/>
-          <path data-map-link="ledger allocate" d="M850 292 C850 330 150 330 150 292"/>
-        </svg>
-        <button class="idea-node pos-a" type="button" data-map-node="allocate"
-                data-map-title="父级预算划拨"
-                data-map-copy="子 Agent 在 ELF 中声明请求，父级在 spawn 时批准、缩减或拒绝。预算沿 lineage 切片，问责关系与执行关系同时建立。">
-          <span>01 · ALLOCATE</span><strong>父级预算划拨</strong><small>request · approve · slice</small>
-        </button>
-        <button class="idea-node pos-b" type="button" data-map-node="preauth"
-                data-map-title="调用前硬上限"
-                data-map-copy="调用前先冻结预估成本，并把剩余额度折算成 max_tokens 或工具 preauth。即使事后成本未知，物理上也无法无限透支。">
-          <span>02 · PREAUTH</span><strong>调用前硬上限</strong><small>freeze · max_tokens</small>
-        </button>
-        <button class="idea-node pos-core is-active" type="button" data-map-node="debit"
-                data-map-title="陷入点原子扣减"
-                data-map-copy="驱动按实际用量回报，NLOS 在陷入点以 credits 原子扣减。价格表留在用户态，内核只维护守恒的余额与继承树。">
-          <span>03 · DEBIT</span><strong>陷入点原子扣减</strong><small>measure · convert · debit</small>
-        </button>
-        <button class="idea-node pos-c" type="button" data-map-node="signal"
-                data-map-title="阈值与耗尽信号"
-                data-map-copy="80% 触发预警，100% 默认 suspend。Agent 可 checkpoint、申请增资或显式降级；隐蔽失败不会被伪装成正常结果。">
-          <span>04 · ENFORCE</span><strong>阈值与耗尽信号</strong><small>80% warn · 100% suspend</small>
-        </button>
-        <button class="idea-node pos-d" type="button" data-map-node="ledger"
-                data-map-title="流水与反馈"
-                data-map-copy="每笔扣减进入 WAL 批量组提交，形成可追责流水；用户态策略依据花费、质量与风险重新分配下一轮资源。">
-          <span>05 · FEEDBACK</span><strong>流水与反馈</strong><small>ledger · audit · reallocate</small>
-        </button>
-      </div>
-      <figcaption class="idea-map-readout" aria-live="polite">
-        <span class="idea-map-index">03</span>
-        <div><strong>陷入点原子扣减</strong><p>驱动按实际用量回报，NLOS 在陷入点以 credits 原子扣减。价格表留在用户态，内核只维护守恒的余额与继承树。</p></div>
-        <span class="idea-map-hint">HOVER / CLICK</span>
-      </figcaption>
+      <svg id="budgetflow" viewBox="0 0 960 220" role="img" aria-label="ResourceAccount 四步生命周期与守恒回流图" style="width:100%;height:auto;margin-top:8px;">
+        <!-- 前向扣减与结算主干路径 -->
+        <path class="dg-fwd" d="M 106 82 L 854 82" fill="none" stroke="rgba(138, 212, 255, 0.34)" stroke-width="1.5" stroke-dasharray="5 5"/>
+        <!-- 反向余量退回 / 隔离对账回流路径 -->
+        <path class="dg-back" d="M 854 128 C 700 196, 260 196, 106 128" fill="none" stroke="rgba(182, 230, 255, 0.26)" stroke-width="1.35" stroke-dasharray="4 6"/>
+        <text x="480" y="198" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10.5" fill="rgba(194, 224, 241, 0.68)">
+          Finalize / Release 回流：未用预留退回 AVAILABLE · 超时或未知用量锁定 ESCROW / QUARANTINED（零负账、零双花）
+        </text>
+
+        <!-- 5 个守恒门禁节点（严格匹配 anim.js initBudgetflow 的 5 窗口） -->
+        <g class="dg-gate" transform="translate(30, 38)">
+          <rect width="152" height="88" rx="8"/>
+          <text class="dg-gate-kicker" x="14" y="24">01 · QUOTE</text>
+          <text class="dg-gate-title" x="14" y="47">签名报价单</text>
+          <text class="dg-gate-sub" x="14" y="68">PricingVersion 锁定</text>
+        </g>
+        <g class="dg-gate" transform="translate(217, 38)">
+          <rect width="152" height="88" rx="8"/>
+          <text class="dg-gate-kicker" x="14" y="24">02 · RESERVE</text>
+          <text class="dg-gate-title" x="14" y="47">CAS 预留冻结</text>
+          <text class="dg-gate-sub" x="14" y="68">AVAILABLE → RESERVATION</text>
+        </g>
+        <g class="dg-gate" transform="translate(404, 38)">
+          <rect width="152" height="88" rx="8"/>
+          <text class="dg-gate-kicker" x="14" y="24">03 · CONSUME</text>
+          <text class="dg-gate-title" x="14" y="47">单调序号计量</text>
+          <text class="dg-gate-sub" x="14" y="68">幂等去重 · 硬顶截断</text>
+        </g>
+        <g class="dg-gate" transform="translate(591, 38)">
+          <rect width="152" height="88" rx="8"/>
+          <text class="dg-gate-kicker" x="14" y="24">04 · ESCROW</text>
+          <text class="dg-gate-title" x="14" y="47">托管与异常围栏</text>
+          <text class="dg-gate-sub" x="14" y="68">ESCROW / QUARANTINED</text>
+        </g>
+        <g class="dg-gate" transform="translate(778, 38)">
+          <rect width="152" height="88" rx="8"/>
+          <text class="dg-gate-kicker" x="14" y="24">05 · FINALIZE</text>
+          <text class="dg-gate-title" x="14" y="47">双重记账结算</text>
+          <text class="dg-gate-sub" x="14" y="68">SPENT + Release</text>
+        </g>
+
+        <!-- 动态脉冲包（由 anim.js 驱动，无 JS 时停驻在起点/终点） -->
+        <g class="dg-pkt-f" transform="translate(106, 82)">
+          <circle r="7" fill="rgba(138, 212, 255, 0.26)"/>
+          <circle r="2.6" fill="#edf8ff"/>
+        </g>
+        <g class="dg-pkt-b" transform="translate(854, 128)">
+          <circle r="6.5" fill="rgba(182, 230, 255, 0.22)"/>
+          <circle r="2.4" fill="#8ad4ff"/>
+        </g>
+      </svg>
     </figure>
-    <div class="budget-grid reveal-group">
-      <div class="card budget-part">
-        <span class="owner">内核 · 权威</span>
-        <h4>余额 balance</h4>
-        <p>当前可用量，陷入点原子扣减。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner">内核 · 热路径</span>
-        <h4>记账流水 ledger</h4>
-        <p>每笔扣减事件：哪次调用、花多少。WAL 批量组提交（议题 11 裂缝 1）。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner">内核</span>
-        <h4>继承树 inheritance</h4>
-        <p>父子划拨关系，A spawn B spawn C 的问责链。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner user">ELF + 用户态</span>
-        <h4>耗尽行为 exhaustion</h4>
-        <p>归零时挂起 / 降级 / 通知，agent 注册自己的 handler。</p>
-      </div>
-      <div class="card budget-part">
-        <span class="owner user">用户态</span>
-        <h4>定价表 pricing</h4>
-        <p>各模型 / 工具单价，价格波动隔离在内核之外。</p>
-      </div>
+
+    <!-- 六大正交资源维度（按资源真实代数分治：RSM-ALG-001 & RSM-HUMAN-001） -->
+    <div class="wp-matrix reveal-group interactive-structure" aria-label="六大正交资源计量与控制维度">
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-01 · TOKENS (FUNGIBLE)</span>
+          <span class="badge badge-verified">nlos-resource</span>
+        </div>
+        <h4 class="wp-name">Tokens（可转移账本额度 · 输入/输出/推理分维）</h4>
+        <p class="wp-detail">纳入 <code>ResourceAccount</code> 封闭守恒账本：区分可见输出与推理链 token，调用前将 <code>RESERVATION.limit</code> 折算为 <code>max_tokens</code> 下发驱动截断。</p>
+      </article>
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-02 · MONETARY CREDIT (FUNGIBLE)</span>
+          <span class="badge badge-verified">WAL+FULL</span>
+        </div>
+        <h4 class="wp-name">MonetaryCost（可转移整数最小单位 Credit）</h4>
+        <p class="wp-detail">唯一同质化货币守恒域（<code>BUD-INT-001</code>）：模型调价留在签名 <code>PricingVersion</code>，有界滞后超支优先由运维 <code>RISK_RESERVATION.loss_bound</code> 吸收（<code>BUD-CONS-002</code>）。</p>
+      </article>
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-03 · WALL TIME &amp; ENERGY</span>
+          <span class="badge badge-active">Meter &amp; Lease</span>
+        </div>
+        <h4 class="wp-name">WallTime &amp; Energy（单调截止期与累计计量）</h4>
+        <p class="wp-detail">非同质化维度（<code>RSM-ALG-001</code>）：绑定 <code>MonotonicDeadline</code>、租约 TTL 与 <code>energy_mJ</code> 单调 <code>CumulativeMeter</code>，外部网络等待与本地 CPU 严格分列。</p>
+      </article>
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-04 · COMPUTE CPU / FUEL</span>
+          <span class="badge badge-verified">ResourceGroup</span>
+        </div>
+        <h4 class="wp-name">ComputeCPU/Fuel（容量授权与指令步长控制器）</h4>
+        <p class="wp-detail">由层级 <code>ResourceGroup</code> / <code>ResourceController</code> 管控时间片配额、并发槽位与 Wasmtime 确定性 <code>fuel</code> / <code>epoch</code> 门限，不与货币 credit 混算。</p>
+      </article>
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-05 · MEMORY / CONTEXT</span>
+          <span class="badge badge-active">nlos-task · nlos-artifact</span>
+        </div>
+        <h4 class="wp-name">Memory/ContextBytes（容量租约与分级驻留）</h4>
+        <p class="wp-detail">由 <code>nlos-artifact</code>、<code>nlos-semantic</code> 与 <code>nlos-task</code> 协同 <code>ResourceController</code> 按 <code>PINNED</code>、<code>CHECKPOINTABLE</code>、<code>RECLAIMABLE</code> 管控容量上限与有序回收。</p>
+      </article>
+      <article class="wp-item" data-tilt>
+        <div class="wp-top">
+          <span class="wp-id">DIM-06 · IO / NET / ATTENTION</span>
+          <span class="badge badge-active">Rate &amp; Non-Fungible</span>
+        </div>
+        <h4 class="wp-name">I/O、网络窗口与非同质化人类注意力</h4>
+        <p class="wp-detail">I/O、网络带宽与扇出受窗口速率及落盘准入控制（<code>RSM-ADMIT-001</code>）；人类注意力由 <code>nlos-notify</code> <code>NotificationBudget</code> 非同质化节流（<code>RSM-HUMAN-001</code>），严禁花钱绕过。</p>
+      </article>
     </div>
-    <div class="decision-grid reveal-group">
-      <div class="card decision">
-        <span class="d-tag">继承</span>
-        <div>
-          <h4>ELF 要价 + 父审批</h4>
-          <p>子 ELF 声明 <code>budget.request</code>，父（或其 Policy）在 spawn 时批准 / 拒绝 / 调整。支持中途回收未用预算。被否决：共享池——一个失控子 agent 抽干全部兄弟。</p>
-        </div>
+
+    <!-- 三级 GuaranteeTier -->
+    <div class="tier-ladder three reveal-group interactive-structure" style="margin-top: var(--sp-6);">
+      <div class="card tier" data-tilt>
+        <span class="t-no">T1</span>
+        <h4><code>HARD_ENFORCED</code></h4>
+        <span class="t-cost">同步物理截断 · 零超支保证</span>
+        <p>由引用监控器或本地沙箱在陷入点同步强制执行（如 <code>ResourceAccount</code> CAS 预留、Wasmtime <code>fuel</code> 上限、有界消息与落盘窗口）。未取得持久化 <code>Reservation</code> 前，受保护动作物理上无法派发。</p>
+        <span class="t-fit"><span class="badge badge-verified">VERIFIED</span> 本地账本 / Wasm 沙箱 / 存储准入</span>
+        <div class="tier-bar"><i style="width:100%"></i></div>
       </div>
-      <div class="card decision">
-        <span class="d-tag">耗尽</span>
-        <div>
-          <h4>80% 预警 + 默认挂起</h4>
-          <p>80% 阈值信号给优雅收尾窗口（主动 checkpoint、申请增资）；100% 默认 <code>suspend</code>，状态保留、充值可恢复——最诚实的失败。<code>degrade</code> 仅限 ELF 显式声明：隐蔽失败比显式失败更危险。</p>
-        </div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">T2</span>
+        <h4><code>BOUNDED_DELAY_ENFORCED</code></h4>
+        <span class="t-cost">有界滞后掐断 · RiskAccount 封顶</span>
+        <p>面向流式生成或跨进程异步取消路径：从观测超限到物理掐断存在有界延迟，必须同时在运维 <code>RiskAccount</code> 冻结 <code>max_external_loss</code>，保证用户账户绝不出现事后负余额。</p>
+        <span class="t-fit"><span class="badge badge-active">IMPLEMENTED</span> 流式推理截断 / 跨进程信号回收</span>
+        <div class="tier-bar"><i style="width:68%"></i></div>
       </div>
-      <div class="card decision">
-        <span class="d-tag">透支</span>
-        <div>
-          <h4>max_tokens 硬顶（议题 11 拍板）</h4>
-          <p>陷入时余额是预检，实际成本事后才知。内核把剩余预算折算成 <code>max_tokens</code> 随调用下发，驱动物理截断生成——物理保证，无账本复杂性；工具调用用 preauth 预估冻结作补充。</p>
-        </div>
-      </div>
-      <div class="card decision">
-        <span class="d-tag">计费</span>
-        <div>
-          <h4>实际成本 + 钉页费 + 发送者预付</h4>
-          <p>钉住页按「页 × 步数」计费，防止 pin-everything 滥用；KV 共享页按驱动回报的实际成本记账，不做二次分摊。消息投递<b style="color:var(--text);">发送者预付</b>——spam 制造者自付成本，真正的经济背压（议题 11 拍板）。</p>
-        </div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">T3</span>
+        <h4><code>ACCOUNTED_EXTERNAL</code></h4>
+        <span class="t-cost">外部归账与边界隔离 · 诚实标定</span>
+        <p>诚实声明两项宿主与外部残余边界：公有云第三方 Provider 的最终计费以远端回执为准，以及宿主内核 cgroup / Windows Job Object 四维物理硬隔离仍受 <code>RISK-B-10</code>（跨 UAC / breakaway 子进程边界）约束，绝不冒充 <code>HARD_ENFORCED</code>。</p>
+        <span class="t-fit"><span class="badge badge-candidate">RISK-B-10 / EXTERNAL</span> 远端账单对账与宿主隔离边界</span>
+        <div class="tier-bar"><i style="width:38%"></i></div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= 2. 随机性管理 ================= -->
-<section class="section" id="randomness">
+<!-- ================= 2. 随机与认知面 ================= -->
+<section class="section band" id="randomness" data-nav-label="随机与认知面">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Stochasticity · 支撑设施<span class="sec-no">/ 02</span></span>
-      <h2>随机性管理：Unix 把故障当异常，agent OS 把<span style="white-space:nowrap;"><em>故障当统计</em></span></h2>
-      <p>内核消灭不了幻觉，只提供测量、隔离、冗余原语。<b style="color:var(--white);">可靠性是用 Budget 购买的商品。</b>agent 故障 = 拜占庭故障：看似健康地输出错误，检测需要语义判断——检测必须先于监督（Erlang 监督树结构照抄，触发器换掉）。</p>
+      <span class="eyebrow">Epistemic Plane · nlos-semantic · ADR-0006 &amp; ADR-0023<span class="sec-no">/ 02</span></span>
+      <h2>概率执行治理与<em>认知语义平面</em></h2>
+      <p>内核不能消除概率模型的幻觉，但能把不确定性关进可验证的系统结构。NLOS 一方面用四道概率执行防线隔离运行时错误，另一方面通过 <code>nlos-semantic</code>（<code>ADR-0006</code> 出版回执归属、<code>ADR-0023 VERIFIED</code> 语义写入桥与硬门禁）把“谁主张了什么、依据哪条血缘被采信”固化为只追加签名认知图谱。</p>
     </div>
-    <div class="tier-ladder reveal-group">
-      <div class="card tier">
-        <span class="t-no">1</span>
-        <h4>变体重试</h4>
-        <span class="t-cost">成本 ~1x · 默认</span>
-        <p>重试时改变 temperature / 措辞，打破相关性失败——同模型同提示词跑 3 次，大概率犯同一个错。</p>
-        <span class="t-fit">适用：所有任务默认档</span>
-        <div class="tier-bar"><i style="width:25%"></i></div>
+
+    <!-- 四层概率不确定性防御阶梯 -->
+    <div class="tier-ladder reveal-group interactive-structure">
+      <div class="card tier" data-tilt>
+        <span class="t-no">01</span>
+        <h4>Schema 与类型门禁</h4>
+        <span class="t-cost">SABI 强类型 · 零自由文本直通</span>
+        <p>所有跨边界意图与工具输出先过确定性 Schema、范围与污点校验门；格式畸变或越界参数在进入状态机前直接拒绝。</p>
+        <span class="t-fit">防线一：入口结构化过滤</span>
+        <div class="tier-bar"><i style="width:28%"></i></div>
       </div>
-      <div class="card tier">
-        <span class="t-no">2</span>
-        <h4>校验器</h4>
-        <span class="t-cost">成本 ~1.x 倍</span>
-        <p>生成-校验不对称：验证常比生成便宜（代码跑测试、数学验算）。确定性校验器最优，LLM 校验器次之。</p>
-        <span class="t-fit">适用：可机械验证输出的任务</span>
-        <div class="tier-bar"><i style="width:45%"></i></div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">02</span>
+        <h4>多 Attempt 快照隔离</h4>
+        <span class="t-cost">并发候选推演 · 单一 CAS 晋升</span>
+        <p>多个异构 <code>TaskAttempt</code> 在冻结输入快照上独立并行探索，候选产物彼此隔离，最终仅唯一胜者经代次 CAS 晋升为 <code>TaskHead</code>。</p>
+        <span class="t-fit">防线二：打破同源相关错误</span>
+        <div class="tier-bar"><i style="width:52%"></i></div>
       </div>
-      <div class="card tier">
-        <span class="t-no">3</span>
-        <h4>N-版本投票</h4>
-        <span class="t-cost">成本 ~3x</span>
-        <p>3 个多样化实现多数决。冗余必须多样化才有效（不同模型 / 提示词 / harness）——航空软件 N-version programming 先例。</p>
-        <span class="t-fit">适用：关键步骤（ELF 声明 criticality）</span>
-        <div class="tier-bar"><i style="width:75%"></i></div>
+      <div class="card tier" data-tilt>
+        <span class="t-no">03</span>
+        <h4>独立校验器与 Critic</h4>
+        <span class="t-cost">跨 ControlDomainId 验真</span>
+        <p>利用“验证比生成便宜”的不对称性，强制由不同 <code>ControlDomainId</code> 的确定性测试器或独立验证进程出具带环境摘要的检验事件。</p>
+        <span class="t-fit">防线三：防自审自签刷票</span>
+        <div class="tier-bar"><i style="width:76%"></i></div>
       </div>
-      <div class="card tier">
-        <span class="t-no">4</span>
-        <h4>检查点回滚</h4>
-        <span class="t-cost">成本 = 存储</span>
-        <p>检测到错误后 rewind 到出错前。语义难点：哪个 checkpoint 是「出错前」？依赖检测先行。</p>
-        <span class="t-fit">适用：长任务</span>
+      <div class="card tier" data-tilt>
+        <span class="t-no">04</span>
+        <h4>策略与人类上行裁决</h4>
+        <span class="t-cost">Watchdog 挂起 · Fail-Closed</span>
+        <p>看门狗检测到无进展空转（livelock）、验证分歧或触及高危副作用时立即挂起执行，交由版本化 <code>TrustPolicy</code> 或人类主权确认。</p>
+        <span class="t-fit">防线四：显式升级而非静默猜测</span>
         <div class="tier-bar"><i style="width:100%"></i></div>
       </div>
     </div>
-    <div class="split-2 reveal-group">
-      <div class="card">
-        <h4>无进展检测 · 两级制</h4>
-        <p>agent 空转（livelock）持续烧钱但无语义进展，每步都在「正常」调用，Unix 死循环检测无效。</p>
-        <ol class="steps">
-          <li><b>内核看门狗</b>：「喂狗」= 新产物写入、新工具调用、任务清单推进、显式心跳。ELF 声明阈值 <b>maxStepsWithoutProgress / maxRepeatSimilarity</b>，到阈值挂起 + 标记</li>
-          <li><b>用户态语义监督</b>：监督 agent 审查 trace，裁决恢复（误报）/ 转向（注入新指令）/ 杀死（从 checkpoint 重启）。内核只看信号不看语义</li>
-        </ol>
-      </div>
-      <div class="card">
-        <h4>幻觉传染隔离 · 溯源 + 接触追踪</h4>
-        <p>单 agent 幻觉是 bug，幻觉经消息传给 500 个下游是疫情。共享通道上的每条信息<b>内核强制携带</b>溯源元数据：</p>
-        <div class="chips">
-          <span class="chip">来源 agent</span>
-          <span class="chip">lineage 推导链</span>
-          <span class="chip">断言级别（事实 / 结论 / 推测）</span>
-          <span class="chip">验证状态（verified / unverified）</span>
+
+    <!-- SemanticEvent 认知架构 Bento 矩阵 -->
+    <div class="bento-grid reveal-group interactive-structure">
+      <article class="bento-card span-6 featured" data-tilt>
+        <span class="bento-kicker">DUAL IDENTITY · CONTENT DIGEST VS EVENT ID</span>
+        <h3>双重身份分离：<code>ContentDigest</code> 与 <code>EventId</code></h3>
+        <p><code>nlos-semantic</code> 严格区分“说了什么内容”与“哪次签名断言实例”：<code>ContentDigest</code> 对规范化载荷计算内容寻址摘要，用于跨源去重与等价引用；<code>EventId</code> 则绑定签发 <code>Principal</code>、<code>ControlDomainId</code>、因果水位与 Ed25519 签名。撤回（<code>Retraction</code>）与追责只精准作用于特定 <code>EventId</code>（<code>SEM-RETRACT-004</code>），绝不级联抹杀其他独立主体对同一命题的合法观测。</p>
+      </article>
+
+      <article class="bento-card span-6 featured" data-tilt>
+        <span class="bento-kicker">APPEND-ONLY EPISTEMIC GRAPH · 5 KINDS × 5 RELATIONS</span>
+        <h3>五类认知事件与五类有向血缘关系</h3>
+        <p>认知平面禁止原地覆写或静默删改历史，所有信念演化均以只追加事件与墓碑化（tombstoned / retracted）记录呈现：</p>
+        <div class="chips" style="margin-top:4px;">
+          <span class="chip trap">Observation</span>
+          <span class="chip trap">Claim</span>
+          <span class="chip trap">Hypothesis</span>
+          <span class="chip trap">Decision</span>
+          <span class="chip trap">Retraction</span>
         </div>
-        <p class="sub">与污点追踪对偶，合起来是完整信息血缘图。「规划上下文只许 verified 进入」是可强制规则；某 agent 判定幻觉后沿 lineage 前向追踪污染，git 版本化 Blackboard 支持定位回滚。血缘数据有 GC：lineage TTL + 分层归档（议题 11 裂缝 4）。</p>
+        <div class="chips" style="margin-top:4px;">
+          <span class="chip">supports</span>
+          <span class="chip">contradicts</span>
+          <span class="chip">supersedes</span>
+          <span class="chip">derived_from</span>
+          <span class="chip">retracts</span>
+        </div>
+      </article>
+
+      <article class="bento-card span-7" data-tilt>
+        <span class="bento-kicker">CONTROL-DOMAIN AUTHORITY VIEW &amp; INTENT SPEC GATE · ADR-0023 VERIFIED</span>
+        <h3>按 <code>ControlDomainId</code> 物化 <code>AuthorityView</code> 与 <code>IntentSpec</code> 硬门禁</h3>
+        <p>系统不维护单一全局 <code>verified</code> 字段（<code>SEM-GLOBAL-001</code>）。<code>AuthorityView</code> 在不可变 <code>TrustPolicy</code> 与签名 <code>SemanticCheckpoint</code> 下按 <code>ControlDomainId</code> 独立性聚合成效事实，阻断同一控制者用多把密钥伪造多数派（<code>SEM-VIEW-003</code>）。同时 <code>IntentSpec</code> 强制执行<strong>非空验收条件硬门禁</strong>（<code>ADR-0023 VERIFIED</code>）：缺少可核验验收谓词的意图无法跨越权威提交门。</p>
+      </article>
+
+      <article class="bento-card span-5" data-tilt>
+        <span class="bento-kicker">MANDATORY TAINT GUARD · NLOS-SEARCH 0x1F</span>
+        <h3>向量检索强制携带 <code>0x1F NON_AUTHORITATIVE</code> 污点</h3>
+        <p>语义相似度命中永远不等于系统权威事实。<code>nlos-search</code> 输出的每一条检索候选均强制烙印位掩码 <code>0x1F NON_AUTHORITATIVE</code>，在内核门禁处物理阻断相似片段直接充当权限凭据、账本依据或任务提交输入，使用前必须回跳权威对象重验签名与代际。</p>
+      </article>
+    </div>
+
+    <div class="evidence-strip reveal">
+      <span class="badge badge-verified">ADR-0006 · 语义出版回执权威已闭合</span>
+      <span class="badge badge-verified">ADR-0023 VERIFIED · 写入回调桥与 IntentSpec 非空门禁</span>
+      <span class="badge badge-active">nlos-semantic 72/0 · 跨域签名事件合并与向量检查点</span>
+      <span class="badge badge-active">nlos-search · 0x1F NON_AUTHORITATIVE 五道防越权门禁</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 能力密码安全 ================= -->
+<section class="section" id="security" data-nav-label="能力密码安全">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Cryptographic Security · ADR-0010 / 0011 / 0015 / 0025<span class="sec-no">/ 03</span></span>
+      <h2>密码学安全与隔离：<em>零环境特权</em>与四重纵深防线</h2>
+      <p>NLOS 将“委托只能单调衰减、绝不默认信任任何进程或提示词”落实为可测试的密码学与沙箱机制。Stage B 与 Stage C 已在 <code>PARTIAL_PASS (H3–H6)</code> 等级下完成能力令牌、跨平台认证 IPC、双层沙箱模糊测试与密钥托管库验证，并如实划出硬件安全模块与桌面合成防伪层的演进边界。</p>
+    </div>
+
+    <div class="bento-grid reveal-group interactive-structure">
+      <article class="bento-card span-6" data-tilt>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <span class="bento-kicker">ADR-0010 · NLOS-CAPABILITY</span>
+          <span class="badge badge-verified">PARTIAL_PASS H4–H6</span>
+        </div>
+        <h3>Ed25519 签名能力令牌与单调衰减</h3>
+        <p>彻底清零 POSIX 式环境特权（zero ambient authority）。每次子任务派生或跨组件委托均须校验 Ed25519 签名能力链，子令牌权限范围与额度必须是父令牌的严格子集（单调衰减），并绑定 <code>epoch</code> / <code>generation</code> 吊销水位实现即时失效。</p>
+      </article>
+
+      <article class="bento-card span-6" data-tilt>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <span class="bento-kicker">ADR-0011 · NLOS-IPC</span>
+          <span class="badge badge-verified">W52 三平台 CI 全绿</span>
+        </div>
+        <h3>Challenge-Response 认证 IPC 与签名直通</h3>
+        <p>跨进程控制与驱动通道全面运行于 <code>ADR-0011</code> 双向质询—应答主体认证之上，请求体携带调用方签名直通引用监控器，不信任中间传输代理；已在 Linux / macOS Unix Domain Sockets 与 Windows Named Pipes 三平台 CI 全绿闭环。</p>
+      </article>
+
+      <article class="bento-card span-6" data-tilt>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <span class="bento-kicker">ADR-0015 · NLOS-PROCESS + WASMTIME + FUZZ</span>
+          <span class="badge badge-verified">3 libfuzzer-sys 靶标</span>
+        </div>
+        <h3>OS 进程 + Wasmtime 双层隔离与持续模糊测试</h3>
+        <p>不可信载荷采用“外层 <code>nlos-process</code> 独立宿主 OS 进程故障域 + 内层 Wasmtime 确定性 <code>fuel</code> / <code>epoch</code> 抢占及按 Capability 裁剪的 host imports”双层防御；配套 <code>fuzz/</code> 下 <code>3</code> 个 <code>libfuzzer-sys</code> 靶标（<code>protobuf_envelope</code>、<code>canonical_body</code>、<code>signing_preimage</code>）持续锤炼 <code>nlos-schema</code> 与 <code>nlos-canonical</code> 验签原像解析器。</p>
+      </article>
+
+      <article class="bento-card span-6" data-tilt>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <span class="bento-kicker">CUSTODY + TAINT + STAGE D Z4 (ADR-0025 W68-R1/R2)</span>
+          <span class="badge badge-design">U-10 HSM / Z4 DESIGN</span>
+        </div>
+        <h3>密钥引用托管、污点外发阻断与 <code>Z4</code> 实心安全确认屏</h3>
+        <p><code>SigningKeyCustodyVault</code>（<code>WAL+FULL</code>）强制密钥按句柄引用调用、KEK 封装零明文导出（硬件 HSM/TEE 诚实登记为 <code>U-10</code> / <code>NOT_IMPLEMENTED</code>）；污点传播在出口阻断未授权外发；Stage D <code>ADR-0025 (W68-R1 &amp; W68-R2)</code> 确立与展示站 Glacier 显式分叉的 <code>Graphite / Paper Workstation</code> 100% 实心工业双主题、平铺优先多窗口 + <code>36px</code> 贴边任务栏 + <code>Ctrl+Space</code> 按需命令面板、<code>L0 → L1 → L2 → L3</code> 渐进披露与 <code>[UI-PARITY-001]</code> 12 域显控同构，以不可遮挡的 <code>Z4</code> 实心 UAC/Polkit 级安全确认屏（含 <code>32×20</code> 凹陷硬件风单色精密防伪印章）激活时物理切断应用层输入路由。</p>
+      </article>
+    </div>
+
+    <!-- 多标签安全契约检视面板 -->
+    <div class="code-showcase reveal" style="margin-top: var(--sp-6);" data-tabs>
+      <div class="code-tablist-bar">
+        <div class="code-tablist" role="tablist" aria-label="安全与隔离契约检视">
+          <button class="code-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="sec-panel-cap" id="sec-tab-cap">capability_attenuation.rs</button>
+          <button class="code-tab" type="button" role="tab" aria-selected="false" aria-controls="sec-panel-fuzz" id="sec-tab-fuzz">fuzz_and_custody_gate.sh</button>
+        </div>
+        <button class="code-copy" type="button" data-copy="auto">复制</button>
+      </div>
+      <div class="code-panel" role="tabpanel" id="sec-panel-cap" aria-labelledby="sec-tab-cap">
+<pre><span class="c">// ADR-0010 + ADR-0011: 单调衰减能力核验与跨进程签名直通（零环境特权）</span>
+<span class="k">pub fn</span> <span class="fn">verify_delegated_invocation</span>(
+  chain: &amp;<span class="t">SignedCapabilityChain</span>,
+  envelope: &amp;<span class="t">AuthenticatedIpcEnvelope</span>,
+  taint: <span class="t">TaintMask</span>,
+) -&gt; <span class="t">Result</span>&lt;<span class="t">VerifiedGrant</span>, <span class="t">SecurityDeny</span>&gt; {
+  chain.<span class="fn">verify_ed25519_signatures_and_epoch</span>()?;      <span class="c">// 逐跳验签 + 代际吊销水位检查</span>
+  chain.<span class="fn">assert_monotonic_subset</span>()?;                  <span class="c">// 子能力 ⊆ 父能力，物理禁止越权放大</span>
+  envelope.<span class="fn">verify_principal_passthrough</span>(chain.<span class="fn">leaf</span>())?; <span class="c">// Unix Socket / Named Pipe 签名直通</span>
+  <span class="k">if</span> taint.<span class="fn">contains_unapproved_egress</span>() {
+    <span class="k">return</span> <span class="t">Err</span>(<span class="t">SecurityDeny</span>::<span class="n">TaintedEgressBlocked</span>);  <span class="c">// 提示词注入污点在出口处硬阻断</span>
+  }
+  <span class="t">Ok</span>(chain.<span class="fn">into_verified_grant</span>())
+}</pre>
+      </div>
+      <div class="code-panel" role="tabpanel" id="sec-panel-fuzz" aria-labelledby="sec-tab-fuzz" hidden>
+<pre><span class="c"># ADR-0015 双层隔离进程边界测试、Fuzzing 靶标与 C-CUSTODY 密钥引用托管对账回归</span>
+<span class="prompt">$ </span>cargo test -p nlos-commit-coordinator --test custody_gateway_reconciliation
+<span class="c"># signing-key-custody.db (WAL+FULL): KEK 封装零明文导出 · 纪元轮换 · 泄露墓碑 10/10 passed</span>
+<span class="c"># Honest Boundary: 硬件 HSM / OS Enclave 后端登记为 U-10 (NOT_IMPLEMENTED)</span>
+
+<span class="prompt">$ </span>cargo test -p nlos-process -p nlos-canonical &amp;&amp; cargo fuzz list
+<span class="n">protobuf_envelope</span>   <span class="c"># SABI 封包边界抗畸变测试</span>
+<span class="n">canonical_body</span>      <span class="c"># CBOR 规范化编码唯一性测试</span>
+<span class="n">signing_preimage</span>    <span class="c"># Ed25519 验签原像防碰撞/防截断测试</span></pre>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= 3. 安全与授权 ================= -->
-<section class="section" id="security">
+<!-- ================= 4. 实测闭合证据 ================= -->
+<section class="section glacier" id="validation" data-nav-label="实测闭合证据">
   <div class="container">
     <div class="sec-head reveal">
-      <span class="eyebrow">Security &amp; Consistency · 支撑设施<span class="sec-no">/ 03</span></span>
-      <h2>权限只能<em>衰减</em>，签字分三级</h2>
-      <p>自我修改触及 requiresReauth 段（工具 / 权限声明变更）时，谁签字？衰减原则结构性地回答了这个问题：<b style="color:var(--white);">委托只能衰减，不能放大</b>——于是内核可以做纯集合包含的机械校验，而扩权请求物理上无法被父批准，只能沿授权链上行。</p>
+      <span class="eyebrow">Measured Closure · Stage B/C Evidence (H3–H6)<span class="sec-no">/ 04</span></span>
+      <h2>从理论设计上界到 <em>Stage B/C 实测证据闭合 (H3–H6)</em></h2>
+      <p>早期方案讨论中的纸面吞吐推演已被可复现的实机基准与故障注入取代。经 Stage B 正式退出与 Stage C <code>W35–W68</code> 演进，持久防损坏、十万级逻辑恢复、多进程分片分区与四表面控制等价均已取得 <code>H3–H6</code> 实测证据，并逐行公开未外推的诚实边界。</p>
     </div>
-    <div class="tier-ladder three reveal-group">
-      <div class="card tier">
-        <span class="t-no">L0</span>
-        <h4>内核机械校验</h4>
-        <span class="t-cost">一切重授权 · 同步必过</span>
-        <p>请求的能力 ⊆ 父的当前信封？纯集合包含判断，零语义——完美符合「内核从不信任，只设界」。</p>
-        <span class="t-fit">签字人：内核（不变量）</span>
-        <div class="tier-bar"><i style="width:33%"></i></div>
-      </div>
-      <div class="card tier">
-        <span class="t-no">L1</span>
-        <h4>常备授权</h4>
-        <span class="t-cost">信封内低风险变更 · 即时</span>
-        <p>Policy 守护进程按预批规则自动签（polkit / OPA 类比）。绝大多数重授权是规则可预见的——<b style="color:var(--text);">规则就是「预先签好的字」，人类只见例外</b>。这回答了「人类是瓶颈」的反对。</p>
-        <span class="t-fit">签字人：组织 Policy 守护进程</span>
-        <div class="tier-bar"><i style="width:66%"></i></div>
-      </div>
-      <div class="card tier">
-        <span class="t-no">L2</span>
-        <h4>上行扩权</h4>
-        <span class="t-cost">超出父信封 · 阻塞等待</span>
-        <p>父签不出自己没有的能力，扩权沿链上行至信封源头——最终必达组织根（人类 / 根 Policy）。等待期 <b style="color:var(--text);">v1 续跑 + 批准后原子热切换</b>（蓝绿部署类比，服务不中断）。</p>
-        <span class="t-fit">签字人：信封源头 · 人类</span>
-        <div class="tier-bar"><i style="width:100%"></i></div>
-      </div>
-    </div>
-    <div class="split-2 reveal-group">
-      <div class="card">
-        <h4>一致性参照 OS 模型 · 内核不管信念</h4>
-        <p>「语义一致性」不作为系统层概念——两个 agent 持有矛盾信念在 agent 社会里是常态甚至资产，强制统一 = 群体思维。内核的边界：</p>
-        <ol class="steps">
-          <li><b>系统状态一致性</b>：内核保证共享信息空间（串行化锚点 + 分片 + 分档保证，类比 O_SYNC / 缓冲写的档位）</li>
-          <li><b>进程私有状态</b>：内核只管 checkpoint / restore 自身完整性</li>
-          <li><b>信念协调</b>：非系统层——内核提供同步原语（黑板锁 / 消息有序 / provenance），裁决归用户态组织层。分歧可见、可追溯、可裁决，但不统一</li>
-        </ol>
-      </div>
-      <div class="card">
-        <h4>控制面防注入 · 内核级强制</h4>
-        <p>agent OS 独有的新攻击面：控制面里的 LLM（调度 / 监督 agent）要<b>读 agent 的产物</b>才能做语义决策，恶意 agent 可以在自己的 trace 里埋注入指令。</p>
-        <p class="sub">定案：控制面 LLM 输入全污点化、只允许结构化数据、<b style="color:var(--text);">原始 trace 永不进指令通道</b>——立为内核级强制规则。控制 = 设界，不是理解：OS 不需要理解程序就能杀死它。provenance 强制携带不是可观测性设计，是控制权的根基。</p>
-      </div>
-    </div>
-    <div class="callout reveal">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <p><b>克隆群体的记忆一致性：不可变 base + overlay。</b>100 个实例从同一 seed 分叉后各自漂移，组织更新基础知识 = 发布新 base 层版本（只读共享），实例本地写在 overlay；rebase 仅当实例写过同 key 才冲突——git 双向合并的万级冲突地狱被结构性绕过。这与 OCI 分层镜像、KV 前缀共享是同一个分层思想的三层合流。</p>
-    </div>
-  </div>
-</section>
 
-<!-- ================= 4. 设计宗旨验证（浅区） ================= -->
-<section class="section glacier" id="validation">
-  <div class="container">
-    <div class="sec-head reveal">
-      <span class="eyebrow">Validation<span class="sec-no">/ 04</span></span>
-      <h2>为什么能成：<em>六大死因，逐一回查</em></h2>
-      <p>议题 11 用三道程序验证宗旨：六死因回查、陷阱层吞吐推演、失败场景走查。议题 18 收官后，议题 3 提出的六大死因全部有设计覆盖。</p>
-    </div>
-    <div class="stats four reveal-group">
-      <div class="stat">
-        <span class="num">5,000/s</span>
-        <span class="lbl">峰值陷阱率 · 10k agent × 平均步长 2s，每次调用过一次陷阱</span>
+    <!-- 四大核心实测指标条 -->
+    <div class="metric-strip reveal" aria-label="Stage B/C 核心实测遥测摘要">
+      <div class="metric-item">
+        <strong class="metric-value">38,385 ops/s</strong>
+        <span class="metric-label">持久权威吞吐（Fast 档）</span>
+        <small class="metric-scope">SQLite WAL+FULL · VFS 撕裂写 + dm-flakey 0 损坏</small>
       </div>
-      <div class="stat">
-        <span class="num">~50µs</span>
-        <span class="lbl">单次陷阱内核工作 · 能力表 O(1) + 预算扣减 + 流水 + 污点 + 转发</span>
+      <div class="metric-item">
+        <strong class="metric-value">634 B/node</strong>
+        <span class="metric-label">100K_LOGICAL 落盘密度</span>
+        <small class="metric-scope">nlos-task v47 · 崩溃恢复扫描 38.07ms (H6)</small>
       </div>
-      <div class="stat">
-        <span class="num">~20k/s</span>
-        <span class="lbl">单核陷阱容量 · 算术上余量充足；真瓶颈在持久化，已由 WAL 组提交关闭</span>
+      <div class="metric-item">
+        <strong class="metric-value">4.44x</strong>
+        <span class="metric-label">1→8 Cell 多进程扩展比</span>
+        <small class="metric-scope">13 OS 进程无全局锁 · 分区重连 0 双重提交</small>
       </div>
-      <div class="stat">
-        <span class="num">8 / 8</span>
-        <span class="lbl">失败场景走查发现的裂缝 · 全部关闭（2 个真设计缺口已拍板）</span>
+      <div class="metric-item">
+        <strong class="metric-value">84µs</strong>
+        <span class="metric-label">四表面等价控制延迟 (p50)</span>
+        <small class="metric-scope">NL / GUI / CLI / API 逐字节一致 receipt_hex</small>
       </div>
     </div>
-    <div class="timeline reveal-group" style="margin-top: var(--sp-6);">
-      <div class="tl-row">
-        <div class="tl-era">调度语义真空<small>死因 1</small></div>
-        <div class="tl-cell">tick 协作式调度 + 优先级队列 + LOD + sysctl writer 分层</div>
-        <div class="tl-cell"><b>dispatcher 纯算术出队 5k/s 无压力</b></div>
-        <span class="tl-status gap">已解</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">通信拓扑 O(n²)<small>死因 2</small></div>
-        <div class="tl-cell">Topic 兴趣过滤（内核执行谓词）+ 背压</div>
-        <div class="tl-cell"><b>发送者预付 = 经济背压（裂缝 2 拍板）</b></div>
-        <span class="tl-status gap">已解</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">状态一致性<small>死因 3</small></div>
-        <div class="tl-cell">Blackboard 串行化锚点 + wakeup 原子性 + git 合并</div>
-        <div class="tl-cell"><b>命名空间分片，串行化只在片内（裂缝 3）</b></div>
-        <span class="tl-status gap">已解</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">非确定性传染<small>死因 4</small></div>
-        <div class="tl-cell">provenance 内核强制携带 + 接触追踪 + 召回</div>
-        <div class="tl-cell"><b>lineage TTL + 分层归档（裂缝 4）</b></div>
-        <span class="tl-status gap">已解</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">可观测性崩溃<small>死因 5</small></div>
-        <div class="tl-cell">议题 18 压轴定案：内核四件套 + 分层 trace</div>
-        <div class="tl-cell"><b>告警 = Topic · <a class="xref" href="modern.html#observability">见现代系统·可观测性</a></b></div>
-        <span class="tl-status gap">已闭合</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">治理（预算 / 身份）<small>死因 6</small></div>
-        <div class="tl-cell">Budget 全语义 + ELF 签名 + 衰减授权链</div>
-        <div class="tl-cell"><b>流水 WAL 批量组提交（裂缝 1）</b></div>
-        <span class="tl-status gap">已解</span>
-      </div>
+
+    <!-- 设计不变量 -> 权威机制 -> 实测证据 -> 残余边界 对照明细表 -->
+    <div class="table-wrap reveal">
+      <table class="spec-table">
+        <thead>
+          <tr>
+            <th scope="col">v0.5 设计不变量</th>
+            <th scope="col">权威 Crate 与核心机制</th>
+            <th scope="col">Stage B/C 实测证据闭合 (H3–H6)</th>
+            <th scope="col">诚实残余边界 (Residual Boundary)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">持久权威与掉电崩溃安全<br><span class="badge badge-verified" style="margin-top:6px;">H3 DONE · VFS 故障门 + dm-flakey CI</span></th>
+            <td><code>nlos-store</code> + <code>nlos-store-fault</code><br><code>SQLite WAL + synchronous=FULL</code>、<code>STRICT</code> 约束表与单调不可变触发器</td>
+            <td class="is-nlos"><strong><code>B-STORE-FAULT</code> 自定义 VFS 撕裂写/掉电故障注入 + Linux <code>dm-flakey</code> 块层 CI 门禁</strong>实跑通过；持久屏障吞吐达 <code>Fast 38,385 ops/s</code>，故障恢复后 <code>0</code> 账本损坏。</td>
+            <td><span class="badge badge-design">U-4 · NOT_STARTED</span><br>NVMe 真实物理断电台架与硬件控制器写缓存校准诚实登记为 <code>U-4</code>。</td>
+          </tr>
+          <tr>
+            <th scope="row">十万级逻辑规模与快速恢复<br><span class="badge badge-verified" style="margin-top:6px;">H6 · VERIFIED</span></th>
+            <td><code>nlos-task v47</code> + <code>nlos-runtime</code> + <code>nlos-runtime-tokio</code><br>任务节点惰性物化、检查点驱逐重水化与事件溯源续跑（<code>ADR-0009/0012</code>）</td>
+            <td class="is-nlos"><strong><code>100K_LOGICAL</code> 实测终态落盘仅 <code>634 B/node</code>，崩溃恢复全量扫描 <code>38.07ms</code>（<code>H6</code>）</strong>，8-Cell 分片下覆盖 <code>1% / 5% / 10%</code> 活跃工作集重水化。</td>
+            <td><span class="badge badge-design">DESIGN · 1M_LOGICAL</span><br><code>1M_LOGICAL</code> 百万级逻辑节点档位仍处 <code>DESIGN</code>，不从十万级线性外推。</td>
+          </tr>
+          <tr>
+            <th scope="row">多 Cell 分片、租约与分区收敛<br><span class="badge badge-verified" style="margin-top:6px;">H6 · BOUNDED</span></th>
+            <td><code>CellHost</code> + <code>nlos-lease</code> + <code>nlos-cell</code><br>三族持久租约、<code>FenceBarrierAck</code> 与六端点分片接管屏障（<code>ADR-0018/0019</code>）</td>
+            <td class="is-nlos"><strong><code>ROAD-C-001</code> 与 <code>ROAD-C-002</code> 跨 <code>13</code> 个独立 OS 进程达成 <code>SATISFIED-WITH-BOUNDARIES (H6)</code></strong>：<code>1→8 Cell</code> 扩展 <code>4.44x</code>，<code>PartitionBoundedLossProof</code> 验证 <code>0</code> 双重提交与 <code>0</code> 脑裂。</td>
+            <td><span class="badge badge-candidate">ADR-0026 CANDIDATE</span><br>跨物理主机 mTLS 传输、时钟偏斜包络与 Quorum 控制面共识纳入 <code>C-XHOST</code>（<code>RISK-B-11</code>）。</td>
+          </tr>
+          <tr>
+            <th scope="row">四表面控制路径等价性<br><span class="badge badge-verified" style="margin-top:6px;">H4–H6 · PARITY</span></th>
+            <td><code>nlos-system-control</code> (<code>v1.6</code>)<br>统一编译至同源 <code>ControlCommand</code>、代际 CAS 与签名 <code>ControlReceipt</code></td>
+            <td class="is-nlos"><strong>NL / GUI / CLI / API 四个交互表面产出逐字节一致的 <code>receipt_hex</code></strong>，100K 逻辑负载下控制响应中位延迟 <code>p50 = 84µs</code>，无任何私有特权旁路。</td>
+            <td><span class="badge badge-design">ROAD-D-001 · STAGE D</span><br>Stage D（<code>W68–W74</code>，<code>ADR-0025 W68-R1/R2</code>）并行建设 <code>Graphite/Paper</code> 100% 实心工业工作站桌面、<code>L0–L3</code> 渐进披露与 <code>[UI-PARITY-001]</code> 12 域显控同构。</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
+
     <div class="callout reveal">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>
-      <p><b>诚实的边界：内核保证「万级可存活」，不保证「万级有产出」。</b>本设计解决规模生存问题——不死、不爆、不烧穿预算、不传染；万级 agent 能否协调出有效产出是组织设计问题（部门 / 角色 / SOP），属于 ELF 与用户态层。正如 Linux 让你能跑一万个进程，但它们是否构成有用系统取决于应用。边界清晰，且必须在定位上说破。</p>
+      <p><strong>验证铁律：Claim ≤ Evidence。</strong>全仓机器台账（<code>claims.yaml</code> <code>101</code> 条声明、<code>evidence-index.yaml</code> <code>169</code> 份证据制品、<code>P0 = 0</code>）由自动化校验脚本逐波门禁守护：单机多进程 <code>H6</code> 实证绝不冒充跨物理机生产网络，开发者壳绝不冒充 <code>ROAD-D-001</code> 完整桌面。下一页将展开支撑上述分布式证据的<a class="xref" href="modern.html#distributed">多 Cell 蜂窝架构与现代系统机制</a>。</p>
     </div>
   </div>
 </section>
@@ -370,12 +542,12 @@
 <nav class="pager" aria-label="页面顺序">
   <div class="container pager-inner">
     <a class="pager-link prev" href="execution.html">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span><small>上一页</small>执行与控制</span>
     </a>
     <a class="pager-link next" href="modern.html">
       <span><small>下一页</small>现代系统</span>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
   </div>
 </nav>
@@ -384,20 +556,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
-      <span>· 自然语言操作系统</span>
+      <span class="mark" aria-hidden="true">∞</span><span><strong>NLOS</strong> · 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.5 · 2026-07-29 · 不变量与证据边界</span>
-    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 原型证据不得外推为生产保证</span>
+    <div>架构设计总纲 v0.5 · 2026-10-26 (W68) · 35 Crates / 26 ADRs / 101 Claims</div>
+    <div>B EXITED · C W68 (H6 单机多进程 + C-XHOST) · D W68 双轨并行</div>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=10.6.0"></script>
-<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js?v=6.0.1"></script>
-<script src="vendor/gsap.min.js"></script>
-<script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js?v=10.1.0"></script>
+<script src="vendor/three.min.js?v=11.0.0" defer></script>
+<script src="vendor/gsap.min.js?v=11.0.0" defer></script>
+<script src="vendor/ScrollTrigger.min.js?v=11.0.0" defer></script>
+<script src="js/main.js?v=11.0.0" defer></script>
+<script src="js/anim.js?v=11.0.0" defer></script>
+<script src="js/effects.js?v=11.0.0" defer></script>
 </body>
 </html>
