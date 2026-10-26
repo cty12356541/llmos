@@ -185,17 +185,25 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 限制在制品：每位实现者最多一个主要 `IN_PROGRESS` Work Package；紧急故障除外。
 
-## 11.5 阶段 C 管理入口（当前活跃阶段）
+## 11.4 阶段 D 管理入口（完整自然语言桌面，与阶段 C 跨机收官并行活跃）
 
-- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；经 `W35–W67` 连续波次推进，C-core 九大工作包 `C-CELL`/`C-LEASE`/`C-SYNC`/`C-SHARD`/`C-FANOUT`/`C-MIGRATE`/`C-SCHED`/`C-PARTITION`/`C-BENCH`、两道退出门 `ROAD-C-001` 与 `ROAD-C-002` H6 评审 [W67](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、`nlos-search`/`nlos-notify` 超最小面扩展与双生产消费线全链解冻（全仓零冻结/零退役模块）、以及机器台账 `v1.1` `stage: C` 全量回填（101 claims / 169 evidence-index / `P0=0`）均已在 `ADR-0018` 单机多进程拓扑内闭环就绪；权威 tip 以 `git ls-remote origin refs/heads/main` 为准；跨物理机网络/共识保留于 `RISK-B-11` / `ADR-0020`，完整桌面归阶段 D；当前状态 `IN_PROGRESS / NOT EXITED`，待维护者按 §C.5.5 条件 4 明确批准后翻转 `EXITED`）
+- 阶段 D 权威进度单与双轨并行编排：[stage-d-progress.md](./stage-d-progress.md)（2026-10-26 `W68` 依维护者裁定 A1–A4 正式开立，当前状态 `IN_PROGRESS / NOT EXITED`；全量映射 [v0.5 §28.4](../design/06-架构设计总纲-v0.5.md) 七大交付物与退出门 `[ROAD-D-001]`，定义 `D-core` 八大工作包 `D-TOKENS-KIT` / `D-IPC-ENUM` / `D-COMPOSITOR-WM` / `D-OMNIBAR-MULTIMODAL` / `D-TRUSTED-UI` / `D-TASK-SPACE-DAG` / `D-NOTIFY-SEARCH-OFFLINE` / `D-CONTROL-SETTINGS-A11Y`，并编排 `W69 → W74` 与阶段 C `C-XHOST` 100% 写集互斥双轨并行波次；当前各包均为 `DESIGN / NOT_STARTED`）
+- 混合自然语言桌面合成层、双模透视与可信 UI 防伪边界：[ADR-0025](./adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)（`ACCEPTED`，2026-10-26 裁定 A1–A3，`DESIGN` 级，`ACCEPTED ≠ VERIFIED`：确立 `Z0–Z4` 五平面合成隔离、不可遮挡 `Z4` 安全幕布 + Gerono `∞` 防伪印章、`ADR-0011` 单一控制脊柱与 `Consumer Clean <-> Expert X-Ray` 单存储双模切换）
+- 阶段 D 完整自然语言桌面视觉与交互设计规格：[2026-10-26-stage-d-desktop-visual-and-ux-design.md](../superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md)（`DESIGN` only：承接并演进 [站点设计系统 v10.6](../site/DESIGN.md) `Abyssal Glacier (#030710 + #7FC8FF)` 与内建 `Daylight Glacier (#F2FAFF + #006DDD)` 双主题 Token、§25.4 全部 18 类桌面系统对象交互契约及闭合 `TASK_SPACE_GAPS` 的 `IPC-D1..D5` 规范）
+- 规范路线：[v0.5 第 28.4 节](../design/06-架构设计总纲-v0.5.md)（`[ROAD-D-001]`）
+
+## 11.5 阶段 C 管理入口（单机多进程域已齐备，跨物理主机收官并行活跃）
+
+- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；经 `W35–W67` 连续推进，C-core 九大工作包、两道退出门 `ROAD-C-001`/`ROAD-C-002` H6 评审 [W67](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、全仓零冻结/零退役模块及机器台账 `v1.1` 全量回填（101 claims / 169 evidence-index / `P0=0`）已在 `ADR-0018` 单机多进程拓扑内闭环；2026-10-26 `W68` 依维护者裁定 A4 暂不翻 `EXITED`，纳入跨物理主机收官扩展 `C-XHOST` 五工作包并与阶段 D [stage-d-progress.md](./stage-d-progress.md) 双轨并行推进；权威 tip 以 `git ls-remote origin refs/heads/main` 为准；当前状态 `IN_PROGRESS / NOT EXITED`）
 - 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
 - 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
 - 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（**`VERIFIED`** 2026-10-08：Phase 0 证据车道族满足修订 2 R2.2 四条件（独立审查 pass-with-fixes）；效力域=ADR-0018 单机双进程拓扑（R1.2.2/2.3/2.4 + H6 六类目双存活注入），endpoint 仅 TaskStore；跨机/真分区/跨时钟域与物理 cleanup 残域保留（R1.4 触发器 7 / R2.3）；修订 2（2026-10-08）消除循环前置并界定 VERIFIED 范围；**C-SHARD 本体（Phase 1）派发门自此打开，派发前按计划 §5.6 另行确认**）
-- 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD）
+- 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD；`S-B -> S-A` 跨机升级路径已由 [ADR-0026](./adrs/0026-cross-physical-host-transport-and-consensus-expansion.md) 激活）
 - lease grantor 共享 `CellAuthority` 所有权（capacity/device 进 CellHost 装配）：[ADR-0021](./adrs/0021-lease-grantor-shared-cell-authority.md)
 - capability 签发闭环 operator 密钥文件路径：[ADR-0022](./adrs/0022-operator-root-capability-issuance.md)
 - 语义写入端 driver 回调桥（解除 D6 后置）：[ADR-0023](./adrs/0023-semantic-write-side-driver-bridge.md)
 - DriverProvider 载荷编解码通道冻结（第 8 个 SABI 通道 `nlos.sabi.DriverProvider` v1.0，闭合 `RISK-B-05 review_point` 与 `U-10`）：[ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md)
+- 跨物理主机蜂窝网络传输、有界时钟偏斜与控制面复制基底扩展（阶段 C `C-XHOST` 收官立项）：[ADR-0026](./adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)（`CANDIDATE`，2026-10-26 裁定 A4 开档，`DESIGN` 级；定义 `C-NET-TRANSPORT` / `C-NET-CLOCK-LEASE` / `C-CONSENSUS-CP` / `C-NET-SYNC-MIGRATE` / `C-XHOST-GATE` 五包，待 `PoC-XHOST-001` 通过晋升 `ACCEPTED`）
 - C-SHARD 工作包计划：[c-shard-plan.md](./c-shard-plan.md)（2026-10-08 附条件采纳；Phase 0 证据车道族 `C-SHARD-001..004` 与 Phase 1 本体迁移车道族 `CS1-A..E` `C-SHARD-005..006` 已于 2026-10-24 `W62/W63` 全部完成；效力域限定 ADR-0018 单机双进程拓扑，跨机与远端物理 cleanup 残域按 `RISK-B-11` 保留）
 - Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 
