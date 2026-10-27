@@ -36,6 +36,7 @@ members = [
     "crates/nlos-notify",
     "crates/nlos-search",
     "crates/nlos-net",
+    "crates/nlos-consensus",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -58,6 +59,7 @@ pedantic = "warn"
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 minicbor = { version = "2.3.0", default-features = false, features = ["std"] }
+nlos-consensus = { path = "crates/nlos-consensus" }
 nlos-net = { path = "crates/nlos-net" }
 prost = "0.14.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }

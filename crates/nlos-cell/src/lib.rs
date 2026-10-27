@@ -20,6 +20,7 @@
 //! in their dedicated crates and are assembled in `nlos-slice-k`. This crate
 //! does not implement consensus or Raft.
 
+mod clock_liveness;
 mod failure_detector;
 mod federation;
 mod name_cache;
@@ -34,6 +35,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nlos_types::{Generation, SchedulerDomainId};
 
+pub use clock_liveness::{
+    AuditWallTimestampHint, CROSS_HOST_HEARTBEAT_DOMAIN, ClockLivenessError,
+    CrossHostHeartbeatDecision, CrossHostHeartbeatEnvelope, CrossHostHeartbeatWatermark,
+    CrossHostLinkClockGuard, HeuristicPeerLiveness, LinkClockHealthState, LinkClockViolation,
+    MONOTONIC_CHECKPOINT_CHAIN_DOMAIN, MonotonicCheckpointCoord, MonotonicCheckpointEntry,
+    MonotonicCheckpointTrail, MonotonicRecvInstantMs, REASON_CLOCK_SKEW_RTT_EXCEEDED,
+    REASON_LOCAL_MONOTONIC_REGRESSION, ReceiverMonotonicLivenessTracker, TrackedPeerHeartbeatState,
+    rtt_exceeds_max_clock_skew,
+};
 pub use failure_detector::{
     DeadJudgment, EpochAdvanceReport, FailureDetector, FailureDetectorConfig, FailureDetectorError,
     HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,

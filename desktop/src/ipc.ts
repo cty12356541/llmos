@@ -5,6 +5,8 @@ import {
   MAX_SYSTEM_CONTROL_ENUM_LIMIT,
   SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL,
   type AnyControlActionInput,
+  type CompositorInputDispatchInput,
+  type CompositorSnapshotDto,
   type ConfigDto,
   type ControlActionInput,
   type ControlPlaneFactsDto,
@@ -12,16 +14,19 @@ import {
   type DesktopFailure,
   type ExtendedOutcomeDto,
   type FactCheckDto,
+  type InputRouteResultDto,
   type OutcomeDto,
   type ParityDto,
   type PreviewActionDto,
   type ReceiptDto,
+  type RectPxDto,
   type SettingsDomainKindDto,
   type StageDControlActionInput,
   type StageDEnumOutcomeDto,
   type StageDMutationOutcomeDto,
   type SurfacesPresentationDto,
   type TypedReceiptDto,
+  type WorkspaceLayoutModeKindDto,
 } from "./types";
 
 function failClosedControlError(message: string): DesktopFailure {
@@ -485,6 +490,8 @@ export async function queryControlCommandStatus(
   return invoke("query_control_command_status", { targetCommandIdHex });
 }
 
+export const getControlCommandStatus = queryControlCommandStatus;
+
 export async function parityCheck(
   operation: string,
   targetHex?: string | null,
@@ -593,5 +600,174 @@ export async function parityCheckWrite(
     targetHex,
     expectedRevision,
     reason,
+  });
+}
+
+// =========================================================================
+// Stage D (`D-COMPOSITOR-WM`) 五平面合成器宿主状态与焦点防伪路由 IPC 接线
+// =========================================================================
+
+export type CompositorSessionTransitionKind =
+  | "unlock"
+  | "lock"
+  | "suspend"
+  | "resume"
+  | "switch_user"
+  | "close";
+
+export type CompositorWorkspaceActionKind =
+  | "create"
+  | "create_and_activate"
+  | "activate"
+  | "archive"
+  | "close";
+
+export type CompositorWindowActionKind =
+  | "focus"
+  | "minimize"
+  | "restore"
+  | "float"
+  | "tile"
+  | "toggle_floating"
+  | "move_floating"
+  | "begin_close"
+  | "close"
+  | "reload_stale";
+
+export interface CompositorSetLayoutOptions {
+  layoutMode: WorkspaceLayoutModeKindDto;
+  viewportWidth?: number | null;
+  viewportHeight?: number | null;
+  topHeightRatioPermille?: number | null;
+  splitWidthRatioPermille?: number | null;
+  z1Visible?: boolean | null;
+}
+
+export interface CompositorLaunchApplicationInput {
+  applicationIdHex?: string | null;
+  installationIdHex?: string | null;
+  rejectedPackageIdHex?: string | null;
+  rejectedProcessIdHex?: string | null;
+}
+
+export async function compositorGetSnapshot(
+  includeZ4Trusted = false,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_get_snapshot", { includeZ4Trusted });
+}
+
+export async function compositorSessionTransition(
+  transition: CompositorSessionTransitionKind,
+  targetPrincipalHex?: string | null,
+  nowMonoMs?: number | null,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_session_transition", {
+    transition,
+    targetPrincipalHex: targetPrincipalHex ?? null,
+    nowMonoMs: nowMonoMs ?? null,
+  });
+}
+
+export async function compositorWorkspaceAction(
+  action: CompositorWorkspaceActionKind,
+  workspaceIdHex: string,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_workspace_action", { action, workspaceIdHex });
+}
+
+export async function compositorSetLayout(
+  options: CompositorSetLayoutOptions,
+): Promise<CompositorSnapshotDto> {
+  const payload = {
+    layoutMode: options.layoutMode,
+    viewportWidth: options.viewportWidth ?? null,
+    viewportHeight: options.viewportHeight ?? null,
+    topHeightRatioPermille: options.topHeightRatioPermille ?? null,
+    splitWidthRatioPermille: options.splitWidthRatioPermille ?? null,
+    z1Visible: options.z1Visible ?? null,
+  };
+  return invoke("compositor_set_layout", {
+    ...payload,
+    options: payload,
+    input: payload,
+  });
+}
+
+export async function compositorLaunchApplication(
+  input: CompositorLaunchApplicationInput,
+): Promise<CompositorSnapshotDto> {
+  const payload = {
+    applicationIdHex: input.applicationIdHex ?? null,
+    installationIdHex: input.installationIdHex ?? null,
+    rejectedPackageIdHex: input.rejectedPackageIdHex ?? null,
+    rejectedProcessIdHex: input.rejectedProcessIdHex ?? null,
+  };
+  return invoke("compositor_launch_application", {
+    ...payload,
+    input: payload,
+  });
+}
+
+export async function compositorWindowAction(
+  windowIdHex: string,
+  action: CompositorWindowActionKind,
+  rect?: RectPxDto | null,
+  newInstallationIdHex?: string | null,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_window_action", {
+    windowIdHex,
+    action,
+    rect: rect ?? null,
+    newInstallationIdHex: newInstallationIdHex ?? null,
+  });
+}
+
+export async function compositorSetZ3Overlay(
+  overlayId: string,
+  kind: "flyout" | "palette",
+  active: boolean,
+  rect?: RectPxDto | null,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_set_z3_overlay", {
+    overlayId,
+    kind,
+    active,
+    rect: rect ?? null,
+  });
+}
+
+export async function compositorSetZ4Modal(
+  active: boolean,
+  nowMonoMs: number,
+): Promise<CompositorSnapshotDto> {
+  return invoke("compositor_set_z4_modal", { active, nowMonoMs });
+}
+
+export async function compositorRouteInput(
+  input: CompositorInputDispatchInput,
+): Promise<InputRouteResultDto> {
+  const winHex = input.targetWindowIdHex ?? input.windowIdHex ?? null;
+  const surfHex = input.targetSurfaceIdHex ?? input.surfaceIdHex ?? null;
+  const sessionGen = input.eventSessionGeneration ?? input.sessionGeneration;
+  const normalized: CompositorInputDispatchInput = {
+    source: input.source,
+    originKind: input.originKind,
+    originSurfaceIdHex: input.originSurfaceIdHex ?? null,
+    originApplicationIdHex: input.originApplicationIdHex ?? null,
+    targetKind: input.targetKind,
+    targetWindowIdHex: winHex,
+    windowIdHex: winHex,
+    targetSurfaceIdHex: surfHex,
+    surfaceIdHex: surfHex,
+    targetSurfaceGeneration: input.targetSurfaceGeneration ?? null,
+    shortcut: input.shortcut ?? null,
+    confirm: input.confirm ?? null,
+    key: input.key ?? null,
+    sessionGeneration: sessionGen,
+    eventSessionGeneration: sessionGen,
+    nowMonoMs: input.nowMonoMs,
+  };
+  return invoke("compositor_route_input", {
+    input: normalized,
   });
 }

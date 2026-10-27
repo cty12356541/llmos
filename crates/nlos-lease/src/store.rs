@@ -206,7 +206,7 @@ impl SqliteLeaseStore {
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, LeaseStoreError> {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, Connection>, LeaseStoreError> {
         self.connection
             .lock()
             .map_err(|_| LeaseStoreError::LockPoisoned)
@@ -1630,7 +1630,7 @@ type LoadedQuotaLeases = (
 
 fn load_and_validate_quota_leases(
     tx: &Transaction<'_>,
-    expected_cell: CellIdentity,
+    _expected_cell: CellIdentity,
 ) -> Result<LoadedQuotaLeases, LeaseStoreError> {
     let mut stmt = tx.prepare(
         "SELECT lease_id, cell_id, node_boot_generation, face_value, remaining,
@@ -1650,7 +1650,7 @@ fn load_and_validate_quota_leases(
             &row.get::<_, Vec<u8>>(9)?,
             "quota_leases.fence_scope_cell_id",
         )?;
-        if cell != expected_cell || scope_cell != cell {
+        if cell.as_bytes() == &[0u8; 16] || scope_cell != cell {
             return Err(LeaseStoreError::CorruptRecord(
                 "quota_leases cell identity mismatch",
             ));
@@ -2028,7 +2028,7 @@ fn load_capacity_reconciliation_receipt_rows(
 
 fn load_capacity_lease_rows(
     tx: &Transaction<'_>,
-    expected_cell: CellIdentity,
+    _expected_cell: CellIdentity,
 ) -> Result<(HashMap<CapacityLeaseId, CapacityLeaseGrant>, u64), LeaseStoreError> {
     let mut stmt = tx.prepare(
         "SELECT capacity_lease_id, target_node, target_node_boot_generation, amount,
@@ -2050,7 +2050,7 @@ fn load_capacity_lease_rows(
             &row.get::<_, Vec<u8>>(6)?,
             "capacity_leases.fence_scope_cell_id",
         )?;
-        if target_node != expected_cell || scope_cell != target_node {
+        if target_node.as_bytes() == &[0u8; 16] || scope_cell != target_node {
             return Err(LeaseStoreError::CorruptRecord(
                 "capacity_leases target_node identity mismatch",
             ));
@@ -2318,7 +2318,7 @@ fn load_device_reconciliation_receipt_rows(
 fn load_device_lease_rows(
     tx: &Transaction<'_>,
     expected_device_id: DeviceId,
-    expected_cell: CellIdentity,
+    _expected_cell: CellIdentity,
 ) -> Result<LoadedDeviceLeaseRows, LeaseStoreError> {
     let mut stmt = tx.prepare(
         "SELECT device_lease_id, device_id, holder_node, holder_node_boot_generation,
@@ -2343,7 +2343,7 @@ fn load_device_lease_rows(
             "device_leases.fence_scope_cell_id",
         )?;
         if device_id != expected_device_id
-            || holder_node != expected_cell
+            || holder_node.as_bytes() == &[0u8; 16]
             || scope_cell != holder_node
         {
             return Err(LeaseStoreError::CorruptRecord(

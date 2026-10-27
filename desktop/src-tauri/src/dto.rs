@@ -1789,3 +1789,362 @@ pub fn fact_check_dto(
         rows,
     }
 }
+
+// ============================================================================
+// Stage D (`D-COMPOSITOR-WM`) 合成器、多用户会话与防伪输入路由 DTO 投影
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RectPxDto {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<crate::compositor::RectPx> for RectPxDto {
+    fn from(value: crate::compositor::RectPx) -> Self {
+        Self {
+            x: value.x,
+            y: value.y,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+/// 面向 `Z1..Z3` / `Z2` 的公共用户档案投影——严格剥离私密 `security_seal_hint`（`[DUI-SESSION-001]`）。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfilePublicDto {
+    pub principal_id_hex: String,
+    pub display_name: String,
+    pub locale: String,
+    pub theme: String,
+    pub data_container_scope_id_hex: String,
+}
+
+impl From<&crate::session::UserProfile> for UserProfilePublicDto {
+    fn from(user: &crate::session::UserProfile) -> Self {
+        Self {
+            principal_id_hex: user.principal_id_hex(),
+            display_name: user.display_name.clone(),
+            locale: user.locale.as_str().to_owned(),
+            theme: user.theme.as_str().to_owned(),
+            data_container_scope_id_hex: user.data_container_scope_id_hex(),
+        }
+    }
+}
+
+/// 仅供可信 `Z4` 安全确认屏渲染的私密防钓鱼印章上下文。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Z4TrustedSealContextDto {
+    pub principal_id_hex: String,
+    pub display_name: String,
+    pub security_seal_hint: String,
+    pub session_generation: u64,
+    pub z4_armed_at_mono_ms: Option<u64>,
+    pub arming_window_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionWorkspaceDto {
+    pub workspace_id_hex: String,
+    pub owner_principal_id_hex: String,
+    pub name: String,
+    pub state: String,
+    pub revision: u64,
+    pub layout_mode: String,
+}
+
+impl From<&crate::session::SessionWorkspace> for SessionWorkspaceDto {
+    fn from(ws: &crate::session::SessionWorkspace) -> Self {
+        Self {
+            workspace_id_hex: ws.workspace_id_hex(),
+            owner_principal_id_hex: ws.owner_principal_id_hex(),
+            name: ws.name.clone(),
+            state: ws.state.as_str().to_owned(),
+            revision: ws.revision,
+            layout_mode: ws.layout_mode.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowAccessibilityNodeDto {
+    pub a11y_node_id: String,
+    pub a11y_role: String,
+    pub a11y_label: String,
+    pub owner_application_id_hex: String,
+    pub installation_generation: u64,
+    pub stale_readonly: bool,
+    pub hidden: bool,
+}
+
+impl From<&crate::compositor::WindowAccessibilityNode> for WindowAccessibilityNodeDto {
+    fn from(node: &crate::compositor::WindowAccessibilityNode) -> Self {
+        Self {
+            a11y_node_id: node.a11y_node_id.clone(),
+            a11y_role: node.a11y_role.clone(),
+            a11y_label: node.a11y_label.clone(),
+            owner_application_id_hex: hex(&node.owner_application_id),
+            installation_generation: node.installation_generation,
+            stale_readonly: node.stale_readonly,
+            hidden: node.hidden,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositorWindowDto {
+    pub window_id_hex: String,
+    pub surface_id_hex: String,
+    pub title: String,
+    pub entry_name: Option<String>,
+    pub owner_application_id_hex: String,
+    pub installation_id_hex: String,
+    pub package_id_hex: String,
+    pub workspace_id_hex: String,
+    pub session_generation: u64,
+    pub surface_generation: u64,
+    pub current_installation_generation: u64,
+    pub stale_generation: bool,
+    pub window_lifecycle: String,
+    pub surface_lifecycle: String,
+    pub layout_slot: String,
+    pub is_floating: bool,
+    pub z_index: u16,
+    pub border_radius_px: u8,
+    pub outer_frame_rect: RectPxDto,
+    pub inner_content_clip_rect: RectPxDto,
+    pub occluded_by_system_plane: bool,
+    pub a11y: WindowAccessibilityNodeDto,
+}
+
+impl From<&crate::compositor::CompositorWindow> for CompositorWindowDto {
+    fn from(win: &crate::compositor::CompositorWindow) -> Self {
+        Self {
+            window_id_hex: hex(&win.window_id),
+            surface_id_hex: hex(&win.surface_id),
+            title: win.title.clone(),
+            entry_name: win.entry_name.clone(),
+            owner_application_id_hex: hex(&win.owner_application_id),
+            installation_id_hex: hex(&win.installation_id),
+            package_id_hex: hex(&win.package_id),
+            workspace_id_hex: hex(&win.workspace_id),
+            session_generation: win.session_generation,
+            surface_generation: win.surface_generation,
+            current_installation_generation: win.current_installation_generation,
+            stale_generation: win.stale_generation,
+            window_lifecycle: win.lifecycle.window.as_str().to_owned(),
+            surface_lifecycle: win.lifecycle.surface.as_str().to_owned(),
+            layout_slot: win.layout_slot.clone(),
+            is_floating: win.is_floating,
+            z_index: win.z_index,
+            border_radius_px: win.border_radius_px,
+            outer_frame_rect: RectPxDto::from(win.outer_frame_rect),
+            inner_content_clip_rect: RectPxDto::from(win.inner_content_clip_rect),
+            occluded_by_system_plane: win.occluded_by_system_plane,
+            a11y: WindowAccessibilityNodeDto::from(&win.a11y),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositorZ3OverlayDto {
+    pub overlay_id: String,
+    pub kind: String,
+    pub rect: RectPxDto,
+    pub z_index: u16,
+}
+
+impl From<&crate::compositor::CompositorZ3Overlay> for CompositorZ3OverlayDto {
+    fn from(overlay: &crate::compositor::CompositorZ3Overlay) -> Self {
+        Self {
+            overlay_id: overlay.overlay_id.clone(),
+            kind: overlay.kind.as_str().to_owned(),
+            rect: RectPxDto::from(overlay.rect),
+            z_index: overlay.z_index,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputAuditCountersDto {
+    pub accepted_events: u64,
+    pub rejected_stale_surface_events: u64,
+    pub rejected_locked_session_events: u64,
+    pub rejected_z4_severed_events: u64,
+    pub rejected_z4_arming_guard_events: u64,
+    pub rejected_untrusted_spoof_events: u64,
+}
+
+impl From<crate::input_router::InputAuditCounters> for InputAuditCountersDto {
+    fn from(c: crate::input_router::InputAuditCounters) -> Self {
+        Self {
+            accepted_events: c.accepted_events,
+            rejected_stale_surface_events: c.rejected_stale_surface_events,
+            rejected_locked_session_events: c.rejected_locked_session_events,
+            rejected_z4_severed_events: c.rejected_z4_severed_events,
+            rejected_z4_arming_guard_events: c.rejected_z4_arming_guard_events,
+            rejected_untrusted_spoof_events: c.rejected_untrusted_spoof_events,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusAndInputRouteDto {
+    pub focused_window_id_hex: Option<String>,
+    pub focused_surface_id_hex: Option<String>,
+    pub focused_surface_generation: Option<u64>,
+    pub session_generation: u64,
+    pub z4_modal_lock: bool,
+    pub z4_armed_at_mono_ms: Option<u64>,
+    pub counters: InputAuditCountersDto,
+}
+
+impl From<&crate::input_router::FocusAndInputRoute> for FocusAndInputRouteDto {
+    fn from(route: &crate::input_router::FocusAndInputRoute) -> Self {
+        Self {
+            focused_window_id_hex: opt_hex(route.focused_window_id),
+            focused_surface_id_hex: opt_hex(route.focused_surface_id),
+            focused_surface_generation: route.focused_surface_generation,
+            session_generation: route.session_generation,
+            z4_modal_lock: route.z4_modal_lock,
+            z4_armed_at_mono_ms: route.z4_armed_at_mono_ms,
+            counters: InputAuditCountersDto::from(route.counters),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositorSnapshotDto {
+    pub session_state: String,
+    pub session_generation: u64,
+    pub active_user: UserProfilePublicDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z4_trusted_context: Option<Z4TrustedSealContextDto>,
+    pub active_workspace: SessionWorkspaceDto,
+    pub workspaces: Vec<SessionWorkspaceDto>,
+    pub viewport_rect: RectPxDto,
+    pub stage_rect: RectPxDto,
+    pub taskbar_rect: RectPxDto,
+    pub z1_task_space_rect: Option<RectPxDto>,
+    pub z1_task_space_visible: bool,
+    pub layout_mode: String,
+    pub top_height_ratio_permille: u16,
+    pub split_width_ratio_permille: u16,
+    pub windows: Vec<CompositorWindowDto>,
+    pub active_z3_overlays: Vec<CompositorZ3OverlayDto>,
+    pub focus_and_input_route: FocusAndInputRouteDto,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputRouteResultDto {
+    pub accepted: bool,
+    pub routed_plane: Option<String>,
+    pub target_window_id_hex: Option<String>,
+    pub target_surface_id_hex: Option<String>,
+    pub rejection_code: Option<String>,
+    pub rejection_message: Option<String>,
+    pub route: FocusAndInputRouteDto,
+}
+
+/// 从 [`crate::compositor::WorkstationHostShell`] 构建可序列化合成快照。
+///
+/// 当 `include_z4_trusted == false` 时，`z4_trusted_context` 恒为 `None`，
+/// 确保 `Z1..Z3`/`Z2` 公共快照绝不泄露 `security_seal_hint`。
+///
+/// # Errors
+///
+/// 当前活跃用户或工作区丢失时返回 [`crate::session::SessionError`]。
+pub fn compositor_snapshot_dto(
+    shell: &crate::compositor::WorkstationHostShell,
+    include_z4_trusted: bool,
+) -> Result<CompositorSnapshotDto, crate::session::SessionError> {
+    let user = shell.session.active_user()?;
+    let active_ws = shell.session.active_workspace()?;
+    let active_ws_id = active_ws.workspace_id;
+    let workspaces = shell
+        .session
+        .workspaces_for_active_user()
+        .into_iter()
+        .map(SessionWorkspaceDto::from)
+        .collect();
+    let windows = shell
+        .compositor
+        .windows_for_workspace(active_ws_id)
+        .into_iter()
+        .map(CompositorWindowDto::from)
+        .collect();
+    let overlays = shell
+        .compositor
+        .active_z3_overlays()
+        .iter()
+        .map(CompositorZ3OverlayDto::from)
+        .collect();
+    let z4_trusted_context = include_z4_trusted.then(|| Z4TrustedSealContextDto {
+        principal_id_hex: user.principal_id_hex(),
+        display_name: user.display_name.clone(),
+        security_seal_hint: user.z4_trusted_seal_hint().to_owned(),
+        session_generation: shell.session.session_generation(),
+        z4_armed_at_mono_ms: shell.route.z4_armed_at_mono_ms,
+        arming_window_ms: crate::input_router::Z4_ARMING_WINDOW_MS,
+    });
+    Ok(CompositorSnapshotDto {
+        session_state: shell.session.state().as_str().to_owned(),
+        session_generation: shell.session.session_generation(),
+        active_user: UserProfilePublicDto::from(user),
+        z4_trusted_context,
+        active_workspace: SessionWorkspaceDto::from(active_ws),
+        workspaces,
+        viewport_rect: RectPxDto::from(shell.compositor.viewport_rect()),
+        stage_rect: RectPxDto::from(shell.compositor.stage_rect()),
+        taskbar_rect: RectPxDto::from(shell.compositor.taskbar_rect()),
+        z1_task_space_rect: shell.compositor.z1_task_space_rect().map(RectPxDto::from),
+        z1_task_space_visible: shell.compositor.z1_task_space_visible(),
+        layout_mode: shell.compositor.layout_mode().as_str().to_owned(),
+        top_height_ratio_permille: shell.compositor.top_height_ratio_permille(),
+        split_width_ratio_permille: shell.compositor.split_width_ratio_permille(),
+        windows,
+        active_z3_overlays: overlays,
+        focus_and_input_route: FocusAndInputRouteDto::from(&shell.route),
+    })
+}
+
+#[must_use]
+pub fn input_route_result_dto(
+    outcome: Result<crate::input_router::RoutedInputOutcome, crate::input_router::InputRejection>,
+    route: &crate::input_router::FocusAndInputRoute,
+) -> InputRouteResultDto {
+    match outcome {
+        Ok(routed) => InputRouteResultDto {
+            accepted: true,
+            routed_plane: Some(routed.routed_plane.to_owned()),
+            target_window_id_hex: opt_hex(routed.target_window_id),
+            target_surface_id_hex: opt_hex(routed.target_surface_id),
+            rejection_code: None,
+            rejection_message: None,
+            route: FocusAndInputRouteDto::from(route),
+        },
+        Err(rejection) => InputRouteResultDto {
+            accepted: false,
+            routed_plane: None,
+            target_window_id_hex: None,
+            target_surface_id_hex: None,
+            rejection_code: Some(rejection.reason.as_code_str().to_owned()),
+            rejection_message: Some(rejection.message),
+            route: FocusAndInputRouteDto::from(route),
+        },
+    }
+}

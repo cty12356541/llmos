@@ -1,6 +1,14 @@
 import "./style.css";
 
 import {
+  createWorkstationCompositor,
+  type WorkstationTaskRowInput,
+} from "./compositor";
+import { formatTaskbarClock, type InstalledApplicationEntry } from "./dock";
+import {
+  compositorGetSnapshot,
+  compositorSessionTransition,
+  compositorSetLayout,
   controlPlaneFacts,
   costFactCheck,
   exportMetrics,
@@ -14,8 +22,11 @@ import {
   inspectResourceHealth,
   inspectSemanticHealth,
   inspectTask,
+  listInstalledApplications,
+  listTasks,
   parityCheck,
   parityCheckWrite,
+  pollDesktopWatermarkEvents,
   presentSurfaces,
   setConfig,
   submitControl,
@@ -26,12 +37,15 @@ import type {
   ConfigDto,
   ControlActionInput,
   FactCheckDto,
+  InstalledApplicationSummaryDto,
   OutcomeDto,
   PresentedSurfaceDto,
   ReceiptDto,
   SurfacesPresentationDto,
+  TaskSummaryDto,
 } from "./types";
 import { MUTATION_OUTCOME_KINDS } from "./types";
+import type { WorkstationStatusState } from "./ui";
 import { taskSpaceView } from "./views/task-space";
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -849,7 +863,7 @@ function renderFactCheck(check: FactCheckDto): HTMLElement {
       el("td", { text: row.field }),
       el("td", { text: row.first }),
       el("td", { text: row.second }),
-      el("td", { text: row.matched ? "✓" : "✗" }),
+      el("td", { text: row.matched ? "一致" : "不一致" }),
     );
     body.append(tr);
   }
@@ -904,7 +918,7 @@ const SURFACE_PRESENTATION_GAPS: ReadonlyArray<{ fact: string; detail: string }>
   {
     fact: "表面生命周期管理",
     detail:
-      "open/close 终态已由桌面 Rust `window_lifecycle`(REGISTERED→CREATED→PRESENTED↔HIDDEN→CLOSED)落地;本视图仍只有 durable 声明与呈现过滤,未接线 GUI 开合控件、stale 表面隔离执行器",
+      "open/close 终态已由桌面 Rust `window_lifecycle`(REGISTERED→CREATED→PRESENTED<->HIDDEN→CLOSED)落地;本视图仍只有 durable 声明与呈现过滤,未接线 GUI 开合控件、stale 表面隔离执行器",
   },
   {
     fact: "焦点/输入路由与几何",
@@ -1094,7 +1108,7 @@ function controlView(): HTMLElement {
 
 function parityView(): HTMLElement {
   const panel = el("section", { className: "card" });
-  panel.append(el("h3", { text: "GUI ↔ CLI 一致性自检" }));
+  panel.append(el("h3", { text: "GUI <-> CLI 一致性自检" }));
   panel.append(
     el("p", {
       className: "muted",
@@ -1559,98 +1573,338 @@ function resourceMonitorView(): HTMLElement {
   return wrap;
 }
 
+function fallbackOfflineConfig(): ConfigDto {
+  return {
+    socketPath: null,
+    principalHex: null,
+    keyFile: null,
+    cliSocket: null,
+    cliPath: null,
+    resourceRoot: null,
+    applicationRoot: null,
+    source: "unset",
+    platformSupported: false,
+  };
+}
+
+function mapTaskSummaryToWorkstationRow(
+  summary: TaskSummaryDto,
+  index: number,
+): WorkstationTaskRowInput {
+  const norm = summary.taskState.trim().toUpperCase();
+  let status: WorkstationStatusState = "RUNNING";
+  let isTerminal = false;
+  let pendingApproval = false;
+  if (norm === "COMPLETED") {
+    status = "COMPLETED";
+    isTerminal = true;
+  } else if (norm === "FAILED") {
+    status = "FAILED";
+    isTerminal = true;
+  } else if (norm === "CANCELLED") {
+    status = "CANCELLED";
+    isTerminal = true;
+  } else if (norm === "SUSPENDED" || norm === "PAUSED") {
+    status = "SUSPENDED";
+  } else if (norm === "WAITING_CONSENT") {
+    status = "WAITING_CONSENT";
+    pendingApproval = true;
+  } else if (norm === "WAITING_INPUT") {
+    status = "WAITING_INPUT";
+    pendingApproval = true;
+  } else if (norm === "QUARANTINED") {
+    status = "QUARANTINED";
+  }
+
+  return {
+    taskId: summary.taskIdHex,
+    title: `工作站任务 #${index + 1}`,
+    status,
+    actualUsage: 0,
+    effectiveGrantedOrLeaseCap: 100,
+    requestedCeiling: 100,
+    resourceUnit: "%",
+    planIdHex: summary.planIdHex,
+    readBackingIdHex: summary.taskIdHex,
+    expectedRevision: summary.expectedGenerationOrRevision,
+    canPause: status === "RUNNING",
+    canResume: status === "SUSPENDED",
+    canCancel: !isTerminal,
+    isTerminal,
+    pendingApproval,
+  };
+}
+
+function mapInstalledApplicationSummary(
+  app: InstalledApplicationSummaryDto,
+  index: number,
+): InstalledApplicationEntry {
+  const status =
+    app.status === 2
+      ? "DISABLED"
+      : app.status === 3
+        ? "UNINSTALLED"
+        : "ACTIVE";
+  return {
+    applicationIdHex: app.applicationIdHex,
+    installationIdHex: app.installationIdHex,
+    packageIdHex: app.packageIdHex,
+    displayName: `已安装应用 #${index + 1}`,
+    status,
+    installationGeneration: app.currentInstallationGeneration,
+    expectedGenerationOrRevision: app.currentInstallationGeneration,
+    manifestDigestHex: app.packageManifestDigestHex,
+  };
+}
+
+function isEditableTextTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tag = target.tagName.toLowerCase();
+  return (
+    tag === "input" ||
+    tag === "textarea" ||
+    tag === "select" ||
+    target.isContentEditable
+  );
+}
+
+function buildL3DiagnosticInspectorLayout(config: ConfigDto): HTMLElement {
+  const layout = el("div", { className: "layout" });
+  const sidebar = el("nav", { className: "sidebar" });
+  const main = el("main", { className: "main" });
+  const views = new Map<string, HTMLElement>();
+  const register = (id: string, label: string, node: HTMLElement): void => {
+    views.set(id, node);
+    const tab = el("button", { className: "tab", text: label });
+    // 跨文件契约(W56-b #29):tab 挂稳定 data-view-id 属性,供
+    // desktop/src/views/task-space/index.ts 的 openSidebarTab 按属性
+    // 匹配跳转(不依赖中文文案)。新增/改名 viewId 时需同步那边的
+    // TASK_MANAGER_TABS 表;返回 false 的消费在该视图内提示。
+    tab.dataset.viewId = id;
+    tab.addEventListener("click", () => {
+      for (const [otherId, otherNode] of views) {
+        otherNode.classList.toggle("active", otherId === id);
+      }
+      for (const child of sidebar.children) {
+        if (child instanceof HTMLElement) {
+          child.classList.toggle("active", child === tab);
+        }
+      }
+    });
+    sidebar.append(tab);
+    node.classList.add("view");
+    if (id === "health") {
+      node.classList.add("active");
+    }
+    main.append(node);
+  };
+  register("health", "恢复总览", healthView("恢复总览(InspectHealth)", inspectHealth));
+  register(
+    "semantic",
+    "语义恢复",
+    healthView("语义恢复(InspectSemanticHealth)", inspectSemanticHealth),
+  );
+  register(
+    "task",
+    "任务查询",
+    targetQueryView({
+      label: "任务(恢复计划)id",
+      placeholder: "32 hex 字符 plan_id",
+      button: "查询任务",
+      dispatch: inspectTask,
+    }),
+  );
+  register("task-space", "任务空间", taskSpaceView());
+  register(
+    "process",
+    "进程查询",
+    targetQueryView({
+      label: "进程 id",
+      placeholder: "32 hex 字符 process_id",
+      button: "查询进程",
+      dispatch: inspectProcess,
+    }),
+  );
+  register(
+    "resource",
+    "资源查询",
+    targetQueryView({
+      label: "资源预留 id",
+      placeholder: "32 hex 字符 reservation_id",
+      button: "查询资源",
+      dispatch: inspectResource,
+    }),
+  );
+  register("metrics", "指标导出", metricsView());
+  register("monitor", "资源监控", resourceMonitorView());
+  register("surfaces", "应用表面", appSurfacesView());
+  register("control", "控制动作", controlView());
+  register("permission", "权限/预算", permissionView(config));
+  const parity = el("div");
+  parity.append(parityView(), parityWriteCard());
+  register("parity", "一致性自检", parity);
+  register("config", "连接配置", configView(config));
+  if (sidebar.firstElementChild instanceof HTMLElement) {
+    sidebar.firstElementChild.classList.add("active");
+  }
+  layout.append(sidebar, main);
+  return layout;
+}
+
 async function bootstrap(): Promise<void> {
   const app = document.querySelector("#app");
-  if (app === null) {
+  if (!(app instanceof HTMLElement)) {
     return;
   }
+
+  let config = fallbackOfflineConfig();
+  let backendOnline = false;
   try {
-    const config = await getConfig();
-    const layout = el("div", { className: "layout" });
-    const sidebar = el("nav", { className: "sidebar" });
-    const main = el("main", { className: "main" });
-    const views = new Map<string, HTMLElement>();
-    const register = (id: string, label: string, node: HTMLElement): void => {
-      views.set(id, node);
-      const tab = el("button", { className: "tab", text: label });
-      // 跨文件契约(W56-b #29):tab 挂稳定 data-view-id 属性,供
-      // desktop/src/views/task-space/index.ts 的 openSidebarTab 按属性
-      // 匹配跳转(不依赖中文文案)。新增/改名 viewId 时需同步那边的
-      // TASK_MANAGER_TABS 表;返回 false 的消费在该视图内提示。
-      tab.dataset.viewId = id;
-      tab.addEventListener("click", () => {
-        for (const [otherId, otherNode] of views) {
-          otherNode.classList.toggle("active", otherId === id);
+    config = await getConfig();
+    backendOnline = true;
+  } catch {
+    backendOnline = false;
+  }
+
+  const compositor = createWorkstationCompositor({
+    viewportWidth: window.innerWidth || 1440,
+    viewportHeight: window.innerHeight || 900,
+    initialDisclosure: "L1",
+    initialTheme: "graphite-workstation",
+    initialLocale: "zh-CN",
+    initialLayoutMode: "three-pane-workstation",
+    connectivity: {
+      kind: backendOnline ? "local-ready" : "offline-local-ready",
+      l3TopologyTag: "LOCAL_SINGLE_NODE",
+    },
+    clockText: formatTaskbarClock(new Date()),
+    callbacks: {
+      onDisableApplication: (target) => {
+        void compositor.commandReconciler.dispatch({
+          action: {
+            action: "disable-application",
+            targetIdHex: target.installationIdHex,
+            expectedRevision: target.expectedGenerationOrRevision ?? 1,
+            scope: "application",
+            reason: "Disabled from workstation launcher",
+          },
+        });
+      },
+      onUninstallApplication: (target) => {
+        void compositor.commandReconciler.dispatch({
+          action: {
+            action: "uninstall-application",
+            targetIdHex: target.installationIdHex,
+            expectedRevision: target.expectedGenerationOrRevision ?? 1,
+            scope: "application",
+            reason: "Uninstalled from workstation launcher",
+          },
+        });
+      },
+      onTaskVerb: (taskId, verb) => {
+        if (!HEX32.test(taskId)) {
+          return;
         }
-        for (const child of sidebar.children) {
-          if (child instanceof HTMLElement) {
-            child.classList.toggle("active", child === tab);
-          }
+        const actionKind =
+          verb === "pause"
+            ? "pause-operation"
+            : verb === "resume"
+              ? "resume-operation"
+              : "cancel-operation";
+        void compositor.commandReconciler.dispatch({
+          action: {
+            action: actionKind,
+            targetIdHex: taskId.toLowerCase(),
+            expectedRevision: 1,
+            scope: "task",
+            reason: `Requested ${verb} from workstation task pane`,
+          },
+        });
+      },
+      onSessionTransition: (nextState) => {
+        if (!backendOnline) {
+          return;
         }
-      });
-      sidebar.append(tab);
-      node.classList.add("view");
-      if (id === "health") {
-        node.classList.add("active");
-      }
-      main.append(node);
-    };
-    register("health", "恢复总览", healthView("恢复总览(InspectHealth)", inspectHealth));
-    register(
-      "semantic",
-      "语义恢复",
-      healthView("语义恢复(InspectSemanticHealth)", inspectSemanticHealth),
+        const transition =
+          nextState === "LOCKED"
+            ? "lock"
+            : nextState === "ACTIVE"
+              ? "unlock"
+              : nextState === "SUSPENDED"
+                ? "suspend"
+                : "close";
+        void compositorSessionTransition(transition).catch(() => undefined);
+      },
+      onLayoutModeChanged: (mode) => {
+        if (!backendOnline) {
+          return;
+        }
+        void compositorSetLayout({
+          layoutMode: mode,
+          viewportWidth: window.innerWidth || 1440,
+          viewportHeight: window.innerHeight || 900,
+        }).catch(() => undefined);
+      },
+    },
+  });
+
+  const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(config);
+  compositor.setL3DiagnosticElement(l3DiagnosticLayout);
+  compositor.mount(app);
+
+  window.addEventListener("resize", () => {
+    compositor.setViewportSize(
+      window.innerWidth || 1440,
+      window.innerHeight || 900,
     );
-    register(
-      "task",
-      "任务查询",
-      targetQueryView({
-        label: "任务(恢复计划)id",
-        placeholder: "32 hex 字符 plan_id",
-        button: "查询任务",
-        dispatch: inspectTask,
-      }),
-    );
-    register("task-space", "任务空间", taskSpaceView());
-    register(
-      "process",
-      "进程查询",
-      targetQueryView({
-        label: "进程 id",
-        placeholder: "32 hex 字符 process_id",
-        button: "查询进程",
-        dispatch: inspectProcess,
-      }),
-    );
-    register(
-      "resource",
-      "资源查询",
-      targetQueryView({
-        label: "资源预留 id",
-        placeholder: "32 hex 字符 reservation_id",
-        button: "查询资源",
-        dispatch: inspectResource,
-      }),
-    );
-    register("metrics", "指标导出", metricsView());
-    register("monitor", "资源监控", resourceMonitorView());
-    register("surfaces", "应用表面", appSurfacesView());
-    register("control", "控制动作", controlView());
-    register("permission", "权限/预算", permissionView(config));
-    const parity = el("div");
-    parity.append(parityView(), parityWriteCard());
-    register("parity", "一致性自检", parity);
-    register("config", "连接配置", configView(config));
-    if (sidebar.firstElementChild instanceof HTMLElement) {
-      sidebar.firstElementChild.classList.add("active");
-    }
-    layout.append(sidebar, main);
-    app.replaceChildren(layout);
-  } catch (error) {
-    const card = el("section", { className: "card error" });
-    card.append(el("h3", { text: "启动失败" }));
-    card.append(fieldRow("message", String(error)));
-    app.replaceChildren(card);
+  });
+
+  window.addEventListener("keydown", (event: KeyboardEvent) => {
+    compositor.handleKeydown({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      targetIsTextInput: isEditableTextTarget(event.target),
+      preventDefault: () => event.preventDefault(),
+    });
+  });
+
+  window.setInterval(() => {
+    compositor.setClockText(formatTaskbarClock(new Date()));
+  }, 30_000);
+
+  if (backendOnline) {
+    void compositorGetSnapshot(false)
+      .then((snap) => {
+        compositor.setLayoutMode(snap.layoutMode);
+      })
+      .catch(() => undefined);
+
+    void listInstalledApplications(null)
+      .then((receipt) => {
+        if (receipt.outcome.kind === "installed_applications_listed") {
+          compositor.setInstalledApplications(
+            receipt.outcome.applications.map(mapInstalledApplicationSummary),
+          );
+        }
+      })
+      .catch(() => undefined);
+
+    void listTasks(null)
+      .then((receipt) => {
+        if (receipt.outcome.kind === "tasks_listed") {
+          compositor.setTasks(
+            receipt.outcome.tasks.map(mapTaskSummaryToWorkstationRow),
+          );
+        }
+      })
+      .catch(() => undefined);
+
+    void pollDesktopWatermarkEvents(0).catch(() => undefined);
   }
 }
 

@@ -482,8 +482,8 @@ impl Error for PartitionViolation {}
 /// (`[DIST-LOCAL-001]`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PartitionAutonomyGate {
-    state: ControlPlaneLinkState,
-    last_observed_tick: u64,
+    pub(crate) state: ControlPlaneLinkState,
+    pub(crate) last_observed_tick: u64,
 }
 
 impl PartitionAutonomyGate {

@@ -1,0 +1,676 @@
+/* ==========================================================================
+   NLOS Stage D 5-Plane Workstation Shell, Tiling WM & 36px Bottom Taskbar
+   Authority: ADR-0025 Decision 1 & 3 + Stage D Desktop Visual & UX Spec §2, §3.3
+   Discipline:
+     - 100% solid opaque neutral surfaces (zero glass or blur effects)
+     - Crisp 1px structural hairlines & 4px tiling gaps
+     - Strict industrial corner geometry: 0px planes/tiles/taskbar, 2px micro, 4px controls, 6px float/flyout
+   ========================================================================== */
+
+@import "./tokens.css";
+@import "./surfaces-and-borders.css";
+
+/* ---- 5-Plane Workstation Root Shell ---- */
+.nlos-desktop-shell,
+.nlos-workstation-shell {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--nlos-bg-backdrop);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  box-sizing: border-box;
+}
+
+/* ---- Stage Container (Strictly Clamped Above 36px Z3 Taskbar) ---- */
+.nlos-stage-container {
+  position: relative;
+  width: 100%;
+  height: calc(100vh - var(--nlos-taskbar-h));
+  max-height: calc(100vh - 36px);
+  flex: 1 1 auto;
+  overflow: hidden;
+  background-color: var(--nlos-bg-backdrop);
+  border-radius: 0px;
+  box-sizing: border-box;
+}
+
+/* ---- Z0: Solid Neutral Workspace Backdrop ---- */
+.nlos-plane-z0 {
+  position: absolute;
+  inset: 0;
+  z-index: var(--nlos-z0-backdrop);
+  background-color: var(--nlos-bg-backdrop);
+  pointer-events: none;
+  border-radius: 0px;
+}
+
+/* ---- Z1: Docked / Toggleable High-Density Task Space Pane ---- */
+.nlos-plane-z1 {
+  position: absolute;
+  z-index: var(--nlos-z1-task-pane);
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* ---- Z2: Tiling-First & Optional Floating Application Windows Layer ---- */
+.nlos-plane-z2 {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 0px;
+}
+
+/* ---- 4px Crisp Structural Split Sash (Pointer + Keyboard Accessible) ---- */
+.nlos-split-sash {
+  position: absolute;
+  z-index: 300;
+  background-color: var(--nlos-bg-backdrop);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 0px;
+  pointer-events: auto;
+  box-sizing: border-box;
+  transition: background-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-split-sash--vertical {
+  width: var(--nlos-tile-gap);
+  cursor: col-resize;
+}
+
+.nlos-split-sash--horizontal {
+  height: var(--nlos-tile-gap);
+  cursor: row-resize;
+}
+
+.nlos-split-sash:hover,
+.nlos-split-sash:focus-visible {
+  background-color: var(--nlos-accent-active);
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 0px;
+}
+
+/* ---- Z2 Trusted Window Frame & Sandboxed Surface Viewport ---- */
+.nlos-wm-window {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.nlos-wm-window--focused {
+  border-color: var(--nlos-border-focused);
+}
+
+.nlos-wm-window--floating {
+  border-radius: 6px;
+  border-color: var(--nlos-border-focused);
+  box-shadow: var(--nlos-shadow-floating);
+}
+
+.nlos-wm-window--minimized {
+  display: none !important;
+}
+
+.nlos-wm-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.nlos-wm-title {
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  color: var(--nlos-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nlos-wm-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.nlos-wm-ctrl-btn {
+  min-width: var(--nlos-hit-min);
+  min-height: var(--nlos-hit-min);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition:
+    background-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    border-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-wm-ctrl-btn:hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+  border-color: var(--nlos-border-hairline);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-wm-ctrl-btn--close:hover:not(:disabled) {
+  background-color: var(--nlos-signal-danger);
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-fg);
+}
+
+.nlos-wm-ctrl-btn:focus-visible {
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 1px;
+}
+
+/* ---- Stale Installation Generation Fence Banner & Viewport ---- */
+.nlos-wm-stale-banner {
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-primary);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 0px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.nlos-wm-stale-banner__msg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-wm-stale-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.nlos-wm-viewport {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: clip;
+  contain: strict;
+  isolation: isolate;
+  background-color: var(--nlos-bg-window);
+  border-radius: 0px;
+}
+
+.nlos-wm-viewport--stale {
+  filter: grayscale(1);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.nlos-wm-viewport--occluded .nlos-wm-iframe {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.nlos-wm-occlusion-guard {
+  position: absolute;
+  inset: 0;
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  font-size: var(--nlos-fs-ui-sm);
+  border-radius: 0px;
+  pointer-events: none;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.nlos-wm-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background-color: var(--nlos-bg-window);
+  border-radius: 0px;
+}
+
+/* ---- Z3: Persistent 36px Bottom Compact Workstation Taskbar ---- */
+.nlos-plane-z3-taskbar {
+  position: relative;
+  width: 100%;
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  flex: 0 0 36px;
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border-top: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  z-index: var(--nlos-z3-taskbar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--nlos-sp-2);
+  gap: var(--nlos-sp-2);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.nlos-taskbar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.nlos-taskbar-center {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nlos-taskbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.nlos-taskbar-launcher-btn {
+  height: 26px;
+  min-height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+}
+
+.nlos-taskbar-cmd-trigger {
+  height: var(--nlos-taskbar-trigger-h);
+  min-height: 26px;
+  max-height: 26px;
+  padding: 0 10px;
+  margin: 0;
+  border-radius: 4px;
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-secondary);
+  border: 1px solid var(--nlos-border-hairline);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-sizing: border-box;
+  transition:
+    background-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    border-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-taskbar-cmd-trigger:hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+  border-color: var(--nlos-border-focused);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-taskbar-cmd-trigger:focus-visible {
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 1px;
+}
+
+.nlos-taskbar-cmd-trigger:disabled {
+  color: var(--nlos-signal-action-text);
+  border-color: var(--nlos-border-hairline);
+  cursor: not-allowed;
+}
+
+.nlos-taskbar-kbd {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-muted);
+  padding: 1px 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+  background-color: var(--nlos-bg-chrome);
+}
+
+/* ---- Flat Rectangular Window & Task Tabs (2px Solid Active Bottom Bar) ---- */
+.nlos-taskbar-tab {
+  height: 28px;
+  min-height: 26px;
+  max-width: 192px;
+  padding: 0 10px;
+  margin: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-sizing: border-box;
+  transition:
+    background-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-taskbar-tab:hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-taskbar-tab:focus-visible {
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 1px;
+}
+
+.nlos-taskbar-tab--focused {
+  background-color: var(--nlos-bg-window);
+  border-color: var(--nlos-border-hairline);
+  color: var(--nlos-text-primary);
+  font-weight: 600;
+}
+
+.nlos-taskbar-tab--minimized {
+  color: var(--nlos-text-muted);
+}
+
+.nlos-taskbar-tab__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nlos-taskbar-tab__active-bar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 0;
+  height: 2px;
+  background-color: var(--nlos-accent-active);
+  border-radius: 0px;
+  pointer-events: none;
+}
+
+.nlos-taskbar-approval-diamond {
+  color: var(--nlos-signal-action);
+  flex-shrink: 0;
+}
+
+/* ---- Right System Tray Controls, Hardware Capture Pills & Tabular Clock ---- */
+.nlos-taskbar-tray-btn,
+.nlos-taskbar-capture-pill {
+  min-height: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  margin: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-sizing: border-box;
+  transition:
+    background-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-taskbar-tray-btn:hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-taskbar-tray-btn:focus-visible {
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 1px;
+}
+
+.nlos-taskbar-capture-pill {
+  background-color: var(--nlos-bg-recessed);
+  border-color: var(--nlos-border-hairline);
+  color: var(--nlos-signal-action-text);
+  cursor: default;
+}
+
+.nlos-taskbar-capture-dot {
+  color: var(--nlos-signal-action);
+  flex-shrink: 0;
+}
+
+.nlos-taskbar-badge {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-taskbar-clock {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--nlos-text-primary);
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+/* ---- Z3 Application Launcher Flyout ([DUI-LAUNCH-001] & [UI-PARITY-001]) ---- */
+.nlos-launcher-flyout {
+  width: var(--nlos-flyout-w);
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 52px);
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: 6px;
+  box-shadow: var(--nlos-shadow-floating);
+  z-index: var(--nlos-z3-flyout);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.nlos-launcher-flyout__header {
+  min-height: var(--nlos-titlebar-h);
+  padding: 4px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  font-weight: 600;
+}
+
+.nlos-launcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nlos-launcher-row {
+  padding: 6px 8px;
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nlos-launcher-row__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nlos-launcher-row__identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.nlos-launcher-row__name {
+  font-weight: 600;
+  color: var(--nlos-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nlos-launcher-row__meta {
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-launcher-row__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nlos-launcher-row__btn {
+  margin: 0;
+}
+
+/* ---- Z3 Flyout & On-Demand Palette Layers ---- */
+.nlos-plane-z3-flyout-layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: var(--nlos-taskbar-h);
+  z-index: var(--nlos-z3-flyout);
+  pointer-events: none;
+  border-radius: 0px;
+}
+
+.nlos-plane-z3-flyout-layer > * {
+  pointer-events: auto;
+}
+
+.nlos-plane-z3-palette-layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: var(--nlos-taskbar-h);
+  z-index: var(--nlos-z3-palette);
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  border-radius: 0px;
+}
+
+.nlos-plane-z3-palette-layer > * {
+  pointer-events: auto;
+}
+
+/* ---- Z4: Non-Occludable UAC / Polkit System Security Screen Layer ---- */
+.nlos-plane-z4-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--nlos-z4-security-screen);
+  background-color: var(--nlos-scrim-z4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0px;
+}
+
+.nlos-plane-z3-flyout-layer[hidden],
+.nlos-plane-z3-palette-layer[hidden],
+.nlos-plane-z4-layer[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nlos-split-sash,
+  .nlos-wm-ctrl-btn,
+  .nlos-taskbar-cmd-trigger,
+  .nlos-taskbar-tab,
+  .nlos-taskbar-tray-btn {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

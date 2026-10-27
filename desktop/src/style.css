@@ -1,25 +1,42 @@
-:root {
-  color-scheme: light dark;
-  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
-  font-size: 14px;
-}
+/* ==========================================================================
+   NLOS Desktop Entry Stylesheet — Industrial Workstation + Legacy L3 Inspector
+   Authority: ADR-0025 Rev 2 + Stage D Desktop Visual & UX Specification
+   ========================================================================== */
 
-* {
+@import "./styles/tokens.css";
+@import "./styles/surfaces-and-borders.css";
+@import "./styles/planes-layout.css";
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-body {
-  margin: 0;
-  min-width: 720px;
-}
-
+html,
+body,
 #app {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
   height: 100vh;
+  overflow: hidden;
+  background-color: var(--nlos-bg-backdrop);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-base);
+  font-variant-numeric: tabular-nums;
 }
 
+/* ---- Legacy Stage B/C L3 Diagnostic Inspector Compatibility Rules ---- */
 .layout {
   display: flex;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border-radius: 0px;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -29,28 +46,47 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border-right: 1px solid rgba(128, 128, 128, 0.35);
+  background-color: var(--nlos-bg-chrome);
+  border-right: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  overflow-y: auto;
 }
 
-.sidebar .tab {
+.sidebar .tab,
+.tab {
   text-align: left;
-  border: none;
-  background: transparent;
-  padding: 8px 12px;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  min-height: var(--nlos-hit-min);
+  padding: 6px 10px;
+  margin: 0;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
 }
 
-.sidebar .tab.active {
-  background: rgba(64, 128, 255, 0.18);
+.sidebar .tab:hover,
+.tab:hover {
+  background-color: var(--nlos-bg-hover);
+  color: var(--nlos-text-primary);
+}
+
+.sidebar .tab.active,
+.tab.active {
+  background-color: var(--nlos-bg-active-row);
+  border-color: var(--nlos-border-focused);
+  color: var(--nlos-text-primary);
   font-weight: 600;
 }
 
 .main {
-  flex: 1;
+  flex: 1 1 auto;
   overflow-y: auto;
   padding: 16px 20px;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
 }
 
 .view {
@@ -62,22 +98,26 @@ body {
 }
 
 .card {
-  border: 1px solid rgba(128, 128, 128, 0.35);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
 }
 
 .card h3 {
   margin-top: 0;
+  color: var(--nlos-text-primary);
+  font-size: var(--nlos-fs-title-sm);
 }
 
 .card.ok {
-  border-color: rgba(46, 160, 67, 0.7);
+  border-color: var(--nlos-border-focused);
 }
 
 .card.error {
-  border-color: rgba(228, 86, 73, 0.8);
+  border-color: var(--nlos-signal-danger);
 }
 
 .field-row {
@@ -89,134 +129,177 @@ body {
 
 .field-row.mono .field-value,
 .field-value.mono {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
   word-break: break-all;
 }
 
 .field-label {
   min-width: 240px;
-  color: rgba(128, 128, 128, 0.95);
+  color: var(--nlos-text-secondary);
   flex-shrink: 0;
 }
 
 .field-value {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 12.5px;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-primary);
+  font-variant-numeric: tabular-nums;
   word-break: break-all;
 }
 
 .data-table {
   border-collapse: collapse;
   width: 100%;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 12.5px;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  border-radius: 0px;
 }
 
 .data-table th,
 .data-table td {
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--nlos-border-hairline);
   padding: 4px 8px;
   text-align: left;
   word-break: break-all;
+  border-radius: 0px;
 }
 
-button {
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.45);
+.data-table th {
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-secondary);
+  font-weight: 600;
+}
+
+button:not([class*="nlos-"]):not(.tab) {
+  min-height: var(--nlos-hit-min);
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--nlos-border-hairline);
   cursor: pointer;
-  margin: 6px 8px 6px 0;
-  background: rgba(64, 128, 255, 0.12);
+  margin: 4px 8px 4px 0;
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
 }
 
-button:hover {
-  background: rgba(64, 128, 255, 0.24);
+button:not([class*="nlos-"]):not(.tab):hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+  border-color: var(--nlos-border-focused);
 }
 
-input,
-select {
-  flex: 1;
-  padding: 5px 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.45);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 12.5px;
+input:not([class*="nlos-"]),
+select:not([class*="nlos-"]) {
+  flex: 1 1 auto;
+  min-height: var(--nlos-hit-min);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
 }
 
 pre.metrics {
-  background: rgba(128, 128, 128, 0.12);
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
   padding: 10px;
-  border-radius: 8px;
-  font-size: 12px;
+  border-radius: 4px;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
   overflow-x: auto;
 }
 
 .muted {
-  color: rgba(128, 128, 128, 0.95);
+  color: var(--nlos-text-muted);
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 .receipt-footer {
-  background: rgba(128, 128, 128, 0.08);
+  background-color: var(--nlos-bg-chrome);
+  border-top: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
 }
 
 button.danger {
-  background: rgba(228, 86, 73, 0.28);
-  border-color: rgba(228, 86, 73, 0.8);
+  background-color: var(--nlos-signal-danger);
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-fg);
+  border-radius: 4px;
 }
 
-button.danger:hover {
-  background: rgba(228, 86, 73, 0.45);
+button.danger:hover:not(:disabled) {
+  background-color: var(--nlos-signal-danger);
+  border-color: var(--nlos-border-focused);
 }
 
 .confirm-hint {
-  color: rgba(200, 60, 50, 0.95);
+  color: var(--nlos-signal-danger-text);
   font-weight: 600;
 }
 
-/* W32-F 应用表面:窗口形呈现卡(最小窗口隐喻,非窗口系统)。 */
+/* Legacy W32-F presented surface card classes (solid token-backed) */
 .surface-window {
   padding: 0;
   overflow: hidden;
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
 }
 
 .surface-titlebar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.9rem;
-  background: rgba(128, 128, 128, 0.14);
-  border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+  gap: 8px;
+  min-height: var(--nlos-titlebar-h);
+  padding: 4px 12px;
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
 }
 
 .surface-kind {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 0.6rem;
-  border: 1px solid rgba(128, 128, 128, 0.5);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--nlos-border-hairline);
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-secondary);
   white-space: nowrap;
 }
 
 .surface-kind.window {
-  border-color: rgba(90, 150, 255, 0.7);
-  color: rgba(140, 190, 255, 0.95);
+  border-color: var(--nlos-border-focused);
+  color: var(--nlos-text-primary);
 }
 
 .surface-kind.panel {
-  border-color: rgba(120, 200, 150, 0.7);
-  color: rgba(150, 220, 180, 0.95);
+  border-color: var(--nlos-border-hairline);
+  color: var(--nlos-text-secondary);
 }
 
 .surface-body {
-  padding: 0.8rem 0.9rem;
+  padding: 12px;
+  background-color: var(--nlos-bg-window);
 }
 
 .surface-placeholder {
-  margin-top: 0.6rem;
-  border: 1px dashed rgba(128, 128, 128, 0.45);
-  padding: 0.5rem 0.7rem;
+  margin-top: 8px;
+  border: 1px dashed var(--nlos-border-hairline);
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-secondary);
+  border-radius: 2px;
+  padding: 8px 10px;
 }

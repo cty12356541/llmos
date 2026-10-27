@@ -7,9 +7,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ed25519-dalek.workspace = true
+minicbor.workspace = true
+nlos-capability = { path = "../nlos-capability" }
 nlos-cell = { path = "../nlos-cell" }
+nlos-clock = { path = "../nlos-clock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-net.workspace = true
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

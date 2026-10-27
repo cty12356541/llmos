@@ -6,9 +6,12 @@
 //! 展示;W69-D-IPC-ENUM 补齐 inspect_search / inspect_notification 与
 //! IPC-D1..D8 12 域有界游标枚举、爆炸半径预演及控制命令状态对账桥。
 
+pub mod compositor;
 pub mod dto;
 pub mod error;
+pub mod input_router;
 pub mod ipc;
+pub mod session;
 pub mod surfaces;
 pub mod window_lifecycle;
 
@@ -72,6 +75,15 @@ pub fn run() {
             ipc::inspect_cell_leases,
             ipc::preview_control_blast_radius,
             ipc::query_control_command_status,
+            ipc::compositor_get_snapshot,
+            ipc::compositor_session_transition,
+            ipc::compositor_workspace_action,
+            ipc::compositor_set_layout,
+            ipc::compositor_launch_application,
+            ipc::compositor_window_action,
+            ipc::compositor_set_z3_overlay,
+            ipc::compositor_set_z4_modal,
+            ipc::compositor_route_input,
         ])
         .run(tauri::generate_context!())
     {

@@ -14,14 +14,16 @@
 //!   非当前代际与已卸载/停用状态如实投影为空集 + 状态行,不报错;
 //! - **未知应用是类型化 NOT_FOUND**:从未安装的包是事实,不是错误。
 //!
-//! 渲染边界(诚实登记,视图内静态缺口卡同步):载荷内容渲染(entry
-//! 引用的 artifact 字节)、焦点/输入路由、多窗口几何——均不在本最小链内。
-//! 表面开合终态见 `window_lifecycle`(`REGISTERED`…`CLOSED` 的 create/open/hide/close)。
+//! Stage D (`[DUI-LAUNCH-001]`) 扩展：`resolve_launch_from_authority` 面向
+//! `ApplicationLauncher` 按 `(ApplicationId, InstallationId)` 执行权威安装与表面解析，
+//! 并显式检测/拒绝将 `PackageId` 或瞬态 `ProcessId` 冒充为应用身份的调用。
+
+use std::fmt;
 
 use nlos_application::{
     ApplicationAuthority, ApplicationAuthorityError, ApplicationStatus, PackageSurfaceKind,
 };
-use nlos_types::PackageId;
+use nlos_types::{ApplicationId, InstallationId, PackageId};
 
 use crate::dto::hex;
 use crate::error::{DesktopError, ErrorCode};
@@ -221,6 +223,315 @@ pub fn present_surfaces_core(
         process_bindings,
         background_tasks,
     })
+}
+
+/// `[DUI-LAUNCH-001]` 权威应用启动解析失败原因。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityLaunchResolutionError {
+    /// 调用方把 `PackageId` 冒充为 `ApplicationId` 或 `InstallationId`。
+    PackageIdNotApplicationIdentity { offending_id: [u8; 16] },
+    /// 调用方把瞬态 `ProcessId` 冒充为 `ApplicationId` 或 `InstallationId`。
+    ProcessIdNotApplicationIdentity { offending_id: [u8; 16] },
+    /// 请求的 `InstallationId` 在权威安装回执表中不存在。
+    InstallationNotFound { installation_id: [u8; 16] },
+    /// `InstallationId` 所属 `ApplicationId` 与调用方声明的不匹配。
+    ApplicationInstallationMismatch {
+        requested_application_id: [u8; 16],
+        receipt_application_id: [u8; 16],
+        installation_id: [u8; 16],
+    },
+    /// 应用处于 `disabled` 或 `uninstalled`，拒绝激活。
+    ApplicationNotInstalled {
+        application_id: [u8; 16],
+        status: String,
+    },
+    /// 请求的 `InstallationId` 属于已被更新取代的旧代际。
+    StaleInstallationGeneration {
+        application_id: [u8; 16],
+        installation_id: [u8; 16],
+        package_id: [u8; 16],
+        requested_generation: u64,
+        current_generation: u64,
+    },
+    /// 当前安装代际尚未登记任何可呈现表面。
+    NoPresentableSurfaces {
+        application_id: [u8; 16],
+        generation: u64,
+    },
+    /// 底层存储或读取错误。
+    Storage(String),
+}
+
+impl fmt::Display for AuthorityLaunchResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PackageIdNotApplicationIdentity { offending_id } => write!(
+                formatter,
+                "PACKAGE_ID_NOT_APPLICATION_IDENTITY: {} is a PackageId, not ApplicationId/InstallationId ([DUI-LAUNCH-001])",
+                hex(offending_id)
+            ),
+            Self::ProcessIdNotApplicationIdentity { offending_id } => write!(
+                formatter,
+                "PROCESS_ID_NOT_APPLICATION_IDENTITY: {} is a registered ProcessId, not ApplicationId/InstallationId ([DUI-LAUNCH-001])",
+                hex(offending_id)
+            ),
+            Self::InstallationNotFound { installation_id } => write!(
+                formatter,
+                "INSTALLATION_NOT_FOUND: installation {} does not exist",
+                hex(installation_id)
+            ),
+            Self::ApplicationInstallationMismatch {
+                requested_application_id,
+                receipt_application_id,
+                installation_id,
+            } => write!(
+                formatter,
+                "APPLICATION_INSTALLATION_MISMATCH: installation {} belongs to application {}, not {}",
+                hex(installation_id),
+                hex(receipt_application_id),
+                hex(requested_application_id)
+            ),
+            Self::ApplicationNotInstalled {
+                application_id,
+                status,
+            } => write!(
+                formatter,
+                "APPLICATION_NOT_INSTALLED: application {} status is '{status}'",
+                hex(application_id)
+            ),
+            Self::StaleInstallationGeneration {
+                application_id,
+                installation_id,
+                requested_generation,
+                current_generation,
+                ..
+            } => write!(
+                formatter,
+                "STALE_INSTALLATION_GENERATION: installation {} of application {} is generation {requested_generation}, current is {current_generation}",
+                hex(installation_id),
+                hex(application_id)
+            ),
+            Self::NoPresentableSurfaces {
+                application_id,
+                generation,
+            } => write!(
+                formatter,
+                "NO_PRESENTABLE_SURFACES: application {} generation {generation} has no registered surfaces",
+                hex(application_id)
+            ),
+            Self::Storage(detail) => write!(formatter, "AUTHORITY_STORAGE_ERROR: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for AuthorityLaunchResolutionError {}
+
+/// `[DUI-LAUNCH-001]` 经 `ApplicationAuthority` 完整核验后的应用启动事实包。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedAuthorityLaunch {
+    pub application_id: ApplicationId,
+    pub installation_id: InstallationId,
+    pub package_id: PackageId,
+    pub current_installation_generation: u64,
+    pub known_process_ids: Vec<[u8; 16]>,
+    pub presentation: SurfacesPresentationDto,
+}
+
+fn check_process_bindings_for_spoof(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+    candidate_app: [u8; 16],
+    candidate_inst: [u8; 16],
+    collected_pids: &mut Vec<[u8; 16]>,
+) -> Result<(), AuthorityLaunchResolutionError> {
+    let bindings = authority
+        .inspect_process_bindings(package_id)
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.to_string()))?;
+    for binding in &bindings {
+        let pid = *binding.process_id.as_bytes();
+        if !collected_pids.contains(&pid) {
+            collected_pids.push(pid);
+        }
+        if candidate_app == pid {
+            return Err(
+                AuthorityLaunchResolutionError::ProcessIdNotApplicationIdentity {
+                    offending_id: candidate_app,
+                },
+            );
+        }
+        if candidate_inst == pid {
+            return Err(
+                AuthorityLaunchResolutionError::ProcessIdNotApplicationIdentity {
+                    offending_id: candidate_inst,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `[DUI-LAUNCH-001]`：严格按 `(ApplicationId, InstallationId)` 从本地 `ApplicationAuthority`
+/// 解析当前安装代际的可呈现表面，并拒绝把 `PackageId` 或已登记 `ProcessId` 冒充为应用身份。
+///
+/// # Errors
+///
+/// 返回类型化 [`AuthorityLaunchResolutionError`]。
+pub fn resolve_launch_from_authority(
+    authority: &ApplicationAuthority,
+    application_id: ApplicationId,
+    installation_id: InstallationId,
+) -> Result<ResolvedAuthorityLaunch, AuthorityLaunchResolutionError> {
+    let app_bytes = *application_id.as_bytes();
+    let inst_bytes = *installation_id.as_bytes();
+
+    // 1. 检测调用方是否将已登记的 PackageId 传入 application_id 或 installation_id。
+    if authority
+        .inspect_application(PackageId::from_bytes(app_bytes))
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.to_string()))?
+        .is_some()
+    {
+        return Err(
+            AuthorityLaunchResolutionError::PackageIdNotApplicationIdentity {
+                offending_id: app_bytes,
+            },
+        );
+    }
+    if authority
+        .inspect_application(PackageId::from_bytes(inst_bytes))
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.to_string()))?
+        .is_some()
+    {
+        return Err(
+            AuthorityLaunchResolutionError::PackageIdNotApplicationIdentity {
+                offending_id: inst_bytes,
+            },
+        );
+    }
+
+    let mut known_process_ids = Vec::new();
+
+    // 2. 若 application_id 存在安装历史，交叉检查其包与已登记 ProcessId（拦截 `(valid_app_id, process_id)`）。
+    let history = authority
+        .list_installations(application_id)
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.to_string()))?;
+    for entry in &history {
+        let pkg_bytes = *entry.package_id.as_bytes();
+        if app_bytes == pkg_bytes || inst_bytes == pkg_bytes {
+            return Err(
+                AuthorityLaunchResolutionError::PackageIdNotApplicationIdentity {
+                    offending_id: pkg_bytes,
+                },
+            );
+        }
+        check_process_bindings_for_spoof(
+            authority,
+            entry.package_id,
+            app_bytes,
+            inst_bytes,
+            &mut known_process_ids,
+        )?;
+    }
+
+    // 3. 按 InstallationId 读取不可变安装回执。
+    let receipt = authority
+        .inspect_installation(installation_id)
+        .map_err(|err| match err {
+            ApplicationAuthorityError::InstallationNotFound(_) => {
+                AuthorityLaunchResolutionError::InstallationNotFound {
+                    installation_id: inst_bytes,
+                }
+            }
+            other => AuthorityLaunchResolutionError::Storage(other.to_string()),
+        })?;
+
+    // 4. 在真实包上再次交叉核对 ProcessId（拦截 `(process_id, valid_installation_id)`）。
+    check_process_bindings_for_spoof(
+        authority,
+        receipt.package_id,
+        app_bytes,
+        inst_bytes,
+        &mut known_process_ids,
+    )?;
+
+    if receipt.application_id != application_id {
+        return Err(
+            AuthorityLaunchResolutionError::ApplicationInstallationMismatch {
+                requested_application_id: app_bytes,
+                receipt_application_id: *receipt.application_id.as_bytes(),
+                installation_id: inst_bytes,
+            },
+        );
+    }
+
+    // 5. 核验应用当前状态与当前安装代际。
+    let app_view = authority
+        .inspect_application(receipt.package_id)
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.to_string()))?
+        .ok_or(AuthorityLaunchResolutionError::InstallationNotFound {
+            installation_id: inst_bytes,
+        })?;
+
+    if app_view.status != ApplicationStatus::Installed {
+        return Err(AuthorityLaunchResolutionError::ApplicationNotInstalled {
+            application_id: app_bytes,
+            status: status_name(app_view.status).to_owned(),
+        });
+    }
+
+    if receipt.installation_generation != app_view.current_installation_generation {
+        return Err(
+            AuthorityLaunchResolutionError::StaleInstallationGeneration {
+                application_id: app_bytes,
+                installation_id: inst_bytes,
+                package_id: *receipt.package_id.as_bytes(),
+                requested_generation: receipt.installation_generation.get(),
+                current_generation: app_view.current_installation_generation.get(),
+            },
+        );
+    }
+
+    // 6. 读取当前安装代际的可呈现表面。
+    let presentation = present_surfaces_core(authority, receipt.package_id)
+        .map_err(|err| AuthorityLaunchResolutionError::Storage(err.message))?;
+
+    if presentation.presentable_surfaces.is_empty() {
+        return Err(AuthorityLaunchResolutionError::NoPresentableSurfaces {
+            application_id: app_bytes,
+            generation: app_view.current_installation_generation.get(),
+        });
+    }
+
+    Ok(ResolvedAuthorityLaunch {
+        application_id,
+        installation_id,
+        package_id: receipt.package_id,
+        current_installation_generation: app_view.current_installation_generation.get(),
+        known_process_ids,
+        presentation,
+    })
+}
+
+/// 按 `PackageId` 探查权威最新代际与状态（用于已打开窗口的升级代际同步围栏）。
+///
+/// # Errors
+///
+/// 存储读取失败返回 [`DesktopError`]。
+pub fn inspect_current_generation_by_package(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+) -> Result<Option<(ApplicationId, u64, ApplicationStatus)>, DesktopError> {
+    authority
+        .inspect_application(package_id)
+        .map(|opt| {
+            opt.map(|view| {
+                (
+                    view.application_id,
+                    view.current_installation_generation.get(),
+                    view.status,
+                )
+            })
+        })
+        .map_err(authority_failure)
 }
 
 #[cfg(test)]

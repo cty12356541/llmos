@@ -1,0 +1,25 @@
+[package]
+name = "nlos-consensus"
+description = "Embedded deterministic Raft control-plane quorum log, SQLite WAL+FULL durability engine, strict CONS-SCOPE-001 4-family guard, and N=1 single-host zero-config passthrough mode (ADR-0026 C-CONSENSUS-CP)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-cell = { path = "../nlos-cell" }
+nlos-clock = { path = "../nlos-clock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-net.workspace = true
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true

@@ -522,6 +522,15 @@ impl CellDirectory {
     /// a discovery heuristic on the stamped `heartbeat_ms`, not a fencing
     /// oracle: no authority is granted or revoked here.
     ///
+    /// Note (`ADR-0019` Trigger 7 #1, `ADR-0026` §2.3): this file-timestamp
+    /// face is strictly for single-host shared-directory deployments
+    /// (`ClusterProfile::SingleHostDesktop`). Cross-physical-host deployments
+    /// MUST evaluate [`crate::CrossHostHeartbeatEnvelope`] against
+    /// receiver-local monotonic windows via
+    /// [`crate::ReceiverMonotonicLivenessTracker`] and order checkpoints via
+    /// [`Self::record_monotonic_checkpoint`] /
+    /// [`Self::read_monotonic_checkpoint_trail`].
+    ///
     /// # Errors
     ///
     /// As [`Self::snapshot`], plus

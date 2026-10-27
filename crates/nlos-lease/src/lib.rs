@@ -56,7 +56,10 @@
 //! [`CapacityLeaseGrantor::open_durable`],
 //! [`ExclusiveDeviceLeaseGrantor::open_durable`]).
 
+pub mod clock_horizon;
+mod cross_host_store;
 mod reconcile;
+pub mod remote_proto;
 mod store;
 
 use std::collections::HashMap;
@@ -72,12 +75,30 @@ use nlos_types::{
     CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId, ReceiptId,
 };
 
+pub use clock_horizon::{
+    AuditWallTimeHint, AuthorityClockHorizonGuard, ClockHorizonError, ClockSkewPolicy,
+    CrossHostGrantParams, CrossHostLeaseFamily, FenceScopeCoverageStatus,
+    GrantorClockBoundedCoordinator, GrantorHorizonRecord, GrantorHorizonStatus,
+    HolderClockBoundedLease, HolderCommitPermit, HolderEffectPermit, HolderHorizonState,
+    HolderLeaseAdmitError, HolderLeaseGrantKind, MonotonicDurationMs, MonotonicInstantMs,
+    MultiEndpointFenceScope, PhysicalCleanupProofKind, QuarantineDisposition,
+    QuarantinedClockViolation, SIGNED_CLOSE_RECEIPT_DOMAIN, SIGNED_FENCE_BARRIER_ACK_DOMAIN,
+    SIGNED_SUPERVISOR_CANCEL_DOMAIN, SignedFenceBarrierAck, SignedLeaseCloseReceipt,
+    SignedSupervisorCancellationReceipt,
+};
 pub use reconcile::{
     CapacityMigrationError, CapacityMigrationOutcome, CapacityReconcileError,
     CapacityReconciliationReceipt, CleanupAttestation, DeviceMigrationError,
     DeviceMigrationOutcome, DeviceReconcileError, DeviceReconciliationReceipt, FenceBarrierAck,
     QuotaMigrationError, QuotaMigrationOutcome, QuotaReconcileError, QuotaReconciliationReceipt,
     QuotaWalLossError,
+};
+pub use remote_proto::{
+    LEASE_PROTO_SCHEMA_VERSION, LeaseReconciliationSnapshot, REMOTE_LEASE_CMD_SIGNING_DOMAIN,
+    REMOTE_LEASE_RESP_SIGNING_DOMAIN, RemoteLeaseClientError, RemoteLeaseCommand,
+    RemoteLeaseProtocolClient, RemoteLeaseProtocolServer, RemoteLeaseReject,
+    RemoteLeaseRequestEnvelope, RemoteLeaseResponseEnvelope, RemoteLeaseSuccess,
+    RemoteReconcilePayload,
 };
 pub use store::{LeaseStoreError, SCHEMA_VERSION, SqliteLeaseStore};
 
@@ -346,11 +367,48 @@ impl QuotaLeaseGrantor {
         face_value: u64,
         expires_at: Option<LeaseInstant>,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseGrantError> {
+        let holder_cell = self.authority.identity();
+        let holder_boot = self.authority.node_boot_generation();
+        self.grant_for_holder(
+            presented,
+            holder_cell,
+            holder_boot,
+            lease_id,
+            face_value,
+            expires_at,
+        )
+    }
+
+    pub(crate) fn grant_for_holder(
+        &mut self,
+        presented: &CellFence,
+        holder_cell: CellIdentity,
+        holder_boot_generation: Generation,
+        lease_id: QuotaLeaseId,
+        face_value: u64,
+        expires_at: Option<LeaseInstant>,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseGrantError> {
         if let Some(existing) = self.leases.get(&lease_id).copied() {
-            if existing.face_value == face_value && existing.expires_at == expires_at {
+            if existing.cell == holder_cell
+                && existing.node_boot_generation == holder_boot_generation
+                && existing.face_value == face_value
+                && existing.expires_at == expires_at
+            {
                 return Ok(existing);
             }
             self.authority.admit(presented)?;
+            if existing.cell != holder_cell {
+                return Err(QuotaLeaseGrantError::IdentityMismatch {
+                    presented: holder_cell,
+                    current: existing.cell,
+                });
+            }
+            if existing.node_boot_generation != holder_boot_generation {
+                return Err(QuotaLeaseGrantError::BootGenerationMismatch {
+                    presented: holder_boot_generation,
+                    current: existing.node_boot_generation,
+                });
+            }
             if existing.face_value != face_value {
                 return Err(QuotaLeaseGrantError::ConflictingFace {
                     existing: existing.face_value,
@@ -370,18 +428,17 @@ impl QuotaLeaseGrantor {
             });
         }
         let next_available = self.available - face_value;
-        let cell = self.authority.identity();
         let grant = QuotaLeaseGrant {
             lease_id,
-            cell,
-            node_boot_generation: self.authority.node_boot_generation(),
+            cell: holder_cell,
+            node_boot_generation: holder_boot_generation,
             face_value,
             remaining: face_value,
             spent: 0,
             returned: 0,
             epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
-            fence_scope: FenceScope::cell(cell),
+            fence_scope: FenceScope::cell(holder_cell),
             expires_at,
             state: QuotaLeaseState::Issued,
         };
@@ -733,6 +790,42 @@ impl QuotaLeaseGrantor {
             }
             QuotaLeaseState::Closed => Ok(existing),
             state => Err(QuotaLeaseLedgerError::NotFenced { state }),
+        }
+    }
+
+    /// Moves an unsettled `QuotaLease` (`ISSUED`, `ACTIVE`, `CLOSING`, or
+    /// `FENCED`) strictly into `QUARANTINED` without returning its unspent
+    /// `remaining` balance to `AVAILABLE` (`[LEASE-LOSS-001]`, `ADR-0026` §2.3).
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn quarantine_lease(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let existing = self.query(lease_id)?;
+        match existing.state {
+            prev @ (QuotaLeaseState::Issued
+            | QuotaLeaseState::Active
+            | QuotaLeaseState::Closing
+            | QuotaLeaseState::Fenced) => {
+                let next = QuotaLeaseGrant {
+                    state: QuotaLeaseState::Quarantined,
+                    ..existing
+                };
+                if let Some(store) = &self.store {
+                    store.persist_quota_state_transition(lease_id, prev, &next, None)?;
+                }
+                self.leases.insert(lease_id, next);
+                Ok(next)
+            }
+            QuotaLeaseState::Quarantined => Ok(existing),
+            state @ (QuotaLeaseState::Closed | QuotaLeaseState::Cancelled) => {
+                Err(QuotaLeaseLedgerError::NotActive { state })
+            }
         }
     }
 
@@ -1298,11 +1391,45 @@ impl CapacityLeaseGrantor {
         capacity_lease_id: CapacityLeaseId,
         amount: u64,
     ) -> Result<CapacityLeaseGrant, CapacityLeaseGrantError> {
+        let holder_cell = self.authority.identity();
+        let holder_boot = self.authority.node_boot_generation();
+        self.grant_for_holder(
+            presented,
+            holder_cell,
+            holder_boot,
+            capacity_lease_id,
+            amount,
+        )
+    }
+
+    pub(crate) fn grant_for_holder(
+        &mut self,
+        presented: &CellFence,
+        target_node: CellIdentity,
+        target_node_boot_generation: Generation,
+        capacity_lease_id: CapacityLeaseId,
+        amount: u64,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseGrantError> {
         if let Some(existing) = self.leases.get(&capacity_lease_id).copied() {
-            if existing.amount == amount {
+            if existing.target_node == target_node
+                && existing.target_node_boot_generation == target_node_boot_generation
+                && existing.amount == amount
+            {
                 return Ok(existing);
             }
             self.authority.admit(presented)?;
+            if existing.target_node != target_node {
+                return Err(CapacityLeaseGrantError::IdentityMismatch {
+                    presented: target_node,
+                    current: existing.target_node,
+                });
+            }
+            if existing.target_node_boot_generation != target_node_boot_generation {
+                return Err(CapacityLeaseGrantError::BootGenerationMismatch {
+                    presented: target_node_boot_generation,
+                    current: existing.target_node_boot_generation,
+                });
+            }
             return Err(CapacityLeaseGrantError::ConflictingAmount {
                 existing: existing.amount,
                 requested: amount,
@@ -1316,11 +1443,10 @@ impl CapacityLeaseGrantor {
             });
         }
         let next_pool = self.pool_remaining - amount;
-        let target_node = self.authority.identity();
         let grant = CapacityLeaseGrant {
             capacity_lease_id,
             target_node,
-            target_node_boot_generation: self.authority.node_boot_generation(),
+            target_node_boot_generation,
             amount,
             capacity_epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
@@ -2153,8 +2279,35 @@ impl ExclusiveDeviceLeaseGrantor {
         presented: &CellFence,
         device_lease_id: ExclusiveDeviceLeaseId,
     ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantError> {
+        let holder_node = self.authority.identity();
+        let holder_boot = self.authority.node_boot_generation();
+        self.grant_for_holder(presented, holder_node, holder_boot, device_lease_id)
+    }
+
+    pub(crate) fn grant_for_holder(
+        &mut self,
+        presented: &CellFence,
+        holder_node: CellIdentity,
+        holder_node_boot_generation: Generation,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantError> {
         if let Some(existing) = self.leases.get(&device_lease_id).copied() {
-            return Ok(existing);
+            if existing.holder_node == holder_node
+                && existing.holder_node_boot_generation == holder_node_boot_generation
+            {
+                return Ok(existing);
+            }
+            self.authority.admit(presented)?;
+            if existing.holder_node != holder_node {
+                return Err(ExclusiveDeviceLeaseGrantError::IdentityMismatch {
+                    presented: holder_node,
+                    current: existing.holder_node,
+                });
+            }
+            return Err(ExclusiveDeviceLeaseGrantError::BootGenerationMismatch {
+                presented: holder_node_boot_generation,
+                current: existing.holder_node_boot_generation,
+            });
         }
         self.authority.admit(presented)?;
         if !self.free {
@@ -2162,12 +2315,11 @@ impl ExclusiveDeviceLeaseGrantor {
                 device_id: self.device_id,
             });
         }
-        let holder_node = self.authority.identity();
         let grant = ExclusiveDeviceLeaseGrant {
             device_lease_id,
             device_id: self.device_id,
             holder_node,
-            holder_node_boot_generation: self.authority.node_boot_generation(),
+            holder_node_boot_generation,
             exclusivity_epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
             fence_scope: FenceScope::cell(holder_node),

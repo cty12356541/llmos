@@ -489,6 +489,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-consensus"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-capability",
+ "nlos-cell",
+ "nlos-clock",
+ "nlos-identity",
+ "nlos-net",
+ "nlos-types",
+ "rusqlite",
+ "rustls",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "nlos-driver-mock"
 version = "0.1.0"
 dependencies = [
@@ -540,9 +558,17 @@ dependencies = [
 name = "nlos-lease"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "minicbor",
+ "nlos-capability",
  "nlos-cell",
+ "nlos-clock",
+ "nlos-identity",
+ "nlos-net",
  "nlos-types",
  "rusqlite",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]

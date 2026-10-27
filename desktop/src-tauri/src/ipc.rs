@@ -44,12 +44,16 @@ use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
 use nlos_types::PrincipalId;
 use serde::Deserialize;
 
+use crate::compositor::{CompositorError, LauncherError, RectPx, WorkstationHostShell};
 use crate::dto::receipt_dto;
 use crate::dto::{
-    ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, OutcomeDto, ParityDto,
-    ReceiptDto, fact_check_dto,
+    CompositorSnapshotDto, ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto,
+    InputRouteResultDto, OutcomeDto, ParityDto, ReceiptDto, compositor_snapshot_dto,
+    fact_check_dto, input_route_result_dto,
 };
 use crate::error::{DesktopError, ErrorCode, from_control_error};
+use crate::input_router::{InputEventEnvelope, InputOrigin, InputSource, InputTarget};
+use crate::session::SessionError;
 
 /// 环境变量名(README 记录;GUI 内可会话级覆盖)。
 pub const ENV_SOCKET: &str = "LLMOS_DESKTOP_SOCKET";
@@ -81,10 +85,11 @@ pub struct SessionConfig {
     pub source: ConfigSourceDto,
 }
 
-/// Tauri 管理态:持有一份会话配置及可选的桌面只读组合 inspector 面。
+/// Tauri 管理态:持有一份会话配置、可选的桌面只读组合 inspector 面及 Stage D 合成工作站壳。
 pub struct AppState {
     config: Mutex<SessionConfig>,
     desktop_surface: Option<Arc<InMemoryDesktopControlSurface>>,
+    host_shell: Mutex<WorkstationHostShell>,
 }
 
 impl AppState {
@@ -119,6 +124,7 @@ impl AppState {
                 source,
             }),
             desktop_surface: None,
+            host_shell: Mutex::new(WorkstationHostShell::new_default_workstation()),
         }
     }
 
@@ -128,6 +134,17 @@ impl AppState {
         Self {
             config: Mutex::new(config),
             desktop_surface: None,
+            host_shell: Mutex::new(WorkstationHostShell::new_default_workstation()),
+        }
+    }
+
+    /// 供集成测试显式注入会话配置与自定义工作站合成壳状态。
+    #[must_use]
+    pub fn with_host_shell(config: SessionConfig, host_shell: WorkstationHostShell) -> Self {
+        Self {
+            config: Mutex::new(config),
+            desktop_surface: None,
+            host_shell: Mutex::new(host_shell),
         }
     }
 
@@ -141,7 +158,24 @@ impl AppState {
         Self {
             config: Mutex::new(config),
             desktop_surface: Some(desktop_surface),
+            host_shell: Mutex::new(WorkstationHostShell::new_default_workstation()),
         }
+    }
+
+    /// 在互斥保护下操作宿主工作站合成壳（零 `unwrap`）。
+    ///
+    /// # Errors
+    ///
+    /// 锁中毒或闭包返回错误时返回 [`DesktopError`]。
+    pub fn with_host_shell_mut<R>(
+        &self,
+        op: impl FnOnce(&mut WorkstationHostShell) -> Result<R, DesktopError>,
+    ) -> Result<R, DesktopError> {
+        let mut guard = self
+            .host_shell
+            .lock()
+            .map_err(|_| DesktopError::internal("桌面合成器宿主壳锁中毒"))?;
+        op(&mut guard)
     }
 
     fn snapshot(&self) -> Result<SessionConfig, DesktopError> {
@@ -2642,6 +2676,594 @@ pub async fn parity_check_write(
 #[must_use]
 pub fn default_cli_path() -> &'static str {
     DEFAULT_CLI_PATH
+}
+
+// ============================================================================
+// Stage D (`D-COMPOSITOR-WM`) 桌面合成器、多用户会话与防伪输入路由 Tauri 命令
+// ============================================================================
+
+/// 前端传入的整数像素矩形。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RectPxInput {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<RectPxInput> for RectPx {
+    fn from(value: RectPxInput) -> Self {
+        Self {
+            x: value.x,
+            y: value.y,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+/// 经 `compositor_route_input` 投递的确定性输入事件参数包。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositorInputDispatchInput {
+    pub source: String,
+    pub origin_kind: Option<String>,
+    pub origin_surface_id_hex: Option<String>,
+    pub origin_application_id_hex: Option<String>,
+    pub target_kind: String,
+    #[serde(alias = "targetWindowIdHex", alias = "target_window_id_hex")]
+    pub window_id_hex: Option<String>,
+    #[serde(alias = "targetSurfaceIdHex", alias = "target_surface_id_hex")]
+    pub surface_id_hex: Option<String>,
+    pub target_surface_generation: Option<u64>,
+    pub shortcut: Option<String>,
+    pub confirm: Option<bool>,
+    pub key: Option<String>,
+    #[serde(alias = "sessionGeneration", alias = "session_generation")]
+    pub event_session_generation: u64,
+    pub now_mono_ms: u64,
+}
+
+fn from_session_error(error: &SessionError) -> DesktopError {
+    let code = match error {
+        SessionError::UserProfileNotFound { .. }
+        | SessionError::WorkspaceNotFound { .. }
+        | SessionError::GrantNotFound { .. } => ErrorCode::NotFound,
+        SessionError::EmptyDisplayName
+        | SessionError::EmptySecuritySealHint
+        | SessionError::InvalidLocale(_)
+        | SessionError::InvalidTheme(_) => ErrorCode::Config,
+        SessionError::AlreadyClosed
+        | SessionError::InvalidSessionTransition { .. }
+        | SessionError::SessionNotActive { .. }
+        | SessionError::ContainerScopeCollision { .. }
+        | SessionError::WorkspaceAlreadyExists { .. }
+        | SessionError::WorkspaceClosed
+        | SessionError::InvalidWorkspaceTransition { .. }
+        | SessionError::WorkspaceAdmissionLocked { .. }
+        | SessionError::CrossUserWorkspaceAccessDenied { .. }
+        | SessionError::GrantRevokedOrStale { .. } => ErrorCode::Control,
+    };
+    DesktopError::new(code, error.to_string())
+}
+
+fn from_launcher_error(error: &LauncherError) -> DesktopError {
+    let code = match error {
+        LauncherError::InstallationNotFound { .. }
+        | LauncherError::NoPresentableSurfaces { .. } => ErrorCode::NotFound,
+        LauncherError::Storage(_) => ErrorCode::Internal,
+        LauncherError::PackageIdNotApplicationIdentity { .. }
+        | LauncherError::ProcessIdNotApplicationIdentity { .. }
+        | LauncherError::ApplicationInstallationMismatch { .. }
+        | LauncherError::ApplicationNotInstalled { .. }
+        | LauncherError::StaleInstallationGeneration { .. }
+        | LauncherError::SessionOrWorkspaceLocked(_) => ErrorCode::Control,
+    };
+    DesktopError::new(code, error.to_string())
+}
+
+fn from_compositor_error(error: &CompositorError) -> DesktopError {
+    match error {
+        CompositorError::InvalidLayoutMode(_)
+        | CompositorError::InvalidOverlayKind(_)
+        | CompositorError::InvalidWindowAction(_) => DesktopError::config(error.to_string()),
+        CompositorError::WindowNotFound { .. } => {
+            DesktopError::new(ErrorCode::NotFound, error.to_string())
+        }
+        CompositorError::StaleWindowRequiresReloadOrClose { .. }
+        | CompositorError::WindowLifecycle(_) => {
+            DesktopError::new(ErrorCode::Control, error.to_string())
+        }
+        CompositorError::Session(inner) => from_session_error(inner),
+        CompositorError::Launcher(inner) => from_launcher_error(inner),
+    }
+}
+
+fn maybe_open_authority_for_shell(
+    config: &SessionConfig,
+) -> Result<Option<ApplicationAuthority>, DesktopError> {
+    if config
+        .application_root
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        let authority = crate::surfaces::open_configured_application_authority(
+            config.application_root.as_deref(),
+        )?;
+        Ok(Some(authority))
+    } else {
+        Ok(None)
+    }
+}
+
+fn parse_input_envelope(
+    input: &CompositorInputDispatchInput,
+) -> Result<InputEventEnvelope, DesktopError> {
+    let source = InputSource::parse(&input.source).map_err(DesktopError::config)?;
+    let origin = match input
+        .origin_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None | Some("trusted_shell" | "trusted-shell" | "trusted" | "host") => {
+            InputOrigin::TrustedShell
+        }
+        Some(
+            "untrusted_application_surface"
+            | "untrusted-application-surface"
+            | "untrusted_surface"
+            | "untrusted-surface"
+            | "untrusted",
+        ) => {
+            let raw_surface = input
+                .origin_surface_id_hex
+                .as_deref()
+                .ok_or_else(|| DesktopError::config("untrusted origin 需要 originSurfaceIdHex"))?;
+            let raw_app = input.origin_application_id_hex.as_deref().ok_or_else(|| {
+                DesktopError::config("untrusted origin 需要 originApplicationIdHex")
+            })?;
+            InputOrigin::UntrustedApplicationSurface {
+                surface_id: principal_bytes(raw_surface)?,
+                application_id: principal_bytes(raw_app)?,
+            }
+        }
+        Some(other) => {
+            return Err(DesktopError::config(format!(
+                "未知输入来源类型 originKind: {other}"
+            )));
+        }
+    };
+
+    let target = match input.target_kind.trim().to_ascii_lowercase().as_str() {
+        "z2_surface" | "z2-surface" | "z2" => {
+            let raw_win = input
+                .window_id_hex
+                .as_deref()
+                .ok_or_else(|| DesktopError::config("z2_surface 目标需要 windowIdHex"))?;
+            let raw_surface = input
+                .surface_id_hex
+                .as_deref()
+                .ok_or_else(|| DesktopError::config("z2_surface 目标需要 surfaceIdHex"))?;
+            let target_surface_generation = input.target_surface_generation.ok_or_else(|| {
+                DesktopError::config("z2_surface 目标需要 targetSurfaceGeneration")
+            })?;
+            InputTarget::Z2Surface {
+                window_id: principal_bytes(raw_win)?,
+                surface_id: principal_bytes(raw_surface)?,
+                target_surface_generation,
+            }
+        }
+        "z3_system_shortcut" | "z3-system-shortcut" | "z3_shortcut" | "z3-shortcut" | "z3" => {
+            InputTarget::Z3SystemShortcut {
+                shortcut: input.shortcut.clone().unwrap_or_default(),
+            }
+        }
+        "z4_security_action" | "z4-security-action" | "z4_decision" | "z4-decision" | "z4" => {
+            InputTarget::Z4SecurityAction {
+                confirm: input.confirm.unwrap_or(false),
+                key: input.key.clone(),
+            }
+        }
+        "z4_session_unlock" | "z4-session-unlock" | "z4_unlock" | "z4-unlock" | "unlock" => {
+            InputTarget::Z4SessionUnlock
+        }
+        other => {
+            return Err(DesktopError::config(format!(
+                "未知输入目标类型 targetKind: {other}"
+            )));
+        }
+    };
+
+    Ok(InputEventEnvelope {
+        source,
+        origin,
+        target,
+        event_session_generation: input.event_session_generation,
+        now_mono_ms: input.now_mono_ms,
+    })
+}
+
+/// 读取当前合成器快照（核心无异步实现，供 Tauri 命令与集成测试共享）。
+///
+/// # Errors
+///
+/// 配置或会话状态异常时返回 [`DesktopError`]。
+pub fn compositor_get_snapshot_core(
+    state: &AppState,
+    include_z4_trusted: Option<bool>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let config = state.snapshot()?;
+    let maybe_authority = maybe_open_authority_for_shell(&config)?;
+    state.with_host_shell_mut(|shell| {
+        if let Some(ref authority) = maybe_authority {
+            shell
+                .sync_generations_from_authority(authority)
+                .map_err(DesktopError::internal)?;
+        }
+        compositor_snapshot_dto(shell, include_z4_trusted.unwrap_or(false))
+            .map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_get_snapshot(
+    state: tauri::State<'_, AppState>,
+    include_z4_trusted: Option<bool>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_get_snapshot_core(&state, include_z4_trusted)
+}
+
+/// 执行会话状态转换（`lock` / `unlock` / `suspend` / `resume` / `switch_user` / `close`）。
+///
+/// # Errors
+///
+/// 非法跃迁、已关闭或目标用户未知时返回 [`DesktopError`]。
+pub fn compositor_session_transition_core(
+    state: &AppState,
+    transition: &str,
+    target_principal_hex: Option<&str>,
+    now_mono_ms: Option<u64>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let target_principal = optional_id_bytes(target_principal_hex)?;
+    state.with_host_shell_mut(|shell| {
+        shell
+            .transition_session(transition, target_principal, now_mono_ms)
+            .map_err(|err| from_compositor_error(&err))?;
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_session_transition(
+    state: tauri::State<'_, AppState>,
+    transition: String,
+    target_principal_hex: Option<String>,
+    now_mono_ms: Option<u64>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_session_transition_core(
+        &state,
+        &transition,
+        target_principal_hex.as_deref(),
+        now_mono_ms,
+    )
+}
+
+/// 执行工作区动作（`create` / `create_and_activate` / `activate` / `archive` / `close`）。
+///
+/// # Errors
+///
+/// 跨用户越权或非法状态跃迁时返回 [`DesktopError`]。
+pub fn compositor_workspace_action_core(
+    state: &AppState,
+    action: &str,
+    workspace_id_hex: &str,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let workspace_id = principal_bytes(workspace_id_hex)?;
+    state.with_host_shell_mut(|shell| {
+        shell
+            .workspace_action(action, workspace_id)
+            .map_err(|err| from_compositor_error(&err))?;
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_workspace_action(
+    state: tauri::State<'_, AppState>,
+    action: String,
+    workspace_id_hex: String,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_workspace_action_core(&state, &action, &workspace_id_hex)
+}
+
+/// 更新合成器工作站布局模式与视口几何参数。
+///
+/// # Errors
+///
+/// 非法布局模式或无活动工作区时返回 [`DesktopError`]。
+pub fn compositor_set_layout_core(
+    state: &AppState,
+    layout_mode: &str,
+    viewport_width: Option<u32>,
+    viewport_height: Option<u32>,
+    top_height_ratio_permille: Option<u16>,
+    split_width_ratio_permille: Option<u16>,
+    z1_visible: Option<bool>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    state.with_host_shell_mut(|shell| {
+        shell
+            .set_layout(
+                layout_mode,
+                viewport_width,
+                viewport_height,
+                top_height_ratio_permille,
+                split_width_ratio_permille,
+                z1_visible,
+            )
+            .map_err(|err| from_compositor_error(&err))?;
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_set_layout(
+    state: tauri::State<'_, AppState>,
+    layout_mode: String,
+    viewport_width: Option<u32>,
+    viewport_height: Option<u32>,
+    top_height_ratio_permille: Option<u16>,
+    split_width_ratio_permille: Option<u16>,
+    z1_visible: Option<bool>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_set_layout_core(
+        &state,
+        &layout_mode,
+        viewport_width,
+        viewport_height,
+        top_height_ratio_permille,
+        split_width_ratio_permille,
+        z1_visible,
+    )
+}
+
+/// `[DUI-LAUNCH-001]`：严格按 `(ApplicationId, InstallationId)` 激活应用窗口；
+/// 显式拒绝以 `PackageId` 或瞬态 `ProcessId` 启动的请求。
+///
+/// # Errors
+///
+/// 违反 `[DUI-LAUNCH-001]`、安装过期或会话未激活时返回 [`DesktopError`]。
+pub fn compositor_launch_application_core(
+    state: &AppState,
+    application_id_hex: Option<&str>,
+    installation_id_hex: Option<&str>,
+    rejected_package_id_hex: Option<&str>,
+    rejected_process_id_hex: Option<&str>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let rejected_pkg = optional_id_bytes(rejected_package_id_hex)?;
+    let rejected_pid = optional_id_bytes(rejected_process_id_hex)?;
+    let maybe_app = optional_id_bytes(application_id_hex)?;
+    let maybe_inst = optional_id_bytes(installation_id_hex)?;
+    let config = state.snapshot()?;
+    let maybe_authority = maybe_open_authority_for_shell(&config)?;
+
+    state.with_host_shell_mut(|shell| {
+        if let Some(pkg_bytes) = rejected_pkg {
+            shell
+                .launcher
+                .launch_by_package_id_rejected(nlos_types::PackageId::from_bytes(pkg_bytes))
+                .map_err(|err| from_launcher_error(&err))?;
+        }
+        if let Some(pid_bytes) = rejected_pid {
+            shell
+                .launcher
+                .launch_by_process_id_rejected(nlos_types::ProcessId::from_bytes(pid_bytes))
+                .map_err(|err| from_launcher_error(&err))?;
+        }
+        let app_bytes = maybe_app.ok_or_else(|| {
+            DesktopError::config("compositor_launch_application 需要 applicationIdHex")
+        })?;
+        let inst_bytes = maybe_inst.ok_or_else(|| {
+            DesktopError::config("compositor_launch_application 需要 installationIdHex")
+        })?;
+        let app_id = nlos_types::ApplicationId::from_bytes(app_bytes);
+        let inst_id = nlos_types::InstallationId::from_bytes(inst_bytes);
+
+        if let Some(ref authority) = maybe_authority {
+            shell
+                .sync_generations_from_authority(authority)
+                .map_err(DesktopError::internal)?;
+            shell
+                .launcher
+                .launch_from_authority(
+                    authority,
+                    app_id,
+                    inst_id,
+                    &shell.session,
+                    &mut shell.compositor,
+                    &mut shell.route,
+                )
+                .map_err(|err| from_launcher_error(&err))?;
+        } else {
+            shell
+                .launcher
+                .launch_from_catalog(
+                    app_id,
+                    inst_id,
+                    &shell.session,
+                    &mut shell.compositor,
+                    &mut shell.route,
+                )
+                .map_err(|err| from_launcher_error(&err))?;
+        }
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_launch_application(
+    state: tauri::State<'_, AppState>,
+    application_id_hex: Option<String>,
+    installation_id_hex: Option<String>,
+    rejected_package_id_hex: Option<String>,
+    rejected_process_id_hex: Option<String>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_launch_application_core(
+        &state,
+        application_id_hex.as_deref(),
+        installation_id_hex.as_deref(),
+        rejected_package_id_hex.as_deref(),
+        rejected_process_id_hex.as_deref(),
+    )
+}
+
+/// 执行窗口操作（聚焦、最小化、关闭、浮动调整或过期重载）。
+///
+/// # Errors
+///
+/// 窗口不存在、已关闭或过期拒绝聚焦时返回 [`DesktopError`]。
+pub fn compositor_window_action_core(
+    state: &AppState,
+    window_id_hex: &str,
+    action: &str,
+    rect: Option<RectPxInput>,
+    new_installation_id_hex: Option<&str>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let window_id = principal_bytes(window_id_hex)?;
+    let new_inst =
+        optional_id_bytes(new_installation_id_hex)?.map(nlos_types::InstallationId::from_bytes);
+    let config = state.snapshot()?;
+    let maybe_authority = maybe_open_authority_for_shell(&config)?;
+
+    state.with_host_shell_mut(|shell| {
+        if let Some(ref authority) = maybe_authority {
+            shell
+                .sync_generations_from_authority(authority)
+                .map_err(DesktopError::internal)?;
+        }
+        shell
+            .window_action(
+                window_id,
+                action,
+                rect.map(RectPx::from),
+                new_inst,
+                maybe_authority.as_ref(),
+            )
+            .map_err(|err| from_compositor_error(&err))?;
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_window_action(
+    state: tauri::State<'_, AppState>,
+    window_id_hex: String,
+    action: String,
+    rect: Option<RectPxInput>,
+    new_installation_id_hex: Option<String>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_window_action_core(
+        &state,
+        &window_id_hex,
+        &action,
+        rect,
+        new_installation_id_hex.as_deref(),
+    )
+}
+
+/// 激活或关闭 `Z3` 系统快捷浮层 / 全局命令面板，同步重算 `Z2` 系统平面遮挡态。
+///
+/// # Errors
+///
+/// 未知 `Z3` 浮层类别返回 [`DesktopError`]。
+pub fn compositor_set_z3_overlay_core(
+    state: &AppState,
+    overlay_id: &str,
+    kind: &str,
+    active: bool,
+    rect: Option<RectPxInput>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    let trimmed_id = overlay_id.trim();
+    if trimmed_id.is_empty() {
+        return Err(DesktopError::config("overlayId 不能为空"));
+    }
+    state.with_host_shell_mut(|shell| {
+        shell
+            .set_z3_overlay(trimmed_id, kind, active, rect.map(RectPx::from))
+            .map_err(|err| from_compositor_error(&err))?;
+        compositor_snapshot_dto(shell, false).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_set_z3_overlay(
+    state: tauri::State<'_, AppState>,
+    overlay_id: String,
+    kind: String,
+    active: bool,
+    rect: Option<RectPxInput>,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_set_z3_overlay_core(&state, &overlay_id, &kind, active, rect)
+}
+
+/// 开启或关闭 `Z4` 不可遮挡安全确认模态屏，启动 `350ms` 武装计时并返回含（或不含）可信印章的快照。
+///
+/// # Errors
+///
+/// 锁异常或会话丢失时返回 [`DesktopError`]。
+pub fn compositor_set_z4_modal_core(
+    state: &AppState,
+    active: bool,
+    now_mono_ms: u64,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    state.with_host_shell_mut(|shell| {
+        shell.set_z4_modal(active, now_mono_ms);
+        compositor_snapshot_dto(shell, active).map_err(|err| from_session_error(&err))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_set_z4_modal(
+    state: tauri::State<'_, AppState>,
+    active: bool,
+    now_mono_ms: u64,
+) -> Result<CompositorSnapshotDto, DesktopError> {
+    compositor_set_z4_modal_core(&state, active, now_mono_ms)
+}
+
+/// 经 `FocusAndInputRoute` 执行四级防伪、代际与 `Z4` 武装门输入裁决。
+///
+/// # Errors
+///
+/// 参数形态非法时返回 [`DesktopError`]；防伪或代际拦截结果以结构化 [`InputRouteResultDto`] 返回（`accepted = false`）。
+pub fn compositor_route_input_core(
+    state: &AppState,
+    input: &CompositorInputDispatchInput,
+) -> Result<InputRouteResultDto, DesktopError> {
+    let envelope = parse_input_envelope(input)?;
+    let config = state.snapshot()?;
+    let maybe_authority = maybe_open_authority_for_shell(&config)?;
+    state.with_host_shell_mut(|shell| {
+        if let Some(ref authority) = maybe_authority {
+            shell
+                .sync_generations_from_authority(authority)
+                .map_err(DesktopError::internal)?;
+        }
+        let outcome = shell.dispatch_input(&envelope);
+        Ok(input_route_result_dto(outcome, &shell.route))
+    })
+}
+
+#[tauri::command]
+pub async fn compositor_route_input(
+    state: tauri::State<'_, AppState>,
+    input: CompositorInputDispatchInput,
+) -> Result<InputRouteResultDto, DesktopError> {
+    compositor_route_input_core(&state, &input)
 }
 
 #[cfg(test)]

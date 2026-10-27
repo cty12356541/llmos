@@ -944,3 +944,202 @@ export interface ParityDto {
   matched: boolean;
   cliStderr: string | null;
 }
+
+// =========================================================================
+// Stage D (`D-COMPOSITOR-WM`) 五平面桌面合成器、窗口管理与焦点输入防伪路由 DTO
+// =========================================================================
+
+export interface RectPxDto {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type DesktopSessionStateDto =
+  | "LOCKED"
+  | "ACTIVE"
+  | "SUSPENDED"
+  | "CLOSED";
+
+export type WorkspaceLifecycleStateDto =
+  | "CREATED"
+  | "ACTIVE"
+  | "ARCHIVED"
+  | "CLOSED";
+
+export type WindowLifecycleStateDto =
+  | "CREATED"
+  | "VISIBLE"
+  | "MINIMIZED"
+  | "CLOSING"
+  | "CLOSED";
+
+export type SurfaceLifecycleStateDto =
+  | "REGISTERED"
+  | "CREATED"
+  | "PRESENTED"
+  | "HIDDEN"
+  | "CLOSED";
+
+export type WorkspaceLayoutModeKindDto =
+  | "three-pane-workstation"
+  | "two-column-split"
+  | "quadrants"
+  | "workspace-maximize"
+  | "floating";
+
+export type WorkstationThemeDto =
+  | "graphite-workstation"
+  | "paper-workstation"
+  | "system";
+
+export type InputSourceKindDto =
+  | "keyboard"
+  | "pointer"
+  | "voice"
+  | "drag_drop"
+  | "automation";
+
+export interface UserProfilePublicDto {
+  principalIdHex: string;
+  displayName: string;
+  locale: "zh-CN" | "en-US";
+  theme: WorkstationThemeDto;
+  dataContainerScopeIdHex: string;
+}
+
+export interface Z4TrustedSealContextDto {
+  principalIdHex: string;
+  displayName: string;
+  securitySealHint: string;
+  sessionGeneration: number;
+  z4ArmedAtMonoMs: number | null;
+  armingWindowMs: number;
+}
+
+export interface SessionWorkspaceDto {
+  workspaceIdHex: string;
+  ownerPrincipalIdHex: string;
+  name: string;
+  state: WorkspaceLifecycleStateDto;
+  revision: number;
+  layoutMode: WorkspaceLayoutModeKindDto;
+}
+
+export interface WindowAccessibilityNodeDto {
+  a11yNodeId: string;
+  a11yRole: string;
+  a11yLabel: string;
+  ownerApplicationIdHex: string;
+  installationGeneration: number;
+  staleReadonly: boolean;
+  hidden: boolean;
+}
+
+export interface CompositorWindowDto {
+  windowIdHex: string;
+  surfaceIdHex: string;
+  title: string;
+  entryName: string | null;
+  ownerApplicationIdHex: string;
+  installationIdHex: string;
+  packageIdHex: string;
+  workspaceIdHex: string;
+  sessionGeneration: number;
+  surfaceGeneration: number;
+  currentInstallationGeneration: number;
+  staleGeneration: boolean;
+  windowLifecycle: WindowLifecycleStateDto;
+  surfaceLifecycle: SurfaceLifecycleStateDto;
+  layoutSlot: string;
+  isFloating: boolean;
+  zIndex: number;
+  borderRadiusPx: number;
+  outerFrameRect: RectPxDto;
+  innerContentClipRect: RectPxDto;
+  occludedBySystemPlane: boolean;
+  a11y: WindowAccessibilityNodeDto;
+}
+
+export interface CompositorZ3OverlayDto {
+  overlayId: string;
+  kind: "flyout" | "palette";
+  rect: RectPxDto;
+  zIndex: number;
+}
+
+export interface InputAuditCountersDto {
+  acceptedEvents: number;
+  rejectedStaleSurfaceEvents: number;
+  rejectedLockedSessionEvents: number;
+  rejectedZ4SeveredEvents: number;
+  rejectedZ4ArmingGuardEvents: number;
+  rejectedUntrustedSpoofEvents: number;
+}
+
+export interface FocusAndInputRouteDto {
+  focusedWindowIdHex: string | null;
+  focusedSurfaceIdHex: string | null;
+  focusedSurfaceGeneration: number | null;
+  sessionGeneration: number;
+  z4ModalLock: boolean;
+  z4ArmedAtMonoMs: number | null;
+  counters: InputAuditCountersDto;
+}
+
+export interface CompositorSnapshotDto {
+  sessionState: DesktopSessionStateDto;
+  sessionGeneration: number;
+  activeUser: UserProfilePublicDto;
+  z4TrustedContext: Z4TrustedSealContextDto | null;
+  activeWorkspace: SessionWorkspaceDto;
+  workspaces: SessionWorkspaceDto[];
+  viewportRect: RectPxDto;
+  stageRect: RectPxDto;
+  taskbarRect: RectPxDto;
+  z1TaskSpaceRect: RectPxDto | null;
+  z1TaskSpaceVisible: boolean;
+  layoutMode: WorkspaceLayoutModeKindDto;
+  topHeightRatioPermille: number;
+  splitWidthRatioPermille: number;
+  windows: CompositorWindowDto[];
+  activeZ3Overlays: CompositorZ3OverlayDto[];
+  focusAndInputRoute: FocusAndInputRouteDto;
+}
+
+export interface CompositorInputDispatchInput {
+  source: InputSourceKindDto;
+  originKind: "trusted_shell" | "untrusted_surface" | "untrusted_application_surface";
+  originSurfaceIdHex?: string | null;
+  originApplicationIdHex?: string | null;
+  targetKind:
+    | "z2_surface"
+    | "z3_shortcut"
+    | "z3_system_shortcut"
+    | "z4_decision"
+    | "z4_security_action"
+    | "z4_unlock"
+    | "z4_session_unlock";
+  targetWindowIdHex?: string | null;
+  windowIdHex?: string | null;
+  targetSurfaceIdHex?: string | null;
+  surfaceIdHex?: string | null;
+  targetSurfaceGeneration?: number | null;
+  shortcut?: string | null;
+  confirm?: boolean | null;
+  key?: string | null;
+  sessionGeneration: number;
+  eventSessionGeneration?: number;
+  nowMonoMs: number;
+}
+
+export interface InputRouteResultDto {
+  accepted: boolean;
+  routedPlane: string | null;
+  targetWindowIdHex: string | null;
+  targetSurfaceIdHex: string | null;
+  rejectionCode: string | null;
+  rejectionMessage: string | null;
+  route: FocusAndInputRouteDto;
+}

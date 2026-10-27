@@ -1036,3 +1036,21 @@
   scope: "system_control.proto 纯增量扩展与 gen/ 同步 + nlos-system-control 12 域有界分页枚举（limit<=64、NOT_FOUND vs StaleGeneration、懒物化折叠计数、0x1F 非权威搜索守卫、水位事件、可插拔 CellTopology/CellLease inspector、PreviewControlBlastRadius、QueryControlCommandStatus）+ 五大法定不可篡改禁区协议级拒绝 + Tauri/TS 漏接补齐与显式 ControlScope + TRUSTED_GUI/NL_SHELL/CLI/STRUCTURED_API 四入口字节级 receipt_hex 对等跨平台实测；真实多机 CellHost 注入与前端视图挂载留归 W70-W72"
   assurance: H4
   date: "2026-10-27"
+- id: c-xhost-002-conservative-clock-skew-and-remote-lease
+  path: docs/evidence/stage-c/c-xhost-002-conservative-clock-skew-and-remote-lease.md
+  title: "C-XHOST-002 / W70-C-CLOCK-LEASE：跨硬件时钟域保守偏斜包络、单调存活窗口与基于 nlos-net 的远程三族租约围栏协议"
+  scope: "crates/nlos-lease 跨时钟域保守非重叠包络（ttl_holder = ttl_grant - 2*max_skew - safety_margin，>15,000 组参数属性扫描 0 重叠）+ AuditWallTimeHint 禁比较类型守卫 + AuthorityClockHorizonGuard 粘性隔离 + SqliteLeaseStore 5 张跨宿主持久表与 QuarantineDisposition（严格区分账本围栏与远端物理清理证明）+ 基于 nlos-net TLS 1.3 mTLS 五轴 Exporter 的 12 命令远程三族租约围栏协议（LEASE-PROTO-001 / TCB-ENDPOINT-001 / DIST-FAIL-001 断连对账重放）+ crates/nlos-cell 单调跨宿主存活判定器与无墙钟因果审计全序；跨机 ChaosTcpProxy 门禁留归 W72"
+  assurance: H5
+  date: "2026-10-27"
+- id: c-xhost-003-embedded-raft-control-plane-consensus
+  path: docs/evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md
+  title: "C-XHOST-003 / W70-C-CONSENSUS：nlos-consensus 嵌入式确定性 Raft 控制面多数派日志、SQLite WAL+FULL 持久层、N=1 零配置直通模式与控制面权威索引门禁"
+  scope: "crates/nlos-consensus 嵌入式确定性 Raft 控制面复制引擎（CONS-SCOPE-001 双层 4 族结构化边界守卫拒绝数据面帧、TASK-SCALE-002 奇数 N>=3 独立 ControlDomainId 投票名册、Pre-Vote 防任期膨胀、Figure 8 提交安全性、单调 TermBoundLeaderLease + 线性一致 ReadIndex、分块 InstallSnapshot、SQLite WAL+FULL 先刷盘后应答 DUR-ACK-002 与 DUR-FAILCLOSED-001 四重启动完整性校验、N=1 SingleHostPassthroughNode 零套接字/零定时器/零证书直通、nlos-net TLS 1.3 mTLS 五轴复制驱动与真实 Child::kill 硬崩溃故障转移）+ crates/nlos-takeover-control CommittedControlIndexGate 单调索引与实时 IdentityAuthority 密钥撤销门禁；CellHost 生产编排接线与跨机混沌门禁留归 W71-W72"
+  assurance: H6
+  date: "2026-10-27"
+- id: d-compositor-001-five-plane-tiling-wm-and-session
+  path: docs/evidence/stage-d/d-compositor-001-five-plane-tiling-wm-and-session.md
+  title: "D-COMPOSITOR-001 / W70-D-COMPOSITOR：五平面 DesktopSession 工作站合成器、4px 平铺优先窗口管理器、36px 底部贴边任务栏（L0）与代际输入路由"
+  scope: "desktop/src-tauri 五平面 Z0-Z4 合成骨架、DesktopSession/Workspace/CoupledWindowSurface 状态机、DUI-LAUNCH-001 按 (ApplicationId,InstallationId) 权威校验启动器、DUI-INPUT-001 五输入源代际防伪路由与 Z4 350ms 武装门、多用户工作区与 Z4 专属 32x20 校验印章隔离 + desktop/src/store L0-L3 <16ms 渐进披露、O(visible_rows) <=64 懒拉取归一化 Store、UI-PARITY-001 动作裁剪器与 CTRL-RECOVERY-001 对账器 + 4px 五模式平铺求解器、30px 可信窗框、36px 底部任务栏；compositor-wm.test.ts 733 项断言与 compositor_wm_side.rs 全部通过，下游 Omnibar/Z4 完整审批/Task Space DAG/通知搜索控制中心槽位留归 W71-W73"
+  assurance: H4
+  date: "2026-10-27"

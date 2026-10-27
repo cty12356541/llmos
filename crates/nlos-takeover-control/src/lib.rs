@@ -70,6 +70,14 @@ use nlos_types::{ControlDomainId, Generation, KeyId, PrincipalId, ReceiptId, Tas
 
 #[cfg(feature = "authenticated-ipc")]
 pub mod authenticated;
+pub mod consensus_index_gate;
+
+pub use consensus_index_gate::{
+    AdmittedCommitDisposition, CommittedControlIndexGate, ConsensusBackingMode,
+    ConsensusIndexGateError, ControlCommitSubject, QUORUM_COMMIT_ATTESTATION_DOMAIN,
+    QuorumCommitAttestation, VerifiedControlCommitProof, VoterCommitAttestation,
+    quorum_commit_attestation_digest,
+};
 
 pub const TAKEOVER_CONTROL_SERVICE: &str = "takeover_control";
 pub const SUBMIT_BARRIER_OBSERVATION_METHOD: &str = "submit_barrier_observation";
