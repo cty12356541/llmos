@@ -39,6 +39,20 @@ pub const MAX_DRIVER_PROVIDER_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_PROVIDER_PROFILE_BYTES: usize = 128;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
+/// Stage D (`IPC-D1..D8`) bounded cursor page ceiling for twelve-domain list
+/// and search/preview projections.
+pub const MAX_SYSTEM_CONTROL_ENUM_LIMIT: usize = 64;
+/// Stage D (`IPC-D5`) bounded event ceiling for `PollDesktopWatermarkEvents`.
+pub const MAX_DESKTOP_WATERMARK_EVENT_LIMIT: usize = 128;
+/// Stage D (`IPC-D4`) bounded query-string UTF-8 bytes for `QuerySearchCandidates`.
+pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
+/// Stage D (`IPC-D5`) bounded settings/content-type key length.
+pub const MAX_SETTINGS_KEY_BYTES: usize = 128;
+/// Stage D (`IPC-D5`) bounded CBOR settings value payload length.
+pub const MAX_SETTINGS_VALUE_CBOR_BYTES: usize = 1024;
+/// Statutory `0x1F` non-authoritative restriction bitmask (`[SEARCH-AUTH-002]`,
+/// `[UI-PARITY-001]`).
+pub const SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL: u32 = 0x1F;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
 /// Bounded topic-name projection on the W32-G `Topic` inspect view. The
 /// topic authority admits free-form names; anything longer than this bound
@@ -114,8 +128,11 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     // application-lifecycle command arms (移交#11 前片:
     // DisableApplicationCommand/UninstallApplicationCommand oneof entries
     // 19..=20, empty payloads over the shared package-identity addressing)
-    // under the ADR-0014 freeze rules. The entry stays frozen.
-    minor: 6,
+    // under the ADR-0014 freeze rules; minor 7 records the Stage D W69
+    // twelve-domain enumeration, explicit ControlScope variants 3..=17,
+    // SystemControlView variants 9..=31, and ControlCommand arms 21..=30
+    // (IPC-D1..D8 / ADR-0025). The entry stays frozen.
+    minor: 7,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -1096,6 +1113,202 @@ pub fn decode_durable_operation_snapshot(
     validate_durable_operation_snapshot(&snapshot)?;
     Ok(snapshot)
 }
+
+/// Packs `(ControlScope, preview_action)` into `GetSystemControlRequest.target_generation`
+/// for `SystemControlView::ControlBlastRadiusPreview` (`IPC-D8`).
+#[must_use]
+pub const fn pack_blast_radius_preview_generation(
+    scope: sabi::v1::ControlScope,
+    preview_action: u32,
+) -> u64 {
+    (((scope as i32).cast_unsigned() as u64) << 32) | (preview_action as u64)
+}
+
+/// Unpacks `(ControlScope, preview_action)` from `GetSystemControlRequest.target_generation`
+/// for `SystemControlView::ControlBlastRadiusPreview` (`IPC-D8`).
+///
+/// # Errors
+///
+/// Returns [`CompatibilityError::InvalidSystemControlIdentifier`] when the scope
+/// is unspecified/unknown or `preview_action == 0`.
+pub fn unpack_blast_radius_preview_generation(
+    target_generation: u64,
+) -> Result<(sabi::v1::ControlScope, u32), CompatibilityError> {
+    let raw_scope = i32::try_from(target_generation >> 32)
+        .map_err(|_| CompatibilityError::InvalidSystemControlIdentifier)?;
+    let scope = sabi::v1::ControlScope::try_from(raw_scope)
+        .map_err(|_| CompatibilityError::InvalidSystemControlIdentifier)?;
+    let action = u32::try_from(target_generation & 0xFFFF_FFFF)
+        .map_err(|_| CompatibilityError::InvalidSystemControlIdentifier)?;
+    if scope == sabi::v1::ControlScope::Unspecified || action == 0 || action > 255 {
+        return Err(CompatibilityError::InvalidSystemControlIdentifier);
+    }
+    Ok((scope, action))
+}
+
+macro_rules! define_system_control_snapshot_codec {
+    ($encode_fn:ident, $decode_fn:ident, $ty:path, $validate_fn:ident) => {
+        /// Encodes a bounded Stage D `SystemControl` snapshot (`IPC-D1..D8`).
+        ///
+        /// # Errors
+        ///
+        /// Returns a compatibility error for malformed identity, page bounds, or fields.
+        pub fn $encode_fn(snapshot: &$ty) -> Result<Vec<u8>, CompatibilityError> {
+            $validate_fn(snapshot)?;
+            encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+        }
+
+        /// Decodes a bounded Stage D `SystemControl` snapshot (`IPC-D1..D8`).
+        ///
+        /// # Errors
+        ///
+        /// Returns a compatibility error for malformed, incompatible, or oversized input.
+        pub fn $decode_fn(wire: &[u8]) -> Result<$ty, CompatibilityError> {
+            let snapshot: $ty = decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+            $validate_fn(&snapshot)?;
+            Ok(snapshot)
+        }
+    };
+}
+
+define_system_control_snapshot_codec!(
+    encode_task_list_snapshot,
+    decode_task_list_snapshot,
+    sabi::v1::TaskListSnapshot,
+    validate_task_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_task_group_list_snapshot,
+    decode_task_group_list_snapshot,
+    sabi::v1::TaskGroupListSnapshot,
+    validate_task_group_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_task_node_list_snapshot,
+    decode_task_node_list_snapshot,
+    sabi::v1::TaskNodeListSnapshot,
+    validate_task_node_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_task_attempt_list_snapshot,
+    decode_task_attempt_list_snapshot,
+    sabi::v1::TaskAttemptListSnapshot,
+    validate_task_attempt_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_execution_fiber_list_snapshot,
+    decode_execution_fiber_list_snapshot,
+    sabi::v1::ExecutionFiberListSnapshot,
+    validate_execution_fiber_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_durable_operation_list_snapshot,
+    decode_durable_operation_list_snapshot,
+    sabi::v1::DurableOperationListSnapshot,
+    validate_durable_operation_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_installed_application_list_snapshot,
+    decode_installed_application_list_snapshot,
+    sabi::v1::InstalledApplicationListSnapshot,
+    validate_installed_application_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_search_candidate_query_snapshot,
+    decode_search_candidate_query_snapshot,
+    sabi::v1::SearchCandidateQuerySnapshot,
+    validate_search_candidate_query_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_desktop_watermark_poll_snapshot,
+    decode_desktop_watermark_poll_snapshot,
+    sabi::v1::DesktopWatermarkPollSnapshot,
+    validate_desktop_watermark_poll_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_settings_domain_snapshot,
+    decode_settings_domain_snapshot,
+    sabi::v1::SettingsDomainSnapshot,
+    validate_settings_domain_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_content_type_association_list_snapshot,
+    decode_content_type_association_list_snapshot,
+    sabi::v1::ContentTypeAssociationListSnapshot,
+    validate_content_type_association_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_keychain_reference_list_snapshot,
+    decode_keychain_reference_list_snapshot,
+    sabi::v1::KeychainReferenceListSnapshot,
+    validate_keychain_reference_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_chooser_grant_list_snapshot,
+    decode_chooser_grant_list_snapshot,
+    sabi::v1::ChooserGrantListSnapshot,
+    validate_chooser_grant_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_workspace_list_snapshot,
+    decode_workspace_list_snapshot,
+    sabi::v1::WorkspaceListSnapshot,
+    validate_workspace_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_workspace_snapshot,
+    decode_workspace_snapshot,
+    sabi::v1::WorkspaceSnapshot,
+    validate_workspace_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_process_list_snapshot,
+    decode_process_list_snapshot,
+    sabi::v1::ProcessListSnapshot,
+    validate_process_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_resource_reservation_list_snapshot,
+    decode_resource_reservation_list_snapshot,
+    sabi::v1::ResourceReservationListSnapshot,
+    validate_resource_reservation_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_topic_list_snapshot,
+    decode_topic_list_snapshot,
+    sabi::v1::TopicListSnapshot,
+    validate_topic_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_notification_list_snapshot,
+    decode_notification_list_snapshot,
+    sabi::v1::NotificationListSnapshot,
+    validate_notification_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_cell_list_snapshot,
+    decode_cell_list_snapshot,
+    sabi::v1::CellListSnapshot,
+    validate_cell_list_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_cell_lease_inspect_snapshot,
+    decode_cell_lease_inspect_snapshot,
+    sabi::v1::CellLeaseInspectSnapshot,
+    validate_cell_lease_inspect_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_control_blast_radius_preview_snapshot,
+    decode_control_blast_radius_preview_snapshot,
+    sabi::v1::ControlBlastRadiusPreviewSnapshot,
+    validate_control_blast_radius_preview_snapshot
+);
+define_system_control_snapshot_codec!(
+    encode_control_command_status_snapshot,
+    decode_control_command_status_snapshot,
+    sabi::v1::ControlCommandStatusSnapshot,
+    validate_control_command_status_snapshot
+);
 
 /// Encodes a bounded `SystemControl.submit` command request.
 ///
@@ -2413,8 +2626,20 @@ fn validate_get_system_control_request(
     if view == sabi::v1::SystemControlView::Unspecified {
         return Err(CompatibilityError::UnspecifiedSystemControlView);
     }
+    let max_limit = match view {
+        sabi::v1::SystemControlView::ArtifactCommitRecovery
+        | sabi::v1::SystemControlView::SemanticCommitRecovery
+        | sabi::v1::SystemControlView::ResourceCommitRecovery
+        | sabi::v1::SystemControlView::TaskGroup
+        | sabi::v1::SystemControlView::TaskNode
+        | sabi::v1::SystemControlView::ExecutionFiber
+        | sabi::v1::SystemControlView::Topic
+        | sabi::v1::SystemControlView::Operation => MAX_SYSTEM_CONTROL_ALERTS,
+        sabi::v1::SystemControlView::DesktopWatermarkPoll => MAX_DESKTOP_WATERMARK_EVENT_LIMIT,
+        _ => MAX_SYSTEM_CONTROL_ENUM_LIMIT,
+    };
     if request.alert_limit == 0
-        || usize::try_from(request.alert_limit).unwrap_or(usize::MAX) > MAX_SYSTEM_CONTROL_ALERTS
+        || usize::try_from(request.alert_limit).unwrap_or(usize::MAX) > max_limit
     {
         return Err(CompatibilityError::InvalidSystemControlAlertLimit);
     }
@@ -2426,11 +2651,10 @@ fn validate_get_system_control_request(
     )
 }
 
-/// Fail-closed addressing contract of the W32-G per-layer views: views 4..=8
-/// address exactly one target, the `TaskNode` view additionally names its
-/// owning plan, the fiber/operation views additionally carry a non-zero
-/// handle generation, and the recovery views 1..=3 admit none of the three
-/// additive fields.
+/// Fail-closed addressing contract of the W32-G per-layer views and Stage D
+/// (`IPC-D1..D8`) bounded enumeration, watermark, settings, blast-radius, and
+/// reconciliation views.
+#[allow(clippy::too_many_lines)] // Flat per-view addressing dispatch keeps every view's wire contract auditable.
 fn validate_view_addressing(
     view: sabi::v1::SystemControlView,
     target_id: &[u8],
@@ -2439,8 +2663,16 @@ fn validate_view_addressing(
 ) -> Result<(), CompatibilityError> {
     use sabi::v1::SystemControlView;
     let invalid = || CompatibilityError::InvalidSystemControlIdentifier;
+    let optional_cursor = |bytes: &[u8]| bytes.is_empty() || bytes.len() == REQUEST_ID_BYTES;
     match view {
-        SystemControlView::TaskGroup | SystemControlView::Topic => {
+        SystemControlView::ArtifactCommitRecovery
+        | SystemControlView::SemanticCommitRecovery
+        | SystemControlView::ResourceCommitRecovery => {
+            if !target_id.is_empty() || !plan_id.is_empty() || target_generation != 0 {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::TaskGroup | SystemControlView::Topic | SystemControlView::Workspace => {
             if target_id.len() != REQUEST_ID_BYTES || !plan_id.is_empty() {
                 return Err(invalid());
             }
@@ -2456,10 +2688,80 @@ fn validate_view_addressing(
                 return Err(invalid());
             }
         }
-        _ => {
-            if !target_id.is_empty() || !plan_id.is_empty() || target_generation != 0 {
+        SystemControlView::TaskList
+        | SystemControlView::InstalledApplicationList
+        | SystemControlView::ContentTypeAssociationList
+        | SystemControlView::KeychainReferenceList
+        | SystemControlView::ChooserGrantList
+        | SystemControlView::WorkspaceList
+        | SystemControlView::ProcessList
+        | SystemControlView::ResourceReservationList
+        | SystemControlView::TopicList
+        | SystemControlView::NotificationList
+        | SystemControlView::CellList
+        | SystemControlView::CellLeaseInspect => {
+            if !optional_cursor(target_id) || !plan_id.is_empty() || target_generation != 0 {
                 return Err(invalid());
             }
+        }
+        SystemControlView::TaskNodeList => {
+            if !optional_cursor(target_id) || plan_id.len() != REQUEST_ID_BYTES {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::TaskGroupList
+        | SystemControlView::TaskAttemptList
+        | SystemControlView::ExecutionFiberList
+        | SystemControlView::OperationList => {
+            if !optional_cursor(target_id) || !optional_cursor(plan_id) {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::SearchCandidateQuery => {
+            if target_id.len() != SHA256_DIGEST_BYTES
+                || plan_id.len() > MAX_SEARCH_QUERY_BYTES
+                || plan_id.contains(&0)
+            {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::DesktopWatermarkPoll => {
+            if !target_id.is_empty() || !plan_id.is_empty() {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::SettingsDomain => {
+            if !plan_id.is_empty() {
+                return Err(invalid());
+            }
+            match target_generation {
+                1 | 2 => {
+                    if !target_id.is_empty() {
+                        return Err(invalid());
+                    }
+                }
+                3 | 4 => {
+                    if target_id.len() != REQUEST_ID_BYTES {
+                        return Err(invalid());
+                    }
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        SystemControlView::ControlBlastRadiusPreview => {
+            if target_id.len() != REQUEST_ID_BYTES || !optional_cursor(plan_id) {
+                return Err(invalid());
+            }
+            let _ = unpack_blast_radius_preview_generation(target_generation)?;
+        }
+        SystemControlView::ControlCommandStatus => {
+            if target_id.len() != REQUEST_ID_BYTES || !plan_id.is_empty() || target_generation != 0
+            {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::Unspecified => {
+            return Err(CompatibilityError::UnspecifiedSystemControlView);
         }
     }
     Ok(())
@@ -2522,6 +2824,7 @@ fn validate_artifact_recovery_operations_snapshot(
 fn validate_control_command(
     command: Option<&sabi::v1::ControlCommand>,
 ) -> Result<(), CompatibilityError> {
+    use sabi::v1::control_command::Command;
     let command = command.ok_or(CompatibilityError::MissingSystemControlCommand)?;
     if command.control_command_id.len() != REQUEST_ID_BYTES
         || command.issuer_principal_id.len() != REQUEST_ID_BYTES
@@ -2537,17 +2840,62 @@ fn validate_control_command(
     }
     let scope = sabi::v1::ControlScope::try_from(command.scope)
         .map_err(|_| CompatibilityError::UnspecifiedControlScope)?;
-    if scope != sabi::v1::ControlScope::Operation {
+    if scope == sabi::v1::ControlScope::Unspecified {
         return Err(CompatibilityError::UnspecifiedControlScope);
     }
-    if command.command.is_none() {
+    let Some(arm) = command.command.as_ref() else {
         return Err(CompatibilityError::MissingSystemControlCommand);
-    }
-    if let Some(sabi::v1::control_command::Command::ThrottleOperation(throttle)) =
-        command.command.as_ref()
-        && !(1..=100).contains(&throttle.throttle_percent)
-    {
-        return Err(CompatibilityError::InvalidSystemControlIdentifier);
+    };
+    match arm {
+        Command::ThrottleOperation(throttle) if !(1..=100).contains(&throttle.throttle_percent) => {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        Command::RequestProcessMigration(migration)
+            if migration.destination_cell_id.len() != REQUEST_ID_BYTES =>
+        {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        Command::UpdateSettingsDomain(update) => {
+            let kind = sabi::v1::SettingsDomainKind::try_from(update.domain_kind)
+                .map_err(|_| CompatibilityError::InvalidSystemControlIdentifier)?;
+            if kind == sabi::v1::SettingsDomainKind::Unspecified
+                || update.key.is_empty()
+                || update.key.len() > MAX_SETTINGS_KEY_BYTES
+                || update.key.contains('\0')
+                || update.value_cbor.len() > MAX_SETTINGS_VALUE_CBOR_BYTES
+            {
+                return Err(CompatibilityError::InvalidSystemControlIdentifier);
+            }
+        }
+        Command::SetContentTypeAssociation(assoc)
+            if assoc.content_type.is_empty()
+                || assoc.content_type.len() > MAX_SETTINGS_KEY_BYTES
+                || assoc.content_type.contains('\0')
+                || assoc.application_id.len() != REQUEST_ID_BYTES =>
+        {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        Command::IssueChooserGrant(grant)
+            if grant.application_id.len() != REQUEST_ID_BYTES
+                || !(1..=4).contains(&grant.chooser_kind)
+                || grant.resource_handle.len() != REQUEST_ID_BYTES =>
+        {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        Command::MutateSearchCandidate(search) if search.scope_id.len() != SHA256_DIGEST_BYTES => {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        Command::UndoReceipt(undo) => {
+            let undo_class = sabi::v1::TaskUndoClass::try_from(undo.receipt_undo_class)
+                .map_err(|_| CompatibilityError::InvalidSystemControlIdentifier)?;
+            if undo_class == sabi::v1::TaskUndoClass::Unspecified {
+                return Err(CompatibilityError::InvalidSystemControlIdentifier);
+            }
+        }
+        Command::MutateTaskNodeTopology(topology) if topology.plan_id.len() != REQUEST_ID_BYTES => {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        _ => {}
     }
     if command.reason.len() > MAX_CONTROL_REASON_BYTES || command.reason.contains('\0') {
         return Err(CompatibilityError::UnsafeControlReason);
@@ -2871,6 +3219,656 @@ fn validate_envelope(envelope: &sabi::v1::Envelope) -> Result<(), CompatibilityE
     }
     if envelope.method.is_empty() {
         return Err(CompatibilityError::EmptyMethod);
+    }
+    Ok(())
+}
+
+fn validate_optional_cursor(cursor: &[u8]) -> Result<(), CompatibilityError> {
+    if !cursor.is_empty() && cursor.len() != REQUEST_ID_BYTES {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+fn validate_bounded_label(label: &str, max_bytes: usize) -> Result<(), CompatibilityError> {
+    if label.is_empty() || label.len() > max_bytes || label.contains('\0') {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+fn validate_task_list_snapshot(
+    snapshot: &sabi::v1::TaskListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{TaskLifecycleState, TaskUndoClass};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.tasks.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for task in &snapshot.tasks {
+        let state = TaskLifecycleState::try_from(task.task_state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let undo = TaskUndoClass::try_from(task.undo_class)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if state == TaskLifecycleState::Unspecified
+            || undo == TaskUndoClass::Unspecified
+            || task.task_id.len() != REQUEST_ID_BYTES
+            || task.plan_id.len() != REQUEST_ID_BYTES
+            || (!task.application_id.is_empty() && task.application_id.len() != REQUEST_ID_BYTES)
+            || (!task.reservation_id.is_empty() && task.reservation_id.len() != REQUEST_ID_BYTES)
+            || (!task.cell_id.is_empty() && task.cell_id.len() != REQUEST_ID_BYTES)
+            || task.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_task_group_list_snapshot(
+    snapshot: &sabi::v1::TaskGroupListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::TaskGroupLifecycleState;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.groups.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for group in &snapshot.groups {
+        let state = TaskGroupLifecycleState::try_from(group.state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if state == TaskGroupLifecycleState::Unspecified
+            || group.group_id.len() != REQUEST_ID_BYTES
+            || group.task_id.len() != REQUEST_ID_BYTES
+            || (!group.parent_group_id.is_empty()
+                && group.parent_group_id.len() != REQUEST_ID_BYTES)
+            || group.updated_at_ms < group.created_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_task_node_list_snapshot(
+    snapshot: &sabi::v1::TaskNodeListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{ContextResidencyTier, PlanNodeKind, PlanNodeLifecycleState};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.plan_id.len() != REQUEST_ID_BYTES
+        || snapshot.current_plan_revision == 0
+        || snapshot.nodes.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+        || (snapshot.stale_generation && !snapshot.nodes.is_empty())
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for node in &snapshot.nodes {
+        let kind = PlanNodeKind::try_from(node.kind)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let state = PlanNodeLifecycleState::try_from(node.state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let residency = ContextResidencyTier::try_from(node.residency_tier)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if kind == PlanNodeKind::Unspecified
+            || state == PlanNodeLifecycleState::Unspecified
+            || residency == ContextResidencyTier::Unspecified
+            || node.plan_id.len() != REQUEST_ID_BYTES
+            || node.node_id.len() != REQUEST_ID_BYTES
+            || node.node_digest.len() != SHA256_DIGEST_BYTES
+            || node.updated_at_ms < node.first_declared_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_task_attempt_list_snapshot(
+    snapshot: &sabi::v1::TaskAttemptListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::TaskAttemptLifecycleState;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.attempts.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+        || (snapshot.stale_generation
+            && (snapshot.current_generation == 0 || !snapshot.attempts.is_empty()))
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for attempt in &snapshot.attempts {
+        let state = TaskAttemptLifecycleState::try_from(attempt.state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if state == TaskAttemptLifecycleState::Unspecified
+            || attempt.attempt_id.len() != REQUEST_ID_BYTES
+            || attempt.task_id.len() != REQUEST_ID_BYTES
+            || (!attempt.node_id.is_empty() && attempt.node_id.len() != REQUEST_ID_BYTES)
+            || attempt.isolation_domain_id.len() != REQUEST_ID_BYTES
+            || attempt.expected_generation_or_revision == 0
+            || attempt.updated_at_ms < attempt.started_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_execution_fiber_list_snapshot(
+    snapshot: &sabi::v1::ExecutionFiberListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{ExecutionFiberLifecycleState, ExecutionFiberPhase};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.fibers.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+        || (snapshot.stale_generation
+            && (snapshot.current_generation == 0 || !snapshot.fibers.is_empty()))
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for entry in &snapshot.fibers {
+        let fiber = entry
+            .fiber
+            .as_ref()
+            .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+        let state = ExecutionFiberLifecycleState::try_from(fiber.state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let phase = ExecutionFiberPhase::try_from(fiber.lifecycle_phase)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if state == ExecutionFiberLifecycleState::Unspecified
+            || phase == ExecutionFiberPhase::Unspecified
+            || fiber.fiber_id.len() != REQUEST_ID_BYTES
+            || fiber.generation == 0
+            || (!entry.process_id.is_empty() && entry.process_id.len() != REQUEST_ID_BYTES)
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_durable_operation_list_snapshot(
+    snapshot: &sabi::v1::DurableOperationListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::DurableOperationState;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.operations.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+        || (snapshot.stale_generation
+            && (snapshot.current_generation == 0 || !snapshot.operations.is_empty()))
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for operation in &snapshot.operations {
+        let state = DurableOperationState::try_from(operation.state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if state == DurableOperationState::Unspecified
+            || operation.operation_id.len() != REQUEST_ID_BYTES
+            || operation.generation == 0
+            || operation.owner_fiber_id.len() != REQUEST_ID_BYTES
+            || operation.owner_fiber_generation == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+        let terminal = matches!(
+            state,
+            DurableOperationState::Completed
+                | DurableOperationState::Failed
+                | DurableOperationState::CancelledBeforeEffect
+                | DurableOperationState::PartialEffect
+                | DurableOperationState::EffectUnknown
+        );
+        match (&operation.outcome_receipt, terminal) {
+            (Some(receipt), true) if receipt.receipt_id.len() == REQUEST_ID_BYTES => {}
+            (None, false) => {}
+            _ => return Err(CompatibilityError::InvalidSystemControlLayerStatus),
+        }
+    }
+    Ok(())
+}
+
+fn validate_installed_application_list_snapshot(
+    snapshot: &sabi::v1::InstalledApplicationListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.applications.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for app in &snapshot.applications {
+        if app.application_id.len() != REQUEST_ID_BYTES
+            || app.installation_id.len() != REQUEST_ID_BYTES
+            || app.package_id.len() != REQUEST_ID_BYTES
+            || app.package_manifest_digest.len() != SHA256_DIGEST_BYTES
+            || app.current_installation_generation == 0
+            || !(1..=3).contains(&app.status)
+            || app.updated_at_ms < app.created_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_search_candidate_query_snapshot(
+    snapshot: &sabi::v1::SearchCandidateQuerySnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.scope_id.len() != SHA256_DIGEST_BYTES
+        || snapshot.non_authoritative_restrictions_bits != SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL
+        || !(1..=3).contains(&snapshot.achieved_consistency)
+        || snapshot.failed_shards.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+        || snapshot.candidates.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for candidate in &snapshot.candidates {
+        if candidate.candidate_id.len() != REQUEST_ID_BYTES
+            || candidate.object_id.len() != REQUEST_ID_BYTES
+            || candidate.scope_id.len() != SHA256_DIGEST_BYTES
+            || candidate.title_snippet.len() > MAX_SEARCH_QUERY_BYTES
+            || candidate.title_snippet.contains('\0')
+            || candidate.non_authoritative_restrictions_bits
+                != SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_desktop_watermark_poll_snapshot(
+    snapshot: &sabi::v1::DesktopWatermarkPollSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    if snapshot.events.len() > MAX_DESKTOP_WATERMARK_EVENT_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    let mut prev_watermark = 0_u64;
+    for event in &snapshot.events {
+        let scope = sabi::v1::ControlScope::try_from(event.domain_scope)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if scope == sabi::v1::ControlScope::Unspecified
+            || event.watermark == 0
+            || event.watermark <= prev_watermark
+            || event.watermark > snapshot.current_watermark
+            || event.entity_id.len() != REQUEST_ID_BYTES
+            || event.state_digest.len() != SHA256_DIGEST_BYTES
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+        prev_watermark = event.watermark;
+    }
+    Ok(())
+}
+
+fn validate_settings_domain_snapshot(
+    snapshot: &sabi::v1::SettingsDomainSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::SettingsDomainKind;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let kind = SettingsDomainKind::try_from(snapshot.domain_kind)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    match kind {
+        SettingsDomainKind::Unspecified => {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+        SettingsDomainKind::System | SettingsDomainKind::User => {
+            if !snapshot.scope_target_id.is_empty() {
+                return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+            }
+        }
+        SettingsDomainKind::Workspace | SettingsDomainKind::Application => {
+            if snapshot.scope_target_id.len() != REQUEST_ID_BYTES {
+                return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+            }
+        }
+    }
+    if snapshot.domain_revision == 0 || snapshot.entries.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for entry in &snapshot.entries {
+        validate_bounded_label(&entry.key, MAX_SETTINGS_KEY_BYTES)?;
+        if entry.revision == 0 || entry.value_cbor.len() > MAX_SETTINGS_VALUE_CBOR_BYTES {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_content_type_association_list_snapshot(
+    snapshot: &sabi::v1::ContentTypeAssociationListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.associations.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for assoc in &snapshot.associations {
+        validate_bounded_label(&assoc.content_type, MAX_SETTINGS_KEY_BYTES)?;
+        if assoc.association_id.len() != REQUEST_ID_BYTES
+            || assoc.application_id.len() != REQUEST_ID_BYTES
+            || assoc.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_keychain_reference_list_snapshot(
+    snapshot: &sabi::v1::KeychainReferenceListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.references.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for reference in &snapshot.references {
+        validate_bounded_label(&reference.label, MAX_SETTINGS_KEY_BYTES)?;
+        if reference.keychain_ref_id.len() != REQUEST_ID_BYTES
+            || reference.owner_principal_id.len() != REQUEST_ID_BYTES
+            || reference.public_fingerprint.len() != SHA256_DIGEST_BYTES
+            || reference.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_chooser_grant_list_snapshot(
+    snapshot: &sabi::v1::ChooserGrantListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.grants.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for grant in &snapshot.grants {
+        if grant.grant_id.len() != REQUEST_ID_BYTES
+            || grant.application_id.len() != REQUEST_ID_BYTES
+            || !(1..=4).contains(&grant.chooser_kind)
+            || grant.resource_handle.len() != REQUEST_ID_BYTES
+            || grant.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_workspace_status_item(
+    workspace: &sabi::v1::WorkspaceStatus,
+) -> Result<(), CompatibilityError> {
+    validate_bounded_label(&workspace.name, MAX_SETTINGS_KEY_BYTES)?;
+    if workspace.workspace_id.len() != REQUEST_ID_BYTES
+        || !(1..=4).contains(&workspace.layout_preset)
+        || (!workspace.focused_task_id.is_empty()
+            && workspace.focused_task_id.len() != REQUEST_ID_BYTES)
+        || workspace.expected_generation_or_revision == 0
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+fn validate_workspace_list_snapshot(
+    snapshot: &sabi::v1::WorkspaceListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.workspaces.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for workspace in &snapshot.workspaces {
+        validate_workspace_status_item(workspace)?;
+    }
+    Ok(())
+}
+
+fn validate_workspace_snapshot(
+    snapshot: &sabi::v1::WorkspaceSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    if snapshot.current_generation == 0 {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    if snapshot.stale_generation {
+        if snapshot.workspace.is_some() {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+        return Ok(());
+    }
+    let workspace = snapshot
+        .workspace
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    validate_workspace_status_item(workspace)
+}
+
+fn validate_process_list_snapshot(
+    snapshot: &sabi::v1::ProcessListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.processes.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for process in &snapshot.processes {
+        if process.process_id.len() != REQUEST_ID_BYTES
+            || process.expected_generation_or_revision == 0
+            || process.agent_instance_id.len() != REQUEST_ID_BYTES
+            || process.task_id.len() != REQUEST_ID_BYTES
+            || process.task_attempt_id.len() != REQUEST_ID_BYTES
+            || process.isolation_domain_id.len() != REQUEST_ID_BYTES
+            || (!process.cell_id.is_empty() && process.cell_id.len() != REQUEST_ID_BYTES)
+            || !(1..=4).contains(&process.lifecycle_state)
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_resource_reservation_list_snapshot(
+    snapshot: &sabi::v1::ResourceReservationListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::ContextResidencyTier;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.reservations.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for reservation in &snapshot.reservations {
+        let tier = ContextResidencyTier::try_from(reservation.context_residency_tier)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if tier == ContextResidencyTier::Unspecified
+            || reservation.reservation_id.len() != REQUEST_ID_BYTES
+            || reservation.account_id.len() != REQUEST_ID_BYTES
+            || reservation.effective_granted > reservation.requested_ceiling
+            || reservation.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_topic_list_snapshot(
+    snapshot: &sabi::v1::TopicListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.topics.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for item in &snapshot.topics {
+        let topic = item
+            .topic
+            .as_ref()
+            .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+        if topic.topic_id.len() != REQUEST_ID_BYTES
+            || topic.channel_id.len() != REQUEST_ID_BYTES
+            || topic.policy_digest.len() != SHA256_DIGEST_BYTES
+            || topic.name.len() > MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES
+            || topic.name.contains(&0)
+            || item.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_notification_list_snapshot(
+    snapshot: &sabi::v1::NotificationListSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.notifications.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for item in &snapshot.notifications {
+        if item.notification_id.len() != REQUEST_ID_BYTES
+            || item.topic_id.len() != REQUEST_ID_BYTES
+            || item.subscriber_key.len() != REQUEST_ID_BYTES
+            || item.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_cell_list_snapshot(
+    snapshot: &sabi::v1::CellListSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{CellReachabilityState, PartitionAutonomyGateState};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    validate_optional_cursor(&snapshot.next_cursor)?;
+    if snapshot.cells.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for cell in &snapshot.cells {
+        validate_bounded_label(&cell.cell_label, MAX_SETTINGS_KEY_BYTES)?;
+        let reachability = CellReachabilityState::try_from(cell.reachability)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let gate = PartitionAutonomyGateState::try_from(cell.partition_autonomy_gate)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if reachability == CellReachabilityState::Unspecified
+            || gate == PartitionAutonomyGateState::Unspecified
+            || cell.cell_id.len() != REQUEST_ID_BYTES
+            || cell.current_epoch == 0
+            || cell.expected_generation_or_revision == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_cell_lease_inspect_snapshot(
+    snapshot: &sabi::v1::CellLeaseInspectSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{CellLeaseKind, CellLeaseLockState};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    if snapshot.cell_id.len() != REQUEST_ID_BYTES
+        || snapshot.leases.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for lease in &snapshot.leases {
+        let kind = CellLeaseKind::try_from(lease.kind)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let lock_state = CellLeaseLockState::try_from(lease.lock_state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if kind == CellLeaseKind::Unspecified
+            || lock_state == CellLeaseLockState::Unspecified
+            || lease.lease_id.len() != REQUEST_ID_BYTES
+            || lease.cell_id.len() != REQUEST_ID_BYTES
+            || lease.holder_id.len() != REQUEST_ID_BYTES
+            || lease.lease_epoch == 0
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_control_blast_radius_preview_snapshot(
+    snapshot: &sabi::v1::ControlBlastRadiusPreviewSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{BlastRadiusImpactSign, ControlScope};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let target_scope = ControlScope::try_from(snapshot.target_scope)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if target_scope == ControlScope::Unspecified
+        || snapshot.target_id.len() != REQUEST_ID_BYTES
+        || snapshot.preview_action == 0
+        || snapshot.statutory_lock_code.len() > MAX_SETTINGS_KEY_BYTES
+        || snapshot.statutory_lock_code.contains('\0')
+        || snapshot.impacts.len() > MAX_SYSTEM_CONTROL_ENUM_LIMIT
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for item in &snapshot.impacts {
+        let sign = BlastRadiusImpactSign::try_from(item.sign)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let scope = ControlScope::try_from(item.affected_scope)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        validate_bounded_label(&item.summary_code, MAX_SETTINGS_KEY_BYTES)?;
+        if sign == BlastRadiusImpactSign::Unspecified
+            || scope == ControlScope::Unspecified
+            || item.affected_id.len() != REQUEST_ID_BYTES
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+fn validate_sabi_failure(failure: &sabi::v1::SabiFailure) -> Result<(), CompatibilityError> {
+    let code = sabi::v1::SabiErrorCode::try_from(failure.code)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    let retry = sabi::v1::RetryDirective::try_from(failure.retry)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if code == sabi::v1::SabiErrorCode::Unspecified
+        || retry == sabi::v1::RetryDirective::Unspecified
+        || failure.safe_message.len() > MAX_SAFE_ERROR_MESSAGE_BYTES
+        || failure.safe_message.contains('\0')
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+fn validate_control_command_status_snapshot(
+    snapshot: &sabi::v1::ControlCommandStatusSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{ControlCommandLifecycleState, ControlScope};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let state = ControlCommandLifecycleState::try_from(snapshot.state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    let scope = ControlScope::try_from(snapshot.scope)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if state == ControlCommandLifecycleState::Unspecified
+        || scope == ControlScope::Unspecified
+        || snapshot.control_command_id.len() != REQUEST_ID_BYTES
+        || snapshot.target_id.len() != REQUEST_ID_BYTES
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    if snapshot
+        .receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+    {
+        return Err(CompatibilityError::InvalidReceiptReference);
+    }
+    if let Some(failure) = snapshot.failure.as_ref() {
+        validate_sabi_failure(failure)?;
     }
     Ok(())
 }

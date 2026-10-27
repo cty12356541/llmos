@@ -17,6 +17,22 @@ enum ControlScope {
   CONTROL_SCOPE_UNSPECIFIED = 0;
   CONTROL_SCOPE_SYSTEM = 1;
   CONTROL_SCOPE_OPERATION = 2;
+  // Stage D (IPC-D8 / ADR-0025): explicit twelve-domain control scopes.
+  CONTROL_SCOPE_WORKSPACE = 3;
+  CONTROL_SCOPE_APPLICATION = 4;
+  CONTROL_SCOPE_TASK = 5;
+  CONTROL_SCOPE_TASK_GROUP = 6;
+  CONTROL_SCOPE_TASK_NODE = 7;
+  CONTROL_SCOPE_TASK_ATTEMPT = 8;
+  CONTROL_SCOPE_PROCESS = 9;
+  CONTROL_SCOPE_AGENT_INSTANCE = 10;
+  CONTROL_SCOPE_EXECUTION_FIBER = 11;
+  CONTROL_SCOPE_RESOURCE_GROUP = 12;
+  CONTROL_SCOPE_CONTEXT = 13;
+  CONTROL_SCOPE_TOPIC = 14;
+  CONTROL_SCOPE_CHANNEL = 15;
+  CONTROL_SCOPE_DEVICE = 16;
+  CONTROL_SCOPE_CELL = 17;
 }
 
 enum SystemControlView {
@@ -32,6 +48,31 @@ enum SystemControlView {
   SYSTEM_CONTROL_VIEW_EXECUTION_FIBER = 6;
   SYSTEM_CONTROL_VIEW_TOPIC = 7;
   SYSTEM_CONTROL_VIEW_OPERATION = 8;
+  // Stage D (IPC-D1..D8): bounded twelve-domain enumeration, watermark,
+  // settings/grant seams, blast-radius dry-run, and command reconciliation.
+  SYSTEM_CONTROL_VIEW_TASK_LIST = 9;
+  SYSTEM_CONTROL_VIEW_TASK_GROUP_LIST = 10;
+  SYSTEM_CONTROL_VIEW_TASK_NODE_LIST = 11;
+  SYSTEM_CONTROL_VIEW_TASK_ATTEMPT_LIST = 12;
+  SYSTEM_CONTROL_VIEW_EXECUTION_FIBER_LIST = 13;
+  SYSTEM_CONTROL_VIEW_OPERATION_LIST = 14;
+  SYSTEM_CONTROL_VIEW_INSTALLED_APPLICATION_LIST = 15;
+  SYSTEM_CONTROL_VIEW_SEARCH_CANDIDATE_QUERY = 16;
+  SYSTEM_CONTROL_VIEW_DESKTOP_WATERMARK_POLL = 17;
+  SYSTEM_CONTROL_VIEW_SETTINGS_DOMAIN = 18;
+  SYSTEM_CONTROL_VIEW_CONTENT_TYPE_ASSOCIATION_LIST = 19;
+  SYSTEM_CONTROL_VIEW_KEYCHAIN_REFERENCE_LIST = 20;
+  SYSTEM_CONTROL_VIEW_CHOOSER_GRANT_LIST = 21;
+  SYSTEM_CONTROL_VIEW_WORKSPACE_LIST = 22;
+  SYSTEM_CONTROL_VIEW_WORKSPACE = 23;
+  SYSTEM_CONTROL_VIEW_PROCESS_LIST = 24;
+  SYSTEM_CONTROL_VIEW_RESOURCE_RESERVATION_LIST = 25;
+  SYSTEM_CONTROL_VIEW_TOPIC_LIST = 26;
+  SYSTEM_CONTROL_VIEW_NOTIFICATION_LIST = 27;
+  SYSTEM_CONTROL_VIEW_CELL_LIST = 28;
+  SYSTEM_CONTROL_VIEW_CELL_LEASE_INSPECT = 29;
+  SYSTEM_CONTROL_VIEW_CONTROL_BLAST_RADIUS_PREVIEW = 30;
+  SYSTEM_CONTROL_VIEW_CONTROL_COMMAND_STATUS = 31;
 }
 
 enum RecoveryWorkerLifecycleState {
@@ -386,6 +427,463 @@ message DurableOperationSnapshot {
   DurableOperationStatus operation = 2;
 }
 
+// ============================================================================
+// Stage D (IPC-D1..D8 / ADR-0025): Twelve-Domain Bounded Enumeration,
+// Watermark, Settings/Grant Seams, Cell Seam, Blast-Radius Dry-Run &
+// Idempotent Command Reconciliation.
+// ============================================================================
+
+enum TaskLifecycleState {
+  TASK_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  TASK_LIFECYCLE_STATE_DRAFT = 1;
+  TASK_LIFECYCLE_STATE_PROPOSED = 2;
+  TASK_LIFECYCLE_STATE_WAITING_CONSENT = 3;
+  TASK_LIFECYCLE_STATE_AUTHORIZED = 4;
+  TASK_LIFECYCLE_STATE_RUNNING = 5;
+  TASK_LIFECYCLE_STATE_WAITING_INPUT = 6;
+  TASK_LIFECYCLE_STATE_WAITING_RESOURCE = 7;
+  TASK_LIFECYCLE_STATE_WAITING_NETWORK = 8;
+  TASK_LIFECYCLE_STATE_SUSPENDED = 9;
+  TASK_LIFECYCLE_STATE_RECOVERING = 10;
+  TASK_LIFECYCLE_STATE_CANCELLING = 11;
+  TASK_LIFECYCLE_STATE_COMPLETING = 12;
+  TASK_LIFECYCLE_STATE_CANCELLED = 13;
+  TASK_LIFECYCLE_STATE_PARTIAL = 14;
+  TASK_LIFECYCLE_STATE_COMPLETED = 15;
+  TASK_LIFECYCLE_STATE_FAILED = 16;
+  TASK_LIFECYCLE_STATE_DISPUTED = 17;
+  TASK_LIFECYCLE_STATE_QUARANTINED = 18;
+}
+
+enum TaskUndoClass {
+  TASK_UNDO_CLASS_UNSPECIFIED = 0;
+  TASK_UNDO_CLASS_READ_ONLY = 1;
+  TASK_UNDO_CLASS_REVERSIBLE = 2;
+  TASK_UNDO_CLASS_COMPENSATABLE = 3;
+  TASK_UNDO_CLASS_IRREVERSIBLE = 4;
+}
+
+message TaskSummaryProjection {
+  bytes task_id = 1;
+  bytes plan_id = 2;
+  bytes application_id = 3;
+  uint64 installation_generation = 4;
+  uint64 plan_revision = 5;
+  TaskLifecycleState task_state = 6;
+  TaskUndoClass undo_class = 7;
+  bytes reservation_id = 8;
+  bytes cell_id = 9;
+  uint64 updated_at_ms = 10;
+  uint64 expected_generation_or_revision = 11;
+}
+
+message TaskListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated TaskSummaryProjection tasks = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message TaskGroupListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated TaskGroupStatus groups = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message TaskNodeListSnapshot {
+  SchemaIdentity schema = 1;
+  bytes plan_id = 2;
+  uint64 current_plan_revision = 3;
+  bool stale_generation = 4;
+  repeated TaskNodeStatus nodes = 5;
+  uint64 metadata_only_collapsed_count = 6;
+  uint64 cold_collapsed_count = 7;
+  bytes next_cursor = 8;
+  bool truncated = 9;
+}
+
+enum TaskAttemptLifecycleState {
+  TASK_ATTEMPT_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  TASK_ATTEMPT_LIFECYCLE_STATE_CREATED = 1;
+  TASK_ATTEMPT_LIFECYCLE_STATE_ADMITTED = 2;
+  TASK_ATTEMPT_LIFECYCLE_STATE_RUNNING = 3;
+  TASK_ATTEMPT_LIFECYCLE_STATE_WAITING = 4;
+  TASK_ATTEMPT_LIFECYCLE_STATE_SEALING = 5;
+  TASK_ATTEMPT_LIFECYCLE_STATE_SEALED = 6;
+  TASK_ATTEMPT_LIFECYCLE_STATE_VALIDATING = 7;
+  TASK_ATTEMPT_LIFECYCLE_STATE_CONFLICTED = 8;
+  TASK_ATTEMPT_LIFECYCLE_STATE_READY_TO_COMMIT = 9;
+  TASK_ATTEMPT_LIFECYCLE_STATE_SUPERSEDED = 10;
+  TASK_ATTEMPT_LIFECYCLE_STATE_COMMIT_PERMITTED = 11;
+  TASK_ATTEMPT_LIFECYCLE_STATE_CANCELLING = 12;
+  TASK_ATTEMPT_LIFECYCLE_STATE_CANCELLED = 13;
+  TASK_ATTEMPT_LIFECYCLE_STATE_FAILED = 14;
+  TASK_ATTEMPT_LIFECYCLE_STATE_COMMITTED = 15;
+}
+
+message TaskAttemptStatus {
+  bytes attempt_id = 1;
+  bytes task_id = 2;
+  bytes node_id = 3;
+  TaskAttemptLifecycleState state = 4;
+  bytes isolation_domain_id = 5;
+  bool provider_isolation_unverified = 6;
+  bool cas_winner = 7;
+  uint64 expected_generation_or_revision = 8;
+  uint64 started_at_ms = 9;
+  uint64 updated_at_ms = 10;
+}
+
+message TaskAttemptListSnapshot {
+  SchemaIdentity schema = 1;
+  uint64 current_generation = 2;
+  bool stale_generation = 3;
+  repeated TaskAttemptStatus attempts = 4;
+  bytes next_cursor = 5;
+  bool truncated = 6;
+}
+
+message ExecutionFiberSummaryStatus {
+  ExecutionFiberStatus fiber = 1;
+  bytes process_id = 2;
+  bool shared_thread_like = 3;
+}
+
+message ExecutionFiberListSnapshot {
+  SchemaIdentity schema = 1;
+  uint64 current_generation = 2;
+  bool stale_generation = 3;
+  repeated ExecutionFiberSummaryStatus fibers = 4;
+  bytes next_cursor = 5;
+  bool truncated = 6;
+}
+
+message DurableOperationListSnapshot {
+  SchemaIdentity schema = 1;
+  uint64 current_generation = 2;
+  bool stale_generation = 3;
+  repeated DurableOperationStatus operations = 4;
+  bytes next_cursor = 5;
+  bool truncated = 6;
+}
+
+message InstalledApplicationStatus {
+  bytes application_id = 1;
+  bytes installation_id = 2;
+  bytes package_id = 3;
+  bytes package_manifest_digest = 4;
+  uint64 current_installation_generation = 5;
+  uint32 status = 6;
+  uint64 created_at_ms = 7;
+  uint64 updated_at_ms = 8;
+}
+
+message InstalledApplicationListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated InstalledApplicationStatus applications = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message SearchCandidateEntry {
+  bytes candidate_id = 1;
+  bytes object_id = 2;
+  bytes scope_id = 3;
+  string title_snippet = 4;
+  uint32 rank_score_milli = 5;
+  uint32 non_authoritative_restrictions_bits = 6;
+}
+
+message SearchCandidateQuerySnapshot {
+  SchemaIdentity schema = 1;
+  bytes scope_id = 2;
+  uint32 non_authoritative_restrictions_bits = 3;
+  uint32 achieved_consistency = 4;
+  repeated uint32 failed_shards = 5;
+  repeated SearchCandidateEntry candidates = 6;
+  bytes next_cursor = 7;
+  bool truncated = 8;
+}
+
+message DesktopWatermarkEvent {
+  uint64 watermark = 1;
+  ControlScope domain_scope = 2;
+  bytes entity_id = 3;
+  uint64 new_generation_or_revision = 4;
+  bytes state_digest = 5;
+  uint64 occurred_at_ms = 6;
+}
+
+message DesktopWatermarkPollSnapshot {
+  SchemaIdentity schema = 1;
+  uint64 current_watermark = 2;
+  repeated DesktopWatermarkEvent events = 3;
+  bool truncated = 4;
+}
+
+enum SettingsDomainKind {
+  SETTINGS_DOMAIN_KIND_UNSPECIFIED = 0;
+  SETTINGS_DOMAIN_KIND_SYSTEM = 1;
+  SETTINGS_DOMAIN_KIND_USER = 2;
+  SETTINGS_DOMAIN_KIND_WORKSPACE = 3;
+  SETTINGS_DOMAIN_KIND_APPLICATION = 4;
+}
+
+message SettingsEntryStatus {
+  string key = 1;
+  bytes value_cbor = 2;
+  uint64 revision = 3;
+}
+
+message SettingsDomainSnapshot {
+  SchemaIdentity schema = 1;
+  SettingsDomainKind domain_kind = 2;
+  bytes scope_target_id = 3;
+  uint64 domain_revision = 4;
+  repeated SettingsEntryStatus entries = 5;
+}
+
+message ContentTypeAssociationStatus {
+  bytes association_id = 1;
+  string content_type = 2;
+  bytes application_id = 3;
+  uint64 expected_generation_or_revision = 4;
+}
+
+message ContentTypeAssociationListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated ContentTypeAssociationStatus associations = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message KeychainReferenceStatus {
+  bytes keychain_ref_id = 1;
+  bytes owner_principal_id = 2;
+  string label = 3;
+  bytes public_fingerprint = 4;
+  uint64 expected_generation_or_revision = 5;
+  bool hardware_backed = 6;
+}
+
+message KeychainReferenceListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated KeychainReferenceStatus references = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message ChooserGrantStatus {
+  bytes grant_id = 1;
+  bytes application_id = 2;
+  uint32 chooser_kind = 3;
+  bytes resource_handle = 4;
+  uint64 expected_generation_or_revision = 5;
+  uint64 expires_at_ms = 6;
+}
+
+message ChooserGrantListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated ChooserGrantStatus grants = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message WorkspaceStatus {
+  bytes workspace_id = 1;
+  string name = 2;
+  uint32 layout_preset = 3;
+  uint32 active_surface_count = 4;
+  bytes focused_task_id = 5;
+  uint64 expected_generation_or_revision = 6;
+  uint64 updated_at_ms = 7;
+}
+
+message WorkspaceListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated WorkspaceStatus workspaces = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message WorkspaceSnapshot {
+  SchemaIdentity schema = 1;
+  bool stale_generation = 2;
+  uint64 current_generation = 3;
+  WorkspaceStatus workspace = 4;
+}
+
+message ProcessSummaryStatus {
+  bytes process_id = 1;
+  uint64 expected_generation_or_revision = 2;
+  bytes agent_instance_id = 3;
+  bytes task_id = 4;
+  bytes task_attempt_id = 5;
+  bytes isolation_domain_id = 6;
+  bytes cell_id = 7;
+  uint32 lifecycle_state = 8;
+}
+
+message ProcessListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated ProcessSummaryStatus processes = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message ResourceReservationSummaryStatus {
+  bytes reservation_id = 1;
+  bytes account_id = 2;
+  uint64 actual_usage = 3;
+  uint64 effective_granted = 4;
+  uint64 requested_ceiling = 5;
+  ContextResidencyTier context_residency_tier = 6;
+  uint64 expected_generation_or_revision = 7;
+}
+
+message ResourceReservationListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated ResourceReservationSummaryStatus reservations = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message TopicSummaryStatus {
+  TopicStatus topic = 1;
+  uint64 expected_generation_or_revision = 2;
+  uint64 retained_messages = 3;
+}
+
+message TopicListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated TopicSummaryStatus topics = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+message NotificationSummaryStatus {
+  bytes notification_id = 1;
+  bytes topic_id = 2;
+  bytes subscriber_key = 3;
+  uint64 next_sequence = 4;
+  uint64 history_entry_count = 5;
+  bool history_truncated = 6;
+  uint64 prune_watermark_sequence = 7;
+  uint64 expected_generation_or_revision = 8;
+}
+
+message NotificationListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated NotificationSummaryStatus notifications = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+enum CellReachabilityState {
+  CELL_REACHABILITY_STATE_UNSPECIFIED = 0;
+  CELL_REACHABILITY_STATE_ONLINE_LOCAL = 1;
+  CELL_REACHABILITY_STATE_ONLINE_REMOTE = 2;
+  CELL_REACHABILITY_STATE_DEGRADED_LINK = 3;
+  CELL_REACHABILITY_STATE_PARTITIONED = 4;
+  CELL_REACHABILITY_STATE_OFFLINE = 5;
+}
+
+enum PartitionAutonomyGateState {
+  PARTITION_AUTONOMY_GATE_STATE_UNSPECIFIED = 0;
+  PARTITION_AUTONOMY_GATE_STATE_FULL_AUTONOMY = 1;
+  PARTITION_AUTONOMY_GATE_STATE_LOCAL_READ_AND_BOUNDED_LEASE = 2;
+  PARTITION_AUTONOMY_GATE_STATE_FENCED_READ_ONLY = 3;
+  PARTITION_AUTONOMY_GATE_STATE_QUARANTINED = 4;
+}
+
+message CellSummaryStatus {
+  bytes cell_id = 1;
+  string cell_label = 2;
+  CellReachabilityState reachability = 3;
+  PartitionAutonomyGateState partition_autonomy_gate = 4;
+  uint64 current_epoch = 5;
+  uint64 active_lease_count = 6;
+  uint64 expected_generation_or_revision = 7;
+}
+
+message CellListSnapshot {
+  SchemaIdentity schema = 1;
+  repeated CellSummaryStatus cells = 2;
+  bytes next_cursor = 3;
+  bool truncated = 4;
+}
+
+enum CellLeaseKind {
+  CELL_LEASE_KIND_UNSPECIFIED = 0;
+  CELL_LEASE_KIND_QUOTA = 1;
+  CELL_LEASE_KIND_CAPACITY = 2;
+  CELL_LEASE_KIND_EXCLUSIVE_DEVICE = 3;
+}
+
+enum CellLeaseLockState {
+  CELL_LEASE_LOCK_STATE_UNSPECIFIED = 0;
+  CELL_LEASE_LOCK_STATE_ACTIVE = 1;
+  CELL_LEASE_LOCK_STATE_EXPIRING = 2;
+  CELL_LEASE_LOCK_STATE_EXPIRED = 3;
+  CELL_LEASE_LOCK_STATE_QUARANTINED = 4;
+}
+
+message CellLeaseStatus {
+  bytes lease_id = 1;
+  bytes cell_id = 2;
+  CellLeaseKind kind = 3;
+  CellLeaseLockState lock_state = 4;
+  bytes holder_id = 5;
+  uint64 remaining_holder_ttl_ms = 6;
+  uint64 lease_epoch = 7;
+  uint64 clock_skew_horizon_ms = 8;
+}
+
+message CellLeaseInspectSnapshot {
+  SchemaIdentity schema = 1;
+  bytes cell_id = 2;
+  repeated CellLeaseStatus leases = 3;
+  bool truncated = 4;
+}
+
+enum BlastRadiusImpactSign {
+  BLAST_RADIUS_IMPACT_SIGN_UNSPECIFIED = 0;
+  BLAST_RADIUS_IMPACT_SIGN_ADD = 1;
+  BLAST_RADIUS_IMPACT_SIGN_CHANGE = 2;
+  BLAST_RADIUS_IMPACT_SIGN_REMOVE = 3;
+  BLAST_RADIUS_IMPACT_SIGN_UNCHANGED = 4;
+}
+
+message ControlBlastRadiusImpactItem {
+  BlastRadiusImpactSign sign = 1;
+  ControlScope affected_scope = 2;
+  bytes affected_id = 3;
+  uint64 current_generation_or_revision = 4;
+  string summary_code = 5;
+}
+
+message ControlBlastRadiusPreviewSnapshot {
+  SchemaIdentity schema = 1;
+  ControlScope target_scope = 2;
+  bytes target_id = 3;
+  uint32 preview_action = 4;
+  bool statutory_lock_blocked = 5;
+  string statutory_lock_code = 6;
+  repeated ControlBlastRadiusImpactItem impacts = 7;
+  bool truncated = 8;
+}
+
+message ControlCommandStatusSnapshot {
+  SchemaIdentity schema = 1;
+  bytes control_command_id = 2;
+  ControlCommandLifecycleState state = 3;
+  ControlScope scope = 4;
+  bytes target_id = 5;
+  ReceiptReference receipt = 6;
+  SabiFailure failure = 7;
+}
+
 message AcknowledgeArtifactRecoveryAlertCommand {}
 
 message AcknowledgeSemanticRecoveryAlertCommand {}
@@ -434,6 +932,53 @@ message DisableApplicationCommand {}
 
 message UninstallApplicationCommand {}
 
+// Stage D (IPC-D5..D8 / ADR-0025): additive domain control arms and
+// protocol-level statutory lock guards (`[UI-PARITY-001]`).
+message RequestProcessMigrationCommand {
+  bytes destination_cell_id = 1;
+}
+
+message PurgeTopicCommand {
+  bool acknowledge_data_loss = 1;
+}
+
+message UpdateSettingsDomainCommand {
+  SettingsDomainKind domain_kind = 1;
+  string key = 2;
+  bytes value_cbor = 3;
+}
+
+message SetContentTypeAssociationCommand {
+  string content_type = 1;
+  bytes application_id = 2;
+}
+
+message IssueChooserGrantCommand {
+  bytes application_id = 1;
+  uint32 chooser_kind = 2;
+  bytes resource_handle = 3;
+}
+
+message MutateSearchCandidateCommand {
+  bytes scope_id = 1;
+  uint32 non_authoritative_restrictions_bits = 2;
+}
+
+message UndoReceiptCommand {
+  TaskUndoClass receipt_undo_class = 1;
+}
+
+message MutateTaskNodeTopologyCommand {
+  bytes plan_id = 1;
+  PlanNodeLifecycleState observed_node_state = 2;
+}
+
+message OverrideTaskAttemptCommitCommand {}
+
+message OverrideEffectUnknownOperationCommand {
+  bool mark_succeeded = 1;
+}
+
 message ControlCommand {
   bytes control_command_id = 1;
   bytes issuer_principal_id = 2;
@@ -455,6 +1000,16 @@ message ControlCommand {
     ResumeResourceRecoveryCommand resume_resource_recovery = 18;
     DisableApplicationCommand disable_application = 19;
     UninstallApplicationCommand uninstall_application = 20;
+    RequestProcessMigrationCommand request_process_migration = 21;
+    PurgeTopicCommand purge_topic = 22;
+    UpdateSettingsDomainCommand update_settings_domain = 23;
+    SetContentTypeAssociationCommand set_content_type_association = 24;
+    IssueChooserGrantCommand issue_chooser_grant = 25;
+    MutateSearchCandidateCommand mutate_search_candidate = 26;
+    UndoReceiptCommand undo_receipt = 27;
+    MutateTaskNodeTopologyCommand mutate_task_node_topology = 28;
+    OverrideTaskAttemptCommitCommand override_task_attempt_commit = 29;
+    OverrideEffectUnknownOperationCommand override_effect_unknown_operation = 30;
   }
   string reason = 8;
 }

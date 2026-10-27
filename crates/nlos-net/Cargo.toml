@@ -1,0 +1,22 @@
+[package]
+name = "nlos-net"
+description = "Cross-physical-host TLS 1.3 mTLS transport, 5-axis TLS Exporter CellFence handshake, multiplexed dual-class framing, and deterministic RemoteCallOutcome socket classifier (ADR-0026 C-NET-TRANSPORT)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-cell = { path = "../nlos-cell" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-types = { path = "../nlos-types" }
+rustls.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true

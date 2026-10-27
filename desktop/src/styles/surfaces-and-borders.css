@@ -1,0 +1,709 @@
+/* ==========================================================================
+   NLOS Workstation Atomic Surfaces, 1px Hairlines, Tables & SOTA Primitives
+   Authority: Stage D Desktop Visual & UX Spec §0.1, §1.1–§1.3, §2A.1
+   ========================================================================== */
+
+@import "./tokens.css";
+
+/* ---- Base Workstation Typography & Numeric Discipline ---- */
+.nlos-workstation-root {
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  line-height: 1.4;
+  color: var(--nlos-text-primary);
+  background-color: var(--nlos-bg-backdrop);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+.nlos-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-mono {
+  font-family: var(--nlos-font-mono);
+  font-size: max(var(--nlos-fs-mono-xs), 12px);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Progressive Disclosure CSS Defense-in-Depth (L0..L3) ---- */
+[data-nlos-disclosure="L0"] .nlos-l3-only,
+[data-nlos-disclosure="L1"] .nlos-l3-only,
+[data-nlos-disclosure="L2"] .nlos-l3-only {
+  display: none !important;
+}
+
+[data-nlos-disclosure="L0"] .nlos-l2-up,
+[data-nlos-disclosure="L1"] .nlos-l2-up {
+  display: none !important;
+}
+
+/* ---- 100% Solid Opaque Workstation Surfaces & 1px Hairline Borders ---- */
+.nlos-surface-backdrop {
+  background-color: var(--nlos-bg-backdrop);
+  border-radius: 0px;
+}
+
+.nlos-surface-window {
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+}
+
+.nlos-surface-window--focused {
+  border-color: var(--nlos-border-focused);
+}
+
+.nlos-surface-window--floating {
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: 6px;
+  box-shadow: var(--nlos-shadow-floating);
+}
+
+.nlos-surface-chrome {
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border-radius: 0px;
+}
+
+.nlos-surface-elevated {
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: 4px;
+  box-shadow: var(--nlos-shadow-palette);
+}
+
+.nlos-surface-flyout {
+  width: var(--nlos-flyout-w);
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: 6px;
+  box-shadow: var(--nlos-shadow-floating);
+  z-index: var(--nlos-z3-flyout);
+}
+
+.nlos-surface-recessed {
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+}
+
+.nlos-scrim-z4 {
+  background-color: var(--nlos-scrim-z4);
+  z-index: var(--nlos-z4-security-screen);
+}
+
+.nlos-surface-modal-z4 {
+  width: var(--nlos-z4-dialog-w);
+  max-width: calc(100vw - 32px);
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-top: 2px solid var(--nlos-accent-primary);
+  border-radius: 6px;
+  box-shadow: var(--nlos-shadow-z4-dialog);
+  z-index: var(--nlos-z4-security-screen);
+}
+
+.nlos-hairline-top {
+  border-top: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-hairline-bottom {
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-hairline-left {
+  border-left: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-hairline-right {
+  border-right: 1px solid var(--nlos-border-hairline);
+}
+
+/* ---- 0px Taskbar & Window Titlebar Chrome ---- */
+.nlos-taskbar-shell {
+  height: var(--nlos-taskbar-h);
+  min-height: var(--nlos-taskbar-h);
+  max-height: var(--nlos-taskbar-h);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border-top: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--nlos-sp-2);
+  gap: var(--nlos-sp-2);
+  z-index: var(--nlos-z3-taskbar);
+}
+
+.nlos-window-titlebar {
+  height: var(--nlos-titlebar-h);
+  min-height: var(--nlos-titlebar-h);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--nlos-sp-2);
+  user-select: none;
+}
+
+/* ---- Rectangular 4px Controls, >= 26px Hit Targets & 2px Focus Rings ---- */
+.nlos-btn {
+  min-height: var(--nlos-hit-min);
+  min-width: var(--nlos-hit-min);
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition:
+    background-color var(--nlos-dur-fast) var(--nlos-ease-snappy),
+    border-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-btn:hover:not(:disabled) {
+  background-color: var(--nlos-bg-hover);
+}
+
+.nlos-btn:disabled {
+  color: var(--nlos-text-muted);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.nlos-btn--icon-only {
+  padding: 0;
+  width: var(--nlos-hit-min);
+}
+
+.nlos-btn--primary {
+  background-color: var(--nlos-accent-primary);
+  border-color: var(--nlos-accent-primary);
+  color: var(--nlos-accent-fg);
+}
+
+.nlos-btn--primary:hover:not(:disabled) {
+  background-color: var(--nlos-accent-primary-hover);
+  border-color: var(--nlos-accent-primary-hover);
+}
+
+.nlos-btn--danger {
+  background-color: var(--nlos-signal-danger);
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-fg);
+}
+
+.nlos-btn--armed {
+  background-color: var(--nlos-bg-recessed);
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+}
+
+.nlos-input {
+  min-height: var(--nlos-hit-min);
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-base);
+  font-variant-numeric: tabular-nums;
+  box-sizing: border-box;
+}
+
+.nlos-input:focus {
+  border-color: var(--nlos-border-input-focus);
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: -1px;
+}
+
+.nlos-focusable:focus-visible,
+.nlos-btn:focus-visible,
+.nlos-table-row:focus-visible,
+.nlos-breadcrumb__btn:focus-visible {
+  outline: 2px solid var(--nlos-accent-active);
+  outline-offset: 1px;
+}
+
+/* ---- High-Density Workstation Table (28px–32px Row Height, 0px Row Radius) ---- */
+.nlos-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  font-size: var(--nlos-fs-ui-sm);
+  font-variant-numeric: tabular-nums;
+  border-radius: 0px;
+}
+
+.nlos-table th {
+  height: var(--nlos-row-h-dense);
+  padding: 0 var(--nlos-sp-2);
+  text-align: left;
+  font-weight: 600;
+  color: var(--nlos-text-secondary);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  white-space: nowrap;
+}
+
+.nlos-table td {
+  height: 30px;
+  min-height: var(--nlos-row-h-dense);
+  max-height: var(--nlos-row-h-std);
+  padding: 0 var(--nlos-sp-2);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  vertical-align: middle;
+}
+
+.nlos-table-row {
+  background-color: var(--nlos-bg-window);
+  border-radius: 0px;
+  transition: background-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-table-row:hover {
+  background-color: var(--nlos-bg-hover);
+}
+
+.nlos-table-row[aria-selected="true"] {
+  background-color: var(--nlos-bg-active-row);
+}
+
+/* ---- Monochrome Geometric Icon Primitive ---- */
+.nlos-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+  color: currentColor;
+}
+
+/* ---- Recessed 32x20 Hardware-Instrument Verification Seal ---- */
+.nlos-verification-seal {
+  width: 32px;
+  height: 20px;
+  min-width: 32px;
+  min-height: 20px;
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.nlos-verification-seal__canvas {
+  width: 32px;
+  height: 20px;
+  display: block;
+}
+
+.nlos-verification-seal__fallback {
+  font-family: var(--nlos-font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--nlos-text-primary);
+  user-select: none;
+}
+
+/* ---- 16-State Status Indicator & Statutory Lock Badges ---- */
+.nlos-status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--nlos-fs-ui-sm);
+  line-height: 1.25;
+  border-radius: 0px;
+}
+
+.nlos-status-glyph {
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  min-height: 6px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* Circular border-radius strictly permitted ONLY on 6x6px geometric status dot */
+.nlos-status-dot-round {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--nlos-indicator-active);
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.nlos-status-cell--neutral .nlos-status-glyph {
+  color: var(--nlos-indicator-neutral);
+}
+.nlos-status-cell--neutral .nlos-status-label {
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-status-cell--active .nlos-status-glyph {
+  color: var(--nlos-indicator-active);
+}
+.nlos-status-cell--active .nlos-status-label {
+  color: var(--nlos-text-primary);
+}
+
+.nlos-status-cell--muted .nlos-status-glyph {
+  color: var(--nlos-text-muted);
+}
+.nlos-status-cell--muted .nlos-status-label {
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-status-cell--action .nlos-status-glyph {
+  color: var(--nlos-signal-action);
+}
+.nlos-status-cell--action .nlos-status-label {
+  color: var(--nlos-signal-action-text);
+  font-weight: 600;
+}
+
+.nlos-status-cell--danger .nlos-status-glyph {
+  color: var(--nlos-signal-danger);
+}
+.nlos-status-cell--danger .nlos-status-label {
+  color: var(--nlos-signal-danger-text);
+  font-weight: 600;
+}
+
+.nlos-status-enum {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+  padding: 0 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+  background-color: var(--nlos-bg-recessed);
+}
+
+.nlos-statutory-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 2px 6px;
+  background-color: var(--nlos-bg-recessed);
+  color: var(--nlos-text-secondary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+/* ---- SOTA-4 Nomad Triple-Watermark Bullet Micro-Bar ---- */
+.nlos-bullet-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-bullet-bar__trough {
+  position: relative;
+  height: 6px;
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.nlos-bullet-bar__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background-color: var(--nlos-indicator-active);
+  border-radius: 0px;
+}
+
+.nlos-bullet-bar--throttled-or-shrunk .nlos-bullet-bar__fill {
+  background-color: var(--nlos-indicator-neutral);
+}
+
+.nlos-bullet-bar--over-effective-cap .nlos-bullet-bar__fill {
+  background-color: var(--nlos-signal-danger);
+}
+
+.nlos-bullet-bar__cap-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background-color: var(--nlos-text-primary);
+}
+
+.nlos-bullet-bar--throttled-or-shrunk .nlos-bullet-bar__cap-tick,
+.nlos-bullet-bar--over-effective-cap .nlos-bullet-bar__cap-tick {
+  background-color: var(--nlos-signal-action);
+}
+
+.nlos-bullet-bar__readout {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- SOTA-3 Temporal / Perfetto Attempt Race & 5-Segment Fiber Waterfall ---- */
+.nlos-waterfall-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-attempt-lane {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-waterfall-track {
+  position: relative;
+  height: 6px;
+  width: 100%;
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  box-sizing: border-box;
+}
+
+.nlos-attempt-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: var(--nlos-indicator-active);
+  border-radius: 0px;
+}
+
+.nlos-attempt-span--superseded,
+.nlos-attempt-span--cancelled {
+  background-color: var(--nlos-text-muted);
+}
+
+.nlos-attempt-span--failed {
+  background-color: var(--nlos-signal-danger);
+}
+
+.nlos-fiber-seg {
+  height: 100%;
+  border-radius: 0px;
+}
+
+.nlos-fiber-seg--cpu {
+  background-color: var(--nlos-indicator-active);
+}
+.nlos-fiber-seg--sched {
+  background-color: var(--nlos-indicator-neutral);
+}
+.nlos-fiber-seg--ext {
+  background-color: var(--nlos-border-focused);
+}
+.nlos-fiber-seg--bp {
+  background-color: var(--nlos-signal-action);
+}
+.nlos-fiber-seg--susp {
+  background-color: var(--nlos-text-muted);
+}
+
+.nlos-fault-domain-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 2px;
+}
+
+/* ---- SOTA-1 Headlamp Non-Modal Inspector Drawer & Scope Breadcrumb ---- */
+.nlos-inspector-drawer {
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  border-radius: 0px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.nlos-inspector-drawer--right {
+  width: var(--nlos-inspector-w);
+  height: 100%;
+  border-left: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-inspector-drawer--bottom {
+  width: 100%;
+  height: var(--nlos-inspector-bottom-h);
+  border-top: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-inspector-drawer__header {
+  min-height: var(--nlos-titlebar-h);
+  padding: 4px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+}
+
+.nlos-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-breadcrumb__btn {
+  min-height: var(--nlos-hit-min);
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-mono-xs);
+  cursor: pointer;
+}
+
+.nlos-breadcrumb__btn:hover {
+  background-color: var(--nlos-bg-hover);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-breadcrumb__btn[aria-current="page"] {
+  color: var(--nlos-text-primary);
+  font-weight: 600;
+}
+
+.nlos-inspector-drawer__body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--nlos-sp-3);
+}
+
+/* ---- SOTA-6 Terraform Plan Blast-Radius Diff Preview ---- */
+.nlos-blast-diff {
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 4px;
+  background-color: var(--nlos-bg-window);
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-blast-diff__summary {
+  padding: 6px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-blast-diff__dataloss {
+  padding: 6px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-recessed);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  border-left: 2px solid var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+  font-size: var(--nlos-fs-ui-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nlos-blast-diff__op {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-weight: 600;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+
+.nlos-blast-diff__op--add {
+  color: var(--nlos-text-primary);
+}
+.nlos-blast-diff__op--mod {
+  color: var(--nlos-signal-action-text);
+}
+.nlos-blast-diff__op--del {
+  color: var(--nlos-signal-danger-text);
+}
+.nlos-blast-diff__op--exempt {
+  color: var(--nlos-text-secondary);
+}
+
+/* ---- L3-Only Receipt & CLI Byte-Parity Audit Bar ---- */
+.nlos-receipt-audit-bar {
+  min-height: 32px;
+  padding: 4px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  border-top: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--nlos-sp-2);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nlos-btn,
+  .nlos-table-row {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

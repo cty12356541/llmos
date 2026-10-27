@@ -1,9 +1,10 @@
-//! llmos 任务管理器 Tauri 壳(W32-A 只读半 + W32-B 写入半)。
+//! llmos 任务管理器 Tauri 壳(W32-A 只读半 + W32-B 写入半 + W69 IPC-D1..D8 12 域显控同构桥)。
 //!
 //! 后端命令层(`ipc`)经 ADR-0011 认证入口连接真实 SystemControl IPC;
 //! 前端渲染 SABI Receipt 数据。W32-B 增加授权控制动作
 //! (ack/resume/pause/cancel/kill/throttle/reclaim)的 GUI 派发与 Receipt
-//! 展示;parity 钉死(W32-C)不在本壳的实现范围内。
+//! 展示;W69-D-IPC-ENUM 补齐 inspect_search / inspect_notification 与
+//! IPC-D1..D8 12 域有界游标枚举、爆炸半径预演及控制命令状态对账桥。
 
 pub mod dto;
 pub mod error;
@@ -14,7 +15,7 @@ pub mod window_lifecycle;
 /// 开发夹具:仅在 Unix + `dev-fixture` feature 下编译(dev_server 示例与
 /// unix 侧集成测试)。夹具 harness 硬编码 Unix socket 路径与
 /// `/dev/urandom`,Windows 移植属后续车道;Windows 侧认证面证据走
-/// `tests/windows_authenticated_pipe_side.rs`(命名管道端到端)。
+/// `tests/windows_authenticated_pipe_side.rs` 与 `tests/ipc_enum_symmetry_side.rs`(命名管道端到端)。
 #[cfg(all(unix, feature = "dev-fixture"))]
 pub mod devfixture;
 
@@ -46,6 +47,31 @@ pub fn run() {
             ipc::inspect_resource_cost,
             ipc::cost_fact_check,
             ipc::present_surfaces,
+            ipc::inspect_search,
+            ipc::inspect_notification,
+            ipc::list_tasks,
+            ipc::list_task_groups,
+            ipc::list_task_nodes,
+            ipc::list_task_attempts,
+            ipc::list_execution_fibers,
+            ipc::list_operations,
+            ipc::list_installed_applications,
+            ipc::query_search_candidates,
+            ipc::poll_desktop_watermark_events,
+            ipc::inspect_settings_domain,
+            ipc::list_content_type_associations,
+            ipc::list_keychain_references,
+            ipc::list_chooser_grants,
+            ipc::list_workspaces,
+            ipc::inspect_workspace,
+            ipc::list_processes,
+            ipc::list_resource_reservations,
+            ipc::list_topics,
+            ipc::list_notifications,
+            ipc::list_cells,
+            ipc::inspect_cell_leases,
+            ipc::preview_control_blast_radius,
+            ipc::query_control_command_status,
         ])
         .run(tauri::generate_context!())
     {

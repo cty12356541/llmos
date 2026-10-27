@@ -1,0 +1,223 @@
+/* ==========================================================================
+   NLOS Desktop Design System v2.0 (W68-R1 / W68-R2) — Industrial Workstation
+   Authority: ADR-0025 Rev 2 + Stage D Desktop Visual & UX Specification §1.1
+   Discipline:
+     - 100% solid opaque neutral surfaces (zero frosted-glass blur filters)
+     - Zero neon glow, zero radial glow, zero decorative background grids
+     - Strict industrial radii: 0px (taskbar/tiles/drawer), 2px (micro), 4px (controls), 6px (float/modal)
+     - Strict bipolar semantic signals (#D97706 action / #DC2626 danger) & zero pictographic emoji
+   ========================================================================== */
+
+:root,
+[data-nlos-theme="graphite-workstation"],
+[data-nlos-theme="system"] {
+  color-scheme: dark;
+
+  /* ---- 1. 100% Solid Opaque Neutral Workstation Surfaces ---- */
+  --nlos-bg-backdrop: #111214;
+  --nlos-bg-window: #18191c;
+  --nlos-bg-chrome: #1e2024;
+  --nlos-bg-elevated: #23252a;
+  --nlos-bg-hover: #2a2d33;
+  --nlos-bg-active-row: #252830;
+  --nlos-bg-recessed: #111214;
+  --nlos-scrim-z4: rgba(10, 11, 13, 0.78);
+
+  /* ---- 2. 1px Structural Hairline Borders & Focus Boundaries ---- */
+  --nlos-border-hairline: #2e3138;
+  --nlos-border-focused: #4b515d;
+  --nlos-border-input-focus: #3b82f6;
+
+  /* ---- 3. High-Contrast Neutral Workstation Typography Ink ---- */
+  --nlos-text-primary: #ecedee;
+  --nlos-text-secondary: #9da3ae;
+  --nlos-text-muted: #6b7280;
+
+  /* ---- 4. Single Utilitarian Engineering Blue Accent ---- */
+  --nlos-accent-primary: #2563eb;
+  --nlos-accent-primary-hover: #1d4ed8;
+  --nlos-accent-active: #3b82f6;
+  --nlos-accent-fg: #ffffff;
+
+  /* ---- 5. Monochrome Status Glyphs & Strict Bipolar Semantic Signals ---- */
+  --nlos-indicator-neutral: #9da3ae;
+  --nlos-indicator-active: #ecedee;
+  --nlos-signal-action: #d97706;
+  --nlos-signal-action-text: #f59e0b;
+  --nlos-signal-danger: #dc2626;
+  --nlos-signal-danger-text: #f87171;
+  --nlos-signal-danger-fg: #ffffff;
+
+  /* ---- 6. Neutral Structural Elevation Shadows (Zero Neon Glow) ---- */
+  --nlos-shadow-floating:
+    0 12px 28px rgba(0, 0, 0, 0.48),
+    0 2px 6px rgba(0, 0, 0, 0.32);
+  --nlos-shadow-palette:
+    0 16px 36px rgba(0, 0, 0, 0.56),
+    0 2px 8px rgba(0, 0, 0, 0.36);
+  --nlos-shadow-z4-dialog:
+    0 20px 48px rgba(0, 0, 0, 0.68),
+    0 4px 12px rgba(0, 0, 0, 0.42);
+}
+
+/* ==========================================================================
+   Paper Workstation (Built-in Light Theme — Zero-Glare Daytime Workstation)
+   ========================================================================== */
+[data-nlos-theme="paper-workstation"] {
+  color-scheme: light;
+
+  --nlos-bg-backdrop: #e5e7eb;
+  --nlos-bg-window: #ffffff;
+  --nlos-bg-chrome: #f3f4f6;
+  --nlos-bg-elevated: #ffffff;
+  --nlos-bg-hover: #eaecef;
+  --nlos-bg-active-row: #eff3f8;
+  --nlos-bg-recessed: #f3f4f6;
+  --nlos-scrim-z4: rgba(10, 11, 13, 0.78);
+
+  --nlos-border-hairline: #d1d5db;
+  --nlos-border-focused: #9ca3af;
+  --nlos-border-input-focus: #1d4ed8;
+
+  --nlos-text-primary: #111827;
+  --nlos-text-secondary: #4b5563;
+  --nlos-text-muted: #6b7280;
+
+  --nlos-accent-primary: #1d4ed8;
+  --nlos-accent-primary-hover: #1e40af;
+  --nlos-accent-active: #1d4ed8;
+  --nlos-accent-fg: #ffffff;
+
+  --nlos-indicator-neutral: #4b5563;
+  --nlos-indicator-active: #111827;
+  --nlos-signal-action: #d97706;
+  --nlos-signal-action-text: #b45309;
+  --nlos-signal-danger: #dc2626;
+  --nlos-signal-danger-text: #b91c1c;
+  --nlos-signal-danger-fg: #ffffff;
+
+  --nlos-shadow-floating:
+    0 10px 24px rgba(17, 24, 39, 0.14),
+    0 2px 6px rgba(17, 24, 39, 0.08);
+  --nlos-shadow-palette:
+    0 14px 32px rgba(17, 24, 39, 0.18),
+    0 2px 8px rgba(17, 24, 39, 0.09);
+  --nlos-shadow-z4-dialog:
+    0 20px 44px rgba(17, 24, 39, 0.26),
+    0 4px 12px rgba(17, 24, 39, 0.12);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-nlos-theme="system"] {
+    color-scheme: light;
+
+    --nlos-bg-backdrop: #e5e7eb;
+    --nlos-bg-window: #ffffff;
+    --nlos-bg-chrome: #f3f4f6;
+    --nlos-bg-elevated: #ffffff;
+    --nlos-bg-hover: #eaecef;
+    --nlos-bg-active-row: #eff3f8;
+    --nlos-bg-recessed: #f3f4f6;
+    --nlos-scrim-z4: rgba(10, 11, 13, 0.78);
+
+    --nlos-border-hairline: #d1d5db;
+    --nlos-border-focused: #9ca3af;
+    --nlos-border-input-focus: #1d4ed8;
+
+    --nlos-text-primary: #111827;
+    --nlos-text-secondary: #4b5563;
+    --nlos-text-muted: #6b7280;
+
+    --nlos-accent-primary: #1d4ed8;
+    --nlos-accent-primary-hover: #1e40af;
+    --nlos-accent-active: #1d4ed8;
+    --nlos-accent-fg: #ffffff;
+
+    --nlos-indicator-neutral: #4b5563;
+    --nlos-indicator-active: #111827;
+    --nlos-signal-action: #d97706;
+    --nlos-signal-action-text: #b45309;
+    --nlos-signal-danger: #dc2626;
+    --nlos-signal-danger-text: #b91c1c;
+    --nlos-signal-danger-fg: #ffffff;
+
+    --nlos-shadow-floating:
+      0 10px 24px rgba(17, 24, 39, 0.14),
+      0 2px 6px rgba(17, 24, 39, 0.08);
+    --nlos-shadow-palette:
+      0 14px 32px rgba(17, 24, 39, 0.18),
+      0 2px 8px rgba(17, 24, 39, 0.09);
+    --nlos-shadow-z4-dialog:
+      0 20px 44px rgba(17, 24, 39, 0.26),
+      0 4px 12px rgba(17, 24, 39, 0.12);
+  }
+}
+
+/* ==========================================================================
+   Typography, Workstation Geometry, 5-Plane Z-Stack & Crisp Motion
+   ========================================================================== */
+:root {
+  /* ---- Font Stacks (System UI Sans + Engineering Monospace) ---- */
+  --nlos-font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
+  --nlos-font-mono:
+    ui-monospace, "Cascadia Mono", "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
+
+  /* ---- Compact Workstation Type Scale (Monospace Floor >= 12px) ---- */
+  --nlos-fs-mono-xs: 0.75rem;      /* 12px — strict minimum floor: clock, kbd, L3 IDs */
+  --nlos-fs-ui-sm: 0.8125rem;      /* 13px — high-density table rows, taskbar tabs, buttons */
+  --nlos-fs-ui-base: 0.875rem;     /* 14px — standard forms, palette items, Z4 spec rows */
+  --nlos-fs-input-cmd: 0.9375rem;  /* 15px — Ctrl+Space command & intent input */
+  --nlos-fs-title-sm: 1rem;        /* 16px — Z4 security dialog & section titles */
+  --nlos-fs-stat-md: 1.25rem;      /* 20px — core telemetry numerals (tabular-nums) */
+
+  /* ---- 4px Grid Spacing & Strict Industrial Radii {0px, 2px, 4px, 6px} ---- */
+  --nlos-sp-1: 4px;
+  --nlos-sp-2: 8px;
+  --nlos-sp-3: 12px;
+  --nlos-sp-4: 16px;
+  --nlos-sp-5: 24px;
+
+  --nlos-radius-none: 0px;
+  --nlos-radius-micro: 2px;
+  --nlos-radius-ctrl: 4px;
+  --nlos-radius-win: 6px;
+
+  /* ---- Workstation Shell & Hit-Target Metrics ---- */
+  --nlos-tile-gap: 4px;
+  --nlos-titlebar-h: 30px;
+  --nlos-taskbar-h: 36px;
+  --nlos-taskbar-trigger-h: 26px;
+  --nlos-hit-min: 26px;
+  --nlos-row-h-dense: 28px;
+  --nlos-row-h-std: 32px;
+  --nlos-flyout-w: 360px;
+  --nlos-inspector-w: 420px;
+  --nlos-inspector-bottom-h: 36%;
+  --nlos-palette-max-w: 640px;
+  --nlos-z4-dialog-w: 520px;
+  --nlos-focus-ring-w: 2px;
+
+  /* ---- 5-Plane Z-Index Contract (Z0..Z4) ---- */
+  --nlos-z0-backdrop: 0;
+  --nlos-z1-task-pane: 100;
+  --nlos-z2-window-base: 200;
+  --nlos-z3-taskbar: 400;
+  --nlos-z3-flyout: 430;
+  --nlos-z3-palette: 460;
+  --nlos-z4-security-screen: 900;
+
+  /* ---- Crisp Snappy Transitions ---- */
+  --nlos-ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+  --nlos-dur-fast: 80ms;
+  --nlos-dur-base: 140ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --nlos-dur-fast: 0ms;
+    --nlos-dur-base: 0ms;
+  }
+}

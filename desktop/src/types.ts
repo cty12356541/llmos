@@ -5,6 +5,70 @@ export interface DesktopFailure {
   message: string;
 }
 
+/** `[CONS-CTRL-001]` / `[UI-PARITY-001]` 非权威搜索五禁全集掩码(`0x1F`)。 */
+export const SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL = 0x1f as const;
+
+/** SABI `SystemControl` 有界分页单次最大页宽(`limit <= 64`)。 */
+export const MAX_SYSTEM_CONTROL_ENUM_LIMIT = 64 as const;
+
+/** SABI `PollDesktopWatermarkEvents` 有界水位线事件单次最大页宽(`limit <= 128`)。 */
+export const MAX_DESKTOP_WATERMARK_EVENT_LIMIT = 128 as const;
+
+/** `IPC-D8`: 显式一等控制作用域枚举(`ControlScope` 1..=17)。 */
+export type ControlScopeDto =
+  | "system"
+  | "operation"
+  | "workspace"
+  | "application"
+  | "task"
+  | "task-group"
+  | "task-node"
+  | "task-attempt"
+  | "process"
+  | "agent-instance"
+  | "execution-fiber"
+  | "resource-group"
+  | "context"
+  | "topic"
+  | "channel"
+  | "device"
+  | "cell";
+
+export type SettingsDomainKindDto =
+  | "system"
+  | "user"
+  | "workspace"
+  | "application";
+
+export type TaskUndoClassDto =
+  | "reversible"
+  | "compensatable"
+  | "irreversible";
+
+export type PlanNodeStateDto =
+  | "declared"
+  | "eligible"
+  | "active"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "skipped";
+
+export type ScopedControlVerbDto =
+  | "pause"
+  | "resume"
+  | "cancel"
+  | "kill"
+  | "throttle"
+  | "reclaim"
+  | "disable-application"
+  | "uninstall-application";
+
+export type PreviewActionDto =
+  | ScopedControlVerbDto
+  | "migrate"
+  | "purge-topic";
+
 export interface RecoveryAlertDto {
   planIdHex: string;
   totalFailures: number;
@@ -169,6 +233,409 @@ export type OutcomeDto =
   | { kind: "application_disabled"; receiptIdHex: string }
   | { kind: "application_uninstalled"; receiptIdHex: string };
 
+/** Stage D (`IPC-D1..D8`) 十二域有界枚举、水位线、爆炸半径预演与命令状态对账 DTO。 */
+export interface TaskSummaryDto {
+  taskIdHex: string;
+  planIdHex: string;
+  applicationIdHex: string | null;
+  installationGeneration: number;
+  planRevision: number;
+  taskState: string;
+  undoClass: string;
+  reservationIdHex: string | null;
+  cellIdHex: string | null;
+  updatedAtMs: number;
+  expectedGenerationOrRevision: number;
+}
+
+export interface TaskGroupSummaryDto {
+  groupIdHex: string;
+  taskIdHex: string;
+  parentGroupIdHex: string | null;
+  state: string;
+  membershipGeneration: number;
+  stateSeq: number;
+  depth: number;
+  cancelEpoch: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface TaskNodeSummaryDto {
+  planIdHex: string;
+  nodeIdHex: string;
+  nodeKind: string;
+  state: string;
+  declaredRevision: number;
+  nodeDigestHex: string;
+  transitionCount: number;
+  residencyTier: string;
+  residencyTransitionCount: number;
+  firstDeclaredAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface TaskAttemptSummaryDto {
+  attemptIdHex: string;
+  taskIdHex: string;
+  nodeIdHex: string | null;
+  state: string;
+  isolationDomainIdHex: string;
+  providerIsolationUnverified: boolean;
+  casWinner: boolean;
+  expectedGenerationOrRevision: number;
+  startedAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ExecutionFiberSummaryDto {
+  fiberIdHex: string;
+  generation: number;
+  state: string;
+  lifecyclePhase: string;
+  activeCpuMs: number;
+  elapsedWallMs: number;
+  schedulerWaitMs: number;
+  externalWaitMs: number;
+  backpressureWaitMs: number;
+  suspendedMs: number;
+  processIdHex: string | null;
+  sharedThreadLike: boolean;
+}
+
+export interface DurableOperationSummaryDto {
+  operationIdHex: string;
+  generation: number;
+  state: string;
+  cancelEpoch: number;
+  ownerFiberIdHex: string;
+  ownerFiberGeneration: number;
+  outcomeReceiptIdHex: string | null;
+}
+
+export interface InstalledApplicationSummaryDto {
+  applicationIdHex: string;
+  installationIdHex: string;
+  packageIdHex: string;
+  packageManifestDigestHex: string;
+  currentInstallationGeneration: number;
+  status: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface SearchCandidateDto {
+  candidateIdHex: string;
+  objectIdHex: string;
+  scopeIdHex: string;
+  titleSnippet: string;
+  rankScoreMilli: number;
+  nonAuthoritativeRestrictionsBits: number;
+}
+
+export interface DesktopWatermarkEventDto {
+  watermark: number;
+  domainScope: string;
+  entityIdHex: string;
+  newGenerationOrRevision: number;
+  stateDigestHex: string;
+  occurredAtMs: number;
+}
+
+export interface SettingsEntryDto {
+  key: string;
+  valueCborHex: string;
+  revision: number;
+}
+
+export interface ContentTypeAssociationDto {
+  associationIdHex: string;
+  contentType: string;
+  applicationIdHex: string;
+  expectedGenerationOrRevision: number;
+}
+
+export interface KeychainReferenceDto {
+  keychainRefIdHex: string;
+  ownerPrincipalIdHex: string;
+  label: string;
+  publicFingerprintHex: string;
+  expectedGenerationOrRevision: number;
+  hardwareBacked: boolean;
+}
+
+export interface ChooserGrantDto {
+  grantIdHex: string;
+  applicationIdHex: string;
+  chooserKind: number;
+  resourceHandleHex: string;
+  expectedGenerationOrRevision: number;
+  expiresAtMs: number;
+}
+
+export interface WorkspaceDto {
+  workspaceIdHex: string;
+  name: string;
+  layoutPreset: number;
+  activeSurfaceCount: number;
+  focusedTaskIdHex: string | null;
+  expectedGenerationOrRevision: number;
+  updatedAtMs: number;
+}
+
+export interface ProcessSummaryDto {
+  processIdHex: string;
+  expectedGenerationOrRevision: number;
+  agentInstanceIdHex: string;
+  taskIdHex: string;
+  taskAttemptIdHex: string;
+  isolationDomainIdHex: string;
+  cellIdHex: string | null;
+  lifecycleState: number;
+}
+
+export interface ResourceReservationSummaryDto {
+  reservationIdHex: string;
+  accountIdHex: string;
+  actualUsage: number;
+  effectiveGranted: number;
+  requestedCeiling: number;
+  contextResidencyTier: string;
+  expectedGenerationOrRevision: number;
+}
+
+export interface TopicSummaryDto {
+  topicIdHex: string;
+  channelIdHex: string;
+  channelGeneration: number;
+  nameHex: string;
+  activeSubscriptions: number;
+  policyDigestHex: string;
+  createdAtMs: number;
+  expectedGenerationOrRevision: number;
+  retainedMessages: number;
+}
+
+export interface NotificationSummaryDto {
+  notificationIdHex: string;
+  topicIdHex: string;
+  subscriberKeyHex: string;
+  nextSequence: number;
+  historyEntryCount: number;
+  historyTruncated: boolean;
+  pruneWatermarkSequence: number;
+  expectedGenerationOrRevision: number;
+}
+
+export interface CellSummaryDto {
+  cellIdHex: string;
+  cellLabel: string;
+  reachability: string;
+  partitionAutonomyGate: string;
+  currentEpoch: number;
+  activeLeaseCount: number;
+  expectedGenerationOrRevision: number;
+}
+
+export interface CellLeaseDto {
+  leaseIdHex: string;
+  cellIdHex: string;
+  kind: string;
+  lockState: string;
+  holderIdHex: string;
+  remainingHolderTtlMs: number;
+  leaseEpoch: number;
+  clockSkewHorizonMs: number;
+}
+
+export interface ControlBlastRadiusImpactDto {
+  sign: string;
+  affectedScope: string;
+  affectedIdHex: string;
+  currentGenerationOrRevision: number;
+  summaryCode: string;
+}
+
+export type StageDEnumOutcomeDto =
+  | {
+      kind: "stale_generation";
+      view: string;
+      targetIdHex: string | null;
+      expectedGeneration: number;
+      currentGeneration: number;
+    }
+  | {
+      kind: "tasks_listed";
+      tasks: TaskSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "task_groups_listed";
+      groups: TaskGroupSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "task_nodes_listed";
+      planIdHex: string;
+      currentPlanRevision: number;
+      staleGeneration: boolean;
+      nodes: TaskNodeSummaryDto[];
+      metadataOnlyCollapsedCount: number;
+      coldCollapsedCount: number;
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "task_attempts_listed";
+      currentGeneration: number;
+      staleGeneration: boolean;
+      attempts: TaskAttemptSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "execution_fibers_listed";
+      currentGeneration: number;
+      staleGeneration: boolean;
+      fibers: ExecutionFiberSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "operations_listed";
+      currentGeneration: number;
+      staleGeneration: boolean;
+      operations: DurableOperationSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "installed_applications_listed";
+      applications: InstalledApplicationSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "search_candidates_queried";
+      scopeIdHex: string;
+      nonAuthoritativeRestrictionsBits: number;
+      achievedConsistency: number;
+      failedShards: number[];
+      candidates: SearchCandidateDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "desktop_watermark_polled";
+      currentWatermark: number;
+      events: DesktopWatermarkEventDto[];
+      truncated: boolean;
+    }
+  | {
+      kind: "settings_domain_inspected";
+      domainKind: string;
+      scopeTargetIdHex: string | null;
+      domainRevision: number;
+      entries: SettingsEntryDto[];
+    }
+  | {
+      kind: "content_type_associations_listed";
+      associations: ContentTypeAssociationDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "keychain_references_listed";
+      references: KeychainReferenceDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "chooser_grants_listed";
+      grants: ChooserGrantDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "workspaces_listed";
+      workspaces: WorkspaceDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | ({ kind: "workspace_inspected" } & WorkspaceDto)
+  | {
+      kind: "processes_listed";
+      processes: ProcessSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "resource_reservations_listed";
+      reservations: ResourceReservationSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "topics_listed";
+      topics: TopicSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "notifications_listed";
+      notifications: NotificationSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "cells_listed";
+      cells: CellSummaryDto[];
+      nextCursorHex: string | null;
+      truncated: boolean;
+    }
+  | {
+      kind: "cell_leases_inspected";
+      cellIdHex: string;
+      leases: CellLeaseDto[];
+      truncated: boolean;
+    }
+  | {
+      kind: "blast_radius_previewed";
+      targetScope: string;
+      targetIdHex: string;
+      previewAction: number;
+      statutoryLockBlocked: boolean;
+      statutoryLockCode: string;
+      impacts: ControlBlastRadiusImpactDto[];
+      truncated: boolean;
+    }
+  | {
+      kind: "command_status_queried";
+      controlCommandIdHex: string;
+      state: string;
+      scope: string;
+      targetIdHex: string;
+      receiptIdHex: string | null;
+      failureCode: string | null;
+      failureRetry: string | null;
+      failureSafeMessage: string | null;
+    };
+
+export type StageDMutationOutcomeDto =
+  | { kind: "process_migration_requested"; receiptIdHex: string }
+  | { kind: "topic_purged"; receiptIdHex: string }
+  | { kind: "settings_domain_updated"; receiptIdHex: string }
+  | { kind: "content_type_association_set"; receiptIdHex: string }
+  | { kind: "chooser_grant_issued"; receiptIdHex: string }
+  | { kind: "receipt_undone"; receiptIdHex: string };
+
+export type ExtendedOutcomeDto =
+  | OutcomeDto
+  | StageDEnumOutcomeDto
+  | StageDMutationOutcomeDto;
+
 /** mutation 成功形态(渲染样式与读侧巡检区分)。 */
 export const MUTATION_OUTCOME_KINDS: ReadonlySet<OutcomeDto["kind"]> = new Set([
   "acknowledged",
@@ -183,25 +650,210 @@ export const MUTATION_OUTCOME_KINDS: ReadonlySet<OutcomeDto["kind"]> = new Set([
   "application_uninstalled",
 ]);
 
-/** W32-B 授权动作(serde tag 与 CLI operation 名一致;desktop/src-tauri/src/ipc.rs 为权威)。 */
-export type ControlActionInput =
-  | { action: "ack-recovery-alert"; planIdHex: string; expectedTotalFailures: number; reason: string }
-  | { action: "ack-semantic-recovery-alert"; planIdHex: string; expectedTotalFailures: number; reason: string }
-  | { action: "resume-semantic-recovery"; planIdHex: string; expectedTotalFailures: number; reason: string }
-  | { action: "ack-resource-recovery-alert"; planIdHex: string; expectedTotalFailures: number; reason: string }
-  | { action: "resume-resource-recovery"; planIdHex: string; expectedTotalFailures: number; reason: string }
-  | { action: "pause-operation"; targetIdHex: string; expectedRevision: number; reason: string }
-  | { action: "resume-operation"; targetIdHex: string; expectedRevision: number; reason: string }
-  | { action: "cancel-operation"; targetIdHex: string; expectedRevision: number; reason: string }
-  | { action: "kill-operation"; targetIdHex: string; expectedRevision: number; reason: string }
-  | { action: "throttle-operation"; targetIdHex: string; expectedRevision: number; throttlePercent: number; reason: string }
-  | { action: "reclaim-operation"; targetIdHex: string; expectedRevision: number; reason: string };
+export const STAGE_D_MUTATION_OUTCOME_KINDS: ReadonlySet<
+  StageDMutationOutcomeDto["kind"]
+> = new Set([
+  "process_migration_requested",
+  "topic_purged",
+  "settings_domain_updated",
+  "content_type_association_set",
+  "chooser_grant_issued",
+  "receipt_undone",
+]);
 
-export interface ReceiptDto {
+/** W32-B + Stage D 应用生命周期与显式 ControlScope 授权动作(desktop/src-tauri/src/ipc.rs 为权威)。 */
+export type ControlActionInput =
+  | {
+      action: "ack-recovery-alert";
+      planIdHex: string;
+      expectedTotalFailures: number;
+      reason: string;
+    }
+  | {
+      action: "ack-semantic-recovery-alert";
+      planIdHex: string;
+      expectedTotalFailures: number;
+      reason: string;
+    }
+  | {
+      action: "resume-semantic-recovery";
+      planIdHex: string;
+      expectedTotalFailures: number;
+      reason: string;
+    }
+  | {
+      action: "ack-resource-recovery-alert";
+      planIdHex: string;
+      expectedTotalFailures: number;
+      reason: string;
+    }
+  | {
+      action: "resume-resource-recovery";
+      planIdHex: string;
+      expectedTotalFailures: number;
+      reason: string;
+    }
+  | {
+      action: "pause-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "resume-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "cancel-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "kill-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "throttle-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      throttlePercent: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "reclaim-operation";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "disable-application";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "uninstall-application";
+      targetIdHex: string;
+      expectedRevision: number;
+      scope?: ControlScopeDto;
+      reason: string;
+    }
+  | {
+      action: "scoped-operation";
+      scope: ControlScopeDto;
+      verb: ScopedControlVerbDto;
+      targetIdHex: string;
+      expectedRevision: number;
+      throttlePercent?: number;
+      reason: string;
+    };
+
+/** Stage D 跨十二域写路径动作与五大法定不可篡改锁探针。 */
+export type StageDControlActionInput =
+  | {
+      action: "request-process-migration";
+      processIdHex: string;
+      destinationCellIdHex: string;
+      expectedRevision: number;
+      reason: string;
+    }
+  | {
+      action: "purge-topic";
+      topicIdHex: string;
+      expectedRevision: number;
+      acknowledgeDataLoss?: boolean;
+      reason: string;
+    }
+  | {
+      action: "update-settings-domain";
+      domainKind: SettingsDomainKindDto;
+      scope?: ControlScopeDto;
+      scopeTargetIdHex?: string | null;
+      expectedDomainRevision: number;
+      key: string;
+      valueCborHex: string;
+      reason: string;
+    }
+  | {
+      action: "set-content-type-association";
+      associationIdHex: string;
+      contentType: string;
+      applicationIdHex: string;
+      expectedRevision: number;
+      reason: string;
+    }
+  | {
+      action: "issue-chooser-grant";
+      grantIdHex: string;
+      applicationIdHex: string;
+      chooserKind: number;
+      resourceHandleHex: string;
+      expectedRevision: number;
+      reason: string;
+    }
+  | {
+      action: "undo-receipt";
+      scope?: ControlScopeDto;
+      targetIdHex: string;
+      undoClass: TaskUndoClassDto;
+      expectedRevision: number;
+      reason: string;
+    }
+  | {
+      action: "mutate-search-candidate";
+      candidateIdHex: string;
+      scopeIdHex: string;
+      restrictionsBits?: number;
+      expectedRevision: number;
+      reason: string;
+    }
+  | {
+      action: "mutate-task-node-topology";
+      planIdHex: string;
+      nodeIdHex: string;
+      observedState: PlanNodeStateDto;
+      expectedPlanRevision: number;
+      reason: string;
+    }
+  | {
+      action: "override-task-attempt-commit";
+      attemptIdHex: string;
+      expectedGeneration: number;
+      reason: string;
+    }
+  | {
+      action: "override-effect-unknown-operation";
+      operationIdHex: string;
+      markSucceeded?: boolean;
+      expectedGeneration: number;
+      reason: string;
+    };
+
+export type AnyControlActionInput =
+  | ControlActionInput
+  | StageDControlActionInput;
+
+export interface TypedReceiptDto<O = ExtendedOutcomeDto> {
   controlCommandIdHex: string;
   correlationIdHex: string;
   /** ControlReceipt::to_bytes 的 hex——与 CLI `RECEIPT <hex>` 同一等价契约。 */
   receiptHex: string;
+  outcome: O;
+}
+
+export interface ReceiptDto extends TypedReceiptDto<OutcomeDto> {
   outcome: OutcomeDto;
 }
 

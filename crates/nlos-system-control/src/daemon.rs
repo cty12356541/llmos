@@ -149,10 +149,12 @@ use crate::application_inspector::ApplicationAuthorityInspector;
 use crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor;
 use crate::auth::EndpointListener;
 use crate::auth::authenticated_serve_one_control;
+use crate::cell_inspector::LocalSingleNodeCellInspector;
 use crate::control::{
     CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand, ControlError,
     ControlReceipt,
 };
+use crate::desktop_enum::InMemoryDesktopControlSurface;
 use crate::fiber_inspector::TokioExecutionFiberSource;
 use crate::materialization_driver::{
     MaterializationDriver, MaterializationDriverConfig, MaterializationDriverHealth,
@@ -835,6 +837,11 @@ pub struct SystemControlDaemon {
     pub operations: SqliteOperationStore,
     /// Live runtime adapter behind the `ExecutionFiber` inspect seam.
     pub runtime: TokioRuntimeAdapter,
+    /// Stage D desktop enumeration, settings/chooser/content-type/keychain,
+    /// blast-radius preview, and idempotent command-status ledger surface.
+    pub desktop_surface: Arc<InMemoryDesktopControlSurface>,
+    /// Stage D single-node cell topology and lease inspector seam (`IPC-D7`).
+    pub cell_inspector: Arc<LocalSingleNodeCellInspector>,
     /// In-process supervisor pid registry behind the kill arm's platform
     /// adapter (daemon-lifetime memory instance; see
     /// [`Self::register_supervisor_pid`] for the honest registration-surface
@@ -974,7 +981,13 @@ impl SystemControlDaemon {
         .with_topic_source(&topics)
         .with_operation_source(&operations)
         .with_operation_executor(&operation_arms)
-        .with_application_executor(&applications);
+        .with_application_executor(&applications)
+        .with_desktop_enumeration_source(self.desktop_surface.as_ref())
+        .with_desktop_mutation_executor(self.desktop_surface.as_ref())
+        .with_reconciliation_source(self.desktop_surface.as_ref())
+        .with_command_status_ledger(self.desktop_surface.command_ledger())
+        .with_cell_topology_inspector(self.cell_inspector.as_ref())
+        .with_cell_lease_inspector(self.cell_inspector.as_ref());
         let process = ProcessAuthorityInspector::new(self.process.as_ref());
         let resource = ResourceAuthorityInspector::new(self.resource.as_ref());
         let application = ApplicationAuthorityInspector::new(self.application.as_ref());
@@ -1135,6 +1148,8 @@ pub fn assemble(
         search,
         operations,
         runtime,
+        desktop_surface: Arc::new(InMemoryDesktopControlSurface::default()),
+        cell_inspector: Arc::new(LocalSingleNodeCellInspector::default()),
         supervisor_registry: SupervisorPidRegistry::new(),
         handshake,
         random,
@@ -1181,7 +1196,13 @@ pub async fn serve_authenticated_endpoint(
         .with_topic_source(&topics)
         .with_operation_source(&operations)
         .with_operation_executor(&operation_arms)
-        .with_application_executor(&applications);
+        .with_application_executor(&applications)
+        .with_desktop_enumeration_source(daemon.desktop_surface.as_ref())
+        .with_desktop_mutation_executor(daemon.desktop_surface.as_ref())
+        .with_reconciliation_source(daemon.desktop_surface.as_ref())
+        .with_command_status_ledger(daemon.desktop_surface.command_ledger())
+        .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
+        .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
         let outcome = authenticated_serve_one_control(
             &mut listener,
             TransportConfig::default(),
@@ -1258,7 +1279,13 @@ pub async fn serve_plain_endpoint(
                     .with_topic_source(&topics)
                     .with_operation_source(&operations)
                     .with_operation_executor(&operation_arms)
-                    .with_application_executor(&applications);
+                    .with_application_executor(&applications)
+                    .with_desktop_enumeration_source(daemon.desktop_surface.as_ref())
+                    .with_desktop_mutation_executor(daemon.desktop_surface.as_ref())
+                    .with_reconciliation_source(daemon.desktop_surface.as_ref())
+                    .with_command_status_ledger(daemon.desktop_surface.command_ledger())
+                    .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
+                    .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
                     let response = crate::auth::serve_validated(
                         &control,
                         daemon.clock.as_ref(),

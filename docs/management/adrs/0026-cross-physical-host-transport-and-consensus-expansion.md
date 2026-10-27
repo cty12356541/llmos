@@ -1,12 +1,12 @@
 # ADR-0026：跨物理主机蜂窝网络传输、有界时钟偏斜与控制面复制基底扩展（阶段 C 跨机收官立项）
 
-- **状态**：**`CANDIDATE`（2026-10-26 依维护者裁定 A4 开档立项；触发 [ADR-0018](./0018-single-host-multiprocess-dual-cell-topology.md) 复审触发器 2/4、[ADR-0019](./0019-cross-cell-commit-semantics-extension.md) 触发器 7 与 [ADR-0020](./0020-control-plane-single-writer-and-consensus-timing.md) 升级路径；当前无跨机 PoC 与实现证据，严格遵守 [README.md §4.2](../README.md#42-技术决策) 与 `[PHIL-TRANSFER-002]`，不得写为 `ACCEPTED`/`VERIFIED` 或声称跨机能力已实现）**
-- **日期**：2026-10-26
+- **状态**：**`ACCEPTED`（2026-10-26 依维护者裁定 A4 开档为 `CANDIDATE`；2026-10-27 `W69` 完成 `crates/nlos-net` `PoC-XHOST-001` 与三节点确定性 `ConsensusCore` 原型 [C-XHOST-001](../../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)，并通过独立对抗式审查 `W69-C-XHOST-REVIEW`（`F1–F4` 全部闭环复验 `PASS`），按 §7.1 门禁晋升为 `ACCEPTED`；严格遵守 [README.md §4.2](../README.md#42-技术决策) 与 `[PHIL-TRANSFER-002]`，`ACCEPTED ≠ VERIFIED`，在 `C-XHOST-GATE` 全部落盘前不得标为 `VERIFIED` 或向 `claims.yaml` 宣称全栈跨机能力已完成）**
+- **日期**：2026-10-26（2026-10-27 `W69` 晋升 `ACCEPTED`）
 - **Owner**：`C-XHOST`（阶段 C 跨物理主机收官扩展族：`C-NET-TRANSPORT` / `C-NET-CLOCK-LEASE` / `C-CONSENSUS-CP` / `C-NET-SYNC-MIGRATE` / `C-XHOST-GATE`；编排入口：[stage-c-progress.md](../stage-c-progress.md)，与阶段 D [stage-d-progress.md](../stage-d-progress.md) 双轨并行）
 - **关联 Requirement**：[06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §2.3 `[PHIL-TRANSFER-002]`、§3.1 `[MODEL-ID-002]` / `[MODEL-ID-003]` / `[MODEL-TIME-001]`、§6.1 `[TCB-ENDPOINT-001]`、§10.5/§21 `[RESCROW-TIME-001]`、§11 `[DUR-ACK-001]` / `[DUR-ACK-002]` / `[DUR-SNAP-001]` / `[DUR-FAILCLOSED-001]`、§12 全部 `LEASE-*`（含 `[LEASE-GRANT-001]`、`[LEASE-SPEND-001]`、`[LEASE-TTL-001]`、`[LEASE-FENCE-001]`、`[LEASE-CLOSE-001]`、`[LEASE-LOSS-001]`、`[LEASE-MIGRATE-001]`、`[LEASE-ENFORCE-001]`、`[LEASE-WAL-001]`、`[LEASE-CAPACITY-001/002]`、`[LEASE-DEVICE-001]`、`[LEASE-PREACTIVE-001]`、`[LEASE-RECON-001]`、`[LEASE-PROTO-001]`）、§18 `[SEM-CHECKPOINT-001]`、§25.1 `[CONS-SCOPE-001]` / `[CONS-DECL-001]` / `[CONS-CTRL-001]` / `[TASK-SCALE-002]`、§26.1–§26.3（`[DIST-LOCAL-001]`、`[DIST-FAIL-001]`、`[DIST-NAME-001]`、`[DIST-TASK-001..004]`、`[DIST-EVENT-001]`、`[DIST-ART-001]`、`[DIST-AUDIT-001]`、`[DIST-MIGRATE-001]`、`[DIST-MIGRATE-002]`）、§27 `[PERF-BENCH-001]` / `[PERF-CONTROL-001]`、§28.3 `[ROAD-C-001]` / `[ROAD-C-002]`、§29.2 `[NLOS-DEFER-001]`
 - **关联工作包与风险项**：新增阶段 C 补充收官五包 `C-NET-TRANSPORT`、`C-NET-CLOCK-LEASE`、`C-CONSENSUS-CP`、`C-NET-SYNC-MIGRATE`、`C-XHOST-GATE`；承接 `C-core` 九包单机多进程基线（[W67 退出门综合评审](../../evidence/stage-c/reviews/w67-stage-c-exit-gates.md) §1/§5.1/§6.1）并面向退役 [exit-unknown-risks.md](../exit-unknown-risks.md) / [risks.yaml](../risks.yaml) 中 `RISK-B-11`（`U-5`）的跨物理主机网络、时钟域与控制面共识残域；与阶段 D 完整桌面（[stage-d-progress.md](../stage-d-progress.md) / [ADR-0025](./0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)）保持 `100%` 写集不相交并行（`Stage D || C-XHOST`）
 - **决策来源**：维护者 2026-10-26 裁定 A4——阶段 C **暂不翻转 `EXITED`**（继续保持 `IN_PROGRESS / NOT EXITED`），将跨物理主机扩展（`C-XHOST`）直接纳入阶段 C 作为补充收官波次，在阶段 C 正式退出前闭合真实网络套接字传输、跨硬件时钟域租约安全与复制控制面共识基底，同时并行启动阶段 D 完整自然语言桌面（`Stage D || C-XHOST`）
-- **证据**：**当前无跨机 PoC 与实现证据**（`DESIGN` / `CANDIDATE` 级立项文档）。单机多进程基线证据见 `docs/evidence/stage-c/` 既有 22 份工件及 [W67 综合评审](../../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)；在 `PoC-XHOST-001` 与 `C-XHOST-GATE` 落档并通过独立审查前，严禁将任何跨物理机能力写入 [claims.yaml](../claims.yaml) 或对外宣称已实现
+- **证据**：**`C-NET-TRANSPORT` / `PoC-XHOST-001` 已取证（`H5`）**：[C-XHOST-001](../../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)（实证 `rustls` TLS 1.3 mTLS + TLS Exporter 五轴对端认证握手、吊销密钥/旧 `boot_generation`/Principal-Cell 错配拒止、写出前后套接字异常到 `RemoteCallOutcome` 确定性映射、64 MiB 分块流窗口背压、`N=1` 零监听以及三节点确定性 `ConsensusCore` 原型）；单机多进程基线证据见 `docs/evidence/stage-c/` 既有 22 份工件及 [W67 综合评审](../../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)；其余四包（`C-NET-CLOCK-LEASE`、`C-CONSENSUS-CP`、`C-NET-SYNC-MIGRATE`、`C-XHOST-GATE`）在 `W70–W72` 落档并通过 `W73` 独立审查前，严禁将全栈跨物理机能力写入 [claims.yaml](../claims.yaml) 或标为 `VERIFIED`
 - **复审触发器**：见文末第 8 节
 
 ---
@@ -189,12 +189,12 @@ flowchart LR
 
 ---
 
-## 5. 决定（Decision Summary — `CANDIDATE` 范围）
+## 5. 决定（Decision Summary — `ACCEPTED` 范围，`ACCEPTED ≠ VERIFIED`）
 
-鉴于当前尚未执行 `PoC-XHOST-001`，本 ADR 严格保持 **`CANDIDATE`** 状态，仅对立项范围、不变量红线、候选收敛方向与工作包分解作出如下架构裁定：
+经 `2026-10-27 W69` `crates/nlos-net` 实现、[C-XHOST-001](../../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)（`PoC-XHOST-001` `11/11` 通过）及独立对抗式审查 `W69-C-XHOST-REVIEW`（复验 `PASS`），本 ADR 正式由 `CANDIDATE` 晋升为 **`ACCEPTED`**，并对范围、不变量红线、选定技术路线与后续 `W70–W73` 工作包分解作出如下架构裁定：
 
-1. **立项与阶段门禁绑定**：正式立项 `C-XHOST` 五工作包（`C-NET-TRANSPORT`、`C-NET-CLOCK-LEASE`、`C-CONSENSUS-CP`、`C-NET-SYNC-MIGRATE`、`C-XHOST-GATE`）作为阶段 C 补充收官波次；在 `C-XHOST-GATE` 完成并经维护者最终批准前，阶段 C 维持 `IN_PROGRESS / NOT EXITED`。
-2. **候选技术方向锁定为 `PoC-XHOST-001` 验证标的**：以 **T1**（`tokio` + `rustls` TLS 1.3 mTLS + 五轴 `CellFence` 握手绑定 + 长度前缀多路复用流）作为跨主机传输候选，以 **C1**（`crates/nlos-consensus` 嵌入式确定性 Raft 多数派日志 + `SQLite WAL+FULL` + `N=1` 零配置退化模式）作为控制面复制候选，进入 `C-NET-TRANSPORT` 首波 PoC 实证。
+1. **立项与阶段门禁绑定**：正式推进 `C-XHOST` 五工作包（`C-NET-TRANSPORT` 已 `PARTIAL_PASS`；`C-NET-CLOCK-LEASE`、`C-CONSENSUS-CP`、`C-NET-SYNC-MIGRATE`、`C-XHOST-GATE` 自 `W70` 解锁实施）作为阶段 C 补充收官波次；在 `C-XHOST-GATE` 完成并经维护者最终批准前，阶段 C 维持 `IN_PROGRESS / NOT EXITED`。
+2. **技术选型正式锁定（`T1 + C1`）**：采纳 **T1**（`tokio` + `rustls`（`ring` crypto provider，`default-features = false`）TLS 1.3 mTLS + TLS Exporter 五轴 `CellFence` 握手绑定 + 4B 大端长度前缀多路复用流与有界窗口背压）作为跨主机传输实现，采纳 **C1**（`crates/nlos-consensus` 嵌入式确定性 Raft 多数派日志 + `SQLite WAL+FULL` + `N=1` 零配置退化模式）作为 `W70` 控制面复制实现。
 3. **四项硬不变量作为一票否决门**：任何破坏 `[CONS-SCOPE-001]`（在数据面引入跨 Cell 全局总序）、`[DIST-NAME-001]` / `[TCB-ENDPOINT-001]`（把 IP:port 当身份或跳过密码学对端绑定）、§2.3 保守时钟偏斜包络（用远端墙钟判租约安全或无 `FenceBarrierAck` 释放失联额度）、或 `[DIST-FAIL-001]` / `ADR-0019` R2.3（隐瞒 `UncertainSideEffect` 或把 `QUARANTINED` 冒充远端物理擦除）的设计或实现，在代码审查与门禁阶段一律一票否决。
 4. **双轨零碰撞编排生效**：`C-XHOST` 与阶段 D 桌面按 §4 写集分区自下一波起并行调度，共享台账仅在波次屏障由单一 Integrator 更新。
 5. **非目标（Explicit Non-Goals）**：
@@ -234,11 +234,11 @@ flowchart LR
 
 ## 7. 验证准则与状态晋升门（Verification Criteria & Promotion Gates）
 
-本文件当前为纯立项架构记录，无代码变更。后续状态晋升严格执行两级硬门禁（[README.md §4.2](../README.md#42-技术决策)）：
+状态晋升严格执行两级硬门禁（[README.md §4.2](../README.md#42-技术决策)）：
 
-1. **`CANDIDATE -> POC -> ACCEPTED` 晋升门（由 `C-NET-TRANSPORT` / `PoC-XHOST-001` 触发）**：
-   - 完成 `rustls` TLS 1.3 mTLS + 五轴 `CellFence` 绑定握手原型、基于 `rustls` 的依赖供应链安全/许可证核查记录、套接字异常到 `RemoteCallOutcome` 的确定性分类测试，以及 `ConsensusCore` 三节点内存确定性状态机最小原型；
-   - 经独立代码与架构审查 pass（确认零违反 §2 四大硬不变量）后，由单一 Integrator 将本 ADR 状态行更新为 `ACCEPTED`。
+1. **`CANDIDATE -> POC -> ACCEPTED` 晋升门（已于 `2026-10-27 W69` 由 `C-NET-TRANSPORT` / `PoC-XHOST-001` 达成）**：
+   - 已在 `crates/nlos-net` 完成 `rustls 0.23.38`（`ring 0.17.14`，Apache-2.0 / MIT / ISC 许可证与供应链核查入档）TLS 1.3 mTLS + TLS Exporter 五轴 `CellFence` 绑定握手、套接字异常到 `RemoteCallOutcome` 的确定性分类测试、64 MiB 流式背压以及 `ConsensusCore` 三节点内存确定性状态机最小原型（见 [C-XHOST-001](../../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)）；
+   - 经独立代码与对抗式架构审查 `W69-C-XHOST-REVIEW` 发现并闭环 `F1–F4` 四项加固（验签前只读水位防投毒与 `CellIdentity <-> PrincipalId` 绑定、流首字节后异常强制销毁会话并登记 `PendingReconciliationTracker`、`ConnectionSocketGuard` 生命周期与有界审计环、服务端双随机数混合与重复 X.509 扩展拒止）后复验 `PASS`，由 `W69-INT` 单一 Integrator 将本 ADR 状态行更新为 `ACCEPTED`（解锁 `W70` `C-NET-CLOCK-LEASE` 与 `C-CONSENSUS-CP`）。
 2. **`ACCEPTED -> VERIFIED` 晋升门（由 `C-XHOST-GATE` 收官触发）**：
    - `C-NET-TRANSPORT`、`C-NET-CLOCK-LEASE`、`C-CONSENSUS-CP`、`C-NET-SYNC-MIGRATE`、`C-XHOST-GATE` 五包全部落盘 `docs/evidence/stage-c/` 证据工件；
    - `ROAD-C-001-XHOST`（含 `ChaosTcpProxy` 单向/非对称分区、半开挂起、`N=3` Leader 强杀切换、合成时钟偏斜越界、跨网 8 步迁移与 `PartitionBoundedLossProof` 守恒）与 `ROAD-C-002-XHOST`（多节点 `SQLite WAL+FULL` 无全局锁/无全局总序扩展 + 五类并发故障）实跑全绿；

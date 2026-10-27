@@ -61,6 +61,23 @@ pub mod control;
 /// [§1.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
 pub mod nl;
 
+/// Pluggable Stage C `Cell` topology, lease-table, and process-migration seam
+/// (`IPC-D7`, `[CELL-LEASE-001]`, `[CELL-FENCE-001]`, `[DIST-PARTITION-001]`).
+pub mod cell_inspector;
+
+/// Pluggable Stage D twelve-domain bounded enumeration, monotonic watermark
+/// digest, settings/association/keychain/chooser seams, blast-radius dry-run
+/// (`[CTRL-HIER-001]`), and command reconciliation (`[CTRL-RECOVERY-001]`).
+pub mod desktop_enum;
+
+/// Stage D client-side `ControlCommand` compilation, snapshot decoding, and
+/// deterministic `ControlReceipt` byte encoding.
+mod control_stage_d;
+
+/// Stage D handler dispatch and statutory non-tamperable lock guards
+/// (`[UI-PARITY-001]`).
+mod stage_d_handler;
+
 /// Optional [`control::ProcessInspector`] adapter backed by
 /// [`nlos_process::ProcessAuthority`] (`process` feature).
 #[cfg(feature = "process")]
@@ -1070,10 +1087,17 @@ pub struct RecoverySystemControl<'a, H, A> {
     authorizer: &'a A,
     operation_executor: Option<&'a dyn OperationCommandExecutor>,
     application_executor: Option<&'a dyn ApplicationCommandExecutor>,
-    task_node_source: Option<&'a dyn TaskNodeInspectSource>,
+    pub(crate) task_node_source: Option<&'a dyn TaskNodeInspectSource>,
     fiber_source: Option<&'a dyn ExecutionFiberInspectSource>,
     topic_source: Option<&'a dyn TopicInspectSource>,
     operation_source: Option<&'a dyn OperationInspectSource>,
+    pub(crate) desktop_enum_source: Option<&'a dyn desktop_enum::DesktopEnumerationSource>,
+    pub(crate) desktop_mutation_executor:
+        Option<&'a dyn desktop_enum::DesktopDomainMutationExecutor>,
+    pub(crate) reconciliation_source: Option<&'a dyn desktop_enum::ControlReconciliationSource>,
+    pub(crate) command_ledger: Option<&'a desktop_enum::CommandStatusLedger>,
+    pub(crate) cell_topology_inspector: Option<&'a dyn cell_inspector::CellTopologyInspector>,
+    pub(crate) cell_lease_inspector: Option<&'a dyn cell_inspector::CellLeaseInspector>,
 }
 
 impl<'a, H, A> RecoverySystemControl<'a, H, A>
@@ -1093,6 +1117,12 @@ where
             fiber_source: None,
             topic_source: None,
             operation_source: None,
+            desktop_enum_source: None,
+            desktop_mutation_executor: None,
+            reconciliation_source: None,
+            command_ledger: None,
+            cell_topology_inspector: None,
+            cell_lease_inspector: None,
         }
     }
 
@@ -1151,6 +1181,68 @@ where
     #[must_use]
     pub const fn with_operation_source(mut self, source: &'a dyn OperationInspectSource) -> Self {
         self.operation_source = Some(source);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D1..D6`) bounded enumeration seam.
+    #[must_use]
+    pub const fn with_desktop_enumeration_source(
+        mut self,
+        source: &'a dyn desktop_enum::DesktopEnumerationSource,
+    ) -> Self {
+        self.desktop_enum_source = Some(source);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D5..D8`) desktop domain mutation executor seam.
+    #[must_use]
+    pub const fn with_desktop_mutation_executor(
+        mut self,
+        executor: &'a dyn desktop_enum::DesktopDomainMutationExecutor,
+    ) -> Self {
+        self.desktop_mutation_executor = Some(executor);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D8`) blast-radius dry-run and command status
+    /// reconciliation source.
+    #[must_use]
+    pub const fn with_reconciliation_source(
+        mut self,
+        source: &'a dyn desktop_enum::ControlReconciliationSource,
+    ) -> Self {
+        self.reconciliation_source = Some(source);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D8`, `[CTRL-RECOVERY-001]`) bounded command
+    /// status ledger recording completed and rejected `ControlCommand` outcomes.
+    #[must_use]
+    pub const fn with_command_status_ledger(
+        mut self,
+        ledger: &'a desktop_enum::CommandStatusLedger,
+    ) -> Self {
+        self.command_ledger = Some(ledger);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D7`) `CellTopologyInspector` seam.
+    #[must_use]
+    pub const fn with_cell_topology_inspector(
+        mut self,
+        inspector: &'a dyn cell_inspector::CellTopologyInspector,
+    ) -> Self {
+        self.cell_topology_inspector = Some(inspector);
+        self
+    }
+
+    /// Wires the Stage D (`IPC-D7`) `CellLeaseInspector` seam.
+    #[must_use]
+    pub const fn with_cell_lease_inspector(
+        mut self,
+        inspector: &'a dyn cell_inspector::CellLeaseInspector,
+    ) -> Self {
+        self.cell_lease_inspector = Some(inspector);
         self
     }
 
@@ -1411,6 +1503,9 @@ where
         self.authorizer
             .authorize_get(context, &payload)
             .map_err(SystemControlError::AuthorizationDenied)?;
+        if let Some(envelope) = self.try_handle_stage_d_get(request, context, &payload)? {
+            return Ok(envelope);
+        }
         if payload.view == i32::from(SystemControlView::SemanticCommitRecovery) {
             return self.handle_get_semantic(request, context, payload.alert_limit);
         }
@@ -1833,9 +1928,10 @@ where
         self.authorizer
             .authorize_submit(context, command)
             .map_err(SystemControlError::AuthorizationDenied)?;
-        let receipt_id = match command.command {
+        let execution_result: Result<ReceiptId, SystemControlError> = (|| match command.command {
             Some(sabi::v1::control_command::Command::AcknowledgeArtifactRecoveryAlert(_)) => {
-                self.tasks
+                Ok(self
+                    .tasks
                     .acknowledge_artifact_recovery_alert(ArtifactRecoveryAlertAcknowledgeRequest {
                         plan_id: ArtifactCommitPlanId::from_bytes(fixed16(&command.target_id)?),
                         expected_total_failures: command.expected_generation_or_revision,
@@ -1846,10 +1942,11 @@ where
                         acknowledged_at_ms: now_wall_ms,
                     })?
                     .receipt()
-                    .receipt_id
+                    .receipt_id)
             }
             Some(sabi::v1::control_command::Command::AcknowledgeSemanticRecoveryAlert(_)) => {
-                self.tasks
+                Ok(self
+                    .tasks
                     .acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
                         plan_id: SemanticCommitPlanId::from_bytes(fixed16(&command.target_id)?),
                         expected_total_failures: command.expected_generation_or_revision,
@@ -1860,7 +1957,7 @@ where
                         acknowledged_at_ms: now_wall_ms,
                     })?
                     .receipt()
-                    .receipt_id
+                    .receipt_id)
             }
             Some(sabi::v1::control_command::Command::ResumeSemanticRecovery(_)) => {
                 let resumed =
@@ -1870,10 +1967,14 @@ where
                             expected_total_failures: command.expected_generation_or_revision,
                             resumed_at_ms: now_wall_ms,
                         })?;
-                semantic_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
+                Ok(semantic_recovery_resume_reference(
+                    resumed.plan_id,
+                    resumed.total_failures,
+                ))
             }
             Some(sabi::v1::control_command::Command::AcknowledgeResourceRecoveryAlert(_)) => {
-                self.tasks
+                Ok(self
+                    .tasks
                     .acknowledge_resource_recovery_alert(ResourceRecoveryAlertAcknowledgeRequest {
                         plan_id: ResourceCommitPlanId::from_bytes(fixed16(&command.target_id)?),
                         expected_total_failures: command.expected_generation_or_revision,
@@ -1884,7 +1985,7 @@ where
                         acknowledged_at_ms: now_wall_ms,
                     })?
                     .receipt()
-                    .receipt_id
+                    .receipt_id)
             }
             Some(sabi::v1::control_command::Command::ResumeResourceRecovery(_)) => {
                 let resumed =
@@ -1894,7 +1995,10 @@ where
                             expected_total_failures: command.expected_generation_or_revision,
                             resumed_at_ms: now_wall_ms,
                         })?;
-                resource_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
+                Ok(resource_recovery_resume_reference(
+                    resumed.plan_id,
+                    resumed.total_failures,
+                ))
             }
             Some(sabi::v1::control_command::Command::PauseOperation(_)) => self
                 .execute_operation_control(
@@ -1903,7 +2007,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::ResumeOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Resume,
@@ -1911,7 +2015,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::CancelOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Cancel,
@@ -1919,7 +2023,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::KillOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Kill,
@@ -1927,8 +2031,8 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
-            Some(sabi::v1::control_command::Command::ThrottleOperation(throttle)) => self
+                ),
+            Some(sabi::v1::control_command::Command::ThrottleOperation(ref throttle)) => self
                 .execute_operation_control(
                     OperationArm::Throttle {
                         throttle_percent: throttle.throttle_percent,
@@ -1937,7 +2041,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::ReclaimOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Reclaim,
@@ -1945,7 +2049,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::DisableApplication(_)) => self
                 .execute_application_control(
                     ApplicationArm::Disable,
@@ -1953,7 +2057,7 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
+                ),
             Some(sabi::v1::control_command::Command::UninstallApplication(_)) => self
                 .execute_application_control(
                     ApplicationArm::Uninstall,
@@ -1961,11 +2065,23 @@ where
                     caller,
                     context,
                     now_wall_ms,
-                )?,
-            // The shared decoder already rejects a payload without a known
-            // command arm, so an un-routed command cannot reach this point.
-            None => return Err(CompatibilityError::MissingSystemControlCommand.into()),
-        };
+                ),
+            Some(
+                sabi::v1::control_command::Command::RequestProcessMigration(_)
+                | sabi::v1::control_command::Command::PurgeTopic(_)
+                | sabi::v1::control_command::Command::UpdateSettingsDomain(_)
+                | sabi::v1::control_command::Command::SetContentTypeAssociation(_)
+                | sabi::v1::control_command::Command::IssueChooserGrant(_)
+                | sabi::v1::control_command::Command::MutateSearchCandidate(_)
+                | sabi::v1::control_command::Command::UndoReceipt(_)
+                | sabi::v1::control_command::Command::MutateTaskNodeTopology(_)
+                | sabi::v1::control_command::Command::OverrideTaskAttemptCommit(_)
+                | sabi::v1::control_command::Command::OverrideEffectUnknownOperation(_),
+            ) => self.execute_stage_d_submit_arm(command, caller, context, now_wall_ms),
+            None => Err(CompatibilityError::MissingSystemControlCommand.into()),
+        })();
+        self.record_command_outcome(command, &execution_result);
+        let receipt_id = execution_result?;
         let receipt = ReceiptReference {
             receipt_id: receipt_id.into_bytes().to_vec(),
         };
@@ -2162,7 +2278,7 @@ fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn fixed16(bytes: &[u8]) -> Result<[u8; 16], SystemControlError> {
+pub(crate) fn fixed16(bytes: &[u8]) -> Result<[u8; 16], SystemControlError> {
     bytes
         .try_into()
         .map_err(|_| SystemControlError::InvalidRecoveryAlert)
@@ -2199,7 +2315,7 @@ pub fn failure_envelope(request: &Envelope, error: &SystemControlError) -> Envel
     response
 }
 
-fn response_envelope(
+pub(crate) fn response_envelope(
     request: &Envelope,
     correlation_id: Vec<u8>,
     payload: Vec<u8>,

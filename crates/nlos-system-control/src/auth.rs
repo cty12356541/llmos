@@ -196,7 +196,7 @@ where
 /// through this one function, so both faces stamp durable mutation records
 /// from the same `AuthorityClock` wall domain under the same
 /// [`command_wall_key`] derivation — never from the bare system clock.
-pub(crate) fn serve_validated<H, A>(
+pub fn serve_validated<H, A>(
     control: &RecoverySystemControl<'_, H, A>,
     clock: &AuthorityClock,
     now_monotonic_ns: u64,

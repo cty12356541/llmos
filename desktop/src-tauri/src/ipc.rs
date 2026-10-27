@@ -1,7 +1,7 @@
-//! 认证 SystemControl IPC 客户端接线(W32-A 只读半 + W32-B 写入半)。
+//! 认证 SystemControl IPC 客户端接线(W32-A 只读半 + W32-B 写入半 + Stage D 十二域枚举与对称控制)。
 //!
-//! 每条命令——inspect 读或授权控制写——都通过
-//! [`nlos_system_control::auth::dispatch_over_authenticated_socket`]
+//! 每条命令——inspect 读、Stage D 有界分页枚举或授权控制写——都通过
+//! [`nlos_system_control::auth::dispatch_over_authenticated_socket_with_services`]
 //! ——ADR-0011 challenge-response 认证入口——到达真实 SystemControl 服务,
 //! 没有 plain socket 捷径。端点路径按平台解释:Unix 下为 Unix socket
 //! 路径,Windows 下为命名管道路径,字符串自会话配置透传。principal 私钥
@@ -9,9 +9,9 @@
 //! operator 提供的密钥文件(64 hex Ed25519 种子;Unix 侧 0600 权限位)
 //! 在派发时读取。
 //!
-//! 写入半(W32-B):`submit_control` 把 GUI 的授权动作编译为真实
+//! 写入半(W32-B + Stage D `IPC-D8`):`submit_control` 把 GUI 的授权动作编译为真实
 //! `ControlCommand`(§25.3 idempotency 身份在派发时新生成;CAS 预期由
-//! 前端从 inspect 状态带入),经同一认证入口派发并投影 Receipt。
+//! 前端从 inspect/list 状态带入),经同一认证入口派发并投影 Receipt。
 //!
 //! 一致性自检(`parity_check`)把同一只读命令再经真实 `system-control-cli`
 //! 二进制(plain 入口,本地信任域)派发一次,比对两侧
@@ -19,15 +19,26 @@
 //! 契约同源。`parity_check_write` 把同一自检扩展到一条写路径命令
 //! (pause-operation 探针);完整写路径 parity 矩阵钉死是 W32-C。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::ApplicationAuthority;
 use nlos_resource::ResourceAuthority;
+use nlos_schema::sabi::v1::{ControlScope, SettingsDomainKind};
+use nlos_schema::{
+    MAX_DESKTOP_WATERMARK_EVENT_LIMIT, MAX_SYSTEM_CONTROL_ENUM_LIMIT,
+    SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL,
+};
 use nlos_system_control::application_inspector::ApplicationAuthorityInspector;
 use nlos_system_control::control::{
     ApplicationInspector, CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand,
-    ResourceInspector, parse_hex_id,
+    NotificationInspector, ProcessInspector, ResourceInspector, ScopedControlAction,
+    SearchInspector, parse_hex_32, parse_hex_id,
+};
+use nlos_system_control::desktop_enum::InMemoryDesktopControlSurface;
+use nlos_system_control::nl::{
+    parse_control_scope, parse_plan_node_state, parse_preview_action_code,
+    parse_settings_domain_kind, parse_undo_class, parse_unit_scoped_action,
 };
 use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
 use nlos_types::PrincipalId;
@@ -35,10 +46,10 @@ use serde::Deserialize;
 
 use crate::dto::receipt_dto;
 use crate::dto::{
-    ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, ParityDto, ReceiptDto,
-    fact_check_dto,
+    ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, OutcomeDto, ParityDto,
+    ReceiptDto, fact_check_dto,
 };
-use crate::error::{DesktopError, from_control_error};
+use crate::error::{DesktopError, ErrorCode, from_control_error};
 
 /// 环境变量名(README 记录;GUI 内可会话级覆盖)。
 pub const ENV_SOCKET: &str = "LLMOS_DESKTOP_SOCKET";
@@ -54,6 +65,9 @@ pub const ENV_APPLICATION_ROOT: &str = "LLMOS_DESKTOP_APPLICATION_ROOT";
 /// `cargo run`/`tauri dev` 的 cwd 是 `src-tauri`,仓库 target 目录在此相对路径下。
 const DEFAULT_CLI_PATH: &str = "../../target/debug/system-control-cli";
 
+/// Settings CBOR value payload upper bound enforced before the wire.
+const MAX_SETTINGS_CBOR_BYTES: usize = 4096;
+
 /// 会话连接配置(内存态;不落盘)。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionConfig {
@@ -67,9 +81,10 @@ pub struct SessionConfig {
     pub source: ConfigSourceDto,
 }
 
-/// Tauri 管理态:仅持有一份会话配置;派发路径无共享可变状态。
+/// Tauri 管理态:持有一份会话配置及可选的桌面只读组合 inspector 面。
 pub struct AppState {
     config: Mutex<SessionConfig>,
+    desktop_surface: Option<Arc<InMemoryDesktopControlSurface>>,
 }
 
 impl AppState {
@@ -103,6 +118,29 @@ impl AppState {
                 application_root: env(ENV_APPLICATION_ROOT),
                 source,
             }),
+            desktop_surface: None,
+        }
+    }
+
+    /// 供集成测试显式注入会话配置(无环境变量竞态)。
+    #[must_use]
+    pub fn from_session(config: SessionConfig) -> Self {
+        Self {
+            config: Mutex::new(config),
+            desktop_surface: None,
+        }
+    }
+
+    /// 供集成测试与开发夹具接线客户端侧五域只读 inspector
+    /// (`Process`/`Resource`/`Application`/`Search`/`Notification`)。
+    #[must_use]
+    pub fn with_desktop_surface(
+        config: SessionConfig,
+        desktop_surface: Arc<InMemoryDesktopControlSurface>,
+    ) -> Self {
+        Self {
+            config: Mutex::new(config),
+            desktop_surface: Some(desktop_surface),
         }
     }
 
@@ -138,7 +176,69 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
 
 /// 32 hex 字符 → 16 字节(复用控制面 fail-closed 解析器,不做第二套规则)。
 fn principal_bytes(principal_hex: &str) -> Result<[u8; 16], DesktopError> {
-    parse_hex_id(principal_hex).map_err(|error| from_control_error(&error))
+    parse_hex_id(principal_hex.trim()).map_err(|error| from_control_error(&error))
+}
+
+/// 64 hex 字符 → 32 字节(Search scope_id 等 32 字节身份解析)。
+fn scope_32_bytes(scope_hex: &str) -> Result<[u8; 32], DesktopError> {
+    parse_hex_32(scope_hex.trim()).map_err(|error| from_control_error(&error))
+}
+
+fn optional_id_bytes(raw: Option<&str>) -> Result<Option<[u8; 16]>, DesktopError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(hex) => principal_bytes(hex).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn decode_hex_bytes(raw: &str, max_bytes: usize) -> Result<Vec<u8>, DesktopError> {
+    let trimmed = raw.trim();
+    if !trimmed.len().is_multiple_of(2) || !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(DesktopError::config(
+            "十六进制负载必须是偶数个合法 ASCII hex 字符",
+        ));
+    }
+    let byte_len = trimmed.len() / 2;
+    if byte_len > max_bytes {
+        return Err(DesktopError::config(format!(
+            "十六进制负载超过 {max_bytes} 字节上限"
+        )));
+    }
+    let mut out = Vec::with_capacity(byte_len);
+    let raw_bytes = trimmed.as_bytes();
+    for idx in 0..byte_len {
+        let hi = (raw_bytes[2 * idx] as char)
+            .to_digit(16)
+            .ok_or_else(|| DesktopError::config("非法 hex 字符"))?;
+        let lo = (raw_bytes[2 * idx + 1] as char)
+            .to_digit(16)
+            .ok_or_else(|| DesktopError::config("非法 hex 字符"))?;
+        let byte = u8::try_from(hi * 16 + lo).map_err(|_| DesktopError::config("非法 hex 字节"))?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
+fn validate_enum_limit_bound(limit: u32) -> Result<u32, DesktopError> {
+    if limit == 0 || usize::try_from(limit).unwrap_or(usize::MAX) > MAX_SYSTEM_CONTROL_ENUM_LIMIT {
+        Err(DesktopError::config(
+            "enumeration limit must be between 1 and 64",
+        ))
+    } else {
+        Ok(limit)
+    }
+}
+
+fn validate_watermark_limit_bound(limit: u32) -> Result<u32, DesktopError> {
+    if limit == 0
+        || usize::try_from(limit).unwrap_or(usize::MAX) > MAX_DESKTOP_WATERMARK_EVENT_LIMIT
+    {
+        Err(DesktopError::config(
+            "watermark event limit must be between 1 and 128",
+        ))
+    } else {
+        Ok(limit)
+    }
 }
 
 /// 64 hex 字符 Ed25519 种子文件 → 32 字节种子。
@@ -192,7 +292,53 @@ pub async fn dispatch_control(
     key_file: &str,
     command: ControlCommand,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_control_with_resource(socket, principal_hex, key_file, command, None).await
+    dispatch_control_with_services(
+        socket,
+        principal_hex,
+        key_file,
+        command,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+/// [`dispatch_control`] 的全量五域客户端 inspector 扩展核心
+/// (`Process` / `Resource` / `Application` / `Search` / `Notification`)。
+#[allow(clippy::too_many_arguments)]
+pub async fn dispatch_control_with_services(
+    socket: &str,
+    principal_hex: &str,
+    key_file: &str,
+    command: ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
+) -> Result<ReceiptDto, DesktopError> {
+    use nlos_system_control::auth::dispatch_over_authenticated_socket_with_services;
+
+    let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
+    let seed = key_seed(key_file)?;
+    let key = SigningKey::from_bytes(&seed);
+    let receipt = dispatch_over_authenticated_socket_with_services(
+        socket,
+        principal,
+        |digest| Ok(key.sign(digest).to_bytes()),
+        &command,
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
+    .await
+    .map_err(|error| from_control_error(&error))?;
+    Ok(receipt_dto(&receipt))
 }
 
 /// [`dispatch_control`] 的 W32-D 扩展核心:额外接受可选资源 inspector。
@@ -207,23 +353,18 @@ pub async fn dispatch_control_with_resource(
     command: ControlCommand,
     resource: Option<&dyn ResourceInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
-    use nlos_system_control::auth::dispatch_over_authenticated_socket;
-
-    let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
-    let seed = key_seed(key_file)?;
-    let key = SigningKey::from_bytes(&seed);
-    let receipt = dispatch_over_authenticated_socket(
+    dispatch_control_with_services(
         socket,
-        principal,
-        |digest| Ok(key.sign(digest).to_bytes()),
-        &command,
+        principal_hex,
+        key_file,
+        command,
         None,
         resource,
         None,
+        None,
+        None,
     )
     .await
-    .map_err(|error| from_control_error(&error))?;
-    Ok(receipt_dto(&receipt))
 }
 
 /// [`dispatch_control`] 的 Application inspect 扩展:可选
@@ -237,23 +378,18 @@ pub async fn dispatch_control_with_application(
     command: ControlCommand,
     application: Option<&dyn ApplicationInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
-    use nlos_system_control::auth::dispatch_over_authenticated_socket;
-
-    let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
-    let seed = key_seed(key_file)?;
-    let key = SigningKey::from_bytes(&seed);
-    let receipt = dispatch_over_authenticated_socket(
+    dispatch_control_with_services(
         socket,
-        principal,
-        |digest| Ok(key.sign(digest).to_bytes()),
-        &command,
+        principal_hex,
+        key_file,
+        command,
         None,
         None,
         application,
+        None,
+        None,
     )
     .await
-    .map_err(|error| from_control_error(&error))?;
-    Ok(receipt_dto(&receipt))
 }
 
 /// `InspectApplication` 经认证入口派发。配置了 `application_root` 时以
@@ -318,17 +454,44 @@ where
         .map_err(|_| DesktopError::internal("认证派发阻塞线程 join 失败"))?
 }
 
+/// 面向 [`AppState`] 的无 Tauri 句柄认证派发核心(Tauri 命令与集成测试共用)。
+pub async fn dispatch_app_state(
+    state: &AppState,
+    command: ControlCommand,
+) -> Result<ReceiptDto, DesktopError> {
+    let config = state.snapshot()?;
+    let (socket, principal, key_file) = required(&config)?;
+    let surface = state.desktop_surface.clone();
+    dispatch_off_main(move || {
+        tauri::async_runtime::block_on(async move {
+            match surface.as_deref() {
+                Some(surface) => {
+                    dispatch_control_with_services(
+                        &socket,
+                        &principal,
+                        &key_file,
+                        command,
+                        Some(surface),
+                        Some(surface),
+                        Some(surface),
+                        Some(surface),
+                        Some(surface),
+                    )
+                    .await
+                }
+                None => dispatch_control(&socket, &principal, &key_file, command).await,
+            }
+        })
+    })
+    .await
+}
+
 /// 会话配置快照 + 必需凭据,随后在阻塞线程池上执行一次认证 dispatch。
 async fn dispatch_configured(
     state: &tauri::State<'_, AppState>,
     command: ControlCommand,
 ) -> Result<ReceiptDto, DesktopError> {
-    let config = state.snapshot()?;
-    let (socket, principal, key_file) = required(&config)?;
-    dispatch_off_main(move || {
-        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))
-    })
-    .await
+    dispatch_app_state(state.inner(), command).await
 }
 
 #[tauri::command]
@@ -561,6 +724,75 @@ pub async fn inspect_resource(
     dispatch_configured(&state, ControlCommand::InspectResource { reservation_id }).await
 }
 
+/// W66 (`C-UNFREEZE-001`) + Stage D (`IPC-D4`):`InspectSearch` 命令构造器。
+pub fn build_inspect_search(scope_id_hex: &str) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectSearch {
+        scope_id: scope_32_bytes(scope_id_hex)?,
+    })
+}
+
+fn verify_search_inspected_restrictions(receipt: &ReceiptDto) -> Result<(), DesktopError> {
+    if let OutcomeDto::SearchInspected {
+        non_authoritative_restrictions_bits,
+        ..
+    } = &receipt.outcome
+        && u32::from(*non_authoritative_restrictions_bits)
+            != SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL
+    {
+        return Err(DesktopError::new(
+            ErrorCode::Control,
+            format!(
+                "search inspection violated 0x1F non-authoritative restriction bits: {non_authoritative_restrictions_bits:#x}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `InspectSearch` 无 Tauri 句柄核心(强制 `0x1F` 非权威五禁掩码 fail-closed)。
+pub async fn inspect_search_core(
+    state: &AppState,
+    scope_id_hex: &str,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_inspect_search(scope_id_hex)?;
+    let receipt = dispatch_app_state(state, command).await?;
+    verify_search_inspected_restrictions(&receipt)?;
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub async fn inspect_search(
+    state: tauri::State<'_, AppState>,
+    scope_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    inspect_search_core(state.inner(), &scope_id_hex).await
+}
+
+/// W66 (`C-UNFREEZE-001`) + Stage D (`IPC-D6`):`InspectNotification` 命令构造器。
+pub fn build_inspect_notification(
+    notification_id_hex: &str,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectNotification {
+        notification_id: principal_bytes(notification_id_hex)?,
+    })
+}
+
+pub async fn inspect_notification_core(
+    state: &AppState,
+    notification_id_hex: &str,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_inspect_notification(notification_id_hex)?;
+    dispatch_app_state(state, command).await
+}
+
+#[tauri::command]
+pub async fn inspect_notification(
+    state: tauri::State<'_, AppState>,
+    notification_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    inspect_notification_core(state.inner(), &notification_id_hex).await
+}
+
 /// W32-D:打开会话配置指向的本地资源权威(未配置/空白 → `None`,保持
 /// 未接线形态)。每次派发即时打开(WAL 多进程读安全),进程内不缓存句柄。
 fn open_resource_authority(
@@ -663,7 +895,8 @@ pub async fn cost_fact_check(
 }
 
 /// `ControlCommand::InspectApplication` 的 GUI 接线。未配置
-/// `application_root` 时走既有未接线 inspector,回执为类型化 `NOT_FOUND`。
+/// `application_root` 时,若会话未注入 `desktop_surface`,走既有未接线 inspector,
+/// 回执为类型化 `NOT_FOUND`。
 #[tauri::command]
 pub async fn inspect_application(
     state: tauri::State<'_, AppState>,
@@ -671,6 +904,16 @@ pub async fn inspect_application(
 ) -> Result<ReceiptDto, DesktopError> {
     let config = state.snapshot()?;
     let package_id = principal_bytes(&package_id_hex)?;
+    if config
+        .application_root
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        && state.desktop_surface.is_some()
+    {
+        return dispatch_configured(&state, ControlCommand::InspectApplication { package_id })
+            .await;
+    }
     dispatch_off_main(move || {
         let (socket, principal, key_file) = required(&config)?;
         let authority = open_application_authority(config.application_root.as_deref())?;
@@ -711,6 +954,590 @@ pub fn control_plane_facts() -> ControlPlaneFactsDto {
     }
 }
 
+// =========================================================================
+// Stage D (`IPC-D1..D8` & `[UI-PARITY-001]`) 有界枚举、水位线、预演与对账命令
+// =========================================================================
+
+pub fn build_list_tasks(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListTasks {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_tasks(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_tasks(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_task_groups(
+    task_id_hex: Option<&str>,
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListTaskGroups {
+        task_id: optional_id_bytes(task_id_hex)?,
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_task_groups(
+    state: tauri::State<'_, AppState>,
+    task_id_hex: Option<String>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_task_groups(task_id_hex.as_deref(), cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_task_nodes(
+    plan_id_hex: &str,
+    expected_plan_revision: u64,
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListTaskNodes {
+        plan_id: principal_bytes(plan_id_hex)?,
+        expected_plan_revision,
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_task_nodes(
+    state: tauri::State<'_, AppState>,
+    plan_id_hex: String,
+    expected_plan_revision: u64,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_task_nodes(
+        &plan_id_hex,
+        expected_plan_revision,
+        cursor_hex.as_deref(),
+        limit,
+    )?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_task_attempts(
+    scope_filter_id_hex: Option<&str>,
+    expected_generation: u64,
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListTaskAttempts {
+        scope_filter_id: optional_id_bytes(scope_filter_id_hex)?,
+        expected_generation,
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_task_attempts(
+    state: tauri::State<'_, AppState>,
+    scope_filter_id_hex: Option<String>,
+    expected_generation: u64,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_task_attempts(
+        scope_filter_id_hex.as_deref(),
+        expected_generation,
+        cursor_hex.as_deref(),
+        limit,
+    )?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_execution_fibers(
+    process_id_hex: Option<&str>,
+    expected_generation: u64,
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListExecutionFibers {
+        process_id: optional_id_bytes(process_id_hex)?,
+        expected_generation,
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_execution_fibers(
+    state: tauri::State<'_, AppState>,
+    process_id_hex: Option<String>,
+    expected_generation: u64,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_execution_fibers(
+        process_id_hex.as_deref(),
+        expected_generation,
+        cursor_hex.as_deref(),
+        limit,
+    )?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_operations(
+    fiber_id_hex: Option<&str>,
+    expected_generation: u64,
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListOperations {
+        fiber_id: optional_id_bytes(fiber_id_hex)?,
+        expected_generation,
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_operations(
+    state: tauri::State<'_, AppState>,
+    fiber_id_hex: Option<String>,
+    expected_generation: u64,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_operations(
+        fiber_id_hex.as_deref(),
+        expected_generation,
+        cursor_hex.as_deref(),
+        limit,
+    )?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_installed_applications(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListInstalledApplications {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_installed_applications(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_installed_applications(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_query_search_candidates(
+    scope_id_hex: &str,
+    query: &str,
+    cursor_offset: u64,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    if query.len() > 256 {
+        return Err(DesktopError::config(
+            "search query exceeds bounded 256-byte limit",
+        ));
+    }
+    Ok(ControlCommand::QuerySearchCandidates {
+        scope_id: scope_32_bytes(scope_id_hex)?,
+        query: query.to_owned(),
+        cursor_offset,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+fn verify_search_candidates_restrictions(receipt: &ReceiptDto) -> Result<(), DesktopError> {
+    if let OutcomeDto::SearchCandidatesQueried {
+        non_authoritative_restrictions_bits,
+        candidates,
+        ..
+    } = &receipt.outcome
+    {
+        if *non_authoritative_restrictions_bits != SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL {
+            return Err(DesktopError::new(
+                ErrorCode::Control,
+                format!(
+                    "search candidate summary violated 0x1F non-authoritative restriction bits: {non_authoritative_restrictions_bits:#x}"
+                ),
+            ));
+        }
+        if let Some(violating) = candidates.iter().find(|candidate| {
+            candidate.non_authoritative_restrictions_bits
+                != SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL
+        }) {
+            return Err(DesktopError::new(
+                ErrorCode::Control,
+                format!(
+                    "search candidate {} violated 0x1F non-authoritative restriction bits: {:#x}",
+                    violating.candidate_id_hex, violating.non_authoritative_restrictions_bits
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub async fn query_search_candidates_core(
+    state: &AppState,
+    scope_id_hex: &str,
+    query: &str,
+    cursor_offset: u64,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_query_search_candidates(scope_id_hex, query, cursor_offset, limit)?;
+    let receipt = dispatch_app_state(state, command).await?;
+    verify_search_candidates_restrictions(&receipt)?;
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub async fn query_search_candidates(
+    state: tauri::State<'_, AppState>,
+    scope_id_hex: String,
+    query: String,
+    cursor_offset: u64,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    query_search_candidates_core(state.inner(), &scope_id_hex, &query, cursor_offset, limit).await
+}
+
+pub fn build_poll_desktop_watermark_events(
+    since_watermark: u64,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::PollDesktopWatermarkEvents {
+        since_watermark,
+        limit: validate_watermark_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn poll_desktop_watermark_events(
+    state: tauri::State<'_, AppState>,
+    since_watermark: u64,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_poll_desktop_watermark_events(since_watermark, limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_inspect_settings_domain(
+    domain_kind: &str,
+    scope_target_id_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectSettingsDomain {
+        domain_kind: parse_settings_domain_kind(domain_kind.trim())
+            .map_err(|error| from_control_error(&error))?,
+        scope_target_id: optional_id_bytes(scope_target_id_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn inspect_settings_domain(
+    state: tauri::State<'_, AppState>,
+    domain_kind: String,
+    scope_target_id_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command =
+        build_inspect_settings_domain(&domain_kind, scope_target_id_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_content_type_associations(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListContentTypeAssociations {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_content_type_associations(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_content_type_associations(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_keychain_references(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListKeychainReferences {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_keychain_references(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_keychain_references(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_chooser_grants(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListChooserGrants {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_chooser_grants(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_chooser_grants(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_workspaces(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListWorkspaces {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_workspaces(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_workspaces(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_inspect_workspace(
+    workspace_id_hex: &str,
+    expected_revision: u64,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectWorkspace {
+        workspace_id: principal_bytes(workspace_id_hex)?,
+        expected_revision,
+    })
+}
+
+#[tauri::command]
+pub async fn inspect_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id_hex: String,
+    expected_revision: u64,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_inspect_workspace(&workspace_id_hex, expected_revision)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_processes(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListProcesses {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_processes(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_processes(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_resource_reservations(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListResourceReservations {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_resource_reservations(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_resource_reservations(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_topics(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListTopics {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_topics(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_topics(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_notifications(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListNotifications {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_notifications(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_notifications(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_list_cells(
+    cursor_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::ListCells {
+        cursor: optional_id_bytes(cursor_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_cells(
+    state: tauri::State<'_, AppState>,
+    cursor_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_list_cells(cursor_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_inspect_cell_leases(
+    cell_id_hex: Option<&str>,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectCellLeases {
+        cell_id: optional_id_bytes(cell_id_hex)?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn inspect_cell_leases(
+    state: tauri::State<'_, AppState>,
+    cell_id_hex: Option<String>,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_inspect_cell_leases(cell_id_hex.as_deref(), limit)?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_preview_control_blast_radius(
+    target_scope: &str,
+    target_id_hex: &str,
+    secondary_id_hex: Option<&str>,
+    preview_action: &str,
+    limit: u32,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::PreviewControlBlastRadius {
+        target_scope: parse_control_scope(target_scope.trim())
+            .map_err(|error| from_control_error(&error))?,
+        target_id: principal_bytes(target_id_hex)?,
+        secondary_id: optional_id_bytes(secondary_id_hex)?,
+        preview_action: parse_preview_action_code(preview_action.trim())
+            .map_err(|error| from_control_error(&error))?,
+        limit: validate_enum_limit_bound(limit)?,
+    })
+}
+
+#[tauri::command]
+pub async fn preview_control_blast_radius(
+    state: tauri::State<'_, AppState>,
+    target_scope: String,
+    target_id_hex: String,
+    secondary_id_hex: Option<String>,
+    preview_action: String,
+    limit: u32,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_preview_control_blast_radius(
+        &target_scope,
+        &target_id_hex,
+        secondary_id_hex.as_deref(),
+        &preview_action,
+        limit,
+    )?;
+    dispatch_configured(&state, command).await
+}
+
+pub fn build_query_control_command_status(
+    target_command_id_hex: &str,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::QueryControlCommandStatus {
+        target_command_id: principal_bytes(target_command_id_hex)?,
+    })
+}
+
+#[tauri::command]
+pub async fn query_control_command_status(
+    state: tauri::State<'_, AppState>,
+    target_command_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_query_control_command_status(&target_command_id_hex)?;
+    dispatch_configured(&state, command).await
+}
+
 /// §25.3 idempotency 身份:每次提交新生成 16 字节 OS 随机(Unix 读
 /// `/dev/urandom`;Windows 经 `getrandom` 走 BCrypt CSPRNG)。认证派发
 /// 已跨平台,命令 id 的生成不再有平台桩。
@@ -734,71 +1561,271 @@ fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     Ok(id)
 }
 
-/// GUI 授权动作(SABI v1.4 命令面;serde tag 与 CLI operation 名一致)。
+/// GUI 授权动作(SABI v1.4 + Stage D 对称控制面;serde tag 与 CLI operation 名一致)。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum ControlAction {
     AckRecoveryAlert {
+        #[serde(alias = "planIdHex")]
         plan_id_hex: String,
+        #[serde(alias = "expectedTotalFailures")]
         expected_total_failures: u64,
         reason: String,
     },
     AckSemanticRecoveryAlert {
+        #[serde(alias = "planIdHex")]
         plan_id_hex: String,
+        #[serde(alias = "expectedTotalFailures")]
         expected_total_failures: u64,
         reason: String,
     },
     ResumeSemanticRecovery {
+        #[serde(alias = "planIdHex")]
         plan_id_hex: String,
+        #[serde(alias = "expectedTotalFailures")]
         expected_total_failures: u64,
         reason: String,
     },
     AckResourceRecoveryAlert {
+        #[serde(alias = "planIdHex")]
         plan_id_hex: String,
+        #[serde(alias = "expectedTotalFailures")]
         expected_total_failures: u64,
         reason: String,
     },
     ResumeResourceRecovery {
+        #[serde(alias = "planIdHex")]
         plan_id_hex: String,
+        #[serde(alias = "expectedTotalFailures")]
         expected_total_failures: u64,
         reason: String,
     },
     PauseOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
         reason: String,
     },
     ResumeOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
         reason: String,
     },
     CancelOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
         reason: String,
     },
     KillOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
         reason: String,
     },
     ThrottleOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
+        #[serde(alias = "throttlePercent")]
         throttle_percent: u64,
         reason: String,
     },
     ReclaimOperation {
+        #[serde(alias = "targetIdHex")]
         target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
         expected_revision: u64,
         reason: String,
     },
+    DisableApplication {
+        #[serde(alias = "targetIdHex")]
+        target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        #[serde(default)]
+        scope: Option<String>,
+        reason: String,
+    },
+    UninstallApplication {
+        #[serde(alias = "targetIdHex")]
+        target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        #[serde(default)]
+        scope: Option<String>,
+        reason: String,
+    },
+    ScopedOperation {
+        scope: String,
+        verb: String,
+        #[serde(alias = "targetIdHex")]
+        target_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        #[serde(default, alias = "throttlePercent")]
+        throttle_percent: Option<u64>,
+        reason: String,
+    },
+    RequestProcessMigration {
+        #[serde(alias = "processIdHex")]
+        process_id_hex: String,
+        #[serde(alias = "destinationCellIdHex")]
+        destination_cell_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        reason: String,
+    },
+    PurgeTopic {
+        #[serde(alias = "topicIdHex")]
+        topic_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        #[serde(default = "default_true", alias = "acknowledgeDataLoss")]
+        acknowledge_data_loss: bool,
+        reason: String,
+    },
+    UpdateSettingsDomain {
+        #[serde(alias = "domainKind")]
+        domain_kind: String,
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(default, alias = "scopeTargetIdHex")]
+        scope_target_id_hex: Option<String>,
+        #[serde(alias = "expectedDomainRevision")]
+        expected_domain_revision: u64,
+        key: String,
+        #[serde(alias = "valueCborHex")]
+        value_cbor_hex: String,
+        reason: String,
+    },
+    SetContentTypeAssociation {
+        #[serde(alias = "associationIdHex")]
+        association_id_hex: String,
+        #[serde(alias = "contentType")]
+        content_type: String,
+        #[serde(alias = "applicationIdHex")]
+        application_id_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        reason: String,
+    },
+    IssueChooserGrant {
+        #[serde(alias = "grantIdHex")]
+        grant_id_hex: String,
+        #[serde(alias = "applicationIdHex")]
+        application_id_hex: String,
+        #[serde(alias = "chooserKind")]
+        chooser_kind: u32,
+        #[serde(alias = "resourceHandleHex")]
+        resource_handle_hex: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        reason: String,
+    },
+    UndoReceipt {
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(alias = "targetReceiptIdHex", alias = "targetIdHex")]
+        target_id_hex: String,
+        #[serde(alias = "undoClass")]
+        undo_class: String,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        reason: String,
+    },
+    MutateSearchCandidate {
+        #[serde(alias = "candidateIdHex")]
+        candidate_id_hex: String,
+        #[serde(alias = "scopeIdHex")]
+        scope_id_hex: String,
+        #[serde(
+            default = "default_search_restrictions_bits",
+            alias = "restrictionsBits"
+        )]
+        restrictions_bits: u32,
+        #[serde(alias = "expectedRevision")]
+        expected_revision: u64,
+        reason: String,
+    },
+    MutateTaskNodeTopology {
+        #[serde(alias = "planIdHex")]
+        plan_id_hex: String,
+        #[serde(alias = "nodeIdHex")]
+        node_id_hex: String,
+        #[serde(alias = "observedState")]
+        observed_state: String,
+        #[serde(alias = "expectedPlanRevision")]
+        expected_plan_revision: u64,
+        reason: String,
+    },
+    OverrideTaskAttemptCommit {
+        #[serde(alias = "attemptIdHex")]
+        attempt_id_hex: String,
+        #[serde(alias = "expectedGeneration")]
+        expected_generation: u64,
+        reason: String,
+    },
+    OverrideEffectUnknownOperation {
+        #[serde(alias = "operationIdHex")]
+        operation_id_hex: String,
+        #[serde(default = "default_true", alias = "markSucceeded")]
+        mark_succeeded: bool,
+        #[serde(alias = "expectedGeneration")]
+        expected_generation: u64,
+        reason: String,
+    },
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_search_restrictions_bits() -> u32 {
+    SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL
+}
+
+fn compile_scoped_verb(
+    verb: &str,
+    throttle_percent: Option<u64>,
+) -> Result<ScopedControlAction, DesktopError> {
+    let trimmed = verb.trim();
+    if trimmed.eq_ignore_ascii_case("throttle")
+        || trimmed.eq_ignore_ascii_case("throttle-operation")
+        || trimmed == "限流"
+    {
+        let percent = throttle_percent.ok_or_else(|| {
+            DesktopError::config("scoped throttle 动作必须提供 throttle_percent(1..=100)")
+        })?;
+        if !(1..=100).contains(&percent) {
+            return Err(DesktopError::config(
+                "throttle_percent 必须是 1..=100 的整数百分比(与上游 wire 前拒绝同规)",
+            ));
+        }
+        return Ok(ScopedControlAction::Throttle {
+            throttle_percent: percent,
+        });
+    }
+    if throttle_percent.is_some() {
+        return Err(DesktopError::config(
+            "非 throttle 作用域动作不得携带 throttle_percent",
+        ));
+    }
+    parse_unit_scoped_action(trimmed)
+        .map(|(action, _)| action)
+        .map_err(|error| from_control_error(&error))
 }
 
 /// 动作 → [`ControlCommand`] 的单一编译点(派发前类型化校验:32 hex 目标、
 /// 非空 reason;throttle 百分比镜像上游 1..=100 wire 前拒绝规则)。
 /// Tauri `submit_control` 命令与集成测试共用(测试注入确定性命令 id)。
+#[allow(clippy::too_many_lines)]
 pub fn build_control_command(
     action: ControlAction,
     control_command_id: [u8; 16],
@@ -933,7 +1960,272 @@ pub fn build_control_command(
             expected_generation_or_revision: expected_revision,
             reason: reason(&raw)?,
         }),
+        ControlAction::DisableApplication {
+            target_id_hex,
+            expected_revision,
+            scope,
+            reason: raw,
+        } => {
+            let target_id = principal_bytes(&target_id_hex)?;
+            let bounded_reason = reason(&raw)?;
+            if let Some(raw_scope) = scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                let parsed_scope =
+                    parse_control_scope(raw_scope).map_err(|error| from_control_error(&error))?;
+                Ok(ControlCommand::ScopedOperation {
+                    scope: parsed_scope,
+                    action: ScopedControlAction::DisableApplication,
+                    control_command_id,
+                    target_id,
+                    expected_generation_or_revision: expected_revision,
+                    reason: bounded_reason,
+                })
+            } else {
+                Ok(ControlCommand::DisableApplication {
+                    control_command_id,
+                    package_id: target_id,
+                    expected_generation_or_revision: expected_revision,
+                    reason: bounded_reason,
+                })
+            }
+        }
+        ControlAction::UninstallApplication {
+            target_id_hex,
+            expected_revision,
+            scope,
+            reason: raw,
+        } => {
+            let target_id = principal_bytes(&target_id_hex)?;
+            let bounded_reason = reason(&raw)?;
+            if let Some(raw_scope) = scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                let parsed_scope =
+                    parse_control_scope(raw_scope).map_err(|error| from_control_error(&error))?;
+                Ok(ControlCommand::ScopedOperation {
+                    scope: parsed_scope,
+                    action: ScopedControlAction::UninstallApplication,
+                    control_command_id,
+                    target_id,
+                    expected_generation_or_revision: expected_revision,
+                    reason: bounded_reason,
+                })
+            } else {
+                Ok(ControlCommand::UninstallApplication {
+                    control_command_id,
+                    package_id: target_id,
+                    expected_generation_or_revision: expected_revision,
+                    reason: bounded_reason,
+                })
+            }
+        }
+        ControlAction::ScopedOperation {
+            scope,
+            verb,
+            target_id_hex,
+            expected_revision,
+            throttle_percent,
+            reason: raw,
+        } => Ok(ControlCommand::ScopedOperation {
+            scope: parse_control_scope(scope.trim()).map_err(|error| from_control_error(&error))?,
+            action: compile_scoped_verb(&verb, throttle_percent)?,
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::RequestProcessMigration {
+            process_id_hex,
+            destination_cell_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::RequestProcessMigration {
+            control_command_id,
+            process_id: principal_bytes(&process_id_hex)?,
+            destination_cell_id: principal_bytes(&destination_cell_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::PurgeTopic {
+            topic_id_hex,
+            expected_revision,
+            acknowledge_data_loss,
+            reason: raw,
+        } => Ok(ControlCommand::PurgeTopic {
+            control_command_id,
+            topic_id: principal_bytes(&topic_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            acknowledge_data_loss,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::UpdateSettingsDomain {
+            domain_kind,
+            scope,
+            scope_target_id_hex,
+            expected_domain_revision,
+            key,
+            value_cbor_hex,
+            reason: raw,
+        } => {
+            let trimmed_key = key.trim();
+            if trimmed_key.is_empty() || trimmed_key.len() > 128 {
+                return Err(DesktopError::config(
+                    "settings key 必须非空且不超过 128 字节",
+                ));
+            }
+            let parsed_kind = parse_settings_domain_kind(domain_kind.trim())
+                .map_err(|error| from_control_error(&error))?;
+            let resolved_scope = match scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(raw_scope) => {
+                    parse_control_scope(raw_scope).map_err(|error| from_control_error(&error))?
+                }
+                None => match parsed_kind {
+                    SettingsDomainKind::Workspace => ControlScope::Workspace,
+                    SettingsDomainKind::Application => ControlScope::Application,
+                    SettingsDomainKind::System
+                    | SettingsDomainKind::User
+                    | SettingsDomainKind::Unspecified => ControlScope::System,
+                },
+            };
+            Ok(ControlCommand::UpdateSettingsDomain {
+                control_command_id,
+                scope: resolved_scope,
+                target_id: optional_id_bytes(scope_target_id_hex.as_deref())?.unwrap_or([0u8; 16]),
+                expected_generation_or_revision: expected_domain_revision,
+                domain_kind: parsed_kind,
+                key: trimmed_key.to_owned(),
+                value_cbor: decode_hex_bytes(&value_cbor_hex, MAX_SETTINGS_CBOR_BYTES)?,
+                reason: reason(&raw)?,
+            })
+        }
+        ControlAction::SetContentTypeAssociation {
+            association_id_hex,
+            content_type,
+            application_id_hex,
+            expected_revision,
+            reason: raw,
+        } => {
+            let trimmed_ct = content_type.trim();
+            if trimmed_ct.is_empty() || trimmed_ct.len() > 128 {
+                return Err(DesktopError::config(
+                    "content_type 必须非空且不超过 128 字节",
+                ));
+            }
+            Ok(ControlCommand::SetContentTypeAssociation {
+                control_command_id,
+                association_id: principal_bytes(&association_id_hex)?,
+                content_type: trimmed_ct.to_owned(),
+                application_id: principal_bytes(&application_id_hex)?,
+                expected_generation_or_revision: expected_revision,
+                reason: reason(&raw)?,
+            })
+        }
+        ControlAction::IssueChooserGrant {
+            grant_id_hex,
+            application_id_hex,
+            chooser_kind,
+            resource_handle_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::IssueChooserGrant {
+            control_command_id,
+            grant_id: principal_bytes(&grant_id_hex)?,
+            application_id: principal_bytes(&application_id_hex)?,
+            chooser_kind,
+            resource_handle: principal_bytes(&resource_handle_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::UndoReceipt {
+            scope,
+            target_id_hex,
+            undo_class,
+            expected_revision,
+            reason: raw,
+        } => {
+            let resolved_scope = match scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(raw_scope) => {
+                    parse_control_scope(raw_scope).map_err(|error| from_control_error(&error))?
+                }
+                None => ControlScope::Task,
+            };
+            Ok(ControlCommand::UndoReceipt {
+                control_command_id,
+                scope: resolved_scope,
+                target_id: principal_bytes(&target_id_hex)?,
+                receipt_undo_class: parse_undo_class(undo_class.trim())
+                    .map_err(|error| from_control_error(&error))?,
+                expected_generation_or_revision: expected_revision,
+                reason: reason(&raw)?,
+            })
+        }
+        ControlAction::MutateSearchCandidate {
+            candidate_id_hex,
+            scope_id_hex,
+            restrictions_bits,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::MutateSearchCandidate {
+            control_command_id,
+            candidate_id: principal_bytes(&candidate_id_hex)?,
+            scope_id: scope_32_bytes(&scope_id_hex)?,
+            non_authoritative_restrictions_bits: restrictions_bits,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::MutateTaskNodeTopology {
+            plan_id_hex,
+            node_id_hex,
+            observed_state,
+            expected_plan_revision,
+            reason: raw,
+        } => Ok(ControlCommand::MutateTaskNodeTopology {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            node_id: principal_bytes(&node_id_hex)?,
+            observed_node_state: parse_plan_node_state(observed_state.trim())
+                .map_err(|error| from_control_error(&error))?,
+            expected_generation_or_revision: expected_plan_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::OverrideTaskAttemptCommit {
+            attempt_id_hex,
+            expected_generation,
+            reason: raw,
+        } => Ok(ControlCommand::OverrideTaskAttemptCommit {
+            control_command_id,
+            attempt_id: principal_bytes(&attempt_id_hex)?,
+            expected_generation_or_revision: expected_generation,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::OverrideEffectUnknownOperation {
+            operation_id_hex,
+            mark_succeeded,
+            expected_generation,
+            reason: raw,
+        } => Ok(ControlCommand::OverrideEffectUnknownOperation {
+            control_command_id,
+            operation_id: principal_bytes(&operation_id_hex)?,
+            mark_succeeded,
+            expected_generation_or_revision: expected_generation,
+            reason: reason(&raw)?,
+        }),
     }
+}
+
+/// 确定性命令身份提交核心(供四入口字节等价性测试调用,与 `submit_control` 同路径)。
+pub async fn submit_control_with_id_core(
+    state: &AppState,
+    action: ControlAction,
+    control_command_id: [u8; 16],
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_control_command(action, control_command_id)?;
+    dispatch_app_state(state, command).await
+}
+
+/// 随机命令身份提交核心(`submit_control` 的无 Tauri 句柄等价入口)。
+pub async fn submit_control_core(
+    state: &AppState,
+    action: ControlAction,
+) -> Result<ReceiptDto, DesktopError> {
+    submit_control_with_id_core(state, action, fresh_command_id()?).await
 }
 
 /// W32-B 写入半唯一入口:授权动作 → 真实 ControlCommand → 认证 IPC。
@@ -943,11 +2235,11 @@ pub async fn submit_control(
     state: tauri::State<'_, AppState>,
     action: ControlAction,
 ) -> Result<ReceiptDto, DesktopError> {
-    let command = build_control_command(action, fresh_command_id()?)?;
-    dispatch_configured(&state, command).await
+    submit_control_core(state.inner(), action).await
 }
 
 /// 只读 operation → (ControlCommand, CLI 参数)。mutation 一律拒绝。
+#[allow(clippy::too_many_lines)]
 fn parity_command(
     operation: &str,
     target_hex: Option<&str>,
@@ -1019,8 +2311,108 @@ fn parity_command(
                 ],
             ))
         }
+        "inspect-search" => {
+            let raw = target_hex
+                .ok_or_else(|| DesktopError::config("inspect-search 需要 64 hex scope_id"))?;
+            let scope_id = scope_32_bytes(raw)?;
+            Ok((
+                ControlCommand::InspectSearch { scope_id },
+                vec!["inspect-search".into(), raw.trim().to_owned()],
+            ))
+        }
+        "inspect-notification" => {
+            let notification_id = target()?;
+            Ok((
+                ControlCommand::InspectNotification { notification_id },
+                vec![
+                    "inspect-notification".into(),
+                    target_hex.unwrap_or_default().trim().to_owned(),
+                ],
+            ))
+        }
+        "list-tasks" => Ok((
+            ControlCommand::ListTasks {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-tasks".into(), "16".into()],
+        )),
+        "list-task-groups" => Ok((
+            ControlCommand::ListTaskGroups {
+                task_id: None,
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-task-groups".into(), "16".into()],
+        )),
+        "list-installed-applications" => Ok((
+            ControlCommand::ListInstalledApplications {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-installed-applications".into(), "16".into()],
+        )),
+        "list-workspaces" => Ok((
+            ControlCommand::ListWorkspaces {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-workspaces".into(), "16".into()],
+        )),
+        "list-processes" => Ok((
+            ControlCommand::ListProcesses {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-processes".into(), "16".into()],
+        )),
+        "list-resource-reservations" => Ok((
+            ControlCommand::ListResourceReservations {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-resource-reservations".into(), "16".into()],
+        )),
+        "list-topics" => Ok((
+            ControlCommand::ListTopics {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-topics".into(), "16".into()],
+        )),
+        "list-notifications" => Ok((
+            ControlCommand::ListNotifications {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-notifications".into(), "16".into()],
+        )),
+        "list-cells" => Ok((
+            ControlCommand::ListCells {
+                cursor: None,
+                limit: 16,
+            },
+            vec!["list-cells".into(), "16".into()],
+        )),
+        "inspect-cell-leases" => Ok((
+            ControlCommand::InspectCellLeases {
+                cell_id: None,
+                limit: 16,
+            },
+            vec!["inspect-cell-leases".into(), "16".into()],
+        )),
+        "query-control-command-status" => {
+            let target_command_id = target()?;
+            Ok((
+                ControlCommand::QueryControlCommandStatus { target_command_id },
+                vec![
+                    "query-control-command-status".into(),
+                    target_hex.unwrap_or_default().trim().to_owned(),
+                ],
+            ))
+        }
         _ => Err(DesktopError::config(format!(
-            "未知或非只读 operation: {operation}(读路径自检只收 inspect/export;写路径探针见 parity_check_write)"
+            "未知或非只读 operation: {operation}(读路径自检只收 inspect/export/list;写路径探针见 parity_check_write)"
         ))),
     }
 }
@@ -1397,6 +2789,54 @@ mod tests {
             panic!("expected throttle command");
         };
         assert_eq!(throttle_percent, 50);
+    }
+
+    #[test]
+    fn stage_d_builders_enforce_pagination_and_scope_contracts() {
+        assert_eq!(
+            build_list_tasks(None, 0).unwrap_err().code,
+            ErrorCode::Config
+        );
+        assert_eq!(
+            build_list_tasks(None, 65).unwrap_err().code,
+            ErrorCode::Config
+        );
+        assert!(build_list_tasks(None, 64).is_ok());
+
+        assert_eq!(
+            build_poll_desktop_watermark_events(0, 129)
+                .unwrap_err()
+                .code,
+            ErrorCode::Config
+        );
+        assert!(build_poll_desktop_watermark_events(0, 128).is_ok());
+
+        let disable_app = control_action(ControlAction::DisableApplication {
+            target_id_hex: "51".repeat(16),
+            expected_revision: 3,
+            scope: None,
+            reason: "disable app".to_owned(),
+        })
+        .unwrap();
+        assert!(matches!(
+            disable_app,
+            ControlCommand::DisableApplication { .. }
+        ));
+
+        let scoped_pause = control_action(ControlAction::ScopedOperation {
+            scope: "task-group".to_owned(),
+            verb: "pause".to_owned(),
+            target_id_hex: "61".repeat(16),
+            expected_revision: 4,
+            throttle_percent: None,
+            reason: "pause group".to_owned(),
+        })
+        .unwrap();
+        let ControlCommand::ScopedOperation { scope, action, .. } = scoped_pause else {
+            panic!("expected scoped operation");
+        };
+        assert_eq!(scope, ControlScope::TaskGroup);
+        assert_eq!(action, ScopedControlAction::Pause);
     }
 
     #[cfg(unix)]

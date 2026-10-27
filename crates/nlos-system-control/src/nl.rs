@@ -164,6 +164,16 @@
 
 use crate::control::{ControlCommand, ControlError, parse_hex_32, parse_hex_id};
 
+#[path = "nl_stage_d.rs"]
+mod stage_d;
+pub use stage_d::{
+    NL_ISSUE_CHOOSER_REASON, NL_MIGRATE_REASON, NL_MUTATE_SEARCH_REASON, NL_MUTATE_TOPOLOGY_REASON,
+    NL_OVERRIDE_ATTEMPT_REASON, NL_OVERRIDE_OPERATION_REASON, NL_PURGE_TOPIC_REASON,
+    NL_SET_ASSOCIATION_REASON, NL_UNDO_RECEIPT_REASON, NL_UPDATE_SETTINGS_REASON,
+    parse_control_scope, parse_plan_node_state, parse_preview_action_code,
+    parse_settings_domain_kind, parse_undo_class, parse_unit_scoped_action,
+};
+
 /// Fixed bounded audit reason compiled into every natural-language
 /// acknowledgement. It names the issuing surface without embedding the raw
 /// sentence (raw natural language MUST NOT cross the control boundary,
@@ -238,6 +248,9 @@ const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\"
 /// otherwise; no fuzzy or probabilistic interpretation is ever attempted.
 pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
+    if let Some(result) = stage_d::try_parse_stage_d(&tokens) {
+        return result;
+    }
     if let Some(result) = try_parse_inspect_health(&tokens) {
         return result;
     }
@@ -2665,5 +2678,60 @@ mod tests {
                 "expected typed rejection for {rejected:?}"
             );
         }
+    }
+
+    #[test]
+    fn stage_d_enum_scope_preview_and_reconciliation_forms_parse() {
+        use crate::control::ScopedControlAction;
+        use crate::desktop_enum::preview_action;
+        use nlos_schema::sabi::v1::ControlScope;
+
+        assert_eq!(
+            parse_nl_command("list tasks limit 4").unwrap(),
+            ControlCommand::ListTasks {
+                cursor: None,
+                limit: 4,
+            }
+        );
+        assert_eq!(
+            parse_nl_command(&format!("列出任务 限制 4 游标 {PLAN_HEX_LOWER}")).unwrap(),
+            ControlCommand::ListTasks {
+                cursor: Some(plan_id()),
+                limit: 4,
+            }
+        );
+        assert_eq!(
+            parse_nl_command(&format!(
+                "preview cancel scope task {PLAN_HEX_LOWER} limit 16"
+            ))
+            .unwrap(),
+            ControlCommand::PreviewControlBlastRadius {
+                target_scope: ControlScope::Task,
+                target_id: plan_id(),
+                secondary_id: None,
+                preview_action: preview_action::CANCEL,
+                limit: 16,
+            }
+        );
+        assert_eq!(
+            parse_nl_command(&format!(
+                "pause scope workspace {PLAN_HEX_LOWER} expecting 2"
+            ))
+            .unwrap(),
+            ControlCommand::ScopedOperation {
+                scope: ControlScope::Workspace,
+                action: ScopedControlAction::Pause,
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 2,
+                reason: NL_PAUSE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command(&format!("查看命令状态 {PLAN_HEX_LOWER}")).unwrap(),
+            ControlCommand::QueryControlCommandStatus {
+                target_command_id: plan_id(),
+            }
+        );
     }
 }

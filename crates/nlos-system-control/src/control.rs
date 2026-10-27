@@ -31,9 +31,9 @@ use nlos_schema::sabi::v1::{
     ReceiptReference, ReclaimCommand, ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot,
     ResumeCommand, ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, SabiErrorCode,
     SabiFailure, SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
-    SubmitControlCommandRequest, SystemControlView, TaskGroupLifecycleState, TaskGroupMemberType,
-    TaskGroupMembershipState, ThrottleCommand, UninstallApplicationCommand, control_command,
-    envelope,
+    SettingsDomainKind, SubmitControlCommandRequest, SystemControlView, TaskGroupLifecycleState,
+    TaskGroupMemberType, TaskGroupMembershipState, TaskUndoClass, ThrottleCommand,
+    UninstallApplicationCommand, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -45,6 +45,19 @@ use nlos_schema::{
     encode_submit_control_command_request, system_control_schema_identity,
 };
 
+use crate::cell_inspector::{CellLeaseInspectPage, CellListPage};
+use crate::control_stage_d::{
+    compile_stage_d_envelope_arm, decode_stage_d_outcome, encode_stage_d_outcome_bytes,
+    is_stage_d_mutation, stage_d_command_id,
+};
+use crate::desktop_enum::{
+    ChooserGrantListPage, ContentTypeAssociationListPage, ControlBlastRadiusPreviewResult,
+    ControlCommandStatusRecord, DesktopWatermarkPollPage, DurableOperationListPage,
+    ExecutionFiberListPage, InstalledApplicationListPage, KeychainReferenceListPage,
+    NotificationListPage, ProcessListPage, ResourceReservationListPage, SearchCandidateQueryPage,
+    SettingsDomainProjection, TaskAttemptListPage, TaskGroupListPage, TaskListPage,
+    TaskNodeListPage, TopicListPage, WorkspaceListPage, WorkspaceRecord,
+};
 use crate::openmetrics::OpenMetricsRenderer;
 use crate::{
     GET_METHOD, RecoveryCounter, RecoveryGauge, RecoveryHealthSource, RecoveryMetricsSink,
@@ -350,6 +363,241 @@ pub enum ControlCommand {
         expected_generation_or_revision: u64,
         reason: String,
     },
+    /// `IPC-D1`: Bounded cursor enumeration of tasks (`limit <= 64`).
+    ListTasks {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D2`: Bounded cursor enumeration of `TaskGroup` rows (`limit <= 64`).
+    ListTaskGroups {
+        task_id: Option<[u8; 16]>,
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D3`: Bounded plan-scoped `TaskNode` enumeration (`limit <= 64`),
+    /// surfacing `[PLAN-LAZY-001]` collapsed counts and `StaleGeneration` vs `NotFound`.
+    ListTaskNodes {
+        plan_id: [u8; 16],
+        expected_plan_revision: u64,
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D3`: Bounded `TaskAttempt` enumeration (`limit <= 64`).
+    ListTaskAttempts {
+        scope_filter_id: Option<[u8; 16]>,
+        expected_generation: u64,
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D3`: Bounded `ExecutionFiber` enumeration (`limit <= 64`).
+    ListExecutionFibers {
+        process_id: Option<[u8; 16]>,
+        expected_generation: u64,
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D3`: Bounded `DurableOperation` enumeration (`limit <= 64`).
+    ListOperations {
+        fiber_id: Option<[u8; 16]>,
+        expected_generation: u64,
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D4`: Bounded installed `Application` enumeration (`limit <= 64`).
+    ListInstalledApplications {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D4`: Non-authoritative `0x1F` search candidate query (`limit <= 64`).
+    QuerySearchCandidates {
+        scope_id: [u8; SCOPE_ID_BYTES],
+        query: String,
+        cursor_offset: u64,
+        limit: u32,
+    },
+    /// `IPC-D5`: Monotonic desktop watermark digest event poll (`limit <= 128`).
+    PollDesktopWatermarkEvents { since_watermark: u64, limit: u32 },
+    /// `IPC-D5`: Settings domain read (`system` / `user` / `workspace` / `application`).
+    InspectSettingsDomain {
+        domain_kind: SettingsDomainKind,
+        scope_target_id: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D5`: Bounded content-type association enumeration (`limit <= 64`).
+    ListContentTypeAssociations {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D5`: Bounded zero-secret keychain reference enumeration (`limit <= 64`).
+    ListKeychainReferences {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D5`: Bounded scoped chooser grant enumeration (`limit <= 64`).
+    ListChooserGrants {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D6`: Bounded `Workspace` enumeration (`limit <= 64`).
+    ListWorkspaces {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D6`: Single `Workspace` inspect with `expected_revision` fence.
+    InspectWorkspace {
+        workspace_id: [u8; 16],
+        expected_revision: u64,
+    },
+    /// `IPC-D6`: Bounded `Process` enumeration (`limit <= 64`).
+    ListProcesses {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D6`: Bounded Nomad triple-watermark `ResourceReservation` enumeration (`limit <= 64`).
+    ListResourceReservations {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D6`: Bounded `Topic` enumeration (`limit <= 64`).
+    ListTopics {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D6`: Bounded `Notification` enumeration (`limit <= 64`).
+    ListNotifications {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D7`: Bounded `Cell` topology enumeration (`limit <= 64`).
+    ListCells {
+        cursor: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D7`: Bounded `Cell` lease table inspection (`limit <= 64`).
+    InspectCellLeases {
+        cell_id: Option<[u8; 16]>,
+        limit: u32,
+    },
+    /// `IPC-D8`: Read-only `PreviewControlBlastRadius` dry-run (`[CTRL-HIER-001]`).
+    PreviewControlBlastRadius {
+        target_scope: ControlScope,
+        target_id: [u8; 16],
+        secondary_id: Option<[u8; 16]>,
+        preview_action: u32,
+        limit: u32,
+    },
+    /// `IPC-D8`: Idempotent command reconciliation lookup (`[CTRL-RECOVERY-001]`).
+    QueryControlCommandStatus { target_command_id: [u8; 16] },
+    /// `IPC-D8`: Explicit `ControlScope` override for operation/application mutations.
+    ScopedOperation {
+        scope: ControlScope,
+        action: ScopedControlAction,
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// `IPC-D7`: Process migration request across `Cell` topology (`[CELL-FENCE-001]`).
+    RequestProcessMigration {
+        control_command_id: [u8; 16],
+        process_id: [u8; 16],
+        destination_cell_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// `IPC-D6`: Topic retention purge requiring explicit confirmation (`acknowledge_data_loss`).
+    PurgeTopic {
+        control_command_id: [u8; 16],
+        topic_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        acknowledge_data_loss: bool,
+        reason: String,
+    },
+    /// `IPC-D5`: CAS update on `SettingsDomain`.
+    UpdateSettingsDomain {
+        control_command_id: [u8; 16],
+        scope: ControlScope,
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        domain_kind: SettingsDomainKind,
+        key: String,
+        value_cbor: Vec<u8>,
+        reason: String,
+    },
+    /// `IPC-D5`: CAS update on `ContentTypeAssociation`.
+    SetContentTypeAssociation {
+        control_command_id: [u8; 16],
+        association_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        content_type: String,
+        application_id: [u8; 16],
+        reason: String,
+    },
+    /// `IPC-D5`: Issue scoped `ChooserGrant`.
+    IssueChooserGrant {
+        control_command_id: [u8; 16],
+        grant_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        application_id: [u8; 16],
+        chooser_kind: u32,
+        resource_handle: [u8; 16],
+        reason: String,
+    },
+    /// Statutory Lock #1 probe (`[UI-PARITY-001]`): direct mutation of `0x1F` search candidate.
+    MutateSearchCandidate {
+        control_command_id: [u8; 16],
+        candidate_id: [u8; 16],
+        scope_id: [u8; SCOPE_ID_BYTES],
+        non_authoritative_restrictions_bits: u32,
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Undo receipt command + Statutory Lock #2 guard (`[UI-PARITY-001]` on `IRREVERSIBLE`).
+    UndoReceipt {
+        control_command_id: [u8; 16],
+        scope: ControlScope,
+        target_id: [u8; 16],
+        receipt_undo_class: TaskUndoClass,
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Statutory Lock #3 probe (`[UI-PARITY-001]`): topology mutation on `COMPLETED/ACTIVE` `TaskNode`.
+    MutateTaskNodeTopology {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+        observed_node_state: PlanNodeLifecycleState,
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Statutory Lock #4 probe (`[UI-PARITY-001]`): manual commit-success override on `TaskAttempt`.
+    OverrideTaskAttemptCommit {
+        control_command_id: [u8; 16],
+        attempt_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Statutory Lock #5 probe (`[UI-PARITY-001]`): manual mark-succeeded/not-happened on `EFFECT_UNKNOWN`.
+    OverrideEffectUnknownOperation {
+        control_command_id: [u8; 16],
+        operation_id: [u8; 16],
+        mark_succeeded: bool,
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+}
+
+/// Scoped action carried by [`ControlCommand::ScopedOperation`] (`IPC-D8`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopedControlAction {
+    Pause,
+    Resume,
+    Cancel,
+    Kill,
+    Throttle { throttle_percent: u64 },
+    Reclaim,
+    DisableApplication,
+    UninstallApplication,
 }
 
 impl ControlCommand {
@@ -414,6 +662,10 @@ impl ControlCommand {
             | Self::UninstallApplication {
                 control_command_id, ..
             } => *control_command_id,
+            other => match stage_d_command_id(other) {
+                Some(id) => id,
+                None => INSPECT_HEALTH_COMMAND_ID,
+            },
         }
     }
 
@@ -475,6 +727,10 @@ impl ControlCommand {
             | Self::UninstallApplication {
                 control_command_id, ..
             } => *control_command_id,
+            other => match stage_d_command_id(other) {
+                Some(id) => id,
+                None => INSPECT_CORRELATION_ID,
+            },
         }
     }
 }
@@ -940,36 +1196,105 @@ pub enum ControlOutcome {
     /// Read-only metrics export completed.
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
-    Acknowledged { receipt_id: Vec<u8> },
+    Acknowledged {
+        receipt_id: Vec<u8>,
+    },
     /// Semantic resume accepted: the ledger row returned to `Retrying`.
     /// `receipt_id` names the deterministic resume outcome.
-    Resumed { receipt_id: Vec<u8> },
+    Resumed {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level pause accepted by the wired
     /// [`crate::OperationCommandExecutor`]; `receipt_id` names the executed
     /// pause transition.
-    OperationPaused { receipt_id: Vec<u8> },
+    OperationPaused {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level resume accepted by the executor seam.
-    OperationResumed { receipt_id: Vec<u8> },
+    OperationResumed {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level cancel accepted by the executor seam.
-    OperationCancelled { receipt_id: Vec<u8> },
+    OperationCancelled {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level kill accepted by the executor seam (W29-D); the
     /// receipt id is derived from the backing authority's durable
     /// platform-kill receipt.
-    OperationKilled { receipt_id: Vec<u8> },
+    OperationKilled {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level throttle accepted by the executor seam (W29-D); the
     /// receipt id is derived from the authority-driven demand adjustment.
-    OperationThrottled { receipt_id: Vec<u8> },
+    OperationThrottled {
+        receipt_id: Vec<u8>,
+    },
     /// Operation-level reclaim accepted by the executor seam (W29-D); the
     /// receipt id is derived from the nlos-task reclaim execution outcome.
-    OperationReclaimed { receipt_id: Vec<u8> },
+    OperationReclaimed {
+        receipt_id: Vec<u8>,
+    },
     /// Application disable accepted by the application executor seam
     /// (W35-P11, 移交#11 前片); the receipt id is derived from the
     /// application authority's durable disable receipt facts.
-    ApplicationDisabled { receipt_id: Vec<u8> },
+    ApplicationDisabled {
+        receipt_id: Vec<u8>,
+    },
     /// Application uninstall accepted by the application executor seam;
     /// the receipt id is derived from the application authority's durable
     /// uninstall receipt facts (the W27-D activity gate ran first).
-    ApplicationUninstalled { receipt_id: Vec<u8> },
+    ApplicationUninstalled {
+        receipt_id: Vec<u8>,
+    },
+    /// Explicit stale-generation read projection (`IPC-D3` / `IPC-D6`), distinct
+    /// from `SabiErrorCode::NotFound` and reporting `current_generation`.
+    StaleGeneration {
+        view: SystemControlView,
+        target_id: Option<[u8; 16]>,
+        expected_generation: u64,
+        current_generation: u64,
+    },
+    TasksListed(TaskListPage),
+    TaskGroupsListed(TaskGroupListPage),
+    TaskNodesListed(TaskNodeListPage),
+    TaskAttemptsListed(TaskAttemptListPage),
+    ExecutionFibersListed(ExecutionFiberListPage),
+    OperationsListed(DurableOperationListPage),
+    InstalledApplicationsListed(InstalledApplicationListPage),
+    SearchCandidatesQueried(SearchCandidateQueryPage),
+    DesktopWatermarkPolled(DesktopWatermarkPollPage),
+    SettingsDomainInspected(SettingsDomainProjection),
+    ContentTypeAssociationsListed(ContentTypeAssociationListPage),
+    KeychainReferencesListed(KeychainReferenceListPage),
+    ChooserGrantsListed(ChooserGrantListPage),
+    WorkspacesListed(WorkspaceListPage),
+    WorkspaceInspected(WorkspaceRecord),
+    ProcessesListed(ProcessListPage),
+    ResourceReservationsListed(ResourceReservationListPage),
+    TopicsListed(TopicListPage),
+    NotificationsListed(NotificationListPage),
+    CellsListed(CellListPage),
+    CellLeasesInspected(CellLeaseInspectPage),
+    BlastRadiusPreviewed(ControlBlastRadiusPreviewResult),
+    CommandStatusQueried(ControlCommandStatusRecord),
+    ProcessMigrationRequested {
+        receipt_id: Vec<u8>,
+    },
+    TopicPurged {
+        receipt_id: Vec<u8>,
+    },
+    SettingsDomainUpdated {
+        receipt_id: Vec<u8>,
+    },
+    ContentTypeAssociationSet {
+        receipt_id: Vec<u8>,
+    },
+    ChooserGrantIssued {
+        receipt_id: Vec<u8>,
+    },
+    ReceiptUndone {
+        receipt_id: Vec<u8>,
+    },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -1203,6 +1528,9 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
                 })?,
             )
         }
+        stage_d => compile_stage_d_envelope_arm(stage_d).ok_or(ControlError::InvalidCommand(
+            "Stage D command must compile through compile_stage_d_envelope_arm",
+        ))??,
     };
     Ok(Envelope {
         schema: Some(nlos_schema::sabi::v1::SchemaIdentity {
@@ -1477,6 +1805,7 @@ fn request_context(command: &ControlCommand) -> SabiRequestContext {
         | ControlCommand::UninstallApplication {
             control_command_id, ..
         } => control_command_id.to_vec(),
+        other if is_stage_d_mutation(other) => other.control_command_id().to_vec(),
         _ => Vec::new(),
     };
     SabiRequestContext {
@@ -1636,6 +1965,90 @@ pub async fn dispatch_over_socket_with_services(
         search,
         notify,
     )
+}
+
+/// Cross-platform plain-endpoint dispatch (`Unix` domain socket on Unix,
+/// machine-local Named Pipe on Windows) used by `system-control-cli` and
+/// parity harnesses (`[UI-PARITY-001]`).
+///
+/// # Errors
+///
+/// Returns [`ControlError`] for transport, contract, or projection failures;
+/// handler rejections are typed receipt failures instead.
+#[cfg(all(any(unix, windows), feature = "cli"))]
+pub async fn dispatch_over_plain_endpoint(
+    endpoint: impl AsRef<std::path::Path>,
+    command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+) -> Result<ControlReceipt, ControlError> {
+    dispatch_over_plain_endpoint_with_services(
+        endpoint,
+        command,
+        process,
+        resource,
+        application,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Cross-platform plain-endpoint dispatch with optional search and notification
+/// inspection backends wired (`[UI-PARITY-001]`).
+///
+/// # Errors
+///
+/// Returns [`ControlError`] for transport, contract, or projection failures;
+/// handler rejections are typed receipt failures instead.
+#[cfg(all(any(unix, windows), feature = "cli"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn dispatch_over_plain_endpoint_with_services(
+    endpoint: impl AsRef<std::path::Path>,
+    command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+    search: Option<&dyn SearchInspector>,
+    notify: Option<&dyn NotificationInspector>,
+) -> Result<ControlReceipt, ControlError> {
+    use nlos_ipc::{LocalRpcClient, TransportConfig};
+    use nlos_schema::sabi::v1::ExchangeRequest;
+
+    let request = build_request_envelope(command)?;
+    let config = TransportConfig::default();
+    #[cfg(unix)]
+    let (stream, _) = nlos_ipc::unix::connect(endpoint, config)
+        .await
+        .map_err(ControlError::Ipc)?;
+    #[cfg(windows)]
+    let (stream, _) = nlos_ipc::windows::connect(endpoint.as_ref().as_os_str(), config)
+        .await
+        .map_err(ControlError::Ipc)?;
+    let client = LocalRpcClient::new(stream, config);
+    let response = client
+        .exchange_validated(ExchangeRequest {
+            envelope: Some(request),
+        })
+        .await
+        .map_err(ControlError::Ipc)?;
+    ControlReceipt::compose_with_services(
+        command,
+        response.envelope(),
+        process,
+        resource,
+        application,
+        search,
+        notify,
+    )
+}
+
+pub(crate) fn decoded_result_receipt_pub(
+    command: &ControlCommand,
+    response: &Envelope,
+) -> Result<Vec<u8>, ControlError> {
+    decoded_result_receipt(command, response)
 }
 
 /// Projects one completed mutation response into its authoritative receipt
@@ -2428,6 +2841,9 @@ impl ControlReceipt {
                         receipt_id: decoded_result_receipt(command, response)?,
                     })
                 }
+                stage_d => Ok(decode_stage_d_outcome(stage_d, response).ok_or(
+                    ControlError::UnexpectedResponse("unhandled Stage D command projection"),
+                )??),
             }
         };
         Ok(Self {
@@ -2559,6 +2975,13 @@ impl ControlReceipt {
             }
             Ok(ControlOutcome::DurableOperationInspected(inspection)) => {
                 push_durable_operation_inspection(&mut bytes, inspection);
+            }
+            Ok(stage_d_outcome) => {
+                let encoded = encode_stage_d_outcome_bytes(&mut bytes, stage_d_outcome);
+                debug_assert!(
+                    encoded,
+                    "every Stage D ControlOutcome must encode deterministically"
+                );
             }
         }
         bytes

@@ -224,7 +224,7 @@ fn registry_exposes_the_supported_contract() {
     // for the additive application-lifecycle command arms (移交#11 前片);
     // ADR-0014 permits additive extension of a frozen entry.
     assert_eq!(system_control.major, 1);
-    assert_eq!(system_control.minor, 6);
+    assert_eq!(system_control.minor, 7);
     let takeover_control = registry
         .iter()
         .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
@@ -2413,4 +2413,326 @@ fn driver_provider_response_bounds_fail_closed() {
         decode_driver_provider_request(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F]),
         Err(CompatibilityError::MalformedProtobuf(_))
     ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn stage_d_w69_twelve_domain_scopes_views_and_snapshots_enforce_fail_closed_bounds() {
+    use nlos_schema::sabi::v1::{
+        BlastRadiusImpactSign, CellLeaseInspectSnapshot, CellLeaseKind, CellLeaseLockState,
+        CellLeaseStatus, CellListSnapshot, CellReachabilityState, CellSummaryStatus,
+        ControlBlastRadiusImpactItem, ControlBlastRadiusPreviewSnapshot,
+        ControlCommandStatusSnapshot, DesktopWatermarkEvent, DesktopWatermarkPollSnapshot,
+        PartitionAutonomyGateState, PurgeTopicCommand, RequestProcessMigrationCommand,
+        SearchCandidateEntry, SearchCandidateQuerySnapshot, TaskLifecycleState, TaskListSnapshot,
+        TaskSummaryProjection, TaskUndoClass, UndoReceiptCommand,
+    };
+    use nlos_schema::{
+        MAX_DESKTOP_WATERMARK_EVENT_LIMIT, MAX_SYSTEM_CONTROL_ENUM_LIMIT,
+        SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL, decode_cell_lease_inspect_snapshot,
+        decode_cell_list_snapshot, decode_control_blast_radius_preview_snapshot,
+        decode_control_command_status_snapshot, decode_desktop_watermark_poll_snapshot,
+        decode_search_candidate_query_snapshot, decode_task_list_snapshot,
+        encode_cell_lease_inspect_snapshot, encode_cell_list_snapshot,
+        encode_control_blast_radius_preview_snapshot, encode_control_command_status_snapshot,
+        encode_desktop_watermark_poll_snapshot, encode_search_candidate_query_snapshot,
+        encode_task_list_snapshot, pack_blast_radius_preview_generation,
+    };
+
+    // All 15 explicit domain scopes (3..=17) plus SYSTEM(1) and OPERATION(2) round-trip.
+    for scope in [
+        ControlScope::System,
+        ControlScope::Operation,
+        ControlScope::Workspace,
+        ControlScope::Application,
+        ControlScope::Task,
+        ControlScope::TaskGroup,
+        ControlScope::TaskNode,
+        ControlScope::TaskAttempt,
+        ControlScope::Process,
+        ControlScope::AgentInstance,
+        ControlScope::ExecutionFiber,
+        ControlScope::ResourceGroup,
+        ControlScope::Context,
+        ControlScope::Topic,
+        ControlScope::Channel,
+        ControlScope::Device,
+        ControlScope::Cell,
+    ] {
+        let submit = SubmitControlCommandRequest {
+            schema: Some(system_control_schema_identity()),
+            command: Some(ControlCommand {
+                control_command_id: vec![0x61; 16],
+                issuer_principal_id: vec![0x32; 16],
+                source: ControlCommandSource::TrustedGui.into(),
+                scope: scope.into(),
+                target_id: vec![0x71; 16],
+                expected_generation_or_revision: 1,
+                command: Some(control_command::Command::PauseOperation(PauseCommand {})),
+                reason: "stage-d explicit scope check".to_owned(),
+            }),
+        };
+        let wire = encode_submit_control_command_request(&submit).unwrap();
+        assert_eq!(
+            decode_submit_control_command_request(&wire).unwrap(),
+            submit
+        );
+    }
+
+    // Unspecified scope still fails closed.
+    let unspecified_scope = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: vec![0x61; 16],
+            issuer_principal_id: vec![0x32; 16],
+            source: ControlCommandSource::TrustedGui.into(),
+            scope: ControlScope::Unspecified.into(),
+            target_id: vec![0x71; 16],
+            expected_generation_or_revision: 1,
+            command: Some(control_command::Command::PauseOperation(PauseCommand {})),
+            reason: "bad".to_owned(),
+        }),
+    };
+    assert_eq!(
+        encode_submit_control_command_request(&unspecified_scope),
+        Err(CompatibilityError::UnspecifiedControlScope)
+    );
+
+    // Additive command arms (RequestProcessMigration, PurgeTopic, UndoReceipt) round-trip.
+    for arm in [
+        control_command::Command::RequestProcessMigration(RequestProcessMigrationCommand {
+            destination_cell_id: vec![0x99; 16],
+        }),
+        control_command::Command::PurgeTopic(PurgeTopicCommand {
+            acknowledge_data_loss: true,
+        }),
+        control_command::Command::UndoReceipt(UndoReceiptCommand {
+            receipt_undo_class: TaskUndoClass::Irreversible.into(),
+        }),
+    ] {
+        let submit = SubmitControlCommandRequest {
+            schema: Some(system_control_schema_identity()),
+            command: Some(ControlCommand {
+                control_command_id: vec![0x62; 16],
+                issuer_principal_id: vec![0x32; 16],
+                source: ControlCommandSource::TrustedGui.into(),
+                scope: ControlScope::Process.into(),
+                target_id: vec![0x72; 16],
+                expected_generation_or_revision: 3,
+                command: Some(arm),
+                reason: "stage-d additive arm".to_owned(),
+            }),
+        };
+        let wire = encode_submit_control_command_request(&submit).unwrap();
+        assert_eq!(
+            decode_submit_control_command_request(&wire).unwrap(),
+            submit
+        );
+    }
+
+    // List views enforce limit <= 64; watermark poll enforces limit <= 128.
+    let valid_task_list_req = GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: SystemControlView::TaskList.into(),
+        alert_limit: u32::try_from(MAX_SYSTEM_CONTROL_ENUM_LIMIT).unwrap(),
+        target_id: vec![0x10; 16],
+        plan_id: Vec::new(),
+        target_generation: 0,
+    };
+    assert!(encode_get_system_control_request(&valid_task_list_req).is_ok());
+
+    let mut over_limit_req = valid_task_list_req;
+    over_limit_req.alert_limit = u32::try_from(MAX_SYSTEM_CONTROL_ENUM_LIMIT + 1).unwrap();
+    assert_eq!(
+        encode_get_system_control_request(&over_limit_req),
+        Err(CompatibilityError::InvalidSystemControlAlertLimit)
+    );
+
+    let valid_watermark_req = GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: SystemControlView::DesktopWatermarkPoll.into(),
+        alert_limit: u32::try_from(MAX_DESKTOP_WATERMARK_EVENT_LIMIT).unwrap(),
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 42,
+    };
+    assert!(encode_get_system_control_request(&valid_watermark_req).is_ok());
+
+    let mut over_watermark_req = valid_watermark_req;
+    over_watermark_req.alert_limit = u32::try_from(MAX_DESKTOP_WATERMARK_EVENT_LIMIT + 1).unwrap();
+    assert_eq!(
+        encode_get_system_control_request(&over_watermark_req),
+        Err(CompatibilityError::InvalidSystemControlAlertLimit)
+    );
+
+    // Preview blast radius addressing packs (scope, action) cleanly.
+    let valid_preview_req = GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: SystemControlView::ControlBlastRadiusPreview.into(),
+        alert_limit: 32,
+        target_id: vec![0x44; 16],
+        plan_id: Vec::new(),
+        target_generation: pack_blast_radius_preview_generation(ControlScope::Task, 1),
+    };
+    assert!(encode_get_system_control_request(&valid_preview_req).is_ok());
+
+    // Snapshot codecs round-trip and enforce 0x1F / page bounds.
+    let task_list = TaskListSnapshot {
+        schema: Some(system_control_schema_identity()),
+        tasks: vec![TaskSummaryProjection {
+            task_id: vec![0x11; 16],
+            plan_id: vec![0x12; 16],
+            application_id: vec![0x13; 16],
+            installation_generation: 2,
+            plan_revision: 4,
+            task_state: TaskLifecycleState::Running.into(),
+            undo_class: TaskUndoClass::Irreversible.into(),
+            reservation_id: vec![0x14; 16],
+            cell_id: vec![0x15; 16],
+            updated_at_ms: 9_000,
+            expected_generation_or_revision: 4,
+        }],
+        next_cursor: Vec::new(),
+        truncated: false,
+    };
+    assert_eq!(
+        decode_task_list_snapshot(&encode_task_list_snapshot(&task_list).unwrap()).unwrap(),
+        task_list
+    );
+
+    let mut search_snapshot = SearchCandidateQuerySnapshot {
+        schema: Some(system_control_schema_identity()),
+        scope_id: vec![0x22; 32],
+        non_authoritative_restrictions_bits: SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL,
+        achieved_consistency: 1,
+        failed_shards: vec![],
+        candidates: vec![SearchCandidateEntry {
+            candidate_id: vec![0x23; 16],
+            object_id: vec![0x24; 16],
+            scope_id: vec![0x22; 32],
+            title_snippet: "quarterly report".to_owned(),
+            rank_score_milli: 950,
+            non_authoritative_restrictions_bits: SEARCH_NON_AUTHORITATIVE_RESTRICTIONS_ALL,
+        }],
+        next_cursor: Vec::new(),
+        truncated: false,
+    };
+    assert_eq!(
+        decode_search_candidate_query_snapshot(
+            &encode_search_candidate_query_snapshot(&search_snapshot).unwrap()
+        )
+        .unwrap(),
+        search_snapshot
+    );
+    search_snapshot.non_authoritative_restrictions_bits = 0x0F;
+    assert_eq!(
+        encode_search_candidate_query_snapshot(&search_snapshot),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let watermark_snapshot = DesktopWatermarkPollSnapshot {
+        schema: Some(system_control_schema_identity()),
+        current_watermark: 5,
+        events: vec![DesktopWatermarkEvent {
+            watermark: 5,
+            domain_scope: ControlScope::Task.into(),
+            entity_id: vec![0x11; 16],
+            new_generation_or_revision: 4,
+            state_digest: vec![0xAA; 32],
+            occurred_at_ms: 9_000,
+        }],
+        truncated: false,
+    };
+    assert_eq!(
+        decode_desktop_watermark_poll_snapshot(
+            &encode_desktop_watermark_poll_snapshot(&watermark_snapshot).unwrap()
+        )
+        .unwrap(),
+        watermark_snapshot
+    );
+
+    let cell_list = CellListSnapshot {
+        schema: Some(system_control_schema_identity()),
+        cells: vec![CellSummaryStatus {
+            cell_id: vec![0x77; 16],
+            cell_label: "local-single-node".to_owned(),
+            reachability: CellReachabilityState::OnlineLocal.into(),
+            partition_autonomy_gate: PartitionAutonomyGateState::FullAutonomy.into(),
+            current_epoch: 1,
+            active_lease_count: 3,
+            expected_generation_or_revision: 1,
+        }],
+        next_cursor: Vec::new(),
+        truncated: false,
+    };
+    assert_eq!(
+        decode_cell_list_snapshot(&encode_cell_list_snapshot(&cell_list).unwrap()).unwrap(),
+        cell_list
+    );
+
+    let cell_leases = CellLeaseInspectSnapshot {
+        schema: Some(system_control_schema_identity()),
+        cell_id: vec![0x77; 16],
+        leases: vec![CellLeaseStatus {
+            lease_id: vec![0x78; 16],
+            cell_id: vec![0x77; 16],
+            kind: CellLeaseKind::ExclusiveDevice.into(),
+            lock_state: CellLeaseLockState::Quarantined.into(),
+            holder_id: vec![0x79; 16],
+            remaining_holder_ttl_ms: 0,
+            lease_epoch: 2,
+            clock_skew_horizon_ms: 250,
+        }],
+        truncated: false,
+    };
+    assert_eq!(
+        decode_cell_lease_inspect_snapshot(
+            &encode_cell_lease_inspect_snapshot(&cell_leases).unwrap()
+        )
+        .unwrap(),
+        cell_leases
+    );
+
+    let preview = ControlBlastRadiusPreviewSnapshot {
+        schema: Some(system_control_schema_identity()),
+        target_scope: ControlScope::Task.into(),
+        target_id: vec![0x11; 16],
+        preview_action: 1,
+        statutory_lock_blocked: false,
+        statutory_lock_code: String::new(),
+        impacts: vec![ControlBlastRadiusImpactItem {
+            sign: BlastRadiusImpactSign::Remove.into(),
+            affected_scope: ControlScope::ExecutionFiber.into(),
+            affected_id: vec![0x19; 16],
+            current_generation_or_revision: 2,
+            summary_code: "cancel_descendant_fiber".to_owned(),
+        }],
+        truncated: false,
+    };
+    assert_eq!(
+        decode_control_blast_radius_preview_snapshot(
+            &encode_control_blast_radius_preview_snapshot(&preview).unwrap()
+        )
+        .unwrap(),
+        preview
+    );
+
+    let status = ControlCommandStatusSnapshot {
+        schema: Some(system_control_schema_identity()),
+        control_command_id: vec![0x61; 16],
+        state: ControlCommandLifecycleState::Completed.into(),
+        scope: ControlScope::Task.into(),
+        target_id: vec![0x11; 16],
+        receipt: Some(ReceiptReference {
+            receipt_id: vec![0x88; 16],
+        }),
+        failure: None,
+    };
+    assert_eq!(
+        decode_control_command_status_snapshot(
+            &encode_control_command_status_snapshot(&status).unwrap()
+        )
+        .unwrap(),
+        status
+    );
 }

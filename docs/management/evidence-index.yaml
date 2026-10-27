@@ -1018,3 +1018,21 @@
   scope: "ROAD-C-001 与 ROAD-C-002 逐条款 H6 证据独立核验（均裁 SATISFIED-WITH-BOUNDARIES）+ C-core 九大工作包与阶段 B->C 移交 #1-#17 逐项终局核对 + 全仓 35 workspace crates + desktop + sample-app 零冻结/零退役静态与反向依赖图审计 + §C.5.5 六条件退出就绪度与 P0=0 复核；严守 ADR-0018 单机多进程拓扑边界，待维护者按条件 4 明确批准后翻转 EXITED"
   assurance: H6
   date: "2026-10-26"
+- id: c-xhost-001-mtls-transport-and-fence-handshake
+  path: docs/evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md
+  title: "C-XHOST-001 / W69-C-TRANSPORT：跨物理主机 TLS 1.3 mTLS 五轴 Exporter 围栏握手、双类多路复用流与确定性失败分类（PoC-XHOST-001）"
+  scope: "crates/nlos-net 纯 Rust TLS 1.3 mTLS（0-RTT 禁用、ring 后端）+ 五轴 TLS Exporter 对端身份绑定（含验签后原子水位推进与 CellIdentity<->PrincipalId 强绑定）+ 单调 EndpointResolver + 64 MiB 分块窗口背压与高优 ControlRpc 隔离 + Before/AfterFirstPayloadByte 确定性 RemoteCallOutcome 分类对账门 + N=1 SingleHostDesktop 零监听套接字默认行为 + 三节点内存确定性 ConsensusCore 原型；限定单机多套接字回路实测与内存共识原型，跨机时钟租约包络与持久 Raft 留归 W70"
+  assurance: H5
+  date: "2026-10-27"
+- id: d-tokens-001-workstation-tokens-and-sota-kit
+  path: docs/evidence/stage-d/d-tokens-001-workstation-tokens-and-sota-kit.md
+  title: "D-TOKENS-001 / W69-D-TOKENS：Graphite/Paper 实心工业工作站双主题系统、32x20 单色 Gerono 防伪印章与六大 SOTA 微型可视化原语库"
+  scope: "desktop/src/styles/{tokens,surfaces-and-borders}.css 与 desktop/src/ui/ 原语库（零 backdrop-filter、0/4/6px 工业圆角、零 Emoji、WCAG 2.2 AA 相对亮度全对偶校验、32x20 凹陷单色 Gerono 示波印章、16 态 L1 零行话状态符与法定不可篡改锁徽标、Nomad 三水位子弹微条、Temporal 五段相位瀑布条、Headlamp 非模态抽屉与面包屑、Terraform +/-/~ 爆炸半径表、L3 专用回执审计栏）；697 项确定性断言全绿，尚未挂载至 W70 桌面合成器壳"
+  assurance: H3
+  date: "2026-10-27"
+- id: d-ipc-001-twelve-domain-enum-and-symmetry
+  path: docs/evidence/stage-d/d-ipc-001-twelve-domain-enum-and-symmetry.md
+  title: "D-IPC-001 / W69-D-IPC-ENUM：IPC-D1..D8 12 域有界游标枚举、可插拔 Cell 检视接缝、五大法定禁区与四入口字节级回执对称验证"
+  scope: "system_control.proto 纯增量扩展与 gen/ 同步 + nlos-system-control 12 域有界分页枚举（limit<=64、NOT_FOUND vs StaleGeneration、懒物化折叠计数、0x1F 非权威搜索守卫、水位事件、可插拔 CellTopology/CellLease inspector、PreviewControlBlastRadius、QueryControlCommandStatus）+ 五大法定不可篡改禁区协议级拒绝 + Tauri/TS 漏接补齐与显式 ControlScope + TRUSTED_GUI/NL_SHELL/CLI/STRUCTURED_API 四入口字节级 receipt_hex 对等跨平台实测；真实多机 CellHost 注入与前端视图挂载留归 W70-W72"
+  assurance: H4
+  date: "2026-10-27"
