@@ -7,8 +7,18 @@ import sys
 from dataclasses import dataclass
 
 from google.protobuf.message import DecodeError
-from nlos.sabi.v1.envelope_pb2 import ExchangeRequest
-from nlos.sabi.v1.service_directory_pb2 import (
+
+from .local_rpc import (
+    IpcError,
+    LocalRpcClient,
+    TransportConfig,
+    _ensure_gen_python_path,
+)
+
+_ensure_gen_python_path()
+
+from nlos.sabi.v1.envelope_pb2 import ExchangeRequest  # noqa: E402
+from nlos.sabi.v1.service_directory_pb2 import (  # noqa: E402
     DIRECTORY_ERROR_CODE_UNSPECIFIED,
     DirectoryErrorCode,
     LOCAL_TRANSPORT_KIND_UNIX_SOCKET,
@@ -17,8 +27,6 @@ from nlos.sabi.v1.service_directory_pb2 import (
     NegotiateServiceResponse,
     ServiceBinding,
 )
-
-from .local_rpc import IpcError, LocalRpcClient, TransportConfig
 
 ENVELOPE_SCHEMA = "nlos.sabi.Envelope"
 DIRECTORY_SCHEMA = "nlos.sabi.ServiceDirectory"
