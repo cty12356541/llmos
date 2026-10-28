@@ -47,7 +47,8 @@ fn map_resource_authority_error(error: &ResourceAuthorityError) -> SabiFailure {
         ResourceAuthorityError::ReservationNotFound
         | ResourceAuthorityError::AccountNotFound
         | ResourceAuthorityError::QuoteNotFound
-        | ResourceAuthorityError::DriverNotFound => (
+        | ResourceAuthorityError::DriverNotFound
+        | ResourceAuthorityError::LlmTokenBudgetNotFound => (
             SabiErrorCode::NotFound,
             RetryDirective::DoNotRetry,
             "requested resource reservation was not found",
@@ -89,7 +90,10 @@ fn map_resource_authority_error(error: &ResourceAuthorityError) -> SabiFailure {
         ResourceAuthorityError::IdempotencyConflict
         | ResourceAuthorityError::ConsumptionSequenceConflict
         | ResourceAuthorityError::FinalizeSequenceConflict
-        | ResourceAuthorityError::ReservationBindingMismatch => (
+        | ResourceAuthorityError::ReservationBindingMismatch
+        | ResourceAuthorityError::LlmTokenBudgetAlreadyExists
+        | ResourceAuthorityError::StaleLlmTokenBudget { .. }
+        | ResourceAuthorityError::LlmBudgetUpdateBelowConsumed { .. } => (
             SabiErrorCode::Conflict,
             RetryDirective::DoNotRetry,
             "resource authority state conflict",
@@ -104,7 +108,11 @@ fn map_resource_authority_error(error: &ResourceAuthorityError) -> SabiFailure {
         | ResourceAuthorityError::InvalidFinalizeTimestamp
         | ResourceAuthorityError::GenerationExhausted
         | ResourceAuthorityError::InsufficientCredit { .. }
-        | ResourceAuthorityError::DemandExceedsCapacity { .. } => (
+        | ResourceAuthorityError::DemandExceedsCapacity { .. }
+        | ResourceAuthorityError::InvalidLlmBudgetTimestamp
+        | ResourceAuthorityError::InvalidLlmTokenUsage
+        | ResourceAuthorityError::LlmUsageArithmeticOverflow
+        | ResourceAuthorityError::LlmTokenBudgetExhausted { .. } => (
             SabiErrorCode::InvalidArgument,
             RetryDirective::DoNotRetry,
             "resource inspection request violates the authority contract",
