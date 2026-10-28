@@ -590,6 +590,229 @@ impl FinalizeDecision {
     }
 }
 
+/// Authoritative `SQLite` schema version stamped by `migrate_v8`.
+pub const SCHEMA_VERSION: i64 = 8;
+
+/// One metered dimension of an LLM token & model API call budget
+/// (`[NLOS-RESOURCE-001]`, `[BUD-INT-001]`, `[BUD-ALG-001]`, `[BUD-ARITH-001]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LlmBudgetDimension {
+    PromptTokens,
+    CompletionTokens,
+    TotalTokens,
+    ApiCalls,
+    CostMicrocredits,
+}
+impl LlmBudgetDimension {
+    /// Fixed per-dimension admission check order (deterministic
+    /// first-exhaustion reporting).
+    pub const ALL: [Self; 5] = [
+        Self::PromptTokens,
+        Self::CompletionTokens,
+        Self::TotalTokens,
+        Self::ApiCalls,
+        Self::CostMicrocredits,
+    ];
+
+    #[must_use]
+    pub const fn limit_of(self, limits: LlmTokenLimits) -> u64 {
+        match self {
+            Self::PromptTokens => limits.max_prompt_tokens,
+            Self::CompletionTokens => limits.max_completion_tokens,
+            Self::TotalTokens => limits.max_total_tokens,
+            Self::ApiCalls => limits.max_api_calls,
+            Self::CostMicrocredits => limits.max_cost_microcredits,
+        }
+    }
+}
+
+/// Per-dimension ceilings for an account's LLM token and model API call budget.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LlmTokenLimits {
+    pub max_prompt_tokens: u64,
+    pub max_completion_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_api_calls: u64,
+    pub max_cost_microcredits: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreateLlmTokenBudgetRequest {
+    pub account_id: ResourceAccountId,
+    pub limits: LlmTokenLimits,
+    pub idempotency_key: IdempotencyKey,
+    pub created_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpdateLlmTokenBudgetRequest {
+    pub account_id: ResourceAccountId,
+    pub expected_generation: Generation,
+    pub limits: LlmTokenLimits,
+    pub idempotency_key: IdempotencyKey,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LlmTokenBudgetRecord {
+    pub account_id: ResourceAccountId,
+    pub generation: Generation,
+    pub limits: LlmTokenLimits,
+    pub consumed_prompt_tokens: u64,
+    pub consumed_completion_tokens: u64,
+    pub consumed_reasoning_tokens: u64,
+    pub consumed_total_tokens: u64,
+    pub consumed_api_calls: u64,
+    pub consumed_cost_microcredits: u64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+impl LlmTokenBudgetRecord {
+    #[must_use]
+    pub const fn remaining_prompt_tokens(&self) -> u64 {
+        self.limits
+            .max_prompt_tokens
+            .saturating_sub(self.consumed_prompt_tokens)
+    }
+
+    #[must_use]
+    pub const fn remaining_completion_tokens(&self) -> u64 {
+        self.limits
+            .max_completion_tokens
+            .saturating_sub(self.consumed_completion_tokens)
+    }
+
+    #[must_use]
+    pub const fn remaining_total_tokens(&self) -> u64 {
+        self.limits
+            .max_total_tokens
+            .saturating_sub(self.consumed_total_tokens)
+    }
+
+    #[must_use]
+    pub const fn remaining_api_calls(&self) -> u64 {
+        self.limits
+            .max_api_calls
+            .saturating_sub(self.consumed_api_calls)
+    }
+
+    #[must_use]
+    pub const fn remaining_cost_microcredits(&self) -> u64 {
+        self.limits
+            .max_cost_microcredits
+            .saturating_sub(self.consumed_cost_microcredits)
+    }
+
+    /// Renders this LLM token budget record as `OpenMetrics` / Prometheus text
+    /// exposition gauges and counters.
+    #[must_use]
+    pub fn to_open_metrics_text(&self) -> String {
+        let max_total_tokens = self.limits.max_total_tokens;
+        let consumed_total_tokens = self.consumed_total_tokens;
+        let consumed_prompt_tokens = self.consumed_prompt_tokens;
+        let consumed_completion_tokens = self.consumed_completion_tokens;
+        let consumed_reasoning_tokens = self.consumed_reasoning_tokens;
+        let consumed_api_calls = self.consumed_api_calls;
+        let consumed_cost_microcredits = self.consumed_cost_microcredits;
+        format!(
+            "# HELP nlos_llm_budget_max_total_tokens Configured ceiling for total LLM tokens.\n\
+             # TYPE nlos_llm_budget_max_total_tokens gauge\n\
+             nlos_llm_budget_max_total_tokens {max_total_tokens}\n\
+             # HELP nlos_llm_budget_consumed_total_tokens Cumulative total LLM tokens consumed.\n\
+             # TYPE nlos_llm_budget_consumed_total_tokens counter\n\
+             nlos_llm_budget_consumed_total_tokens {consumed_total_tokens}\n\
+             # HELP nlos_llm_budget_consumed_prompt_tokens Cumulative prompt tokens consumed.\n\
+             # TYPE nlos_llm_budget_consumed_prompt_tokens counter\n\
+             nlos_llm_budget_consumed_prompt_tokens {consumed_prompt_tokens}\n\
+             # HELP nlos_llm_budget_consumed_completion_tokens Cumulative completion tokens consumed.\n\
+             # TYPE nlos_llm_budget_consumed_completion_tokens counter\n\
+             nlos_llm_budget_consumed_completion_tokens {consumed_completion_tokens}\n\
+             # HELP nlos_llm_budget_consumed_reasoning_tokens Cumulative reasoning tokens consumed.\n\
+             # TYPE nlos_llm_budget_consumed_reasoning_tokens counter\n\
+             nlos_llm_budget_consumed_reasoning_tokens {consumed_reasoning_tokens}\n\
+             # HELP nlos_llm_budget_consumed_api_calls_total Cumulative model API calls consumed.\n\
+             # TYPE nlos_llm_budget_consumed_api_calls_total counter\n\
+             nlos_llm_budget_consumed_api_calls_total {consumed_api_calls}\n\
+             # HELP nlos_llm_budget_consumed_cost_microcredits_total Cumulative model API cost consumed in microcredits.\n\
+             # TYPE nlos_llm_budget_consumed_cost_microcredits_total counter\n\
+             nlos_llm_budget_consumed_cost_microcredits_total {consumed_cost_microcredits}\n"
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LlmTokenBudgetDecision {
+    Created(LlmTokenBudgetRecord),
+    Replayed(LlmTokenBudgetRecord),
+}
+impl LlmTokenBudgetDecision {
+    #[must_use]
+    pub const fn record(self) -> LlmTokenBudgetRecord {
+        match self {
+            Self::Created(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LlmTokenBudgetUpdateDecision {
+    Updated(LlmTokenBudgetRecord),
+    Replayed(LlmTokenBudgetRecord),
+}
+impl LlmTokenBudgetUpdateDecision {
+    #[must_use]
+    pub const fn record(self) -> LlmTokenBudgetRecord {
+        match self {
+            Self::Updated(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsumeLlmTokensRequest {
+    pub account_id: ResourceAccountId,
+    pub operation_id: OperationId,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub api_calls: u64,
+    pub cost_microcredits: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub consumed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LlmTokenConsumptionReceipt {
+    pub receipt_id: ReceiptId,
+    pub account_id: ResourceAccountId,
+    pub operation_id: OperationId,
+    pub sequence: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub total_tokens: u64,
+    pub api_calls: u64,
+    pub cost_microcredits: u64,
+    pub cumulative_total_tokens: u64,
+    pub cumulative_api_calls: u64,
+    pub cumulative_cost_microcredits: u64,
+    pub consumed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LlmTokenConsumeDecision {
+    Charged(LlmTokenConsumptionReceipt),
+    Replayed(LlmTokenConsumptionReceipt),
+}
+impl LlmTokenConsumeDecision {
+    #[must_use]
+    pub const fn receipt(self) -> LlmTokenConsumptionReceipt {
+        match self {
+            Self::Charged(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ResourceAuthorityError {
     Sqlite(rusqlite::Error),
@@ -644,6 +867,25 @@ pub enum ResourceAuthorityError {
         reported: ResourceDemand,
     },
     InvalidThrottleTimestamp,
+    LlmTokenBudgetNotFound,
+    LlmTokenBudgetAlreadyExists,
+    StaleLlmTokenBudget {
+        expected: Generation,
+        current: Generation,
+    },
+    InvalidLlmBudgetTimestamp,
+    LlmBudgetUpdateBelowConsumed {
+        dimension: LlmBudgetDimension,
+        consumed: u64,
+        requested_limit: u64,
+    },
+    InvalidLlmTokenUsage,
+    LlmUsageArithmeticOverflow,
+    LlmTokenBudgetExhausted {
+        dimension: LlmBudgetDimension,
+        requested_cumulative: u64,
+        limit: u64,
+    },
     CorruptRecord(&'static str),
     GenerationExhausted,
     LockPoisoned,
@@ -725,6 +967,7 @@ impl ResourceAuthority {
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
             1 => {
                 schema::migrate_v2(&mut c)?;
@@ -733,6 +976,7 @@ impl ResourceAuthority {
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
             2 | 3 => {
                 schema::migrate_v3(&mut c)?;
@@ -740,23 +984,31 @@ impl ResourceAuthority {
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
             4 => {
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
             5 => {
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
             6 => {
                 schema::migrate_v6(&mut c)?;
                 schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
             }
-            7 => schema::migrate_v7(&mut c)?,
+            7 => {
+                schema::migrate_v7(&mut c)?;
+                schema::migrate_v8(&mut c)?;
+            }
+            SCHEMA_VERSION => schema::migrate_v8(&mut c)?,
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -2219,6 +2471,575 @@ impl ResourceAuthority {
         }
         load_resource_ledger_endpoint_proof(&connection, id)
     }
+
+    /// Creates an initial LLM token and model API call budget for one
+    /// Resource account (`[NLOS-RESOURCE-001]`, `[BUD-INT-001]`).
+    ///
+    /// # Errors
+    /// Fails on an unknown account, idempotency conflict, duplicate budget,
+    /// arithmetic overflow, or storage failure.
+    pub fn create_llm_token_budget(
+        &self,
+        request: CreateLlmTokenBudgetRequest,
+    ) -> Result<LlmTokenBudgetDecision, ResourceAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((existing_key, existing)) =
+            llm_token_budget_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing_key != request.idempotency_key
+                || existing.account_id != request.account_id
+                || (existing.generation == Generation::INITIAL && existing.limits != request.limits)
+            {
+                return Err(ResourceAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(LlmTokenBudgetDecision::Replayed(existing));
+        }
+        if account(&transaction, request.account_id)?.is_none() {
+            return Err(ResourceAuthorityError::AccountNotFound);
+        }
+        if llm_token_budget(&transaction, request.account_id)?.is_some() {
+            return Err(ResourceAuthorityError::LlmTokenBudgetAlreadyExists);
+        }
+        let max_prompt = i64::try_from(request.limits.max_prompt_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_completion = i64::try_from(request.limits.max_completion_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_total = i64::try_from(request.limits.max_total_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_calls = i64::try_from(request.limits.max_api_calls)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_cost = i64::try_from(request.limits.max_cost_microcredits)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let created_ms = eu(request.created_at_ms)?;
+        let generation = Generation::INITIAL;
+        transaction.execute(
+            "INSERT INTO llm_token_budgets (
+                account_id, idempotency_key, generation,
+                max_prompt_tokens, max_completion_tokens, max_total_tokens,
+                max_api_calls, max_cost_microcredits,
+                consumed_prompt_tokens, consumed_completion_tokens,
+                consumed_reasoning_tokens, consumed_total_tokens,
+                consumed_api_calls, consumed_cost_microcredits,
+                created_at_ms, updated_at_ms
+             ) VALUES (
+                ?1, ?2, ?3,
+                ?4, ?5, ?6,
+                ?7, ?8,
+                0, 0, 0, 0, 0, 0,
+                ?9, ?9
+             )",
+            params![
+                request.account_id.as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice(),
+                eg(generation)?,
+                max_prompt,
+                max_completion,
+                max_total,
+                max_calls,
+                max_cost,
+                created_ms,
+            ],
+        )?;
+        let record = LlmTokenBudgetRecord {
+            account_id: request.account_id,
+            generation,
+            limits: request.limits,
+            consumed_prompt_tokens: 0,
+            consumed_completion_tokens: 0,
+            consumed_reasoning_tokens: 0,
+            consumed_total_tokens: 0,
+            consumed_api_calls: 0,
+            consumed_cost_microcredits: 0,
+            created_at_ms: request.created_at_ms,
+            updated_at_ms: request.created_at_ms,
+        };
+        transaction.commit()?;
+        Ok(LlmTokenBudgetDecision::Created(record))
+    }
+
+    /// Raises or adjusts an account's LLM token budget limits by generation
+    /// CAS (`[BUD-ALG-001]`, `[BUD-ARITH-001]`).
+    ///
+    /// Rejects any update that lowers a dimension below already-consumed
+    /// cumulative usage (`LlmBudgetUpdateBelowConsumed`), and replays
+    /// idempotently on `idempotency_key`.
+    ///
+    /// # Errors
+    /// Fails on missing budget, stale generation, timestamp regression,
+    /// shrinking below consumed usage, idempotency conflict, or storage error.
+    #[allow(clippy::too_many_lines)]
+    pub fn update_llm_token_budget(
+        &self,
+        request: UpdateLlmTokenBudgetRequest,
+    ) -> Result<LlmTokenBudgetUpdateDecision, ResourceAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(revision) =
+            llm_token_budget_revision_by_key(&transaction, request.idempotency_key)?
+        {
+            if revision.account_id != request.account_id
+                || revision.expected_generation != request.expected_generation
+                || revision.limits != request.limits
+            {
+                return Err(ResourceAuthorityError::IdempotencyConflict);
+            }
+            let current = llm_token_budget(&transaction, request.account_id)?
+                .ok_or(ResourceAuthorityError::LlmTokenBudgetNotFound)?;
+            transaction.commit()?;
+            return Ok(LlmTokenBudgetUpdateDecision::Replayed(
+                LlmTokenBudgetRecord {
+                    generation: revision.resulting_generation,
+                    limits: revision.limits,
+                    updated_at_ms: revision.updated_at_ms,
+                    ..current
+                },
+            ));
+        }
+        let current = llm_token_budget(&transaction, request.account_id)?
+            .ok_or(ResourceAuthorityError::LlmTokenBudgetNotFound)?;
+        if current.generation != request.expected_generation {
+            return Err(ResourceAuthorityError::StaleLlmTokenBudget {
+                expected: request.expected_generation,
+                current: current.generation,
+            });
+        }
+        if request.updated_at_ms < current.updated_at_ms {
+            return Err(ResourceAuthorityError::InvalidLlmBudgetTimestamp);
+        }
+        for dimension in LlmBudgetDimension::ALL {
+            let consumed = match dimension {
+                LlmBudgetDimension::PromptTokens => current.consumed_prompt_tokens,
+                LlmBudgetDimension::CompletionTokens => current.consumed_completion_tokens,
+                LlmBudgetDimension::TotalTokens => current.consumed_total_tokens,
+                LlmBudgetDimension::ApiCalls => current.consumed_api_calls,
+                LlmBudgetDimension::CostMicrocredits => current.consumed_cost_microcredits,
+            };
+            let requested_limit = dimension.limit_of(request.limits);
+            if requested_limit < consumed {
+                return Err(ResourceAuthorityError::LlmBudgetUpdateBelowConsumed {
+                    dimension,
+                    consumed,
+                    requested_limit,
+                });
+            }
+        }
+        let max_prompt = i64::try_from(request.limits.max_prompt_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_completion = i64::try_from(request.limits.max_completion_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_total = i64::try_from(request.limits.max_total_tokens)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_calls = i64::try_from(request.limits.max_api_calls)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let max_cost = i64::try_from(request.limits.max_cost_microcredits)
+            .map_err(|_| ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let resulting_generation = current
+            .generation
+            .checked_next()
+            .ok_or(ResourceAuthorityError::GenerationExhausted)?;
+        let receipt_id = ReceiptId::from_bytes(id16(
+            b"nlos/llm-token-budget-revision/receipt/v1",
+            &[
+                request.account_id.as_bytes(),
+                request.idempotency_key.as_bytes(),
+                &request.expected_generation.get().to_be_bytes(),
+                &resulting_generation.get().to_be_bytes(),
+                &request.limits.max_prompt_tokens.to_be_bytes(),
+                &request.limits.max_completion_tokens.to_be_bytes(),
+                &request.limits.max_total_tokens.to_be_bytes(),
+                &request.limits.max_api_calls.to_be_bytes(),
+                &request.limits.max_cost_microcredits.to_be_bytes(),
+            ],
+        ));
+        transaction.execute(
+            "INSERT INTO llm_token_budget_revisions (
+                receipt_id, idempotency_key, account_id,
+                expected_generation, resulting_generation,
+                max_prompt_tokens, max_completion_tokens, max_total_tokens,
+                max_api_calls, max_cost_microcredits, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                receipt_id.as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice(),
+                request.account_id.as_bytes().as_slice(),
+                eg(request.expected_generation)?,
+                eg(resulting_generation)?,
+                max_prompt,
+                max_completion,
+                max_total,
+                max_calls,
+                max_cost,
+                eu(request.updated_at_ms)?,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE llm_token_budgets
+                SET generation = ?1,
+                    max_prompt_tokens = ?2,
+                    max_completion_tokens = ?3,
+                    max_total_tokens = ?4,
+                    max_api_calls = ?5,
+                    max_cost_microcredits = ?6,
+                    updated_at_ms = ?7
+              WHERE account_id = ?8 AND generation = ?9",
+            params![
+                eg(resulting_generation)?,
+                max_prompt,
+                max_completion,
+                max_total,
+                max_calls,
+                max_cost,
+                eu(request.updated_at_ms)?,
+                request.account_id.as_bytes().as_slice(),
+                eg(request.expected_generation)?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "llm token budget update CAS lost",
+            ));
+        }
+        let updated = LlmTokenBudgetRecord {
+            generation: resulting_generation,
+            limits: request.limits,
+            updated_at_ms: request.updated_at_ms,
+            ..current
+        };
+        transaction.commit()?;
+        Ok(LlmTokenBudgetUpdateDecision::Updated(updated))
+    }
+
+    /// Charges one model API call / LLM token usage event against the
+    /// account's budget using checked integer arithmetic (`[BUD-ARITH-001]`).
+    ///
+    /// Fails closed with zero durable writes when `api_calls == 0`, on
+    /// integer overflow, or when any dimension exceeds its configured ceiling.
+    ///
+    /// # Errors
+    /// Fails on invalid usage, arithmetic overflow, budget exhaustion,
+    /// idempotency conflict, missing budget, or storage error.
+    #[allow(clippy::too_many_lines)]
+    pub fn consume_llm_tokens(
+        &self,
+        request: ConsumeLlmTokensRequest,
+    ) -> Result<LlmTokenConsumeDecision, ResourceAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = llm_token_consumption_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.account_id != request.account_id
+                || existing.operation_id != request.operation_id
+                || existing.prompt_tokens != request.prompt_tokens
+                || existing.completion_tokens != request.completion_tokens
+                || existing.reasoning_tokens != request.reasoning_tokens
+                || existing.api_calls != request.api_calls
+                || existing.cost_microcredits != request.cost_microcredits
+            {
+                return Err(ResourceAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(LlmTokenConsumeDecision::Replayed(existing));
+        }
+        if request.api_calls == 0 {
+            return Err(ResourceAuthorityError::InvalidLlmTokenUsage);
+        }
+        let total_tokens = request
+            .prompt_tokens
+            .checked_add(request.completion_tokens)
+            .and_then(|sum| sum.checked_add(request.reasoning_tokens))
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let current = llm_token_budget(&transaction, request.account_id)?
+            .ok_or(ResourceAuthorityError::LlmTokenBudgetNotFound)?;
+        if request.consumed_at_ms < current.created_at_ms {
+            return Err(ResourceAuthorityError::InvalidLlmBudgetTimestamp);
+        }
+        let next_prompt = current
+            .consumed_prompt_tokens
+            .checked_add(request.prompt_tokens)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let next_completion = current
+            .consumed_completion_tokens
+            .checked_add(request.completion_tokens)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let next_reasoning = current
+            .consumed_reasoning_tokens
+            .checked_add(request.reasoning_tokens)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let next_total = current
+            .consumed_total_tokens
+            .checked_add(total_tokens)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let next_api_calls = current
+            .consumed_api_calls
+            .checked_add(request.api_calls)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let next_cost = current
+            .consumed_cost_microcredits
+            .checked_add(request.cost_microcredits)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        for value in [
+            request.prompt_tokens,
+            request.completion_tokens,
+            request.reasoning_tokens,
+            total_tokens,
+            request.api_calls,
+            request.cost_microcredits,
+            next_prompt,
+            next_completion,
+            next_reasoning,
+            next_total,
+            next_api_calls,
+            next_cost,
+        ] {
+            if i64::try_from(value).is_err() {
+                return Err(ResourceAuthorityError::LlmUsageArithmeticOverflow);
+            }
+        }
+        for dimension in LlmBudgetDimension::ALL {
+            let requested_cumulative = match dimension {
+                LlmBudgetDimension::PromptTokens => next_prompt,
+                LlmBudgetDimension::CompletionTokens => next_completion,
+                LlmBudgetDimension::TotalTokens => next_total,
+                LlmBudgetDimension::ApiCalls => next_api_calls,
+                LlmBudgetDimension::CostMicrocredits => next_cost,
+            };
+            let limit = dimension.limit_of(current.limits);
+            if requested_cumulative > limit {
+                return Err(ResourceAuthorityError::LlmTokenBudgetExhausted {
+                    dimension,
+                    requested_cumulative,
+                    limit,
+                });
+            }
+        }
+        let last_seq: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sequence), 0)
+               FROM llm_token_consumptions
+              WHERE account_id = ?1",
+            [request.account_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )?;
+        let sequence = du(last_seq)?
+            .checked_add(1)
+            .ok_or(ResourceAuthorityError::LlmUsageArithmeticOverflow)?;
+        let receipt_id = ReceiptId::from_bytes(id16(
+            b"nlos/llm-token-consumption/receipt/v1",
+            &[
+                request.account_id.as_bytes(),
+                request.operation_id.as_bytes(),
+                request.idempotency_key.as_bytes(),
+                &sequence.to_be_bytes(),
+                &request.prompt_tokens.to_be_bytes(),
+                &request.completion_tokens.to_be_bytes(),
+                &request.reasoning_tokens.to_be_bytes(),
+                &total_tokens.to_be_bytes(),
+                &request.api_calls.to_be_bytes(),
+                &request.cost_microcredits.to_be_bytes(),
+            ],
+        ));
+        let receipt = LlmTokenConsumptionReceipt {
+            receipt_id,
+            account_id: request.account_id,
+            operation_id: request.operation_id,
+            sequence,
+            prompt_tokens: request.prompt_tokens,
+            completion_tokens: request.completion_tokens,
+            reasoning_tokens: request.reasoning_tokens,
+            total_tokens,
+            api_calls: request.api_calls,
+            cost_microcredits: request.cost_microcredits,
+            cumulative_total_tokens: next_total,
+            cumulative_api_calls: next_api_calls,
+            cumulative_cost_microcredits: next_cost,
+            consumed_at_ms: request.consumed_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO llm_token_consumptions (
+                receipt_id, idempotency_key, account_id, operation_id,
+                sequence, prompt_tokens, completion_tokens, reasoning_tokens,
+                total_tokens, api_calls, cost_microcredits,
+                cumulative_total_tokens, cumulative_api_calls,
+                cumulative_cost_microcredits, consumed_at_ms
+             ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11,
+                ?12, ?13, ?14, ?15
+             )",
+            params![
+                receipt.receipt_id.as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice(),
+                receipt.account_id.as_bytes().as_slice(),
+                receipt.operation_id.as_bytes().as_slice(),
+                eu(receipt.sequence)?,
+                eu(receipt.prompt_tokens)?,
+                eu(receipt.completion_tokens)?,
+                eu(receipt.reasoning_tokens)?,
+                eu(receipt.total_tokens)?,
+                eu(receipt.api_calls)?,
+                eu(receipt.cost_microcredits)?,
+                eu(receipt.cumulative_total_tokens)?,
+                eu(receipt.cumulative_api_calls)?,
+                eu(receipt.cumulative_cost_microcredits)?,
+                eu(receipt.consumed_at_ms)?,
+            ],
+        )?;
+        let next_updated_at_ms = current.updated_at_ms.max(request.consumed_at_ms);
+        let changed = transaction.execute(
+            "UPDATE llm_token_budgets
+                SET consumed_prompt_tokens = ?1,
+                    consumed_completion_tokens = ?2,
+                    consumed_reasoning_tokens = ?3,
+                    consumed_total_tokens = ?4,
+                    consumed_api_calls = ?5,
+                    consumed_cost_microcredits = ?6,
+                    updated_at_ms = ?7
+              WHERE account_id = ?8
+                AND consumed_total_tokens = ?9
+                AND consumed_api_calls = ?10
+                AND consumed_cost_microcredits = ?11",
+            params![
+                eu(next_prompt)?,
+                eu(next_completion)?,
+                eu(next_reasoning)?,
+                eu(next_total)?,
+                eu(next_api_calls)?,
+                eu(next_cost)?,
+                eu(next_updated_at_ms)?,
+                request.account_id.as_bytes().as_slice(),
+                eu(current.consumed_total_tokens)?,
+                eu(current.consumed_api_calls)?,
+                eu(current.consumed_cost_microcredits)?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "llm token consumption CAS lost",
+            ));
+        }
+        transaction.commit()?;
+        Ok(LlmTokenConsumeDecision::Charged(receipt))
+    }
+
+    /// Reads the durable LLM token budget record for `account_id`, verifying
+    /// that its cumulative counters agree with the immutable consumption
+    /// ledger.
+    ///
+    /// # Errors
+    /// Fails when the budget is absent, the ledger disagrees with the budget
+    /// counters, or storage fails.
+    pub fn inspect_llm_token_budget(
+        &self,
+        account_id: ResourceAccountId,
+    ) -> Result<LlmTokenBudgetRecord, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let budget = llm_token_budget(&connection, account_id)?
+            .ok_or(ResourceAuthorityError::LlmTokenBudgetNotFound)?;
+        let consumptions = llm_token_consumptions(&connection, account_id)?;
+        let expected = consumptions.last().map_or((0, 0, 0), |receipt| {
+            (
+                receipt.cumulative_total_tokens,
+                receipt.cumulative_api_calls,
+                receipt.cumulative_cost_microcredits,
+            )
+        });
+        if expected
+            != (
+                budget.consumed_total_tokens,
+                budget.consumed_api_calls,
+                budget.consumed_cost_microcredits,
+            )
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "llm token consumptions disagree with budget counters",
+            ));
+        }
+        Ok(budget)
+    }
+
+    /// Lists all immutable LLM token consumption receipts for `account_id` in
+    /// `sequence` order, verifying chain continuity and cumulative totals.
+    ///
+    /// # Errors
+    /// Fails when the budget is absent, a ledger link is broken, or storage
+    /// fails.
+    pub fn list_llm_token_consumptions(
+        &self,
+        account_id: ResourceAccountId,
+    ) -> Result<Vec<LlmTokenConsumptionReceipt>, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let budget = llm_token_budget(&connection, account_id)?
+            .ok_or(ResourceAuthorityError::LlmTokenBudgetNotFound)?;
+        let consumptions = llm_token_consumptions(&connection, account_id)?;
+        let mut cum_prompt = 0_u64;
+        let mut cum_completion = 0_u64;
+        let mut cum_reasoning = 0_u64;
+        let mut cum_total = 0_u64;
+        let mut cum_calls = 0_u64;
+        let mut cum_cost = 0_u64;
+        for (expected_seq, receipt) in (1_u64..).zip(consumptions.iter()) {
+            if receipt.sequence != expected_seq {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "llm token consumption sequence has a gap",
+                ));
+            }
+            let sum_tokens = receipt
+                .prompt_tokens
+                .checked_add(receipt.completion_tokens)
+                .and_then(|s| s.checked_add(receipt.reasoning_tokens))
+                .ok_or(ResourceAuthorityError::CorruptRecord(
+                    "llm token consumption total overflow",
+                ))?;
+            if receipt.total_tokens != sum_tokens {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "llm token consumption total mismatch",
+                ));
+            }
+            cum_prompt = cum_prompt.checked_add(receipt.prompt_tokens).ok_or(
+                ResourceAuthorityError::CorruptRecord("llm token cumulative prompt overflow"),
+            )?;
+            cum_completion = cum_completion
+                .checked_add(receipt.completion_tokens)
+                .ok_or(ResourceAuthorityError::CorruptRecord(
+                    "llm token cumulative completion overflow",
+                ))?;
+            cum_reasoning = cum_reasoning.checked_add(receipt.reasoning_tokens).ok_or(
+                ResourceAuthorityError::CorruptRecord("llm token cumulative reasoning overflow"),
+            )?;
+            cum_total = cum_total.checked_add(receipt.total_tokens).ok_or(
+                ResourceAuthorityError::CorruptRecord("llm token cumulative total overflow"),
+            )?;
+            cum_calls = cum_calls.checked_add(receipt.api_calls).ok_or(
+                ResourceAuthorityError::CorruptRecord("llm token cumulative calls overflow"),
+            )?;
+            cum_cost = cum_cost.checked_add(receipt.cost_microcredits).ok_or(
+                ResourceAuthorityError::CorruptRecord("llm token cumulative cost overflow"),
+            )?;
+            if receipt.cumulative_total_tokens != cum_total
+                || receipt.cumulative_api_calls != cum_calls
+                || receipt.cumulative_cost_microcredits != cum_cost
+            {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "llm token consumption cumulative chain mismatch",
+                ));
+            }
+        }
+        if cum_prompt != budget.consumed_prompt_tokens
+            || cum_completion != budget.consumed_completion_tokens
+            || cum_reasoning != budget.consumed_reasoning_tokens
+            || cum_total != budget.consumed_total_tokens
+            || cum_calls != budget.consumed_api_calls
+            || cum_cost != budget.consumed_cost_microcredits
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "llm token consumptions disagree with budget counters",
+            ));
+        }
+        Ok(consumptions)
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, ResourceAuthorityError> {
         self.connection
             .lock()
@@ -2853,4 +3674,300 @@ fn a16(v: Vec<u8>) -> Result<[u8; 16], ResourceAuthorityError> {
 fn a32(v: Vec<u8>) -> Result<[u8; 32], ResourceAuthorityError> {
     v.try_into()
         .map_err(|_| ResourceAuthorityError::CorruptRecord("token length"))
+}
+
+type LlmTokenBudgetRow = (
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+
+fn llm_token_budget_decode(
+    x: LlmTokenBudgetRow,
+) -> Result<(IdempotencyKey, LlmTokenBudgetRecord), ResourceAuthorityError> {
+    let account_id = ResourceAccountId::from_bytes(a16(x.0)?);
+    let key = IdempotencyKey::from_bytes(a16(x.1)?);
+    let record = LlmTokenBudgetRecord {
+        account_id,
+        generation: dg(x.2)?,
+        limits: LlmTokenLimits {
+            max_prompt_tokens: du(x.3)?,
+            max_completion_tokens: du(x.4)?,
+            max_total_tokens: du(x.5)?,
+            max_api_calls: du(x.6)?,
+            max_cost_microcredits: du(x.7)?,
+        },
+        consumed_prompt_tokens: du(x.8)?,
+        consumed_completion_tokens: du(x.9)?,
+        consumed_reasoning_tokens: du(x.10)?,
+        consumed_total_tokens: du(x.11)?,
+        consumed_api_calls: du(x.12)?,
+        consumed_cost_microcredits: du(x.13)?,
+        created_at_ms: du(x.14)?,
+        updated_at_ms: du(x.15)?,
+    };
+    Ok((key, record))
+}
+
+fn llm_token_budget(
+    c: &Connection,
+    account_id: ResourceAccountId,
+) -> Result<Option<LlmTokenBudgetRecord>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT account_id, idempotency_key, generation,
+                    max_prompt_tokens, max_completion_tokens, max_total_tokens,
+                    max_api_calls, max_cost_microcredits,
+                    consumed_prompt_tokens, consumed_completion_tokens,
+                    consumed_reasoning_tokens, consumed_total_tokens,
+                    consumed_api_calls, consumed_cost_microcredits,
+                    created_at_ms, updated_at_ms
+               FROM llm_token_budgets
+              WHERE account_id = ?1",
+            [account_id.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
+                    r.get::<_, i64>(12)?,
+                    r.get::<_, i64>(13)?,
+                    r.get::<_, i64>(14)?,
+                    r.get::<_, i64>(15)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(|row| llm_token_budget_decode(row).map(|(_, record)| record))
+        .transpose()
+}
+
+fn llm_token_budget_by_key(
+    c: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<(IdempotencyKey, LlmTokenBudgetRecord)>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT account_id, idempotency_key, generation,
+                    max_prompt_tokens, max_completion_tokens, max_total_tokens,
+                    max_api_calls, max_cost_microcredits,
+                    consumed_prompt_tokens, consumed_completion_tokens,
+                    consumed_reasoning_tokens, consumed_total_tokens,
+                    consumed_api_calls, consumed_cost_microcredits,
+                    created_at_ms, updated_at_ms
+               FROM llm_token_budgets
+              WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
+                    r.get::<_, i64>(12)?,
+                    r.get::<_, i64>(13)?,
+                    r.get::<_, i64>(14)?,
+                    r.get::<_, i64>(15)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(llm_token_budget_decode).transpose()
+}
+
+struct LlmTokenBudgetRevisionRecord {
+    account_id: ResourceAccountId,
+    expected_generation: Generation,
+    resulting_generation: Generation,
+    limits: LlmTokenLimits,
+    updated_at_ms: u64,
+}
+
+fn llm_token_budget_revision_by_key(
+    c: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<LlmTokenBudgetRevisionRecord>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT account_id, expected_generation, resulting_generation,
+                    max_prompt_tokens, max_completion_tokens, max_total_tokens,
+                    max_api_calls, max_cost_microcredits, updated_at_ms
+               FROM llm_token_budget_revisions
+              WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(|row| {
+        Ok(LlmTokenBudgetRevisionRecord {
+            account_id: ResourceAccountId::from_bytes(a16(row.0)?),
+            expected_generation: dg(row.1)?,
+            resulting_generation: dg(row.2)?,
+            limits: LlmTokenLimits {
+                max_prompt_tokens: du(row.3)?,
+                max_completion_tokens: du(row.4)?,
+                max_total_tokens: du(row.5)?,
+                max_api_calls: du(row.6)?,
+                max_cost_microcredits: du(row.7)?,
+            },
+            updated_at_ms: du(row.8)?,
+        })
+    })
+    .transpose()
+}
+
+type LlmTokenConsumptionRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+
+fn llm_token_consumption_decode(
+    x: LlmTokenConsumptionRow,
+) -> Result<LlmTokenConsumptionReceipt, ResourceAuthorityError> {
+    Ok(LlmTokenConsumptionReceipt {
+        receipt_id: ReceiptId::from_bytes(a16(x.0)?),
+        account_id: ResourceAccountId::from_bytes(a16(x.1)?),
+        operation_id: OperationId::from_bytes(a16(x.2)?),
+        sequence: du(x.3)?,
+        prompt_tokens: du(x.4)?,
+        completion_tokens: du(x.5)?,
+        reasoning_tokens: du(x.6)?,
+        total_tokens: du(x.7)?,
+        api_calls: du(x.8)?,
+        cost_microcredits: du(x.9)?,
+        cumulative_total_tokens: du(x.10)?,
+        cumulative_api_calls: du(x.11)?,
+        cumulative_cost_microcredits: du(x.12)?,
+        consumed_at_ms: du(x.13)?,
+    })
+}
+
+fn llm_token_consumption_by_key(
+    c: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<LlmTokenConsumptionReceipt>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT receipt_id, account_id, operation_id,
+                    sequence, prompt_tokens, completion_tokens,
+                    reasoning_tokens, total_tokens, api_calls,
+                    cost_microcredits, cumulative_total_tokens,
+                    cumulative_api_calls, cumulative_cost_microcredits,
+                    consumed_at_ms
+               FROM llm_token_consumptions
+              WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
+                    r.get::<_, i64>(12)?,
+                    r.get::<_, i64>(13)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(llm_token_consumption_decode).transpose()
+}
+
+fn llm_token_consumptions(
+    c: &Connection,
+    account_id: ResourceAccountId,
+) -> Result<Vec<LlmTokenConsumptionReceipt>, ResourceAuthorityError> {
+    let mut statement = c.prepare(
+        "SELECT receipt_id, account_id, operation_id,
+                sequence, prompt_tokens, completion_tokens,
+                reasoning_tokens, total_tokens, api_calls,
+                cost_microcredits, cumulative_total_tokens,
+                cumulative_api_calls, cumulative_cost_microcredits,
+                consumed_at_ms
+           FROM llm_token_consumptions
+          WHERE account_id = ?1
+          ORDER BY sequence",
+    )?;
+    let mut rows = statement.query([account_id.as_bytes().as_slice()])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        receipts.push(llm_token_consumption_decode((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, i64>(13)?,
+        ))?);
+    }
+    Ok(receipts)
 }

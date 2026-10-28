@@ -659,7 +659,7 @@ fn legacy_v6_database_with_data_upgrades_in_place() {
     assert_eq!(user_version(&root), 6);
 
     let authority = ResourceAuthority::open(root.path()).unwrap();
-    assert_eq!(user_version(&root), 7, "the upgrade stamps v7");
+    assert_eq!(user_version(&root), 8, "the upgrade stamps v8");
     // All v6 data survived byte-identically.
     assert_eq!(
         authority
@@ -739,7 +739,7 @@ fn complete_unstamped_throttle_schema_reopens_by_stamping_v7() {
     // Complete schema + unstamped: the reopen only stamps, never rebuilds,
     // so the surviving ledger rows stay byte-identical.
     let authority = ResourceAuthority::open(root.path()).unwrap();
-    assert_eq!(user_version(&root), 7);
+    assert_eq!(user_version(&root), 8);
     let decisions = authority
         .inspect_throttle_decisions(reservation_id)
         .unwrap();
@@ -755,7 +755,7 @@ fn complete_unstamped_throttle_schema_reopens_by_stamping_v7() {
     // A second reopen takes the complete-state fast path.
     drop(authority);
     let reopened = ResourceAuthority::open(root.path()).unwrap();
-    assert_eq!(user_version(&root), 7);
+    assert_eq!(user_version(&root), 8);
     assert_eq!(
         reopened.inspect_throttle_decisions(reservation_id).unwrap(),
         decisions

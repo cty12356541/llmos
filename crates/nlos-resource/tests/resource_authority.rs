@@ -627,8 +627,8 @@ fn endpoint_proofs_are_authority_assigned_rotate_and_survive_restart() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        7,
-        "schema v7 (throttle decision ledger) is applied by the migration chain"
+        8,
+        "schema v8 (llm token budget ledger) is applied by the migration chain"
     );
     assert!(
         raw.execute(

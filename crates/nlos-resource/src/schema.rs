@@ -772,3 +772,149 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the durable LLM token & model API call budget and append-only
+/// consumption/revision ledgers (`[NLOS-RESOURCE-001]`, `[BUD-INT-001]`,
+/// `[BUD-ALG-001]`, `[BUD-ARITH-001]`).
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN (
+            'llm_token_budgets',
+            'llm_token_consumptions',
+            'llm_token_budget_revisions'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'llm_token_budgets_no_delete',
+            'llm_token_budgets_monotonic_update',
+            'llm_token_consumptions_immutable_update',
+            'llm_token_consumptions_immutable_delete',
+            'llm_token_budget_revisions_immutable_update',
+            'llm_token_budget_revisions_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 3 && trigger_count == 6 {
+        connection.pragma_update(None, "user_version", 8)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial llm token budget schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE llm_token_budgets (
+            account_id BLOB PRIMARY KEY NOT NULL CHECK(length(account_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            generation INTEGER NOT NULL CHECK(generation >= 1),
+            max_prompt_tokens INTEGER NOT NULL CHECK(max_prompt_tokens >= 0),
+            max_completion_tokens INTEGER NOT NULL CHECK(max_completion_tokens >= 0),
+            max_total_tokens INTEGER NOT NULL CHECK(max_total_tokens >= 0),
+            max_api_calls INTEGER NOT NULL CHECK(max_api_calls >= 0),
+            max_cost_microcredits INTEGER NOT NULL CHECK(max_cost_microcredits >= 0),
+            consumed_prompt_tokens INTEGER NOT NULL
+                CHECK(consumed_prompt_tokens >= 0 AND consumed_prompt_tokens <= max_prompt_tokens),
+            consumed_completion_tokens INTEGER NOT NULL
+                CHECK(consumed_completion_tokens >= 0 AND consumed_completion_tokens <= max_completion_tokens),
+            consumed_reasoning_tokens INTEGER NOT NULL
+                CHECK(consumed_reasoning_tokens >= 0),
+            consumed_total_tokens INTEGER NOT NULL
+                CHECK(consumed_total_tokens >= 0 AND consumed_total_tokens <= max_total_tokens),
+            consumed_api_calls INTEGER NOT NULL
+                CHECK(consumed_api_calls >= 0 AND consumed_api_calls <= max_api_calls),
+            consumed_cost_microcredits INTEGER NOT NULL
+                CHECK(consumed_cost_microcredits >= 0 AND consumed_cost_microcredits <= max_cost_microcredits),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
+            FOREIGN KEY(account_id) REFERENCES resource_accounts(account_id)
+        ) STRICT;
+
+        CREATE TABLE llm_token_consumptions (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            account_id BLOB NOT NULL CHECK(length(account_id) = 16),
+            operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+            sequence INTEGER NOT NULL CHECK(sequence >= 1),
+            prompt_tokens INTEGER NOT NULL CHECK(prompt_tokens >= 0),
+            completion_tokens INTEGER NOT NULL CHECK(completion_tokens >= 0),
+            reasoning_tokens INTEGER NOT NULL CHECK(reasoning_tokens >= 0),
+            total_tokens INTEGER NOT NULL
+                CHECK(total_tokens = prompt_tokens + completion_tokens + reasoning_tokens),
+            api_calls INTEGER NOT NULL CHECK(api_calls >= 1),
+            cost_microcredits INTEGER NOT NULL CHECK(cost_microcredits >= 0),
+            cumulative_total_tokens INTEGER NOT NULL
+                CHECK(cumulative_total_tokens >= total_tokens),
+            cumulative_api_calls INTEGER NOT NULL
+                CHECK(cumulative_api_calls >= api_calls),
+            cumulative_cost_microcredits INTEGER NOT NULL
+                CHECK(cumulative_cost_microcredits >= cost_microcredits),
+            consumed_at_ms INTEGER NOT NULL CHECK(consumed_at_ms >= 0),
+            UNIQUE(account_id, sequence),
+            FOREIGN KEY(account_id) REFERENCES llm_token_budgets(account_id)
+        ) STRICT;
+
+        CREATE TABLE llm_token_budget_revisions (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            account_id BLOB NOT NULL CHECK(length(account_id) = 16),
+            expected_generation INTEGER NOT NULL CHECK(expected_generation >= 1),
+            resulting_generation INTEGER NOT NULL
+                CHECK(resulting_generation = expected_generation + 1),
+            max_prompt_tokens INTEGER NOT NULL CHECK(max_prompt_tokens >= 0),
+            max_completion_tokens INTEGER NOT NULL CHECK(max_completion_tokens >= 0),
+            max_total_tokens INTEGER NOT NULL CHECK(max_total_tokens >= 0),
+            max_api_calls INTEGER NOT NULL CHECK(max_api_calls >= 0),
+            max_cost_microcredits INTEGER NOT NULL CHECK(max_cost_microcredits >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+            FOREIGN KEY(account_id) REFERENCES llm_token_budgets(account_id)
+        ) STRICT;
+
+        CREATE TRIGGER llm_token_budgets_no_delete
+        BEFORE DELETE ON llm_token_budgets
+        BEGIN SELECT RAISE(ABORT, 'llm token budget is immutable history'); END;
+
+        CREATE TRIGGER llm_token_budgets_monotonic_update
+        BEFORE UPDATE ON llm_token_budgets
+        WHEN NEW.account_id != OLD.account_id
+          OR NEW.idempotency_key != OLD.idempotency_key
+          OR NEW.created_at_ms != OLD.created_at_ms
+          OR NEW.generation < OLD.generation
+          OR NEW.updated_at_ms < OLD.updated_at_ms
+          OR NEW.consumed_prompt_tokens < OLD.consumed_prompt_tokens
+          OR NEW.consumed_completion_tokens < OLD.consumed_completion_tokens
+          OR NEW.consumed_reasoning_tokens < OLD.consumed_reasoning_tokens
+          OR NEW.consumed_total_tokens < OLD.consumed_total_tokens
+          OR NEW.consumed_api_calls < OLD.consumed_api_calls
+          OR NEW.consumed_cost_microcredits < OLD.consumed_cost_microcredits
+        BEGIN SELECT RAISE(ABORT, 'llm token budget usage is monotonic and identity is immutable'); END;
+
+        CREATE TRIGGER llm_token_consumptions_immutable_update
+        BEFORE UPDATE ON llm_token_consumptions
+        BEGIN SELECT RAISE(ABORT, 'llm token consumption is immutable'); END;
+
+        CREATE TRIGGER llm_token_consumptions_immutable_delete
+        BEFORE DELETE ON llm_token_consumptions
+        BEGIN SELECT RAISE(ABORT, 'llm token consumption is immutable'); END;
+
+        CREATE TRIGGER llm_token_budget_revisions_immutable_update
+        BEFORE UPDATE ON llm_token_budget_revisions
+        BEGIN SELECT RAISE(ABORT, 'llm token budget revision is immutable'); END;
+
+        CREATE TRIGGER llm_token_budget_revisions_immutable_delete
+        BEFORE DELETE ON llm_token_budget_revisions
+        BEGIN SELECT RAISE(ABORT, 'llm token budget revision is immutable'); END;
+
+        PRAGMA user_version = 8;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
