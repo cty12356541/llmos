@@ -299,9 +299,9 @@ hex 一致。
   完整 `tauri build` 打包(bundler/签名)未纳入本波次验证。
 
 
-## 阶段 D 完整自然语言工业工作站扩展(`W69–W72` 已落地,`PARTIAL_PASS`)
+## 阶段 D 完整自然语言工业工作站扩展(`W69–W73` 已落地,`PARTIAL_PASS`)
 
-在阶段 B/C 可信 Task Manager 底座之上,`W69–W72` 落地了符合 [ADR-0025](../docs/management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md) 与 [Stage D 桌面视觉与 UX 设计规格](../docs/superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md) 的中性工业工作站桌面架构(共注册 **102 项** `#[tauri::command]` 句柄):
+在阶段 B/C 可信 Task Manager 底座之上,`W69–W73` 落地了符合 [ADR-0025](../docs/management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md) 与 [Stage D 桌面视觉与 UX 设计规格](../docs/superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md) 的中性工业工作站桌面架构(共注册 **108 项** `#[tauri::command]` 句柄):
 
 1. **`D-TOKENS-KIT` (`W69`, [D-TOKENS-001](../docs/evidence/stage-d/d-tokens-001-workstation-tokens-and-sota-kit.md))**:
    - `src/styles/{tokens,surfaces-and-borders}.css` 与 `src/ui/`:`Graphite Workstation` / `Paper Workstation` 100% 实心不透明双主题(零 `backdrop-filter`、零霓虹发光、零 Emoji、`0px/2px/4px/6px` 工业圆角)、`32×20` 凹陷单色 Gerono 示波防伪印章、Nomad 三水位微条、Temporal 五段耗时瀑布条、Headlamp 非模态抽屉与面包屑、Terraform `+ / ~ / -` 爆炸半径差异表。
@@ -319,3 +319,5 @@ hex 一致。
    - `src/views/{notifications,spotlight,offline-cluster}/` 与 `src-tauri/src/notify_search_offline.rs`:右下角实心通知中心(一次性 SHA-256 `ActionToken` 核销)、`Ctrl+K` 实心候选搜索(硬锁 `0x1F` 法定零写禁区与权威回跳核验)及 `[DUI-OFFLINE-001]` 本地断网自治 + `PartitionAutonomyGate` 集群态势托盘(`tests/notify_token_search_offline_side.rs`)。
 8. **`D-CONTROL-SETTINGS-A11Y` Slice 1 (`W72`, [D-CONTROL-SETTINGS-001](../docs/evidence/stage-d/d-control-settings-001-twelve-domain-tree-and-settings-cas.md))**:
    - `src/views/{control-center,settings}/` 与 `src-tauri/src/settings_keychain.rs`:12 域 `SystemControlCenter`(System Informer 十层父子归属树、阶段 C `Cell` 三族租约检视与受控进程迁移、Headlamp 动作裁剪与 5+1 法定不可篡改锁、Terraform `+ / ~ / -` 爆炸半径预览与 5 秒两步武装)、四层 `SettingsDomain` CAS + watch、可撤销 `ContentTypeAssociation` 与零明文 `KeychainReference` 凭据库(`tests/control_center_settings_cas_side.rs`)。
+9. **`D-CONTROL-SETTINGS-A11Y` Slice 2 & `#3 C-GUI-CAMPAIGN` (`W73`, [D-A11Y-I18N-001](../docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md) / [D-GUI-CAMPAIGN-001](../docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md))**:
+   - `src/{i18n,a11y}/` 与 `src-tauri/src/a11y_i18n.rs`:`WCAG 2.2 AA` 20 组 `Graphite / Paper` 相对亮度对比度审计、`Z0–Z4` ARIA 语义树与双通道 live-region 播报、全键盘焦点环与 `Z4` 模态焦点陷阱、`prefers-reduced-motion` 全局静态闭合帧冻结及版本化 `zh-CN / en-US` 零行话/零 Emoji 双语包(`tests/a11y_i18n_conformance_side.rs`);`e2e/` 与 `scripts/gui-campaign/run_workstation_campaign.py` 闭合跨平台工业工作站五阶段交互战役、CJK 输入法组合态探针与 1,000 轮长稳 `O(visible_rows)` 零泄漏验证。

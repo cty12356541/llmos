@@ -46,6 +46,7 @@ import type {
 } from "./types";
 import { MUTATION_OUTCOME_KINDS } from "./types";
 import { createTrustedUiSuite } from "./trusted-ui";
+import { createWorkstationA11yI18nSuiteController } from "./a11y";
 import type { WorkstationStatusState } from "./ui";
 import {
   bindOmnibarToCompositor,
@@ -1995,6 +1996,7 @@ async function bootstrap(): Promise<void> {
   const clusterPostureController = new ClusterPostureController();
   const controlCenterController = createSystemControlCenterController();
   const settingsSuiteController = createWorkstationSettingsSuiteController();
+  const a11yI18nSuite = createWorkstationA11yI18nSuiteController("zh-CN", false);
 
   bindOmnibarToCompositor(compositor, omnibarController);
   bindTaskSpaceToCompositor(
@@ -2004,6 +2006,7 @@ async function bootstrap(): Promise<void> {
     taskSpaceController,
   );
   compositor.subscribe((snap) => {
+    a11yI18nSuite.switchLocale(snap.locale);
     trustedUi.setLocaleAndDisclosure(snap.locale, snap.disclosure);
     notificationController.setDisclosureLevel(snap.disclosure);
     spotlightController.setDisclosureLevel(snap.disclosure);

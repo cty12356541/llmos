@@ -85,13 +85,17 @@
   category: runtime-ui-lockin
   severity: P2
   status: partial
-  description: "runtime 或 UI 技术锁定：执行引擎或 GUI 框架选型不可逆地限制演进；GUI 真实可用性未经真机战役验证"
-  mitigation: "runtime 选型经 ADR-0001 显式决策（含退出策略）；隔离机制经四维对比实验定案（ADR-0015）；GUI（Tauri）已落地 desktop/（W32-A..F+W33-F）——锁定风险缓解为架构约束：GUI 只经 SystemControl 认证 IPC 单控制路径（无旁路）、四路径 Receipt parity 钉死（20 命令家族）、SABI 只走 additive，换壳成本受限于壳本身；GUI 真机战役（computer-use 交互清单）未跑——现有证据形态为命令层集成测试 + 窗口注册 + CLI 活体冒烟（B-GUI-001 §2 逐波次登记）"
+  description: "runtime 或 UI 技术锁定（分域口径 2026-10-28，W73）：执行引擎（ADR-0001/0015）与工业工作站桌面壳（ADR-0025：Z0-Z4 五平面合成、L0-L3 渐进披露、UI-PARITY-001 12 域显控同构、四入口字节级 Receipt parity）均已实证，且跨平台工作站交互战役、中日英 CJK IME 组合态探针与 1000 轮 100K 任务 O(visible_rows)<=64 零泄漏浸泡测试已于 W73 闭合（D-GUI-CAMPAIGN-001 / D-A11Y-I18N-001，U-3 退役）；残域仅保留物理 macOS 硬件触控板/眼动人工巡检与 OS 原生安装器签名公证"
+  mitigation: "GUI 严格通过 ADR-0011 认证 IPC 单一控制脊柱与显式 ControlScope 通信（108 项 Tauri 句柄零旁路），四入口 receipt_hex 字节级对等（D-IPC-001）、WCAG 2.2 AA 与 zh-CN/en-US 双语零行话一致性（D-A11Y-I18N-001）及五阶段工作站 E2E 战役（D-GUI-CAMPAIGN-001）均已落库；换壳成本严格受限于前端视图层"
   evidence_refs:
     - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
     - docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
-  review_point: "GUI 真机战役（computer-use 清单）收尾时复审；desktop 引入新重依赖前须过 README §7 选型门"
+    - docs/evidence/stage-d/d-ipc-001-twelve-domain-enum-and-symmetry.md
+    - docs/evidence/stage-d/d-compositor-001-five-plane-tiling-wm-and-session.md
+    - docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md
+    - docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
+  review_point: "W73 已完成工作站 GUI 战役并闭合 U-3；desktop 引入新重依赖或发布 OS 原生签名安装包前须过 README §7 选型门"
 
 - id: RISK-B-07
   category: scale-impersonation
@@ -142,8 +146,8 @@
   category: durable-state-loss
   severity: P1
   status: partial
-  description: "多 Cell/跨机器原子提交与分区收敛（分域口径 2026-10-26，W67）：ADR-0018 单主机多 OS 进程持久库拓扑下的阶段 C 全套分布式机制——C-SHARD Phase 0+1（schema v47 三 Record + 六类 canonical endpoint 屏障 + Ed25519 快照签名接管）、三族租约持久化与非互换对账（C-LEASE-001）、跨域签名事件/向量检查点与制品传输包收敛（C-SYNC-001/002）、双进程 CellHost 八步迁移（C-MIGRATE-001/002）、断连局部自治与有界损耗守恒（C-PARTITION-001）及 ROAD-C-001 / ROAD-C-002 H6 门禁均已实证闭合；**残域显式保留**：①跨物理机器网络传输/真实网卡丢包分区/硬件跨时钟域共识（ADR-0019 触发器 7 / ADR-0020）；②远端外部副作用的物理级回滚/清理证明（QUARANTINE 围栏 ≠ 远端物理擦除）。将单机多进程证据外推为跨物理机无条件保证即构成风险"
-  mitigation: "claims.yaml 全部 stage: C 条目与 W67 退出评审记录逐项限定 ADR-0018 单机多进程拓扑边界；跨 Cell 未决副作用在 SourceFenced / 租约超期后一律转入持久化 QUARANTINED 并由 PartitionBoundedLossProof 钉死损失上界，绝不静默退回 AVAILABLE 或猜测剩余额度"
+  description: "多 Cell/跨机器原子提交与分区收敛（分域口径 2026-10-28，W73）：①ADR-0018 单机多进程域（W35-W67）与 ②ADR-0026 跨物理主机网络/时钟/共识扩展域（W69-W73 C-XHOST-001..005：TLS 1.3 mTLS 五轴 Exporter 认证传输、跨硬件时钟域保守非重叠偏斜包络 ttl_holder = ttl_grant - 2*max_skew - safety_margin、N>=3 嵌入式确定性 Raft 控制面多数派日志 + N=1 零开销直通、流式签名向量检查点/256KiB 分块制品同步、跨宿主八步进程迁移与六端点接管围栏、以及 ChaosTcpProxy 下 ROAD-C-001-XHOST / ROAD-C-002-XHOST H6 复合门禁）均已实证闭合；**唯一保留残域**：远端失联物理主机或不可逆外部 API/硬件设备上的在途物理副作用擦除证明（QUARANTINE 账本围栏 ≠ 远端物理擦除，ADR-0019 R2.3 第 2 条）与 1M_LOGICAL 多数据中心 WAN 压测"
+  mitigation: "C-XHOST-001..005 与 W73 独立退出评审已闭环跨主机传输、保守时钟偏斜包络与控制面 Raft 多数派；失联/超期/偏斜越界租约与未决副作用一律由 QuarantineDisposition 严格区分账本围栏（LedgerFencedOnly）与物理清理证明（PhysicalCleanupAttested），并由 PartitionBoundedLossProof 钉死有界损耗上界，绝不把账本 QUARANTINED 冒充为远端外部物理副作用已擦除"
   evidence_refs:
     - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
     - docs/evidence/stage-c/c-shard-004-h6-fault-injection-matrix.md
@@ -154,8 +158,14 @@
     - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
     - docs/evidence/stage-c/c-road-001-partition-restart-migration-gate.md
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md
+    - docs/evidence/stage-c/c-xhost-002-conservative-clock-skew-and-remote-lease.md
+    - docs/evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md
+    - docs/evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md
+    - docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
-  review_point: "W67 阶段 C 退出评审已确认 ADR-0018 单机多进程域全量闭合；残域复审触发点：①引入跨物理主机 TCP/QUIC 传输与共识基底（ADR-0018 触发器 2/4、ADR-0019 触发器 7、ADR-0020）；②引入外部物理副作用主动清理协议时"
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  review_point: "W73 独立终审已确认跨主机网络传输、保守时钟偏斜租约与 Raft 控制面多数派半边退役（ADR-0020/0026 VERIFIED）；残域在引入硬件级远程电源 fencing（IPMI/STONITH）或外部物理副作用主动擦除协议时复审"
 
 - id: RISK-B-12
   category: durable-state-loss

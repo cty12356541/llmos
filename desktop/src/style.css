@@ -13,6 +13,7 @@
 @import "./views/offline-cluster/offline-cluster.css";
 @import "./views/control-center/control-center.css";
 @import "./views/settings/settings.css";
+@import "./a11y/a11y.css";
 
 *,
 *::before,

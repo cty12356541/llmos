@@ -1,16 +1,16 @@
 # ADR-0020：控制面单写者覆盖与共识基底引入时序
 
-- 状态：`CANDIDATE`（W37 开档；无 PoC，不得写 `ACCEPTED` / `VERIFIED`；见决定 1）
-- 日期：2026-09-22
-- Owner：控制面单写者 / 共识基底时序（编排入口：[stage-c-progress](../stage-c-progress.md) §C.5.4 决策点 1 子议题）
+- 状态：**`VERIFIED`（2026-10-28 `W73`：单机多进程域 `S-B` 覆盖语义已由 `W37–W67` 验证，跨主机 `S-B -> S-A` 嵌入式确定性 Raft 控制面复制基底升级路径已由 [ADR-0026](./0026-cross-physical-host-transport-and-consensus-expansion.md)、[C-XHOST-003](../../evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md) 与 [C-XHOST-005](../../evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md) 实证闭环并经 [W73 独立终审](../../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md) 核准，`S-B` 保留为单机 `N=1` 零开销直通特例）**
+- 日期：2026-09-22（2026-10-28 `W73` 晋升 `VERIFIED`）
+- Owner：控制面单写者 / 共识基底时序（编排入口：[stage-c-progress](../stage-c-progress.md) §C.5.4 决策点 1 子议题 & §C.3.3 `C-CONSENSUS-CP`）
 - 关联 Requirement：总纲 v0.5 §26.1 控制面职责与 `TaskAuthorityAssignment.consensus_commit_index` / `TaskAuthorityTakeoverReceipt.consensus_commit_index`；`[PHIL-TRANSFER-002]`（使用 consensus 名称不得冒充已获共识保证）；`[CONS-SCOPE-001]`（不建立跨 Cell 全局总序）；`[TASK-SCALE-002]`（禁止用同源 Agent 复制伪造共识）；§12 `LEASE-*`（尤其 `[LEASE-FENCE-001]` / `[LEASE-ENFORCE-001]` / `[LEASE-LOSS-001]`）；§28.3 多节点 identity/epoch/fencing
-- 关联工作包：**不解锁** `C-CELL`（实现派发仍以并行 [ADR-0018](./0018-single-host-multiprocess-dual-cell-topology.md) `VERIFIED` 为前置）；**不解锁** `C-SHARD`（仍以并行 [ADR-0019](./0019-cross-cell-commit-semantics-extension.md) `VERIFIED` 为前置）；`C-LEASE` 仍按 §12 / §C.5.3 W38，本文件不实现三族 lease
+- 关联工作包：**不解锁** `C-CELL`（实现派发仍以并行 [ADR-0018](./0018-single-host-multiprocess-dual-cell-topology.md) `VERIFIED` 为前置）；**不解锁** `C-SHARD`（仍以并行 [ADR-0019](./0019-cross-cell-commit-semantics-extension.md) `VERIFIED` 为前置）；`C-LEASE` 仍按 §12 / §C.5.3 W38，本文件不实现三族 lease；跨物理主机控制面复制基底于 `W68–W72` 由 [ADR-0026](./0026-cross-physical-host-transport-and-consensus-expansion.md) 与 `C-CONSENSUS-CP` 承接实现
 - 决策来源：
   - [stage-c-progress §C.5.4](../stage-c-progress.md) 决策点 1 子议题（2026-09-22 裁定生效；否决窗口留至 W36 屏障）
   - 草案原文 `053f523` §C.5.4 第 1 条附带：`consensus_commit_index` 隐含共识 / 日志基底，但 v0.5 未定共识算法
   - [ADR-0013](./0013-cross-authority-verify-then-commit-contract.md) 决定 3（跨 Cell 扩展点 = reconciliation，非全局共识）
-  - 拓扑半边只读引用 ADR-0018（本文件不重写）；跨 Cell 提交半边只读引用 ADR-0019（本文件不定提交协议）
-- 证据：无新实现证据、无共识库 / Raft PoC。本 ADR 为 DESIGN 级开档，只记录已裁定覆盖语义与「是否 / 何时」时序，不得把任何共识协议写成已实现
+  - 拓扑半边只读引用 ADR-0018（本文件不重写）；跨 Cell 提交半边只读引用 ADR-0019（本文件不定提交协议）；跨物理机控制面复制升级见 [ADR-0026](./0026-cross-physical-host-transport-and-consensus-expansion.md)
+- 证据：单机多进程 `S-B` 覆盖期证据见 [C-SHARD-001](../../evidence/stage-c/c-shard-001-cross-cell-takeover-drive.md)..[006](../../evidence/stage-c/c-shard-006-production-takeover-binding.md)、[C-ROAD-001](../../evidence/stage-c/c-road-001-partition-restart-migration-gate.md) 与 [W67 退出门综合评审](../../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)；跨物理主机 `S-B -> S-A` 升级证据见 [C-XHOST-001](../../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)、[C-XHOST-003](../../evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md)、[C-XHOST-004](../../evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md)、[C-XHOST-005](../../evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md) 及 [W73 独立终审](../../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)（注：下述正文完整保留 `W37` 开档时的历史上下文与时序契约，升级收口记录见文末专节）
 - 复审触发器：见文末
 
 ## 上下文
@@ -100,7 +100,7 @@
 2. **现阶段覆盖（是否 = 现在不引入）。** 采纳 S-B：控制面权威对象（§26.1 控制面职责所列）在引入共识基底之前，以**单写者**提交；写者身份由 **lease + epoch + fencing token** 约束（`[LEASE-FENCE-001]` / `[LEASE-ENFORCE-001]`：fencing 在声明的 `fence_scope` 内全序单调；失联额度走 `[LEASE-LOSS-001]` QUARANTINED，不得并行双发）。`consensus_commit_index` 在此覆盖下只表示该单写者控制面的单调提交游标，**不是**共识协议日志的 commit index，也不是跨 Cell 全局序号（`[CONS-SCOPE-001]`）。
 3. **何时。** 不在本波实现共识库或复制组。引入共识基底的最早复审点是：**已有单机双 Cell 证据之后**（决策点 1 跨机后置），或复审触发器成立（单写者被证伪、fencing 无法单调、或 ROAD-C-002 的分区双主无法用 epoch/lease 表达）。届时经本 ADR 升格或后继 ADR 选型；**现在不定算法、不定 crate、不定实现波次槽位**。
 4. **派发。** 本 ADR 不解锁 `C-CELL`，不解锁 `C-SHARD`。`C-CELL` 仍等 ADR-0018 `VERIFIED`；`C-SHARD` 仍等 ADR-0019 `VERIFIED`。本文件即使日后 `ACCEPTED`，入度仍不以本 ADR 计零去派发那两条实现车道。
-5. **范围。** 本 ADR 不实现 Cell 运行时、不改 crate、不改 schema、不实现 `C-LEASE`。lease/fencing 在此是覆盖语言，实现归属仍按进度单原车道。
+5. **范围。** 本 ADR 不实现 Cell 运行时、不改 crate、不实现 `C-LEASE`。lease/fencing 在此是覆盖语言，实现归属仍按进度单原车道。
 6. **诚实声明。** 开档不等于定案。议题 15 的「控制面 Raft 复制」仍是未兑现的历史推荐，不是本文件的实现承诺。RISK-B-11 / U-5 仍为 open。
 
 ## 后果
@@ -135,3 +135,13 @@
 4. 控制面单写者被证伪（双进程同时写入权威控制面、fencing 无法在 `fence_scope` 内单调、旧写者复活被接受）→ 重开，评估 S-A。
 5. ROAD-C-001 / ROAD-C-002 评审要求真实多机控制面 HA 或把 `consensus_commit_index` 解释为协议日志 → 必须另文选型，不得扩写本开档的 Claim 范围。
 6. ADR-0018 或 ADR-0019 被否 / 改写决定面 → 复审本文件与二者的边界，禁止 last-writer-wins 抢写拓扑或提交语义。
+
+## W73 跨主机 S-B -> S-A 升级验证收口记录（2026-10-28）
+
+1. **复审触发器 3 与触发器 5 正式满足并激活升级**：
+   - 经 `W37–W67` 单机多进程域全量闭环（见 [W67 退出门综合评审](../../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)），`S-B`（控制面单写者 + lease/epoch/fencing 覆盖语义）在 [ADR-0018](./0018-single-host-multiprocess-dual-cell-topology.md) 单机双进程拓扑下的有效性与边界已获完整实证；
+   - 2026-10-26 维护者裁定 A4 要求在阶段 C 退出前闭合跨物理主机控制面高可用（HA）与多数派日志语义，正式激活本 ADR **退出策略 3** 与**复审触发器 3/5**，由后继 [ADR-0026](./0026-cross-physical-host-transport-and-consensus-expansion.md)（§3.2、§5 决定 2）完成 `S-B -> S-A` 的选型与立项（选定 `crates/nlos-consensus` 嵌入式确定性 Raft 控制面多数派日志 + `SQLite WAL + synchronous=FULL`）。
+2. **`S-A` 跨主机控制面复制基底与 `S-B` 单机 `N=1` 退化特例双模闭环**：
+   - **多主机多数派模式（`S-A` / `ConsensusBackingMode::MultiHostQuorum`）**：由 [C-XHOST-003](../../evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md)（`crates/nlos-consensus` + `crates/nlos-takeover-control::consensus_index_gate`）、[C-XHOST-004](../../evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md) 与 [C-XHOST-005](../../evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md) 实证闭环——强制奇数 `N >= 3` 且互异 `ControlDomainId`（`[TASK-SCALE-002]`），在类型系统与线协议双层锁定仅复制 4 类低频控制面元数据（严守 `[CONS-SCOPE-001]` 数据面 `0` Raft RPC），经 `SQLite WAL+FULL` 先刷盘后应答（`[DUR-ACK-002]`）与 `CommittedControlIndexGate` 多域 Ed25519 验签赋予 `TaskAuthorityAssignment.consensus_commit_index` / `TaskAuthorityTakeoverReceipt.consensus_commit_index` 真实多数派已提交日志下标语义；
+   - **单机桌面零开销退化特例（保留 `S-B` / `SingleHostPassthroughNode`）**：在默认 `ClusterProfile::SingleHostDesktop`（`N=1`）下，`nlos-consensus` 保持 `active_socket_count() == 0`、`active_background_timer_count() == 0`、`requires_tls_certificates() == false`，控制面提交直接退化为单次本地 `SQLite WAL+FULL` 事务，与 `S-B` 单机单写者零开销模型严格等价（`[NLOS-GOAL-001]`）。
+3. **状态晋升裁决**：经 `W73-C-EXIT-REVIEW` 独立终审（[w73-stage-c-xhost-exit-review.md](../../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)）复核确认，本 ADR 所规定的时序纪律、单写者覆盖期边界及 `S-B -> S-A` 升级路径已全部兑现并获 `H6` 实证支撑，状态正式由 `CANDIDATE` 晋升为 **`VERIFIED`**。

@@ -1096,3 +1096,27 @@
   scope: "desktop/src-tauri/src/settings_keychain.rs 6 项设置/文件关联/凭据 Tauri 句柄 + desktop/src/views/{control-center,settings}（UI-PARITY-001 12 域显控中心、System Informer 十层父子归属树与 SHARED_THREAD_LIKE 共享故障域徽标、阶段 C Cell 三族租约只读检视与 RequestProcessMigration 受控迁移、Nomad 三水位子弹微条、Headlamp 权限/状态动作裁剪与 5+1 法定不可篡改锁、CTRL-HIER-001 Terraform +/-/~ 级联爆炸半径预览与 Topic Purge 5 秒两步武装确认及 DataLossReceipt、CTRL-RECOVERY-001 ControlCommandId 对账恢复、system/user/workspace/application 四层 SettingsDomain CAS 与 watch、DUI-ASSOC-001 可撤销 ContentTypeAssociation 表、DUI-SETTINGS-001 零明文 KeychainReference 凭据库）；control_center_settings_cas_side.rs 7/0 与 control-center-settings.test.ts 7/0 全绿，WCAG 2.2 AA/双语与真机战役留归 W73"
   assurance: H4
   date: "2026-10-28"
+- id: w73-qq-agent-dogfood-closure
+  path: docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+  title: "W73-DOGFOOD-001：qq-agent Dogfood 全量 7 项上游问题闭环（L-001 ~ L-007）"
+  scope: "闭合外部应用 qq-agent M0 Dogfood 登记的 L-001~L-007 全部 7 项上游问题：directory_chain.py Windows Named Pipe 防碰撞摘要、第 9 个 SABI 通道 nlos.sabi.ChannelControl v1.0 冻结与 SystemControlDaemon/Python ChannelClient 跨进程一致性、sdk/python/pyproject.toml 打包入口、Windows ProactorEventLoop 诊断守卫、nlos-resource SCHEMA_VERSION=8 LLM Token 五维预算与幂等扣减、conformance/ipc/client.py 逐行进度输出与 nlos-channel 结构化轨迹日志"
+  assurance: H4
+  date: "2026-10-29"
+- id: w73-stage-c-xhost-exit-review
+  path: docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  title: "W73-C-EXIT-REVIEW：阶段 C 单机多进程（W35-W67）与跨物理主机扩展（C-XHOST W69-W72）联合退出门独立终审报告"
+  scope: "独立审查阶段 C C-XHOST 五大工作包（C-NET-TRANSPORT / C-NET-CLOCK-LEASE / C-CONSENSUS-CP / C-NET-SYNC-MIGRATE / C-XHOST-GATE，证据 C-XHOST-001..005）与 W67 单机基线的联合闭环；晋升 ADR-0020 与 ADR-0026 为 VERIFIED；裁定 ROAD-C-001 与 ROAD-C-002 在单机+跨机双域达成 SATISFIED-WITH-BOUNDARIES（H6，P0=0）；核准 RISK-B-11 / U-5 跨机网络传输、保守时钟偏斜租约、N>=3 嵌入式 Raft 控制面多数派与 ChaosTcpProxy 混沌门禁半边退役，诚实保留外部物理设备/不可逆外部 API 副作用擦除与 1M_LOGICAL 多数据中心 WAN 边界；阶段 C 呈请维护者批准翻转 EXITED"
+  assurance: H6
+  date: "2026-10-28"
+- id: d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance
+  path: docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md
+  title: "D-A11Y-I18N-001 / W73-D-A11Y-I18N：WCAG 2.2 AA 对比度审计、Z0-Z4 ARIA 语义树、全键盘导航与 Z4 焦点陷阱、prefers-reduced-motion 全局冻结与 zh-CN / en-US 版本化双语一致性验证"
+  scope: "desktop/src/i18n 版本化双语资源包（zh-CN / en-US 键值 100% 对偶、L0/L1/L2 零内部架构行话与零 Emoji 守卫、原子切换）+ desktop/src/a11y 无障碍引擎（Graphite/Paper 20 组 Token 相对亮度 WCAG 2.2 AA 校验、Z0-Z4 语义地标与 polite/assertive 双通道播报器、Tab/Arrow/Escape 全键盘焦点环与 Z4 独占模态焦点陷阱、prefers-reduced-motion 32x20 印章静态闭合帧冻结）+ desktop/src-tauri/src/a11y_i18n.rs 6 项 Tauri 句柄；a11y_i18n_conformance_side.rs 6/0 与 a11y-i18n.test.ts 7 套件 148 项断言全绿"
+  assurance: H4
+  date: "2026-10-28"
+- id: d-gui-campaign-001-cross-platform-workstation-campaign
+  path: docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
+  title: "D-GUI-CAMPAIGN-001 / W73-D-GUI-CAMPAIGN：跨平台工业工作站五阶段交互战役、CJK 输入法组合态探针与 1000 轮长稳零泄漏验证（闭合 #3 C-GUI-CAMPAIGN 与 U-3）"
+  scope: "desktop/e2e 跨平台工业工作站交互战役矩阵（五模式 4px 平铺/分屏与 L0 窗框代际路由、锁屏/切用户会话代际围栏、Z4 350ms 防点击劫持审批/ChooserGrant 零路径泄露/高污点剪贴板升级、36px 底栏水位增量唤醒与 ControlCommandId 对账、Provider 限流/断网离线自治/歧义澄清降级三连）+ CJK 中日英 IME 组合态防误触探针与多模态附件通道 + 1000 轮 100K 逻辑任务 O(visible_rows)<=64 零泄漏长稳浸泡测试 + desktop/scripts/gui-campaign/run_workstation_campaign.py 实机探针；gui-campaign.test.ts 8 套件 70 项断言与 Windows 10.0.26200 实机探针全绿，闭合 U-3 并更新 RISK-B-06"
+  assurance: H4
+  date: "2026-10-28"

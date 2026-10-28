@@ -6,6 +6,7 @@
 //! 展示;W69-D-IPC-ENUM 补齐 inspect_search / inspect_notification 与
 //! IPC-D1..D8 12 域有界游标枚举、爆炸半径预演及控制命令状态对账桥。
 
+pub mod a11y_i18n;
 pub mod compositor;
 pub mod dto;
 pub mod error;
@@ -34,6 +35,7 @@ pub fn run() {
         .manage(plan_editor::PlanEditorState::default())
         .manage(notify_search_offline::NotifySearchOfflineState::default())
         .manage(settings_keychain::SettingsKeychainState::default())
+        .manage(a11y_i18n::A11yI18nState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::get_config,
             ipc::set_config,
@@ -137,6 +139,12 @@ pub fn run() {
             settings_keychain::update_setting_with_cas,
             settings_keychain::revoke_content_type_association,
             settings_keychain::revoke_keychain_reference,
+            a11y_i18n::a11y_get_locale_bundle,
+            a11y_i18n::a11y_switch_locale,
+            a11y_i18n::a11y_audit_wcag_contrast,
+            a11y_i18n::a11y_audit_aria_landmarks,
+            a11y_i18n::a11y_verify_keyboard_focus_trap,
+            a11y_i18n::a11y_set_reduced_motion_override,
         ])
         .run(tauri::generate_context!())
     {

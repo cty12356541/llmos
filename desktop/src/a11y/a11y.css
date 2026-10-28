@@ -1,0 +1,127 @@
+/* ==========================================================================
+   NLOS Workstation Accessibility & Reduced-Motion Stylesheet (W73-D-A11Y-I18N)
+   Authority: Stage D Visual & UX Spec §1.1, §1.3, §3.7 (WCAG 2.2 AA)
+   Discipline:
+     - 100% solid opaque Graphite / Paper workstation surfaces (zero glass filters)
+     - 2px high-visibility engineering blue focus ring (--ws-accent: #3b82f6 / #1d4ed8)
+     - Strict industrial radii {0px, 2px, 4px, 6px}
+     - Minimum 26x26px interactive hit targets (WCAG 2.5.8)
+     - Global prefers-reduced-motion & explicit data-nlos-reduced-motion freeze
+   ========================================================================== */
+
+:root,
+[data-nlos-theme="graphite-workstation"],
+[data-nlos-theme="system"] {
+  --ws-accent: #3b82f6;
+  --ws-focus-ring-width: 2px;
+  --ws-hit-target-min: 26px;
+}
+
+[data-nlos-theme="paper-workstation"] {
+  --ws-accent: #1d4ed8;
+}
+
+@media (prefers-color-scheme: light) {
+  [data-nlos-theme="system"] {
+    --ws-accent: #1d4ed8;
+  }
+}
+
+/* ---- 1. 2px High-Visibility Keyboard Focus Ring (WCAG 2.2 AA 2.4.11) ---- */
+.nlos-focusable:focus-visible,
+[data-nlos-focus-ring="true"]:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[role="row"][tabindex="0"]:focus-visible,
+[role="treeitem"][tabindex="0"]:focus-visible,
+[role="dialog"]:focus-visible,
+[role="alertdialog"]:focus-visible {
+  outline: var(--ws-focus-ring-width, 2px) solid var(--ws-accent, var(--nlos-accent-active));
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+[role="row"][tabindex="0"]:focus-visible,
+[role="treeitem"][tabindex="0"]:focus-visible {
+  background-color: var(--nlos-bg-active-row);
+  border-radius: 0px;
+}
+
+[role="alertdialog"]:focus-visible {
+  border-radius: 6px;
+}
+
+/* ---- 2. Minimum 26x26px Interactive Hit Target (WCAG 2.2 AA 2.5.8) ---- */
+.nlos-a11y-target,
+.nlos-taskbar-btn,
+.nlos-splitter-kbd-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--ws-hit-target-min, 26px);
+  min-height: var(--ws-hit-target-min, 26px);
+  padding: 0 8px;
+  border-radius: 4px;
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-a11y-target:hover,
+.nlos-taskbar-btn:hover,
+.nlos-splitter-kbd-menu-btn:hover {
+  background-color: var(--nlos-bg-hover);
+}
+
+/* ---- 3. Dual-Channel ARIA Live Region & Screen-Reader-Only Container ---- */
+.nlos-sr-only,
+.nlos-live-region-announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- 4. Tabular Numerals for High-Density Workstation Telemetry ---- */
+.nlos-tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+/* ---- 5. Z4 Security Modal Inert Background Shield ---- */
+[data-nlos-z4-active="true"] [data-nlos-plane="Z1"],
+[data-nlos-z4-active="true"] [data-nlos-plane="Z2"],
+[data-nlos-z4-active="true"] [data-nlos-plane="Z3"] {
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ---- 6. Global Reduced-Motion Freeze (OS Media Query + User Override) ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[data-nlos-reduced-motion="true"],
+[data-nlos-reduced-motion="true"] *,
+[data-nlos-reduced-motion="true"] *::before,
+[data-nlos-reduced-motion="true"] *::after {
+  --nlos-dur-fast: 0ms;
+  --nlos-dur-base: 0ms;
+  animation-duration: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0ms !important;
+  scroll-behavior: auto !important;
+}

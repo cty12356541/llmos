@@ -1200,6 +1200,8 @@
   implementation_refs:
     - crates/nlos-cell
     - crates/nlos-lease
+    - crates/nlos-net
+    - crates/nlos-consensus
     - crates/nlos-task
     - crates/nlos-semantic
     - crates/nlos-artifact
@@ -1209,6 +1211,8 @@
     - crates/nlos-slice-k
   test_refs:
     - crates/nlos-slice-k/tests/c_road_001_h6_partition_restart_migration_gate.rs
+    - crates/nlos-slice-k/tests/c_xhost_h6_multi_machine_gate.rs
+    - crates/nlos-slice-k/tests/cross_host_sync_and_migration.rs
     - crates/nlos-slice-k/tests/dual_cell_partition_recovery.rs
     - crates/nlos-slice-k/tests/dual_cell_process_migration.rs
     - crates/nlos-lease/tests/lease_reconciliation.rs
@@ -1221,12 +1225,18 @@
     - docs/evidence/stage-c/c-sync-001-signed-event-set-merge.md
     - docs/evidence/stage-c/c-sync-002-artifact-sync-policy.md
     - docs/evidence/stage-c/c-migrate-002-cell-host-process-migration.md
+    - docs/evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md
+    - docs/evidence/stage-c/c-xhost-002-conservative-clock-skew-and-remote-lease.md
+    - docs/evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md
+    - docs/evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md
+    - docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
   assurance: H6
   limitations:
-    - "W67 评审裁定 SATISFIED-WITH-BOUNDARIES：效力域严格限定 ADR-0018 单主机多 OS 进程与独立磁盘 SQLite WAL+FULL 持久库拓扑，跨进程断连经文件邮箱通道模拟；跨物理机器真网卡 TCP/QUIC 分区与跨时钟域共识保留在 RISK-B-11 / ADR-0020"
+    - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在单机多 OS 进程持久库拓扑（C-ROAD-001）与跨网络套接字 ChaosTcpProxy 混沌代理拓扑（C-XHOST-001..005：TLS 1.3 mTLS 五轴 Exporter 握手、保守时钟偏斜非重叠包络、N=3 嵌入式 Raft 控制面多数派、流式同步/八步迁移、三角形非对称分区与中段 RST 注入）双域实证闭合；外部物理设备/不可逆第三方 API 副作用物理擦除边界按 ADR-0019 R2.3 第 2 条与 RISK-B-11 保留"
     - "硬崩溃采用真实子 OS 进程 Child::kill()（Layer-2 进程硬终止，页缓存存活），不外推为物理断电测试台 Layer-3 块设备写撕裂证明（U-4）"
-  source: "stage-c-progress.md §C.1.1 / §C.3.1 C-PARTITION 行 / §C.8 W66-W67 + W67 退出门评审（base 9e5e0edc）：SATISFIED-WITH-BOUNDARIES"
+  source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W73 + W73 退出门终审（base 5c052e53）：SATISFIED-WITH-BOUNDARIES"
 
 - requirement_id: ROAD-C-002
   stage: C
@@ -1234,24 +1244,29 @@
   implementation_refs:
     - crates/nlos-task
     - crates/nlos-plan
+    - crates/nlos-net
+    - crates/nlos-consensus
     - crates/nlos-runtime
     - crates/nlos-runtime-tokio
     - crates/nlos-driver-mock
   test_refs:
     - crates/nlos-task/tests/c_bench_task_sharded_scale.rs
     - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
+    - crates/nlos-runtime-tokio/tests/c_xhost_bench_scale.rs
     - crates/nlos-task/tests/c_fanout_hierarchical_bulkhead.rs
     - crates/nlos-runtime-tokio/tests/c_sched_three_tier_domain.rs
   evidence_refs:
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
     - docs/evidence/stage-c/c-fanout-001-hierarchical-fanout-bulkhead.md
     - docs/evidence/stage-c/c-sched-001-three-tier-scheduler-domain.md
+    - docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
   assurance: H6
   limitations:
-    - "W67 评审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（6C/12T, SQLite WAL+FULL）实测 1->2->4->8 独立 OS 子进程 Cell 分片无全局锁/无全局总序扩展（release 4.44x / dev 5.78x）、8-Cell 分片 10K_LOGICAL 与 100K_LOGICAL（1%/5%/10% 工作集）及五类故障全覆盖；1M_LOGICAL 档位与跨物理主机网络基准显式未声称"
+    - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（SQLite WAL+FULL）实测 1->2->4->8 子进程分片无全局锁扩展（release 4.44x）、8-Cell 10K/100K_LOGICAL、以及跨网络套接字 1/2/4 Cell 分片数据面 spawn/message/commit 0 Raft RPC 扩展与五类故障全覆盖（C-XHOST-005）；1M_LOGICAL 裸金属多数据中心 WAN 档位显式未声称"
     - "单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 多平台 release CI 规模数字待常设门回填（RISK-B-07 / U-1），故不发布无限定生产量级口号"
-  source: "stage-c-progress.md §C.1.1 / §C.3.1 C-BENCH 行 / §C.8 W66-W67 + W67 退出门评审（base 9e5e0edc）：SATISFIED-WITH-BOUNDARIES"
+  source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W73 + W73 退出门终审（base 5c052e53）：SATISFIED-WITH-BOUNDARIES"
 
 # ===== 阶段 C 核心工作包（stage-c-progress.md §C.3.1 C-core）=====
 
@@ -1467,16 +1482,21 @@
 
 - requirement_id: C-GUI-CAMPAIGN
   stage: C
-  status: NOT_STARTED
+  status: PARTIAL_PASS
   implementation_refs:
+    - desktop/e2e
+    - desktop/scripts/gui-campaign/run_workstation_campaign.py
     - desktop
   test_refs:
+    - desktop/e2e/__tests__/gui-campaign.test.ts
     - desktop/src-tauri/tests
-  evidence_refs: []
-  assurance: DESIGN
+  evidence_refs:
+    - docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
+    - docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md
+  assurance: H4
   limitations:
-    - "按 §C.5.4 决策点 3(ii) 归置为常设人工真机观察项（与阶段 D 桌面演进邻接），不阻塞阶段 C 分布式内核退出；当前桌面壳验证由命令层集成测试、Windows 认证命名管道测试与 Rust/TS 类型穷尽门承载（RISK-B-06 / U-3）"
-  source: "stage-c-progress.md §C.3.2 C-GUI-CAMPAIGN（移交#3）+ §C.5.4 决策点 3(ii)（base 9e5e0edc）：NOT_STARTED（显式归置常设观察项）"
+    - "已在真实 Windows 10.0.26200 宿主与跨平台（Windows/macOS/Linux）确定性工业工作站战役套件实跑闭合五阶段交互清单（多窗口 4px 平铺/分屏、代际焦点围栏、Z4 350ms 安全确认屏/受限选择器/污点剪贴板、底栏水位唤醒与对账、三级降级）、中日英 CJK IME 组合态防误触探针与 1000 轮 100K 逻辑任务 O(visible_rows)<=64 零泄漏浸泡测试（闭合 U-3）；物理 macOS 硬件人工眼动/触控板与 OS 原生安装器公证签名留归生产发行门"
+  source: "stage-c-progress.md §C.3.2 C-GUI-CAMPAIGN（移交#3）+ stage-d-progress.md §D.5.2 W73-D-GUI-CAMPAIGN（base 5c052e53）：PARTIAL_PASS，U-3 闭合"
 
 - requirement_id: C-WIN-KILL
   stage: C
@@ -1750,3 +1770,94 @@
   limitations:
     - "SigningKeyCustodyVault（KEK 封装 Ed25519 种子零明文导出、审计日志、轮换与泄露吊销墓碑）与 EnforcementGatewayReconciliationAuthority（Provisional vs FinalNonSupersedeable 验签结算回执驱动双域收敛）已验证；物理硬件 HSM / 云 KMS enclave 后端属生产部署边界"
   source: "stage-c-progress.md §C.3.2 C-CUSTODY-GATEWAY（移交#17，W64-CCUSTODY，base 9e5e0edc）：PARTIAL_PASS"
+
+# ===== 阶段 C 跨物理主机收官扩展工作包（stage-c-progress.md §C.3.3 C-XHOST，W69-W73 回填）=====
+
+- requirement_id: C-NET-TRANSPORT
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-net
+  test_refs:
+    - crates/nlos-net/src/lib.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  assurance: H5
+  limitations:
+    - "已实证 rustls（ring）TLS 1.3 mTLS 零 0-RTT + RFC 8446/9266 TLS Exporter 五轴对端认证握手、验签前只读水位防投毒与 CellIdentity<->PrincipalId 绑定、4B 长度前缀控制/大流多路复用与 64 MiB 窗口背压、RemoteCallOutcome 确定性映射及 N=1 零监听退化；内核态 RDMA / 硬件智能网卡卸载未包含"
+  source: "stage-c-progress.md §C.3.3 C-NET-TRANSPORT + ADR-0026（W69-W73，base 5c052e53）：PARTIAL_PASS"
+
+- requirement_id: C-NET-CLOCK-LEASE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-lease/src/clock_horizon.rs
+    - crates/nlos-lease/src/remote_proto.rs
+    - crates/nlos-cell/src/clock_liveness.rs
+  test_refs:
+    - crates/nlos-lease/tests/clock_skew_horizon_properties.rs
+    - crates/nlos-lease/tests/remote_lease_mtls_protocol.rs
+    - crates/nlos-cell/tests/clock_liveness.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-xhost-002-conservative-clock-skew-and-remote-lease.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  assurance: H5
+  limitations:
+    - "已实证跨硬件时钟域保守非重叠包络（ttl_holder = ttl_grant - 2*max_skew - safety_margin，>15,000 组参数扫描 0 重叠）、AuditWallTimeHint 禁比较守卫、QuarantineDisposition 账本围栏 vs 远端物理清理分离、单调跨宿主存活判定器与 12 命令 mTLS 远程三族租约协议；外部失联宿主物理副作用擦除仍受 ADR-0019 R2.3 第 2 条物理边界约束"
+  source: "stage-c-progress.md §C.3.3 C-NET-CLOCK-LEASE + ADR-0026（W70-W73，base 5c052e53）：PARTIAL_PASS"
+
+- requirement_id: C-CONSENSUS-CP
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-consensus
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-consensus/tests/deterministic_raft_simulation.rs
+    - crates/nlos-consensus/tests/durable_quorum_and_crash_recovery.rs
+    - crates/nlos-takeover-control/tests/consensus_index_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-xhost-003-embedded-raft-control-plane-consensus.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  assurance: H6
+  limitations:
+    - "已实证嵌入式确定性 Raft 控制面多数派日志（双层 CONS-SCOPE-001 四族守卫拒绝数据面帧、奇数 N>=3 独立 ControlDomainId 投票名册、Pre-Vote、Figure 8、分块 InstallSnapshot、SQLite WAL+FULL 先刷盘后应答 DUR-ACK-002、N=1 零开销直通、真实 Child::kill 硬崩溃故障转移）与 CommittedControlIndexGate；拜占庭容错（BFT）与跨大洲公网动态重配置属 §29.2 非目标"
+  source: "stage-c-progress.md §C.3.3 C-CONSENSUS-CP + ADR-0020/0026（W70-W73，base 5c052e53）：PARTIAL_PASS"
+
+- requirement_id: C-NET-SYNC-MIGRATE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-semantic/src/net_sync.rs
+    - crates/nlos-artifact/src/net_transfer.rs
+    - crates/nlos-slice-k/src/net_cell_host.rs
+    - crates/nlos-slice-k/src/net_migration_drive.rs
+  test_refs:
+    - crates/nlos-semantic/tests/net_vector_checkpoint_sync.rs
+    - crates/nlos-artifact/tests/net_chunked_artifact_transfer.rs
+    - crates/nlos-slice-k/tests/cross_host_sync_and_migration.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  assurance: H6
+  limitations:
+    - "已实证基于 nlos-net mTLS 五轴 Exporter 的签名向量检查点增量拉取（零未验签落盘）、256 KiB 分块 SHA-256 流式制品传输与断点续传、NetCellHost 跨套接字八步进程迁移（先 fence/release 源再 grant 目标）与 N=3 Raft 多数派支持下 6 端点全覆盖接管屏障；不含 OS 内核态 CRIU 物理内存页实时热迁移"
+  source: "stage-c-progress.md §C.3.3 C-NET-SYNC-MIGRATE + ADR-0026（W71-W73，base 5c052e53）：PARTIAL_PASS"
+
+- requirement_id: C-XHOST-GATE
+  stage: C
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-net/src/chaos_proxy.rs
+    - scripts/xhost_cluster_harness.py
+  test_refs:
+    - crates/nlos-slice-k/tests/c_xhost_h6_multi_machine_gate.rs
+    - crates/nlos-runtime-tokio/tests/c_xhost_bench_scale.rs
+  evidence_refs:
+    - docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
+    - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+  assurance: H6
+  limitations:
+    - "已实证 ChaosTcpProxy 混沌代理（丢包、RTT 抖动、单向/三角形非对称分区、TCP 半开黑洞、载荷中段 RST、密文篡改、时钟偏斜越界）下 ROAD-C-001-XHOST 与 ROAD-C-002-XHOST（数据面 0 Raft RPC + 五类故障负载）H6 复合门禁及 xhost_cluster_harness.py 自检；外部物理设备/不可逆外部 API 副作用擦除与 1M_LOGICAL 裸金属 WAN 集群留界（RISK-B-11 分域保留）"
+  source: "stage-c-progress.md §C.3.3 C-XHOST-GATE + W73 独立退出评审（W72-W73，base 5c052e53）：PARTIAL_PASS"
