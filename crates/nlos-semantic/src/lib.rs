@@ -9,6 +9,7 @@ mod declassification;
 mod durability;
 mod merge;
 mod model;
+pub mod net_sync;
 mod schema;
 mod spec;
 mod trust_view;
@@ -92,6 +93,15 @@ pub use durability::{
     DURABILITY_RECEIPT_PREIMAGE_DOMAIN, SIGNATURE_PREIMAGE_CANONICAL, SIGNATURE_PREIMAGE_LEGACY,
     build_durability_receipt_core_digest, durability_receipt_canonical_preimage,
     durability_receipt_signature_message,
+};
+pub use net_sync::{
+    AuthoritySemanticSyncProvider, DEFAULT_SEMANTIC_SYNC_BATCH_EVENTS,
+    DEFAULT_SEMANTIC_SYNC_DEADLINE_MS, DomainEventPullCursor, MAX_SEMANTIC_SYNC_BATCH_EVENTS,
+    SEMANTIC_NET_SYNC_WIRE_MAGIC, SemanticNetRejectionCode, SemanticNetSyncClient,
+    SemanticNetSyncConfig, SemanticNetSyncError, SemanticNetSyncReport, SemanticNetSyncRequest,
+    SemanticNetSyncResponse, SemanticNetSyncServer, SemanticSyncProvider, decode_sync_request,
+    decode_sync_response, encode_sync_request, encode_sync_response,
+    verify_cross_domain_item_provenance,
 };
 
 const SCHEMA_VERSION: i64 = 9;

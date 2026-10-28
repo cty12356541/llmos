@@ -45,7 +45,12 @@ import type {
   TaskSummaryDto,
 } from "./types";
 import { MUTATION_OUTCOME_KINDS } from "./types";
+import { createTrustedUiSuite } from "./trusted-ui";
 import type { WorkstationStatusState } from "./ui";
+import {
+  bindOmnibarToCompositor,
+  createOmnibarPaletteController,
+} from "./views/omnibar";
 import { taskSpaceView } from "./views/task-space";
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -1823,7 +1828,8 @@ async function bootstrap(): Promise<void> {
           },
         });
       },
-      onSessionTransition: (nextState) => {
+      onSessionTransition: (nextState, generation) => {
+        trustedUi.syncSession(nextState, generation);
         if (!backendOnline) {
           return;
         }
@@ -1848,6 +1854,133 @@ async function bootstrap(): Promise<void> {
         }).catch(() => undefined);
       },
     },
+  });
+
+  const initialCompSnap = compositor.getSnapshot();
+  const trustedUi = createTrustedUiSuite({
+    initialSessionState: initialCompSnap.sessionState,
+    initialSessionGeneration: initialCompSnap.sessionGeneration,
+    locale: initialCompSnap.locale,
+    disclosure: initialCompSnap.disclosure,
+  });
+
+  const omnibarController = createOmnibarPaletteController({
+    initialLocale: initialCompSnap.locale,
+    initialDisclosure: initialCompSnap.disclosure,
+    initialSessionState: initialCompSnap.sessionState,
+    initialSessionGeneration: initialCompSnap.sessionGeneration,
+    initialZ4ModalActive: initialCompSnap.z4Active,
+    workspaceIdHex: initialCompSnap.activeWorkspaceIdHex,
+    principalIdHex: initialCompSnap.activePrincipal.principalIdHex,
+    routeVoiceInput: (voiceCheck) => {
+      const res = compositor.routeInput({
+        source: "voice",
+        targetPlane: "Z3",
+        fromUntrustedSurface: voiceCheck.fromUntrustedSurface,
+        nowMonoMs: voiceCheck.nowMonoMs,
+      });
+      return {
+        accepted: res.accepted,
+        rejectionCode: res.rejectionCode,
+      };
+    },
+    onSubmitProposal: (submitted) => {
+      if (submitted.handoffTarget === "Z4_TRUSTED_CONSENT") {
+        const nowMono = performance.now();
+        const resolvedApp = submitted.typedIntent.resolvedApplication;
+        const appIdHex = resolvedApp?.applicationIdHex ?? "11".repeat(16);
+        const installIdHex = resolvedApp?.installationIdHex ?? "22".repeat(16);
+        const revClass =
+          submitted.proposal.undoClass === "IRREVERSIBLE"
+            ? "IRREVERSIBLE"
+            : submitted.proposal.undoClass === "COMPENSATABLE"
+              ? "COMPENSATABLE_ROLLBACK"
+              : "LOSSLESS_UNDO";
+        const challenge = trustedUi.z4Dialog.openChallenge(
+          { kind: "tcb_trusted_broker" },
+          {
+            requestingApp: {
+              displayName: submitted.proposal.targetApplicationLabel,
+              publisherName: "NLOS Workstation Verified",
+              signatureVerified: true,
+              applicationIdHex: appIdHex,
+              installationIdHex: installIdHex,
+              principalIdHex: submitted.typedIntent.principalIdHex,
+              installationGeneration: resolvedApp?.generation ?? 1,
+              manifestDigestHex: submitted.proposal.proposalDigestHex,
+            },
+            actionScope: {
+              plainSummary: {
+                "zh-CN": submitted.proposal.affectedScopeLabel,
+                "en-US": submitted.proposal.affectedScopeLabel,
+              },
+              capabilityRights: [submitted.typedIntent.intentKind],
+              controlScope: submitted.typedIntent.controlScope,
+              planDigestHex: submitted.proposal.proposalDigestHex,
+            },
+            resourceCeiling: {
+              plainCeiling: {
+                "zh-CN": submitted.proposal.resourceCeilingLabel,
+                "en-US": submitted.proposal.resourceCeilingLabel,
+              },
+              memoryCeilingMib: 512,
+              tokenBudgetCeiling: submitted.proposal.budgetPreview.requestedCeiling,
+              networkEgressAllowed: false,
+              maxDurationMs: 60_000,
+            },
+            reversibilityAndRisk: {
+              reversibilityClass: revClass,
+              plainConsequence: {
+                "zh-CN": submitted.proposal.compensationNote,
+                "en-US": submitted.proposal.compensationNote,
+              },
+              multiTargetCount: 1,
+            },
+          },
+          nowMono,
+        );
+        compositor.openZ4Modal(
+          {
+            promptId: challenge.challengeIdHex,
+            title: submitted.proposal.targetApplicationLabel,
+            summary: `${submitted.proposal.affectedScopeLabel} · ${submitted.proposal.resourceCeilingLabel}`,
+            statutoryLock:
+              revClass === "IRREVERSIBLE" ? "IRREVERSIBLE_NO_UNDO" : undefined,
+            onConfirm: () => {
+              try {
+                trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                  confirm: true,
+                  origin: "trusted_shell",
+                  source: "POINTER",
+                  irreversibleHighContrastAck: revClass === "IRREVERSIBLE",
+                  nowMonoMs: performance.now(),
+                });
+              } catch {
+                // Arming guard or session lock handled by Z4SecurityDialogController.
+              }
+            },
+            onCancel: () => {
+              try {
+                trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                  confirm: false,
+                  origin: "trusted_shell",
+                  source: "KEYBOARD",
+                  nowMonoMs: performance.now(),
+                });
+              } catch {
+                // Challenge may already be invalidated by session lock.
+              }
+            },
+          },
+          nowMono,
+        );
+      }
+    },
+  });
+
+  bindOmnibarToCompositor(compositor, omnibarController);
+  compositor.subscribe((snap) => {
+    trustedUi.setLocaleAndDisclosure(snap.locale, snap.disclosure);
   });
 
   const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(config);
@@ -1887,8 +2020,16 @@ async function bootstrap(): Promise<void> {
     void listInstalledApplications(null)
       .then((receipt) => {
         if (receipt.outcome.kind === "installed_applications_listed") {
-          compositor.setInstalledApplications(
-            receipt.outcome.applications.map(mapInstalledApplicationSummary),
+          const mapped = receipt.outcome.applications.map(mapInstalledApplicationSummary);
+          compositor.setInstalledApplications(mapped);
+          omnibarController.setCatalog(
+            mapped.map((entry) => ({
+              applicationIdHex: entry.applicationIdHex,
+              installationIdHex: entry.installationIdHex,
+              packageIdHex: entry.packageIdHex,
+              currentGeneration: entry.installationGeneration,
+              displayName: entry.displayName,
+            })),
           );
         }
       })

@@ -6,6 +6,7 @@
 @import "./styles/tokens.css";
 @import "./styles/surfaces-and-borders.css";
 @import "./styles/planes-layout.css";
+@import "./views/omnibar/omnibar.css";
 
 *,
 *::before,

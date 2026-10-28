@@ -1054,3 +1054,21 @@
   scope: "desktop/src-tauri 五平面 Z0-Z4 合成骨架、DesktopSession/Workspace/CoupledWindowSurface 状态机、DUI-LAUNCH-001 按 (ApplicationId,InstallationId) 权威校验启动器、DUI-INPUT-001 五输入源代际防伪路由与 Z4 350ms 武装门、多用户工作区与 Z4 专属 32x20 校验印章隔离 + desktop/src/store L0-L3 <16ms 渐进披露、O(visible_rows) <=64 懒拉取归一化 Store、UI-PARITY-001 动作裁剪器与 CTRL-RECOVERY-001 对账器 + 4px 五模式平铺求解器、30px 可信窗框、36px 底部任务栏；compositor-wm.test.ts 733 项断言与 compositor_wm_side.rs 全部通过，下游 Omnibar/Z4 完整审批/Task Space DAG/通知搜索控制中心槽位留归 W71-W73"
   assurance: H4
   date: "2026-10-27"
+- id: c-xhost-004-streaming-sync-and-cross-host-migration
+  path: docs/evidence/stage-c/c-xhost-004-streaming-sync-and-cross-host-migration.md
+  title: "C-XHOST-004 / W71-C-SYNC-MIGRATE：跨网络签名向量检查点增量收敛、流式分块制品传输、跨机双宿主八步进程迁移与六端点接管屏障"
+  scope: "crates/nlos-semantic::net_sync 基于 nlos-net mTLS 五轴 Exporter 的签名向量检查点增量收敛（SEM-CHECKPOINT-001 / DIST-EVENT/AUDIT-001，零未验签落盘）+ crates/nlos-artifact::net_transfer 256KiB 分块 SHA-256 流式传输与 staging/committed 原子提升及中断断点续传（DIST-ART-001）+ crates/nlos-slice-k::{net_cell_host,net_migration_drive} NetCellHost 七件套套接字宿主、跨机八步进程迁移（DIST-MIGRATE-001/002 先 fence/release 源再 grant 目标、固定会话排斥与 PMIGRCPT 检查点）及 N=3 Raft 多数派支持下 6 端点全覆盖接管围栏（DIST-TASK-002）；net_vector_checkpoint_sync 4/0、net_chunked_artifact_transfer 4/0、cross_host_sync_and_migration 4/0+1/0 ignored，ChaosTcpProxy 混沌门禁留归 W72"
+  assurance: H6
+  date: "2026-10-27"
+- id: d-omnibar-001-command-intent-palette-and-multimodal
+  path: docs/evidence/stage-d/d-omnibar-001-command-intent-palette-and-multimodal.md
+  title: "D-OMNIBAR-001 / W71-D-OMNIBAR：Z3 按需唤起 Ctrl+Space 实心命令/意图面板、L0-L3 分层意图编译预览、NL-AMBIG-001 歧义澄清门与多模态附件通道"
+  scope: "desktop/src-tauri/src/omnibar.rs 11 项受控命令面板与多模态 Tauri 句柄（中英文确定性意图编译、NL-BIND-001 应用/预留/选择器句柄绑定、NL-AMBIG-001 高风险歧义澄清门、InputSource::Voice 语音流会话与 L0 麦克风占用指示、SHA-256 内容寻址 4px 附件标签、搜索候选 0x1F NON_AUTHORITATIVE 硬锁）+ desktop/src/{views/omnibar,multimodal} Z3 580px 4px 圆角实心面板（平时 display:none 零霸屏、L1/L2 零内部行话、L3 披露 TypedIntent/ActionProposal JSON 与 6 态键盘状态机）；omnibar_multimodal_side.rs 7/0 与 omnibar-multimodal.test.ts 9 套件 525 项断言全绿，真机 GUI 战役留归 W73"
+  assurance: H4
+  date: "2026-10-27"
+- id: d-trusted-ui-001-z4-consent-chooser-and-taint-clipboard
+  path: docs/evidence/stage-d/d-trusted-ui-001-z4-consent-chooser-and-taint-clipboard.md
+  title: "D-TRUSTED-UI-001 / W71-D-TRUSTED-UI：Z4 UAC/Polkit 实心系统安全确认屏、四行键值规格表、ChooserGrant 受限选择器与污点感知剪贴板/拖拽门控"
+  scope: "desktop/src-tauri/src/trusted_ui.rs 12 项可信 UI Tauri 句柄与 TrustedUiState（TUI-CONSENT-001 Z4 独占模态审批、350ms 防点击劫持门、会话代际锁定、RCPT-UNDO-001 IRREVERSIBLE 零伪撤销与 RCPT-PARTIAL-001 逐目标回执、TUI-CHOOSER-001/DUI-CHOOSER-001 Open/Save/Share 衰减 Capability 签发零宿主裸路径泄露、DUI-CLIP-001 剪贴板/拖拽污点传播与 HIGH/CRITICAL_SECRET 跨应用强制 Z4 升级门）+ desktop/src/trusted-ui Z4 实心安全屏（rgba(10,11,13,0.78) 暗幕、2px 钢蓝顶条、32x20 凹陷单色 Gerono 防伪印章、四行规格表）；trusted_ui_scrim_chooser_clip_side.rs 7/0 与 trusted-ui-security.test.ts 7 套件 333 项断言全绿，真机战役留归 W73"
+  assurance: H4
+  date: "2026-10-27"

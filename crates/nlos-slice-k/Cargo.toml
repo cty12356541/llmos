@@ -20,9 +20,11 @@ nlos-cell = { path = "../nlos-cell" }
 nlos-channel = { path = "../nlos-channel" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
+nlos-consensus.workspace = true
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-lease = { path = "../nlos-lease" }
+nlos-net.workspace = true
 nlos-notify = { path = "../nlos-notify" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-outbox = { path = "../nlos-outbox" }
@@ -35,6 +37,7 @@ nlos-search = { path = "../nlos-search" }
 nlos-semantic = { path = "../nlos-semantic" }
 nlos-store = { path = "../nlos-store" }
 nlos-system-control = { path = "../nlos-system-control", default-features = false, features = ["process"] }
+nlos-takeover-control = { path = "../nlos-takeover-control" }
 nlos-task = { path = "../nlos-task" }
 nlos-topic = { path = "../nlos-topic" }
 nlos-types = { path = "../nlos-types" }

@@ -14,10 +14,14 @@ repository.workspace = true
 # link dev-dependencies; the signing key construction mirrors the
 # crate's tests (W33-A evidence §2).
 ed25519-dalek.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-cell = { path = "../nlos-cell" }
 nlos-identity = { path = "../nlos-identity" }
+nlos-net.workspace = true
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 nlos-store-fault = { path = "../nlos-store-fault" }

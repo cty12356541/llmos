@@ -11,8 +11,10 @@ pub mod dto;
 pub mod error;
 pub mod input_router;
 pub mod ipc;
+pub mod omnibar;
 pub mod session;
 pub mod surfaces;
+pub mod trusted_ui;
 pub mod window_lifecycle;
 
 /// 开发夹具:仅在 Unix + `dev-fixture` feature 下编译(dev_server 示例与
@@ -25,6 +27,7 @@ pub mod devfixture;
 pub fn run() {
     if let Err(error) = tauri::Builder::default()
         .manage(ipc::AppState::from_env())
+        .manage(trusted_ui::TrustedUiState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::get_config,
             ipc::set_config,
@@ -84,6 +87,29 @@ pub fn run() {
             ipc::compositor_set_z3_overlay,
             ipc::compositor_set_z4_modal,
             ipc::compositor_route_input,
+            omnibar::omnibar_get_snapshot,
+            omnibar::omnibar_toggle_palette,
+            omnibar::omnibar_update_draft,
+            omnibar::omnibar_clear_draft,
+            omnibar::omnibar_attach_item,
+            omnibar::omnibar_remove_attachment,
+            omnibar::omnibar_compile_preview,
+            omnibar::omnibar_select_candidate,
+            omnibar::omnibar_submit_proposal,
+            omnibar::omnibar_voice_action,
+            omnibar::omnibar_set_device_permission,
+            trusted_ui::trusted_ui_open_z4_consent,
+            trusted_ui::trusted_ui_notify_z4_focus_regained,
+            trusted_ui::trusted_ui_decide_z4_consent,
+            trusted_ui::trusted_ui_get_public_posture,
+            trusted_ui::trusted_ui_open_chooser,
+            trusted_ui::trusted_ui_confirm_chooser_grant,
+            trusted_ui::trusted_ui_revoke_chooser_grant,
+            trusted_ui::trusted_ui_mint_gesture_token,
+            trusted_ui::trusted_ui_publish_transfer,
+            trusted_ui::trusted_ui_request_transfer_read,
+            trusted_ui::trusted_ui_complete_escalated_transfer,
+            trusted_ui::trusted_ui_get_security_audit,
         ])
         .run(tauri::generate_context!())
     {

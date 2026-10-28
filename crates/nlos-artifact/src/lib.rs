@@ -143,6 +143,7 @@ mod cache;
 mod conformance;
 mod gc;
 mod model;
+pub mod net_transfer;
 mod package;
 mod package_file;
 mod provenance;
@@ -174,6 +175,15 @@ pub use model::{
     PublishStagedRevisionDecision, PublishStagedRevisionRequest, PutRevisionDecision,
     PutRevisionRequest, RecoveryReport, RevisionRecord, StageRevisionDecision,
     StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
+};
+pub use net_transfer::{
+    ARTIFACT_NET_BULK_MAGIC, ARTIFACT_NET_CHUNK_HEADER_BYTES, ARTIFACT_NET_RPC_MAGIC,
+    ArtifactBlobDescriptor, ArtifactBulkChunkFrame, ArtifactNetTransferClient,
+    ArtifactNetTransferError, ArtifactNetTransferRejection, ArtifactNetTransferServer,
+    ArtifactTransferCursorState, ArtifactTransferExecutionSummary, ArtifactTransferManifest,
+    ArtifactTransferSessionCursor, BlobChunkCursor, DEFAULT_NET_ARTIFACT_CHUNK_PAYLOAD_BYTES,
+    FinalizeNetArtifactTransferRequest, MAX_NET_ARTIFACT_CHUNK_PAYLOAD_BYTES,
+    slice_remaining_blob_into_framed_chunks, staged_transfer_dir_for_package,
 };
 pub use package::{
     MAX_TASK_DEPENDENCIES_PER_TEMPLATE, MAX_TASK_TEMPLATES_PER_MANIFEST, PackageEntryRole,

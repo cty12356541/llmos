@@ -46,6 +46,8 @@ mod cell_host;
 mod chain;
 mod error;
 mod fiber;
+pub mod net_cell_host;
+pub mod net_migration_drive;
 mod nl;
 mod package;
 pub mod partition_recovery;
@@ -73,6 +75,28 @@ pub use chain::{
 };
 pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
+pub use net_cell_host::{
+    DEFAULT_NET_CELL_TRUST_SNAPSHOT_DIGEST, NetCellHost, NetCellHostError, NetCellHostInspector,
+    NetCellHostNetworkConfig, NetCellHostServiceDispatcher, NetCellSemanticSyncBridge,
+    NetConsensusBackend, PRIVATE_CONSENSUS_DIR, PRIVATE_FEDERATION_MIRROR_DIR,
+    SubProtocolRpcHandler, TrackedCellLeaseEntry, invalid_sub_rpc_reply,
+};
+pub use net_migration_drive::{
+    CrossSocketMigrationError, CrossSocketProcessMigrationOptions,
+    CrossSocketProcessMigrationOutcome, CrossSocketSemanticSyncSummary,
+    DEFAULT_MIGRATION_ARTIFACT_CHUNK_BYTES, IncumbentTaskShardConfig, MtlsBarrierObservationClient,
+    NET_MIGRATION_RPC_MAGIC, NET_TAKEOVER_RPC_MAGIC, NetMigrationRpcServer, NetTakeoverRpcServer,
+    PostFenceInterruptedMigration, QuorumSixEndpointTakeoverOutcome,
+    QuorumSixEndpointTakeoverRequest, QuorumTakeoverDriveError, RemoteTargetCheckpointSummary,
+    RemoteTargetLeaseRegrantSummary, SixEndpointIncumbentSetup, StaleIncumbentFenceProbeReport,
+    TargetMigrationInspectionSnapshot, VoterAttestationSigner, build_default_net_host_sub_handlers,
+    collect_quorum_commit_attestation_over_mtls, derive_deterministic_assignment_id,
+    derive_net_barrier_digest, derive_net_barrier_remote_receipt_id,
+    drive_cross_socket_process_migration, drive_quorum_backed_six_endpoint_takeover,
+    exchange_peer_bootstrap_over_mtls, inspect_remote_target_migration_state,
+    propose_control_command_over_quorum, reconcile_post_fence_interrupted_migration,
+    setup_six_endpoint_incumbent_task_on_host,
+};
 pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
     AutoOrphanGc, PublishedPackage, Publisher, TemplatedInstallReceipt, artifact_blob_path,

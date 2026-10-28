@@ -1,0 +1,376 @@
+/* ==========================================================================
+   NLOS Stage D On-Demand Z3 Command & Intent Palette (D-OMNIBAR-MULTIMODAL)
+   Authority: ADR-0025 Rev 2 + Stage D Visual & UX Spec §2.4, §2A, §3.3
+   Discipline:
+     - Hidden by default (0px permanent top footprint; never a fixed top prompt bar)
+     - 100% solid opaque Graphite / Paper neutral workstation surfaces (zero blur)
+     - Strict 4px control radius (var(--nlos-radius-ctrl)) at z-index: 460
+     - Zero neon glow, zero decorative grids, zero pictographic characters
+   ========================================================================== */
+
+.nlos-omnibar-scrim {
+  position: fixed;
+  inset: 0 0 var(--nlos-taskbar-h) 0;
+  z-index: var(--nlos-z3-palette);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background-color: transparent;
+}
+
+.nlos-omnibar-scrim[hidden] {
+  display: none !important;
+}
+
+.nlos-omnibar-dialog {
+  width: min(var(--nlos-palette-max-w), calc(100vw - 32px));
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: var(--nlos-radius-ctrl);
+  box-shadow: var(--nlos-shadow-palette);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-base);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: border-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-omnibar-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-recessed);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-omnibar-prompt-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--nlos-text-secondary);
+  flex-shrink: 0;
+}
+
+.nlos-omnibar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--nlos-sp-1);
+  background-color: transparent;
+  color: var(--nlos-text-primary);
+  border: 1px solid transparent;
+  border-radius: var(--nlos-radius-ctrl);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-input-cmd);
+  outline: none;
+}
+
+.nlos-omnibar-input:focus-visible {
+  border-color: var(--nlos-border-input-focus);
+}
+
+.nlos-omnibar-voice-btn,
+.nlos-omnibar-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nlos-sp-1);
+  min-height: var(--nlos-hit-min);
+  padding: 0 var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  cursor: pointer;
+  transition: background-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-omnibar-voice-btn:hover,
+.nlos-omnibar-action-btn:hover {
+  background-color: var(--nlos-bg-hover);
+}
+
+.nlos-omnibar-voice-btn[data-voice-active="true"] {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-omnibar-submit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nlos-sp-1);
+  min-height: var(--nlos-hit-min);
+  padding: 0 var(--nlos-sp-3);
+  background-color: var(--nlos-accent-primary);
+  color: var(--nlos-accent-fg);
+  border: 1px solid var(--nlos-accent-primary);
+  border-radius: var(--nlos-radius-ctrl);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-omnibar-submit-btn:hover:not(:disabled) {
+  background-color: var(--nlos-accent-primary-hover);
+}
+
+.nlos-omnibar-submit-btn:disabled {
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-muted);
+  border-color: var(--nlos-border-hairline);
+  cursor: not-allowed;
+}
+
+.nlos-omnibar-voice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-1) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-omnibar-chip-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nlos-sp-1);
+  padding: var(--nlos-sp-2) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-elevated);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-omnibar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nlos-sp-1);
+  min-height: 24px;
+  padding: 2px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-omnibar-chip-kind {
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-omnibar-chip-size {
+  color: var(--nlos-text-muted);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-omnibar-chip-taint {
+  padding: 0 4px;
+  border: 1px solid var(--nlos-signal-action);
+  border-radius: var(--nlos-radius-micro);
+  color: var(--nlos-signal-action-text);
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-omnibar-chip-l3 {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-muted);
+}
+
+.nlos-omnibar-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background-color: transparent;
+  color: var(--nlos-text-secondary);
+  border: none;
+  border-radius: var(--nlos-radius-micro);
+  cursor: pointer;
+}
+
+.nlos-omnibar-chip-remove:hover {
+  background-color: var(--nlos-bg-hover);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-omnibar-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-3);
+  background-color: var(--nlos-bg-elevated);
+}
+
+.nlos-omnibar-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-omnibar-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--nlos-sp-1) var(--nlos-sp-3);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-omnibar-kv-label {
+  color: var(--nlos-text-secondary);
+  margin-right: var(--nlos-sp-1);
+}
+
+.nlos-omnibar-kv-value {
+  color: var(--nlos-text-primary);
+  font-weight: 500;
+}
+
+.nlos-omnibar-undo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nlos-sp-1);
+  padding: 2px var(--nlos-sp-2);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-primary);
+  background-color: var(--nlos-bg-elevated);
+}
+
+.nlos-omnibar-undo-badge[data-undo-class="IRREVERSIBLE"] {
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+}
+
+.nlos-omnibar-undo-badge[data-undo-class="COMPENSATABLE"] {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-omnibar-l2-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-1);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-omnibar-ambiguity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-signal-action);
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-omnibar-ambiguity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-signal-action-text);
+  font-weight: 600;
+}
+
+.nlos-omnibar-candidate-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-omnibar-candidate-table th,
+.nlos-omnibar-candidate-table td {
+  padding: 6px var(--nlos-sp-2);
+  text-align: left;
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-omnibar-candidate-table th {
+  color: var(--nlos-text-secondary);
+  font-weight: 500;
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-omnibar-candidate-row {
+  cursor: pointer;
+  background-color: transparent;
+}
+
+.nlos-omnibar-candidate-row:hover {
+  background-color: var(--nlos-bg-hover);
+}
+
+.nlos-omnibar-candidate-row[data-selected="true"] {
+  background-color: var(--nlos-bg-active-row);
+}
+
+.nlos-omnibar-l3-panel {
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nlos-omnibar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-chrome);
+  border-top: 1px solid var(--nlos-border-hairline);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-omnibar-kbd {
+  display: inline-block;
+  padding: 1px 4px;
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-micro);
+  background-color: var(--nlos-bg-elevated);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nlos-omnibar-dialog,
+  .nlos-omnibar-voice-btn,
+  .nlos-omnibar-action-btn,
+  .nlos-omnibar-submit-btn {
+    transition-duration: 0ms;
+  }
+}
