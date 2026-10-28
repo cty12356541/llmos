@@ -64,6 +64,14 @@ fn channel_endpoint_proof_is_owner_assigned_and_survives_restart() {
             .expect("initial proof");
         assert_eq!(proof.participant_generation, Generation::INITIAL);
         assert_eq!(proof.channel_id, record.channel_id);
+        println!(
+            "[nlos-channel/channel_authority] channel_endpoint_proof_is_owner_assigned_and_survives_restart: created channel={:?} gen={} capacity_bytes={} participant={:?} receipt={:?}",
+            record.channel_id,
+            record.generation.get(),
+            record.capacity_bytes,
+            proof.participant_id,
+            proof.admission_receipt_id,
+        );
 
         let rotated = match authority
             .rotate_channel(RotateChannelRequest {
@@ -88,6 +96,13 @@ fn channel_endpoint_proof_is_owner_assigned_and_survives_restart() {
         assert_ne!(
             rotated_proof.admission_receipt_id,
             proof.admission_receipt_id
+        );
+        println!(
+            "[nlos-channel/channel_authority] channel_endpoint_proof_is_owner_assigned_and_survives_restart: rotated channel={:?} gen={} participant={:?} receipt={:?}",
+            rotated.channel_id,
+            rotated.generation.get(),
+            rotated_proof.participant_id,
+            rotated_proof.admission_receipt_id,
         );
         (record, proof, rotated, rotated_proof)
     };
@@ -117,6 +132,12 @@ fn channel_endpoint_proof_is_owner_assigned_and_survives_restart() {
         rotated
     );
     assert_eq!(proof.participant_id, rotated_proof.participant_id);
+    println!(
+        "[nlos-channel/channel_authority] channel_endpoint_proof_is_owner_assigned_and_survives_restart: reopened head_gen={} proof_gen={} replay_gen={}",
+        rotated.generation.get(),
+        rotated_proof.participant_generation.get(),
+        rotated.generation.get(),
+    );
 }
 
 #[test]
@@ -138,6 +159,11 @@ fn stale_generation_and_idempotency_conflicts_fail_closed() {
         conflicting,
         Err(nlos_channel::ChannelAuthorityError::IdempotencyConflict)
     ));
+    println!(
+        "[nlos-channel/channel_authority] stale_generation_and_idempotency_conflicts_fail_closed: created channel={:?} gen={} create_conflict=IdempotencyConflict",
+        record.channel_id,
+        record.generation.get(),
+    );
 
     let rotated = authority
         .rotate_channel(RotateChannelRequest {
@@ -169,6 +195,10 @@ fn stale_generation_and_idempotency_conflicts_fail_closed() {
         }),
         Err(nlos_channel::ChannelAuthorityError::IdempotencyConflict)
     ));
+    println!(
+        "[nlos-channel/channel_authority] stale_generation_and_idempotency_conflicts_fail_closed: rotated gen={} stale_rotate_rejected=StaleChannel rebind_rotate_rejected=IdempotencyConflict",
+        rotated.generation.get(),
+    );
 }
 
 #[test]
@@ -185,4 +215,7 @@ fn zero_capacity_is_rejected_before_durable_write() {
         result,
         Err(nlos_channel::ChannelAuthorityError::InvalidCapacity)
     ));
+    println!(
+        "[nlos-channel/channel_authority] zero_capacity_is_rejected_before_durable_write: create capacity_bytes=0 rejected=InvalidCapacity"
+    );
 }

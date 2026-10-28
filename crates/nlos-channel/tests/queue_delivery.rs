@@ -102,6 +102,15 @@ fn enqueue_receive_ack_cycle_is_ordered_and_drains() {
 
     let window = authority.receive(head.channel_id, 10).expect("receive");
     assert_eq!(window, vec![first.clone(), second.clone(), third.clone()]);
+    println!(
+        "[nlos-channel/queue_delivery] enqueue_receive_ack_cycle_is_ordered_and_drains: created channel={:?} gen={} enqueued_seqs=[{},{},{}] receive_window_len={}",
+        head.channel_id,
+        head.generation.get(),
+        first.sequence,
+        second.sequence,
+        third.sequence,
+        window.len()
+    );
     // Receive advances no cursor and writes nothing: repeating it (even with
     // a smaller limit) returns the same prefix of the same window.
     assert_eq!(
@@ -157,6 +166,9 @@ fn enqueue_receive_ack_cycle_is_ordered_and_drains() {
             max_sequence: 3,
         }
     );
+    println!(
+        "[nlos-channel/queue_delivery] enqueue_receive_ack_cycle_is_ordered_and_drains: acked consume_high_water=3 trim_high_water=0 backlog_bytes=0 retained_bytes=16 max_sequence=3"
+    );
 }
 
 #[test]
@@ -209,6 +221,10 @@ fn queue_full_admission_rejects_before_any_durable_write() {
         .inspect_queue(head.channel_id)
         .expect("inspect after rejection");
     assert_eq!((state.backlog_bytes, state.retained_bytes), (10, 10));
+    println!(
+        "[nlos-channel/queue_delivery] queue_full_admission_rejects_before_any_durable_write: capacity_bytes={} boundary_seq={} backlog_bytes={} retained_bytes={} rejected=[InvalidPayload,QueueFull]",
+        state.capacity_bytes, boundary.sequence, state.backlog_bytes, state.retained_bytes
+    );
 
     authority
         .ack(AckRequest {
@@ -226,6 +242,9 @@ fn queue_full_admission_rejects_before_any_durable_write() {
         EnqueueDecision::Enqueued(entry) => assert_eq!(entry.sequence, 3),
         EnqueueDecision::Replayed(_) => panic!("rejected enqueue must not leave a replay record"),
     }
+    println!(
+        "[nlos-channel/queue_delivery] queue_full_admission_rejects_before_any_durable_write: drained consume_high_water=2 retry_enqueued_seq=3"
+    );
 }
 
 #[test]
@@ -266,6 +285,13 @@ fn stale_fence_rejects_enqueue_but_old_generation_entries_stay_receivable() {
             .expect("receive across generations"),
         vec![old_entry.clone(), new_entry.clone()]
     );
+    println!(
+        "[nlos-channel/queue_delivery] stale_fence_rejects_enqueue_but_old_generation_entries_stay_receivable: rotated gen={}->{} stale_enqueue_rejected=StaleChannel cross_gen_seqs=[{},{}]",
+        head.generation.get(),
+        rotated.generation.get(),
+        old_entry.sequence,
+        new_entry.sequence
+    );
     authority
         .ack(AckRequest {
             channel_id: head.channel_id,
@@ -287,6 +313,9 @@ fn stale_fence_rejects_enqueue_but_old_generation_entries_stay_receivable() {
             .receive(head.channel_id, 10)
             .expect("receive drained"),
         [] as [nlos_channel::QueueEntryRecord; 0]
+    );
+    println!(
+        "[nlos-channel/queue_delivery] stale_fence_rejects_enqueue_but_old_generation_entries_stay_receivable: acked consume_high_water=2 compacted trim_high_water=2 drained=true"
     );
 }
 
@@ -337,6 +366,12 @@ fn enqueue_idempotency_replays_and_conflicts_on_payload_or_fence_drift() {
         authority.enqueue(request_for(&rotated, 5, b"payload", 10)),
         Err(ChannelAuthorityError::IdempotencyConflict)
     ));
+    println!(
+        "[nlos-channel/queue_delivery] enqueue_idempotency_replays_and_conflicts_on_payload_or_fence_drift: original_seq={} sibling_seq={} rotated_gen={} replay=ok conflicts=[payload_drift,fence_drift]",
+        original.sequence,
+        sibling.sequence,
+        rotated.generation.get()
+    );
 }
 
 #[test]
@@ -414,6 +449,10 @@ fn ack_is_monotonic_idempotent_and_bounded_by_durable_maximum() {
         }),
         Ok(AckDecision::Replayed(_))
     ));
+    println!(
+        "[nlos-channel/queue_delivery] ack_is_monotonic_idempotent_and_bounded_by_durable_maximum: channel={:?} consume_high_water=1 replay_ts=100 rejected_seqs=[0,3,empty:1] empty_zero_noop=Replayed",
+        head.channel_id
+    );
 }
 
 #[test]
@@ -442,6 +481,9 @@ fn compact_never_trims_unconsumed_prefix_and_is_idempotent() {
             .receive(head.channel_id, 10)
             .expect("receive after refused compact"),
         vec![first.clone(), second.clone(), third.clone()]
+    );
+    println!(
+        "[nlos-channel/queue_delivery] compact_never_trims_unconsumed_prefix_and_is_idempotent: unconsumed_compact_clamped trim_high_water=0 window_len=3"
     );
 
     authority
@@ -491,6 +533,10 @@ fn compact_never_trims_unconsumed_prefix_and_is_idempotent() {
         authority.compact(head.channel_id, 1),
         Err(ChannelAuthorityError::InvalidSequence(_))
     ));
+    println!(
+        "[nlos-channel/queue_delivery] compact_never_trims_unconsumed_prefix_and_is_idempotent: compacted consume_high_water={} trim_high_water={} backlog_bytes={} retained_bytes={} regression_rejected=InvalidSequence",
+        state.consume_high_water, state.trim_high_water, state.backlog_bytes, state.retained_bytes
+    );
 }
 
 #[test]
@@ -528,6 +574,14 @@ fn restart_replays_entries_cursors_bookkeeping_and_decisions() {
         assert_eq!(window, vec![second, third, fourth]);
         (head, state, window)
     };
+    println!(
+        "[nlos-channel/queue_delivery] restart_replays_entries_cursors_bookkeeping_and_decisions: before_restart consume_high_water={} trim_high_water={} backlog_bytes={} max_sequence={} window_len={}",
+        state_before.consume_high_water,
+        state_before.trim_high_water,
+        state_before.backlog_bytes,
+        state_before.max_sequence,
+        window_before.len()
+    );
 
     let reopened = ChannelAuthority::open(root.path()).expect("reopen authority");
     // Entries, cursors and byte bookkeeping replay field-for-field.
@@ -583,6 +637,9 @@ fn restart_replays_entries_cursors_bookkeeping_and_decisions() {
         EnqueueDecision::Enqueued(entry) => assert_eq!(entry.sequence, 5),
         EnqueueDecision::Replayed(_) => panic!("fresh enqueue cannot replay"),
     }
+    println!(
+        "[nlos-channel/queue_delivery] restart_replays_entries_cursors_bookkeeping_and_decisions: reopened state_replayed=true decisions_replayed=[ack,compact,enqueue] post_restart_seq=5"
+    );
 }
 
 #[test]
@@ -680,6 +737,9 @@ fn tampered_queue_state_fails_closed_as_corrupt_record() {
             .len(),
         1
     );
+    println!(
+        "[nlos-channel/queue_delivery] tampered_queue_state_fails_closed_as_corrupt_record: tamper_cases=[consume_hw,backlog_bytes,retained_bytes,trim_hw] rejected=CorruptRecord restored_window_len=1"
+    );
 }
 
 #[test]
@@ -722,6 +782,9 @@ fn ddl_guards_reject_entry_mutation_outside_compaction() {
             .expect("receive after guards")
             .len(),
         1
+    );
+    println!(
+        "[nlos-channel/queue_delivery] ddl_guards_reject_entry_mutation_outside_compaction: rejected=[entry_update,live_entry_delete,cursor_delete,bytes_delete] live_delete_err={message:?} window_len=1"
     );
 }
 
@@ -796,6 +859,10 @@ fn v1_database_migrates_to_v2_preserving_channel_data() {
         EnqueueDecision::Enqueued(entry) => assert_eq!(entry.sequence, 1),
         EnqueueDecision::Replayed(_) => panic!("migrated queue cannot replay a fresh key"),
     }
+    println!(
+        "[nlos-channel/queue_delivery] v1_database_migrates_to_v2_preserving_channel_data: migrated channel={:?} user_version=3 post_migration_seq=1",
+        head.channel_id
+    );
 }
 
 #[test]
@@ -813,4 +880,7 @@ fn unknown_schema_version_fails_closed() {
         ChannelAuthority::open(root.path()),
         Err(ChannelAuthorityError::SchemaVersionUnsupported(99))
     ));
+    println!(
+        "[nlos-channel/queue_delivery] unknown_schema_version_fails_closed: user_version=99 rejected=SchemaVersionUnsupported(99)"
+    );
 }

@@ -108,6 +108,7 @@ fn registered(decision: ConsumptionRegistrationDecision) -> QueueConsumptionReco
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One test covers registration, replay, conflict gates, and compaction survival.
 fn consume_registration_mirrors_register_wait_and_replays() {
     let root = Root::new("register");
     let authority = ChannelAuthority::open(root.path()).expect("open authority");
@@ -124,6 +125,10 @@ fn consume_registration_mirrors_register_wait_and_replays() {
     };
     assert_eq!(enqueued.binding, Some(binding(0x11)));
     assert_eq!(enqueued.fiber_generation, Some(Generation::INITIAL));
+    println!(
+        "[nlos-channel/queue_consumption_registration] consume_registration_mirrors_register_wait_and_replays: enqueue_registered seq={} producer_binding={:?} fiber_gen={:?}",
+        enqueued.sequence, enqueued.binding, enqueued.fiber_generation
+    );
 
     let record = registered(
         authority
@@ -159,6 +164,13 @@ fn consume_registration_mirrors_register_wait_and_replays() {
         }
     };
     assert_eq!(replayed, record);
+    println!(
+        "[nlos-channel/queue_consumption_registration] consume_registration_mirrors_register_wait_and_replays: registered id={:?} seq={} consumer_binding={:?} fiber_gen={} replayed=true",
+        record.registration_id,
+        record.sequence,
+        record.binding,
+        record.fiber_generation.get()
+    );
 
     // Same identity under a fresh key: the row identity is unique, fail
     // closed (deterministic re-registration, not a duplicate fact).
@@ -215,6 +227,11 @@ fn consume_registration_mirrors_register_wait_and_replays() {
         .list_consumptions_for_binding(binding(0x22))
         .expect("list after compaction");
     assert_eq!(listed, vec![record]);
+    println!(
+        "[nlos-channel/queue_consumption_registration] consume_registration_mirrors_register_wait_and_replays: conflicts_rejected=3 compacted_seq={} surviving_registrations={}",
+        enqueued.sequence,
+        listed.len()
+    );
 }
 
 #[test]
@@ -274,6 +291,10 @@ fn registration_gates_fail_closed_without_side_effects() {
         )),
         Err(ChannelAuthorityError::InvalidSequence(_))
     ));
+    println!(
+        "[nlos-channel/queue_consumption_registration] registration_gates_fail_closed_without_side_effects: legacy_entry seq={} binding={:?} rejected=[InvalidBindingRegistration,InvalidSequence(0),ChannelNotFound,InvalidSequence(99)]",
+        entry.sequence, entry.binding
+    );
 
     // Zero side effect: no registration row exists for the binding, and the
     // rejected keys stay free (the retry under the same key succeeds).
@@ -283,7 +304,7 @@ fn registration_gates_fail_closed_without_side_effects() {
             .expect("empty listing"),
         [] as [nlos_channel::QueueConsumptionRecord; 0]
     );
-    registered(
+    let retry_record = registered(
         authority
             .register_queue_consumption(consumption_request(
                 head.channel_id,
@@ -293,6 +314,10 @@ fn registration_gates_fail_closed_without_side_effects() {
                 313,
             ))
             .expect("retry after rejections"),
+    );
+    println!(
+        "[nlos-channel/queue_consumption_registration] registration_gates_fail_closed_without_side_effects: retry_registered id={:?} seq={} binding={:?}",
+        retry_record.registration_id, retry_record.sequence, retry_record.binding
     );
 }
 
@@ -359,6 +384,14 @@ fn projection_read_isolates_bindings_in_registration_order() {
         authority.list_consumptions_for_binding(ExecutionFiberId::from_bytes([0; 16])),
         Err(ChannelAuthorityError::InvalidBindingRegistration)
     ));
+    println!(
+        "[nlos-channel/queue_consumption_registration] projection_read_isolates_bindings_in_registration_order: binding={:?} listed_seqs=[{},{}] listed_ts=[{},{}] zero_binding_rejected=InvalidBindingRegistration",
+        binding(0x55),
+        listed[0].sequence,
+        listed[1].sequence,
+        listed[0].registered_at_ms,
+        listed[1].registered_at_ms
+    );
 }
 
 #[test]
@@ -381,6 +414,10 @@ fn schema_v3_migration_is_idempotent_and_legacy_rows_decode_none() {
         assert_eq!(window.len(), 1);
         assert_eq!(window[0].binding, None);
         assert_eq!(window[0].fiber_generation, None);
+        println!(
+            "[nlos-channel/queue_consumption_registration] schema_v3_migration_is_idempotent_and_legacy_rows_decode_none: legacy_readback seq={} binding={:?} fiber_gen={:?}",
+            window[0].sequence, window[0].binding, window[0].fiber_generation
+        );
     }
 
     // Force a re-run of migrate_v3 over an already-v3 schema: the
@@ -424,4 +461,7 @@ fn schema_v3_migration_is_idempotent_and_legacy_rows_decode_none() {
             "partial channel queue binding schema"
         ))
     ));
+    println!(
+        "[nlos-channel/queue_consumption_registration] schema_v3_migration_is_idempotent_and_legacy_rows_decode_none: idempotent_v3_version=3 partial_schema_rejected=CorruptRecord"
+    );
 }
