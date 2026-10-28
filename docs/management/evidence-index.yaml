@@ -1072,3 +1072,27 @@
   scope: "desktop/src-tauri/src/trusted_ui.rs 12 项可信 UI Tauri 句柄与 TrustedUiState（TUI-CONSENT-001 Z4 独占模态审批、350ms 防点击劫持门、会话代际锁定、RCPT-UNDO-001 IRREVERSIBLE 零伪撤销与 RCPT-PARTIAL-001 逐目标回执、TUI-CHOOSER-001/DUI-CHOOSER-001 Open/Save/Share 衰减 Capability 签发零宿主裸路径泄露、DUI-CLIP-001 剪贴板/拖拽污点传播与 HIGH/CRITICAL_SECRET 跨应用强制 Z4 升级门）+ desktop/src/trusted-ui Z4 实心安全屏（rgba(10,11,13,0.78) 暗幕、2px 钢蓝顶条、32x20 凹陷单色 Gerono 防伪印章、四行规格表）；trusted_ui_scrim_chooser_clip_side.rs 7/0 与 trusted-ui-security.test.ts 7 套件 333 项断言全绿，真机战役留归 W73"
   assurance: H4
   date: "2026-10-27"
+- id: c-xhost-005-chaos-proxy-and-h6-multi-machine-gate
+  path: docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
+  title: "C-XHOST-005 / W72-C-XHOST-GATE：ChaosTcpProxy 套接字混沌故障代理、ROAD-C-001-XHOST 与 ROAD-C-002-XHOST 跨进程/跨主机 H6 复合门禁"
+  scope: "crates/nlos-net::chaos_proxy 可编程 TCP 混沌故障代理（丢包、RTT 抖动、单向/三角形非对称分区、TCP 半开黑洞、载荷中段 RST 与密文损坏、时钟偏斜越界注入）+ crates/nlos-slice-k/tests/c_xhost_h6_multi_machine_gate.rs ROAD-C-001-XHOST H6 复合门禁（双存活 CellHost + N=3 Raft 多数派下三角形非对称分区、Leader 强杀与跨宿主接管、八步进程迁移中段 RST 恢复与时钟偏斜超限粘性隔离，4/0 + 1/0 ignored）+ crates/nlos-runtime-tokio/tests/c_xhost_bench_scale.rs ROAD-C-002-XHOST 跨主机扩展与五类故障负载门禁（1/2/4 分片数据面 spawn/message/commit 0 Raft RPC + stale epoch/分区双主/fanout storm/provider stall/Cell bulkhead，2/0）+ scripts/xhost_cluster_harness.py 多机编排探针；外部物理设备/不可逆外部 API 清理边界按 RISK-B-11 保留"
+  assurance: H6
+  date: "2026-10-28"
+- id: d-task-space-001-l1-l3-disclosure-dag-and-attempts
+  path: docs/evidence/stage-d/d-task-space-001-l1-l3-disclosure-dag-and-attempts.md
+  title: "D-TASK-SPACE-001 / W72-D-TASK-DAG：Z1 L1-L3 四级渐进式披露 Task Space、O(visible_rows) 游标懒拉取、Dagster 待物化折叠超节点正交 DAG 与 Temporal 竞速泳道"
+  scope: "desktop/src/store/disclosure-model.ts TaskSpaceLazyCursorCoordinator（limit<=64 视口游标懒拉取，L1/L2 零 L3 图谱预拉）+ desktop/src/views/task-space 完整闭合 TASK_SPACE_GAPS 1-3（L1 16 态零内部行话高密度承诺表与 TASK-REOPEN-001 重试/微调、L2 单行按需非模态 Headlamp 归因抽屉、L3 Ctrl+Shift+E Dagster 左到右正交 TaskPlan DAG 画布与 PLAN-LAZY-001 +N 待物化步骤·0 进程折叠超节点、Temporal TaskAttempt 多尝试竞速泳道与 ExecutionFiber 四段耗时瀑布条、法定不可篡改锁 #3/#4/#5）+ desktop/src-tauri/src/plan_editor.rs 6 项 Tauri 计划编辑句柄（Path A 受限 ControlCommand vs Path B 新 plan_digest 重编译 + Z4 diff 重新授权）；task_space_dag_override_side.rs 8/0 与 task-space-dag.test.ts 7 套件全绿，真机 GUI 战役留归 W73"
+  assurance: H4
+  date: "2026-10-28"
+- id: d-notify-search-001-action-token-spotlight-and-offline
+  path: docs/evidence/stage-d/d-notify-search-001-action-token-spotlight-and-offline.md
+  title: "D-NOTIFY-SEARCH-001 / W72-D-NOTIFY-SEARCH：右下角实心通知中心（一次性 ActionToken 核销）、Ctrl+K Spotlight 搜索（硬锁 0x1F 零写禁区）与离线自治/集群连接态势"
+  scope: "desktop/src-tauri/src/notify_search_offline.rs 9 项通知/搜索/离线 Tauri 句柄 + desktop/src/views/{notifications,spotlight,offline-cluster} 实心面板（TASK-NOTIFY-001 16 态生命周期通知分页历史、DUI-NOTIFY-001 绑定 (NotificationId,ApplicationId,TaskId) 的 SHA-256 一次性 ActionToken 核销与重放/跨应用冒用双拒绝、Ctrl+K Spotlight 签名向量检查点候选搜索与法定禁区 #1 0x1F NON_AUTHORITATIVE 五门零写硬锁及强制权威回跳重验、DUI-OFFLINE-001 本地六大表面断网 100% 自治与远端动作 WAITING_NETWORK/UNAVAILABLE 精确标识及 L0 托盘 PartitionAutonomyGate 态势指示）；notify_token_search_offline_side.rs 8/0 与 notify-search-offline.test.ts 全绿，真机战役留归 W73"
+  assurance: H4
+  date: "2026-10-28"
+- id: d-control-settings-001-twelve-domain-tree-and-settings-cas
+  path: docs/evidence/stage-d/d-control-settings-001-twelve-domain-tree-and-settings-cas.md
+  title: "D-CONTROL-SETTINGS-001 / W72-D-SETTINGS-CTRL：12 域 SystemControlCenter（System Informer 十层归属树、Cell 租约与迁移、Headlamp 裁剪、Terraform 爆炸半径预览）与四层 SettingsDomain CAS/关联/凭据面板"
+  scope: "desktop/src-tauri/src/settings_keychain.rs 6 项设置/文件关联/凭据 Tauri 句柄 + desktop/src/views/{control-center,settings}（UI-PARITY-001 12 域显控中心、System Informer 十层父子归属树与 SHARED_THREAD_LIKE 共享故障域徽标、阶段 C Cell 三族租约只读检视与 RequestProcessMigration 受控迁移、Nomad 三水位子弹微条、Headlamp 权限/状态动作裁剪与 5+1 法定不可篡改锁、CTRL-HIER-001 Terraform +/-/~ 级联爆炸半径预览与 Topic Purge 5 秒两步武装确认及 DataLossReceipt、CTRL-RECOVERY-001 ControlCommandId 对账恢复、system/user/workspace/application 四层 SettingsDomain CAS 与 watch、DUI-ASSOC-001 可撤销 ContentTypeAssociation 表、DUI-SETTINGS-001 零明文 KeychainReference 凭据库）；control_center_settings_cas_side.rs 7/0 与 control-center-settings.test.ts 7/0 全绿，WCAG 2.2 AA/双语与真机战役留归 W73"
+  assurance: H4
+  date: "2026-10-28"

@@ -1,0 +1,176 @@
+/* ============================================================================
+ * Stage D (W72-D-NOTIFY-SEARCH) Offline Autonomy & Cluster Posture Tray Styles
+ * Solid Graphite / Paper surfaces — zero glass blur, radii in {0,2,4,6}px
+ * ============================================================================ */
+
+.nlos-cluster-tray {
+  position: fixed;
+  top: 40px;
+  right: 404px;
+  width: 400px;
+  max-height: calc(100vh - 104px);
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--nlos-bg-elevated, #181b20);
+  color: var(--nlos-text-primary, #f3f4f6);
+  border: 1px solid var(--nlos-border-strong, #2e3440);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  overflow: hidden;
+  font-family: var(--nlos-font-sans, system-ui, -apple-system, sans-serif);
+}
+
+.nlos-cluster-tray__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background-color: var(--nlos-bg-surface, #121418);
+  border-bottom: 1px solid var(--nlos-border-subtle, #232832);
+}
+
+.nlos-cluster-tray__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--nlos-text-primary, #f3f4f6);
+}
+
+.nlos-cluster-tray__posture-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: var(--nlos-bg-elevated, #181b20);
+  border: 1px solid var(--nlos-border-strong, #2e3440);
+  border-radius: 4px;
+}
+
+.nlos-cluster-tray__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  background-color: var(--nlos-bg-surface, #121418);
+  border-bottom: 1px solid var(--nlos-border-subtle, #232832);
+}
+
+.nlos-cluster-tray__summary-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--nlos-text-secondary, #9ca3af);
+}
+
+.nlos-cluster-tray__autonomy-proof {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--nlos-text-primary, #f3f4f6);
+  background-color: var(--nlos-bg-elevated, #181b20);
+  border: 1px solid var(--nlos-accent-steel, #2563eb);
+  border-radius: 4px;
+}
+
+.nlos-cluster-tray__surfaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  background-color: var(--nlos-bg-surface, #121418);
+  border-bottom: 1px solid var(--nlos-border-subtle, #232832);
+}
+
+.nlos-cluster-tray__surface-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--nlos-text-primary, #f3f4f6);
+  background-color: var(--nlos-bg-elevated, #181b20);
+  border: 1px solid var(--nlos-border-subtle, #232832);
+  border-radius: 4px;
+}
+
+.nlos-cluster-tray__nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  overflow-y: auto;
+  max-height: 380px;
+}
+
+.nlos-cluster-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--nlos-bg-surface, #121418);
+  border: 1px solid var(--nlos-border-subtle, #232832);
+  border-radius: 4px;
+}
+
+.nlos-cluster-node--quarantined {
+  border-left: 2px solid var(--nlos-signal-danger, #dc2626);
+}
+
+.nlos-cluster-node__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nlos-cluster-node__name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--nlos-text-primary, #f3f4f6);
+}
+
+.nlos-cluster-node__status {
+  font-size: 11px;
+  color: var(--nlos-text-secondary, #9ca3af);
+}
+
+.nlos-cluster-node__lease-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--nlos-text-secondary, #9ca3af);
+}
+
+.nlos-cluster-node__l3 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 8px;
+  font-family: var(--nlos-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--nlos-text-secondary, #9ca3af);
+  background-color: var(--nlos-bg-elevated, #181b20);
+  border: 1px solid var(--nlos-border-subtle, #232832);
+  border-radius: 2px;
+}
+
+.nlos-cluster-tray__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background-color: var(--nlos-bg-surface, #121418);
+  border-top: 1px solid var(--nlos-border-subtle, #232832);
+  font-size: 11px;
+  color: var(--nlos-text-secondary, #9ca3af);
+}

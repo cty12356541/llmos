@@ -7,6 +7,12 @@
 @import "./styles/surfaces-and-borders.css";
 @import "./styles/planes-layout.css";
 @import "./views/omnibar/omnibar.css";
+@import "./views/task-space/task-space.css";
+@import "./views/notifications/notifications.css";
+@import "./views/spotlight/spotlight.css";
+@import "./views/offline-cluster/offline-cluster.css";
+@import "./views/control-center/control-center.css";
+@import "./views/settings/settings.css";
 
 *,
 *::before,

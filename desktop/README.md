@@ -297,3 +297,25 @@ hex 一致。
   named-pipe 认证接线、bundle/图标/签名、多窗口为后续波次。
 - **tauri.conf.json** `bundle.active=false`:`cargo build` 可全量编译链接,
   完整 `tauri build` 打包(bundler/签名)未纳入本波次验证。
+
+
+## 阶段 D 完整自然语言工业工作站扩展(`W69–W72` 已落地,`PARTIAL_PASS`)
+
+在阶段 B/C 可信 Task Manager 底座之上,`W69–W72` 落地了符合 [ADR-0025](../docs/management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md) 与 [Stage D 桌面视觉与 UX 设计规格](../docs/superpowers/specs/2026-10-26-stage-d-desktop-visual-and-ux-design.md) 的中性工业工作站桌面架构(共注册 **102 项** `#[tauri::command]` 句柄):
+
+1. **`D-TOKENS-KIT` (`W69`, [D-TOKENS-001](../docs/evidence/stage-d/d-tokens-001-workstation-tokens-and-sota-kit.md))**:
+   - `src/styles/{tokens,surfaces-and-borders}.css` 与 `src/ui/`:`Graphite Workstation` / `Paper Workstation` 100% 实心不透明双主题(零 `backdrop-filter`、零霓虹发光、零 Emoji、`0px/2px/4px/6px` 工业圆角)、`32×20` 凹陷单色 Gerono 示波防伪印章、Nomad 三水位微条、Temporal 五段耗时瀑布条、Headlamp 非模态抽屉与面包屑、Terraform `+ / ~ / -` 爆炸半径差异表。
+2. **`D-IPC-ENUM` (`W69`, [D-IPC-001](../docs/evidence/stage-d/d-ipc-001-twelve-domain-enum-and-symmetry.md))**:
+   - `IPC-D1..D8` 12 域有界游标分页枚举(`limit <= 64`)、`inspect_search` / `inspect_notification` 句柄与 `disable/uninstall-application` 动作补齐、显式类型化 `ControlScope`、`PreviewControlBlastRadius`、`QueryControlCommandStatus` 及五大法定不可篡改禁区(`tests/ipc_enum_symmetry_side.rs`)。
+3. **`D-COMPOSITOR-WM` (`W70`, [D-COMPOSITOR-001](../docs/evidence/stage-d/d-compositor-001-five-plane-tiling-wm-and-session.md))**:
+   - `src/{compositor,wm,dock,store}/` 与 `src-tauri/src/{compositor,session,input_router,window_lifecycle}.rs`:五平面 `Z0–Z4` 工作站合成器、`4px` 间隙五模式平铺优先窗口管理器、`30px` 可信窗框、`36px` 底部贴边工作站任务栏(`L0` 环境感知与 `[DUI-LAUNCH-001]` 启动器)、`L0→L1→L2→L3` `<16ms` 渐进式披露 Store 与五输入源代际防伪路由(`tests/compositor_wm_side.rs`)。
+4. **`D-OMNIBAR-MULTIMODAL` (`W71`, [D-OMNIBAR-001](../docs/evidence/stage-d/d-omnibar-001-command-intent-palette-and-multimodal.md))**:
+   - `src/views/omnibar/`、`src/multimodal/` 与 `src-tauri/src/omnibar.rs`:`Z3` 按需唤起 `Ctrl+Space` `580px` 实心命令/意图面板(平时隐藏零霸屏)、`L1/L2` 零行话与 `L3` `TypedIntent` 预览、`[NL-AMBIG-001]` 高风险歧义澄清门、`InputSource::Voice` 语音流与内容寻址附件标签(`tests/omnibar_multimodal_side.rs`)。
+5. **`D-TRUSTED-UI` (`W71`, [D-TRUSTED-UI-001](../docs/evidence/stage-d/d-trusted-ui-001-z4-consent-chooser-and-taint-clipboard.md))**:
+   - `src/trusted-ui/` 与 `src-tauri/src/trusted_ui.rs`:`Z4` UAC/Polkit 实心安全确认屏(`350ms` 防劫持门、四行规格表、`IRREVERSIBLE` 零伪撤销)、`ChooserGrant` 衰减 Capability 选择器(零宿主裸路径泄露)与污点感知跨应用剪贴板/拖拽门控(`tests/trusted_ui_scrim_chooser_clip_side.rs`)。
+6. **`D-TASK-SPACE-DAG` (`W72`, [D-TASK-SPACE-001](../docs/evidence/stage-d/d-task-space-001-l1-l3-disclosure-dag-and-attempts.md))**:
+   - `src/views/task-space/` 与 `src-tauri/src/plan_editor.rs`:闭合历史 `TASK_SPACE_GAPS` (`1–3`),实现 `L1` 16 态承诺表、`L2` 单行按需非模态归因抽屉、`L3` Dagster 左到右正交 `TaskPlan` DAG 编辑器(`[PLAN-LAZY-001]` `+N 待物化步骤 · 0 进程` 折叠超节点、双路径变更分类器与 `Z4` 重授权 diff)及 Temporal `TaskAttempt` 竞速泳道(`tests/task_space_dag_override_side.rs`)。
+7. **`D-NOTIFY-SEARCH-OFFLINE` (`W72`, [D-NOTIFY-SEARCH-001](../docs/evidence/stage-d/d-notify-search-001-action-token-spotlight-and-offline.md))**:
+   - `src/views/{notifications,spotlight,offline-cluster}/` 与 `src-tauri/src/notify_search_offline.rs`:右下角实心通知中心(一次性 SHA-256 `ActionToken` 核销)、`Ctrl+K` 实心候选搜索(硬锁 `0x1F` 法定零写禁区与权威回跳核验)及 `[DUI-OFFLINE-001]` 本地断网自治 + `PartitionAutonomyGate` 集群态势托盘(`tests/notify_token_search_offline_side.rs`)。
+8. **`D-CONTROL-SETTINGS-A11Y` Slice 1 (`W72`, [D-CONTROL-SETTINGS-001](../docs/evidence/stage-d/d-control-settings-001-twelve-domain-tree-and-settings-cas.md))**:
+   - `src/views/{control-center,settings}/` 与 `src-tauri/src/settings_keychain.rs`:12 域 `SystemControlCenter`(System Informer 十层父子归属树、阶段 C `Cell` 三族租约检视与受控进程迁移、Headlamp 动作裁剪与 5+1 法定不可篡改锁、Terraform `+ / ~ / -` 爆炸半径预览与 5 秒两步武装)、四层 `SettingsDomain` CAS + watch、可撤销 `ContentTypeAssociation` 与零明文 `KeychainReference` 凭据库(`tests/control_center_settings_cas_side.rs`)。

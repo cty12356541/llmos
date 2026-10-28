@@ -548,3 +548,438 @@ export function handleDisclosureKeydown(
 ): boolean {
   return model.handleDisclosureKeydown(event);
 }
+
+// ============================================================================
+// Task Space Row-Level & Canvas-Level Lazy-Pulling Cursor Coordinator (W72)
+// Authority: Stage D Visual & UX Spec §2A.2, §2.4, §3.2 (`[PLAN-LAZY-001]`)
+// ============================================================================
+
+export interface TaskSpaceCursorSlice {
+  readonly queryKind: ProjectionQueryKind;
+  readonly tier: ProjectionQueryTier;
+  readonly parentEntityId: string | null;
+  readonly supernodeId: string | null;
+  readonly cursorHex: string | null;
+  readonly limit: number;
+  readonly expandLazySupernodes: boolean;
+}
+
+export interface TaskSpaceCanvasSupernodeCursor {
+  readonly taskId: string;
+  readonly supernodeId: string;
+  readonly cursorHex: string | null;
+  readonly limit: number;
+  readonly expanded: boolean;
+}
+
+export interface TaskSpaceDisclosurePullPlan {
+  readonly level: DisclosureLevel;
+  readonly selectedTaskId: string | null;
+  readonly visibleRowLimit: number;
+  readonly allowedSlices: readonly TaskSpaceCursorSlice[];
+  readonly blockedTiers: readonly ProjectionQueryTier[];
+  readonly zeroL2PrefetchGuaranteed: boolean;
+  readonly zeroL3PrefetchGuaranteed: boolean;
+}
+
+export interface TaskSpacePullAuditEntry {
+  readonly seq: number;
+  readonly level: DisclosureLevel;
+  readonly queryKind: ProjectionQueryKind;
+  readonly tier: ProjectionQueryTier;
+  readonly targetEntityId: string | null;
+  readonly supernodeId: string | null;
+  readonly requestedLimit: number;
+  readonly effectiveLimit: number;
+  readonly allowed: boolean;
+  readonly reason:
+    | "ALLOWED_WATERMARK_L0"
+    | "ALLOWED_VISIBLE_ROW_WINDOW_L1"
+    | "ALLOWED_SINGLE_ROW_ATTRIBUTION_L2"
+    | "ALLOWED_DIAGNOSTIC_SLICE_L3"
+    | "ALLOWED_SUPERNODE_ON_DEMAND_L3"
+    | "BLOCKED_TIER_AT_CURRENT_DISCLOSURE"
+    | "BLOCKED_UNSELECTED_ROW_AT_L2"
+    | "BLOCKED_UNEXPANDED_PARENT_AT_L3"
+    | "BLOCKED_SUPERNODE_EXPANSION_OUTSIDE_L3";
+}
+
+export function clampTaskSpaceCursorLimit(requestedLimit?: number): number {
+  if (
+    requestedLimit === undefined ||
+    !Number.isFinite(requestedLimit) ||
+    requestedLimit <= 0
+  ) {
+    return MAX_SYSTEM_CONTROL_ENUM_LIMIT;
+  }
+  return Math.max(
+    1,
+    Math.min(MAX_SYSTEM_CONTROL_ENUM_LIMIT, Math.floor(requestedLimit)),
+  );
+}
+
+const L3_TASK_SPACE_QUERY_KINDS: readonly ProjectionQueryKind[] = [
+  "list_task_groups",
+  "list_task_nodes",
+  "list_task_attempts",
+  "list_execution_fibers",
+  "list_operations",
+  "inspect_cell_leases",
+];
+
+export class TaskSpaceLazyCursorCoordinator {
+  private readonly model: DisclosureModel;
+  private readonly rowCursors = new Map<string, string | null>();
+  private readonly supernodeCursors = new Map<string, TaskSpaceCanvasSupernodeCursor>();
+  private readonly auditLog: TaskSpacePullAuditEntry[] = [];
+  private nextAuditSeq = 1;
+
+  public constructor(model?: DisclosureModel) {
+    this.model = model ?? new DisclosureModel({ initialLevel: "L1" });
+  }
+
+  public getDisclosureModel(): DisclosureModel {
+    return this.model;
+  }
+
+  public getAuditLog(): readonly TaskSpacePullAuditEntry[] {
+    return [...this.auditLog];
+  }
+
+  public clearAuditLog(): void {
+    this.auditLog.length = 0;
+  }
+
+  public setEntityCursor(
+    queryKind: ProjectionQueryKind,
+    entityId: string | null,
+    cursorHex: string | null,
+  ): void {
+    const key = `${queryKind}:${entityId ?? "*"}`;
+    this.rowCursors.set(key, cursorHex);
+  }
+
+  public getEntityCursor(
+    queryKind: ProjectionQueryKind,
+    entityId: string | null,
+  ): string | null {
+    const key = `${queryKind}:${entityId ?? "*"}`;
+    return this.rowCursors.get(key) ?? null;
+  }
+
+  private recordAudit(
+    entry: Omit<TaskSpacePullAuditEntry, "seq">,
+  ): TaskSpacePullAuditEntry {
+    const full: TaskSpacePullAuditEntry = {
+      seq: this.nextAuditSeq++,
+      ...entry,
+    };
+    this.auditLog.push(full);
+    return full;
+  }
+
+  /**
+   * Computes the deterministic `L0 -> L1 -> L2 -> L3` pull plan for `TaskSpace`:
+   * - `L0`: watermark posture only (`0` list slices).
+   * - `L1`: `list_tasks` bounded by `visibleRowWindow.limit <= 64`; strictly `0` `L2` and `0` `L3` slices.
+   * - `L2`: `L1` + single selected task's `list_task_nodes` (collapsed super-nodes NOT expanded) and
+   *   `inspect_resource_cost`; strictly `0` `L3` slices.
+   * - `L3`: `L2` + parent-scoped `L3` slices (`list_task_groups`, `list_task_attempts`,
+   *   `list_execution_fibers`, `list_operations`, `inspect_cell_leases`) and any explicitly expanded
+   *   `[PLAN-LAZY-001]` canvas super-nodes (`limit <= 64`).
+   */
+  public computePullPlan(): TaskSpaceDisclosurePullPlan {
+    const snapshot = this.model.getSnapshot();
+    const level = snapshot.level;
+    const selectedTaskId = snapshot.selectedEntityId;
+    const visibleLimit = clampTaskSpaceCursorLimit(snapshot.visibleRowWindow.limit);
+    const slices: TaskSpaceCursorSlice[] = [];
+
+    if (level === "L0") {
+      slices.push({
+        queryKind: "poll_watermark",
+        tier: "L0",
+        parentEntityId: null,
+        supernodeId: null,
+        cursorHex: null,
+        limit: 1,
+        expandLazySupernodes: false,
+      });
+      return {
+        level,
+        selectedTaskId,
+        visibleRowLimit: visibleLimit,
+        allowedSlices: slices,
+        blockedTiers: ["L1", "L2", "L3"],
+        zeroL2PrefetchGuaranteed: true,
+        zeroL3PrefetchGuaranteed: true,
+      };
+    }
+
+    // L1, L2, L3 always include the bounded visible L1 task commitment window
+    slices.push({
+      queryKind: "list_tasks",
+      tier: "L1",
+      parentEntityId: null,
+      supernodeId: null,
+      cursorHex: snapshot.visibleRowWindow.cursorHex,
+      limit: visibleLimit,
+      expandLazySupernodes: false,
+    });
+
+    if (level === "L1") {
+      return {
+        level,
+        selectedTaskId,
+        visibleRowLimit: visibleLimit,
+        allowedSlices: slices,
+        blockedTiers: ["L2", "L3"],
+        zeroL2PrefetchGuaranteed: true,
+        zeroL3PrefetchGuaranteed: true,
+      };
+    }
+
+    // L2 or L3: pull single selected row's L2 attribution summary if a row is selected
+    if (isNonEmptyEntityId(selectedTaskId)) {
+      slices.push(
+        {
+          queryKind: "list_task_nodes",
+          tier: "L2",
+          parentEntityId: selectedTaskId,
+          supernodeId: null,
+          cursorHex: this.getEntityCursor("list_task_nodes", selectedTaskId),
+          limit: visibleLimit,
+          expandLazySupernodes: false,
+        },
+        {
+          queryKind: "inspect_resource_cost",
+          tier: "L2",
+          parentEntityId: selectedTaskId,
+          supernodeId: null,
+          cursorHex: null,
+          limit: 1,
+          expandLazySupernodes: false,
+        },
+      );
+    }
+
+    if (level === "L2") {
+      return {
+        level,
+        selectedTaskId,
+        visibleRowLimit: visibleLimit,
+        allowedSlices: slices,
+        blockedTiers: ["L3"],
+        zeroL2PrefetchGuaranteed: false,
+        zeroL3PrefetchGuaranteed: true,
+      };
+    }
+
+    // L3: pull parent-scoped L3 slices for selectedTaskId and expandedL3ParentIds
+    const activeParents = new Set<string>(snapshot.expandedL3ParentIds);
+    if (isNonEmptyEntityId(selectedTaskId)) {
+      activeParents.add(selectedTaskId);
+    }
+
+    for (const parentId of activeParents) {
+      for (const queryKind of L3_TASK_SPACE_QUERY_KINDS) {
+        if (queryKind === "list_task_nodes" && parentId === selectedTaskId) {
+          continue;
+        }
+        slices.push({
+          queryKind,
+          tier: getProjectionQueryTier(queryKind),
+          parentEntityId: parentId,
+          supernodeId: null,
+          cursorHex: this.getEntityCursor(queryKind, parentId),
+          limit: clampTaskSpaceCursorLimit(MAX_SYSTEM_CONTROL_ENUM_LIMIT),
+          expandLazySupernodes: false,
+        });
+      }
+    }
+
+    for (const superCursor of this.supernodeCursors.values()) {
+      if (superCursor.expanded && activeParents.has(superCursor.taskId)) {
+        slices.push({
+          queryKind: "list_task_nodes",
+          tier: "L2",
+          parentEntityId: superCursor.taskId,
+          supernodeId: superCursor.supernodeId,
+          cursorHex: superCursor.cursorHex,
+          limit: clampTaskSpaceCursorLimit(superCursor.limit),
+          expandLazySupernodes: true,
+        });
+      }
+    }
+
+    return {
+      level,
+      selectedTaskId,
+      visibleRowLimit: visibleLimit,
+      allowedSlices: slices,
+      blockedTiers: [],
+      zeroL2PrefetchGuaranteed: false,
+      zeroL3PrefetchGuaranteed: false,
+    };
+  }
+
+  /**
+   * Validates and records a row-level or canvas-level query pull against the active disclosure fence.
+   */
+  public requestSlicePull(
+    queryKind: ProjectionQueryKind,
+    options?: {
+      readonly targetEntityId?: string | null;
+      readonly supernodeId?: string | null;
+      readonly requestedLimit?: number;
+      readonly cursorHex?: string | null;
+    },
+  ): TaskSpacePullAuditEntry {
+    const level = this.model.getLevel();
+    const tier = getProjectionQueryTier(queryKind);
+    const targetEntityId = options?.targetEntityId ?? null;
+    const supernodeId = options?.supernodeId ?? null;
+    const requestedLimit = options?.requestedLimit ?? MAX_SYSTEM_CONTROL_ENUM_LIMIT;
+    const effectiveLimit = clampTaskSpaceCursorLimit(requestedLimit);
+
+    if (isNonEmptyEntityId(supernodeId) && level !== "L3") {
+      return this.recordAudit({
+        level,
+        queryKind,
+        tier,
+        targetEntityId,
+        supernodeId,
+        requestedLimit,
+        effectiveLimit,
+        allowed: false,
+        reason: "BLOCKED_SUPERNODE_EXPANSION_OUTSIDE_L3",
+      });
+    }
+
+    const allowed = this.model.isQueryAllowedAtDisclosure(queryKind, {
+      targetEntityId,
+    });
+
+    if (!allowed) {
+      let reason: TaskSpacePullAuditEntry["reason"] =
+        "BLOCKED_TIER_AT_CURRENT_DISCLOSURE";
+      if (level === "L2" && tier === "L2") {
+        reason = "BLOCKED_UNSELECTED_ROW_AT_L2";
+      } else if (level === "L3" && (tier === "L2" || tier === "L3")) {
+        reason = "BLOCKED_UNEXPANDED_PARENT_AT_L3";
+      }
+      return this.recordAudit({
+        level,
+        queryKind,
+        tier,
+        targetEntityId,
+        supernodeId,
+        requestedLimit,
+        effectiveLimit,
+        allowed: false,
+        reason,
+      });
+    }
+
+    if (options?.cursorHex !== undefined) {
+      this.setEntityCursor(queryKind, targetEntityId, options.cursorHex);
+    }
+
+    const reason: TaskSpacePullAuditEntry["reason"] = isNonEmptyEntityId(supernodeId)
+      ? "ALLOWED_SUPERNODE_ON_DEMAND_L3"
+      : tier === "L0"
+        ? "ALLOWED_WATERMARK_L0"
+        : tier === "L1"
+          ? "ALLOWED_VISIBLE_ROW_WINDOW_L1"
+          : tier === "L2"
+            ? "ALLOWED_SINGLE_ROW_ATTRIBUTION_L2"
+            : "ALLOWED_DIAGNOSTIC_SLICE_L3";
+
+    return this.recordAudit({
+      level,
+      queryKind,
+      tier,
+      targetEntityId,
+      supernodeId,
+      requestedLimit,
+      effectiveLimit,
+      allowed: true,
+      reason,
+    });
+  }
+
+  /**
+   * On-demand `[PLAN-LAZY-001]` canvas super-node expansion (`+N 待物化步骤 · 0 进程`).
+   * Strictly gated to `L3` DAG canvas and clamped to `limit <= 64`.
+   */
+  public expandCanvasSupernode(
+    taskId: string,
+    supernodeId: string,
+    requestedLimit: number = MAX_SYSTEM_CONTROL_ENUM_LIMIT,
+    cursorHex: string | null = null,
+  ): {
+    readonly allowed: boolean;
+    readonly cursor: TaskSpaceCanvasSupernodeCursor | null;
+    readonly audit: TaskSpacePullAuditEntry;
+  } {
+    const effectiveLimit = clampTaskSpaceCursorLimit(requestedLimit);
+    const level = this.model.getLevel();
+    if (level !== "L3" || !isNonEmptyEntityId(taskId) || !isNonEmptyEntityId(supernodeId)) {
+      const audit = this.recordAudit({
+        level,
+        queryKind: "list_task_nodes",
+        tier: "L2",
+        targetEntityId: taskId,
+        supernodeId,
+        requestedLimit,
+        effectiveLimit,
+        allowed: false,
+        reason: "BLOCKED_SUPERNODE_EXPANSION_OUTSIDE_L3",
+      });
+      return { allowed: false, cursor: null, audit };
+    }
+
+    this.model.expandL3Parent(taskId);
+    const key = `${taskId}::${supernodeId}`;
+    const cursor: TaskSpaceCanvasSupernodeCursor = {
+      taskId,
+      supernodeId,
+      cursorHex,
+      limit: effectiveLimit,
+      expanded: true,
+    };
+    this.supernodeCursors.set(key, cursor);
+    const audit = this.requestSlicePull("list_task_nodes", {
+      targetEntityId: taskId,
+      supernodeId,
+      requestedLimit: effectiveLimit,
+      cursorHex,
+    });
+    return { allowed: audit.allowed, cursor, audit };
+  }
+
+  public collapseCanvasSupernode(taskId: string, supernodeId: string): void {
+    const key = `${taskId}::${supernodeId}`;
+    const existing = this.supernodeCursors.get(key);
+    if (existing !== undefined) {
+      this.supernodeCursors.set(key, {
+        ...existing,
+        expanded: false,
+      });
+    }
+  }
+
+  public getCanvasSupernodeCursor(
+    taskId: string,
+    supernodeId: string,
+  ): TaskSpaceCanvasSupernodeCursor | null {
+    return this.supernodeCursors.get(`${taskId}::${supernodeId}`) ?? null;
+  }
+}
+
+export function createTaskSpaceLazyCursorCoordinator(
+  model?: DisclosureModel,
+): TaskSpaceLazyCursorCoordinator {
+  return new TaskSpaceLazyCursorCoordinator(model);
+}
+

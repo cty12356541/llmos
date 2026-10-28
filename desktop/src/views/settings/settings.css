@@ -1,0 +1,122 @@
+/* ==========================================================================
+   NLOS Stage D — 4-Layer Settings CAS, ContentTypeAssociation & Keychain Vault
+   (`desktop/src/views/settings/settings.css`)
+   - 100% Solid Graphite / Paper Workstation Tokens (`--bg-canvas`, `--bg-surface`)
+   - Strict border-radius discipline: `{0px, 2px, 4px, 6px}` (`[ANTI-AI-04]`)
+   ========================================================================== */
+
+.nlos-settings-workstation {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-canvas, #0f1115);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.nlos-settings-layer-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background-color: var(--bg-subtle, #121418);
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-settings-tab-btn {
+  padding: 4px 10px;
+  background-color: var(--bg-surface, #161920);
+  color: var(--text-secondary, #94a3b8);
+  border: 1px solid var(--border-subtle, #232730);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nlos-settings-tab-btn--active {
+  background-color: var(--bg-elevated, #1e2229);
+  color: var(--text-primary, #eceff4);
+  border-color: var(--border-strong, #3b4252);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.nlos-settings-table,
+.nlos-associations-table,
+.nlos-keychain-table {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-canvas, #0f1115);
+  border-radius: 0px;
+}
+
+.nlos-settings-row,
+.nlos-association-row,
+.nlos-keychain-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.8fr) minmax(160px, 1.3fr) minmax(140px, 1fr) minmax(180px, 1.4fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-settings-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: var(--bg-elevated, #1e2229);
+  color: var(--text-secondary, #cbd5e1);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 2px;
+}
+
+.nlos-settings-cas-banner {
+  padding: 8px 12px;
+  background-color: var(--status-warn-bg, #3b2a14);
+  color: var(--status-warn-fg, #fbbf24);
+  border-bottom: 1px solid var(--status-warn-border, #92400e);
+  border-radius: 0px;
+  font-weight: 500;
+}
+
+.nlos-association-proposal-banner {
+  padding: 6px 8px;
+  background-color: var(--bg-elevated, #181a1f);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nlos-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background-color: var(--bg-surface, #1e2229);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nlos-settings-btn--danger {
+  background-color: var(--status-danger-bg, #3a181c);
+  color: var(--status-danger-fg, #f87171);
+  border-color: var(--status-danger-border, #7f1d1d);
+  border-radius: 4px;
+}

@@ -51,7 +51,16 @@ import {
   bindOmnibarToCompositor,
   createOmnibarPaletteController,
 } from "./views/omnibar";
-import { taskSpaceView } from "./views/task-space";
+import { createSystemControlCenterController } from "./views/control-center";
+import { NotificationCenterController } from "./views/notifications";
+import { ClusterPostureController } from "./views/offline-cluster";
+import { createWorkstationSettingsSuiteController } from "./views/settings";
+import { SpotlightController } from "./views/spotlight";
+import {
+  bindTaskSpaceToCompositor,
+  createTaskSpaceSurfaceController,
+  taskSpaceView,
+} from "./views/task-space";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -1978,9 +1987,35 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  const taskSpaceController = createTaskSpaceSurfaceController({
+    locale: "zh-CN",
+  });
+  const notificationController = new NotificationCenterController();
+  const spotlightController = new SpotlightController();
+  const clusterPostureController = new ClusterPostureController();
+  const controlCenterController = createSystemControlCenterController();
+  const settingsSuiteController = createWorkstationSettingsSuiteController();
+
   bindOmnibarToCompositor(compositor, omnibarController);
+  bindTaskSpaceToCompositor(
+    {
+      focusLandmark: () => undefined,
+    },
+    taskSpaceController,
+  );
   compositor.subscribe((snap) => {
     trustedUi.setLocaleAndDisclosure(snap.locale, snap.disclosure);
+    notificationController.setDisclosureLevel(snap.disclosure);
+    spotlightController.setDisclosureLevel(snap.disclosure);
+    clusterPostureController.setDisclosureLevel(snap.disclosure);
+    if (snap.openZ3FlyoutIds.includes("CONTROL_CENTER")) {
+      void controlCenterController.getState();
+    } else if (snap.openZ3FlyoutIds.includes("NOTIFICATIONS")) {
+      void notificationController.getState();
+    } else if (snap.openZ3FlyoutIds.includes("SPOTLIGHT_SEARCH")) {
+      void spotlightController.getState();
+    }
+    void settingsSuiteController.settingsCas;
   });
 
   const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(config);

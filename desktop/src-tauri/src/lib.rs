@@ -11,8 +11,11 @@ pub mod dto;
 pub mod error;
 pub mod input_router;
 pub mod ipc;
+pub mod notify_search_offline;
 pub mod omnibar;
+pub mod plan_editor;
 pub mod session;
+pub mod settings_keychain;
 pub mod surfaces;
 pub mod trusted_ui;
 pub mod window_lifecycle;
@@ -28,6 +31,9 @@ pub fn run() {
     if let Err(error) = tauri::Builder::default()
         .manage(ipc::AppState::from_env())
         .manage(trusted_ui::TrustedUiState::default())
+        .manage(plan_editor::PlanEditorState::default())
+        .manage(notify_search_offline::NotifySearchOfflineState::default())
+        .manage(settings_keychain::SettingsKeychainState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::get_config,
             ipc::set_config,
@@ -110,6 +116,27 @@ pub fn run() {
             trusted_ui::trusted_ui_request_transfer_read,
             trusted_ui::trusted_ui_complete_escalated_transfer,
             trusted_ui::trusted_ui_get_security_audit,
+            plan_editor::inspect_task_plan_dag_cmd,
+            plan_editor::expand_lazy_plan_supernode_cmd,
+            plan_editor::preview_plan_override_diff_cmd,
+            plan_editor::submit_plan_override_cmd,
+            plan_editor::inspect_task_attempt_lanes_cmd,
+            plan_editor::reopen_terminal_task_cmd,
+            notify_search_offline::list_notification_feed,
+            notify_search_offline::redeem_notification_action_token,
+            notify_search_offline::dismiss_notification_item,
+            notify_search_offline::query_spotlight_candidates,
+            notify_search_offline::verify_spotlight_candidate_authority,
+            notify_search_offline::attempt_mutation_from_search_hit,
+            notify_search_offline::inspect_offline_cluster_posture,
+            notify_search_offline::evaluate_offline_action_availability,
+            notify_search_offline::set_cluster_connectivity_mode,
+            settings_keychain::inspect_system_control_center,
+            settings_keychain::request_process_migration_v2,
+            settings_keychain::preview_blast_radius_package,
+            settings_keychain::update_setting_with_cas,
+            settings_keychain::revoke_content_type_association,
+            settings_keychain::revoke_keychain_reference,
         ])
         .run(tauri::generate_context!())
     {

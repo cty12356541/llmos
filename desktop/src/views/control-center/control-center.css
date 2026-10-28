@@ -1,0 +1,205 @@
+/* ==========================================================================
+   NLOS Stage D — SystemControlCenter, TaskManagerSurface & ResourceMonitorSurface
+   (`desktop/src/views/control-center/control-center.css`)
+   - 100% Solid Graphite / Paper Workstation Tokens (`--bg-elevated`, `--bg-canvas`)
+   - Strict border-radius discipline: `{0px, 2px, 4px, 6px}` (`[ANTI-AI-04]`)
+   ========================================================================== */
+
+.nlos-control-center-flyout {
+  width: 360px;
+  background-color: var(--bg-elevated, #181a1f);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 6px;
+  box-shadow: var(--shadow-window, 0 8px 24px rgba(0, 0, 0, 0.45));
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.nlos-control-center-flyout__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background-color: var(--bg-subtle, #121418);
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-control-center-flyout__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #eceff4);
+  margin: 0;
+}
+
+.nlos-control-center-flyout__section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-control-center-flyout__profile-row,
+.nlos-control-center-flyout__permission-grid,
+.nlos-control-center-flyout__recovery-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nlos-control-center-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background-color: var(--bg-surface, #1e2229);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.nlos-control-center-btn:hover {
+  background-color: var(--bg-hover, #262b34);
+}
+
+.nlos-control-center-btn--danger {
+  background-color: var(--status-danger-bg, #3a181c);
+  color: var(--status-danger-fg, #f87171);
+  border-color: var(--status-danger-border, #7f1d1d);
+  border-radius: 4px;
+}
+
+.nlos-control-center-btn--armed {
+  background-color: var(--status-warn-bg, #3b2a14);
+  color: var(--status-warn-fg, #fbbf24);
+  border-color: var(--status-warn-border, #92400e);
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 12-Domain Summary Strip & Ownership Tree Table (0px Pane Radius) */
+.nlos-control-workstation {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-canvas, #0f1115);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-domain-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-domain-summary-card {
+  padding: 8px 10px;
+  background-color: var(--bg-surface, #161920);
+  border-right: 1px solid var(--border-subtle, #232730);
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nlos-ownership-tree {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: var(--bg-canvas, #0f1115);
+  border-radius: 0px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-ownership-tree__row {
+  display: grid;
+  grid-template-columns: minmax(240px, 2.2fr) minmax(110px, 0.9fr) minmax(180px, 1.3fr) minmax(220px, 1.6fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-ownership-tree__row--selected {
+  background-color: var(--bg-selected, #1c2430);
+}
+
+.nlos-ownership-tree__indent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nlos-fault-domain-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: var(--status-warn-bg, #3b2a14);
+  color: var(--status-warn-fg, #fbbf24);
+  border: 1px solid var(--status-warn-border, #92400e);
+  border-radius: 2px;
+}
+
+/* Stage C Cell Topology & 3-Family Lease Inspector */
+.nlos-cell-lease-panel {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-surface, #161920);
+  border-top: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-cell-lease-panel__card {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+}
+
+.nlos-cell-lease-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(140px, 1.1fr) minmax(160px, 1.3fr) minmax(140px, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-subtle, #232730);
+  border-radius: 0px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Blast-Radius Modal & Data-Loss Receipt Surface */
+.nlos-blast-radius-modal {
+  background-color: var(--bg-elevated, #181a1f);
+  color: var(--text-primary, #eceff4);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 6px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nlos-data-loss-receipt {
+  background-color: var(--bg-subtle, #121418);
+  border: 1px solid var(--border-strong, #2e3440);
+  border-radius: 2px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}

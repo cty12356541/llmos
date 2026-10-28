@@ -32,6 +32,7 @@
 //!   backpressure.
 
 pub mod cert;
+pub mod chaos_proxy;
 pub mod failure;
 pub mod frame;
 pub mod handshake;
@@ -47,6 +48,11 @@ pub use cert::{
     NodeTlsCredentials, TLS_CERT_PRINCIPAL_BINDING_DOMAIN, VerificationTimeSource,
     VerifiedNodeCert, build_tls13_client_config, build_tls13_server_config,
     verify_node_x509_cert_der,
+};
+pub use chaos_proxy::{
+    ChaosDirectedMesh, ChaosDropBehavior, ChaosLinkController, ChaosLinkMetricsSnapshot,
+    ChaosLinkPolicy, ChaosNodeDescriptor, ChaosPrng, ChaosResetMode, ChaosTcpProxy,
+    CiphertextCorruptionRule, HANDSHAKE_S2C_FLIGHT_TURNS,
 };
 pub use failure::{
     PendingReconciliationTracker, SocketFailureKind, WriteProgressPhase, aggregate_fanout_outcomes,

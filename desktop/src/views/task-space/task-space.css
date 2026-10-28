@@ -1,0 +1,330 @@
+/* Stage D Task Space (`L1 -> L2 -> L3`) Industrial Workstation Stylesheet */
+/* Authority: Stage D Visual & UX Spec §1, §3.2; ANTI-AI-01..07 */
+
+.nlos-task-space {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100%;
+  background-color: var(--nlos-bg-canvas, #111214);
+  color: var(--nlos-text-primary, #eceef2);
+  font-family: var(--nlos-font-sans, "Inter", system-ui, sans-serif);
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 0px;
+}
+
+.nlos-task-space__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  background-color: var(--nlos-bg-panel, #17191c);
+  border-bottom: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 0px;
+}
+
+.nlos-task-space__toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--nlos-text-secondary, #a2a8b4);
+}
+
+.nlos-task-space__disclosure-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  background-color: var(--nlos-bg-elevated, #1e2126);
+  border: 1px solid var(--nlos-border-strong, #383c44);
+  border-radius: 2px;
+  font-family: var(--nlos-font-mono, "JetBrains Mono", monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-task-space__workspace-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  border-radius: 0px;
+}
+
+.nlos-task-space[data-disclosure-level="L2"] .nlos-task-space__workspace-split,
+.nlos-task-space[data-disclosure-level="L3"] .nlos-task-space__workspace-split {
+  grid-template-columns: minmax(0, 1fr) 420px;
+}
+
+/* L1 High-Density Commitment Table */
+.nlos-task-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: var(--nlos-bg-canvas, #111214);
+  border-radius: 0px;
+}
+
+.nlos-task-table th,
+.nlos-task-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--nlos-border-hairline, #2a2d32);
+  vertical-align: middle;
+}
+
+.nlos-task-table th {
+  background-color: var(--nlos-bg-panel, #17191c);
+  color: var(--nlos-text-secondary, #a2a8b4);
+  font-weight: 600;
+  font-size: 11px;
+  user-select: none;
+}
+
+.nlos-task-row {
+  height: 30px;
+  background-color: var(--nlos-bg-canvas, #111214);
+  cursor: pointer;
+}
+
+.nlos-task-row:hover,
+.nlos-task-row[data-selected="true"] {
+  background-color: var(--nlos-bg-elevated, #1e2126);
+}
+
+.nlos-task-row__goal-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nlos-task-row__goal-title {
+  font-weight: 500;
+  color: var(--nlos-text-primary, #eceef2);
+}
+
+.nlos-task-row__phase-fold {
+  font-size: 11px;
+  color: var(--nlos-text-secondary, #a2a8b4);
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-task-row__partial-badge,
+.nlos-task-row__undo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  background-color: var(--nlos-bg-panel, #17191c);
+  border: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nlos-task-row__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nlos-task-row__btn,
+.nlos-dag-node__btn,
+.nlos-attempt-card__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background-color: var(--nlos-bg-panel, #17191c);
+  color: var(--nlos-text-primary, #eceef2);
+  border: 1px solid var(--nlos-border-strong, #383c44);
+  border-radius: 2px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.nlos-task-row__btn:hover,
+.nlos-dag-node__btn:hover,
+.nlos-attempt-card__btn:hover {
+  background-color: var(--nlos-bg-elevated, #1e2126);
+}
+
+/* L2 Non-Modal Attribution Drawer */
+.nlos-task-l2-drawer {
+  background-color: var(--nlos-bg-panel, #17191c);
+  border-left: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 0px;
+}
+
+.nlos-task-l2-section {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nlos-border-hairline, #2a2d32);
+}
+
+.nlos-task-l2-section__title {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--nlos-text-secondary, #a2a8b4);
+}
+
+.nlos-task-l2-step-list,
+.nlos-task-l2-partial-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nlos-task-l2-step-item,
+.nlos-task-l2-partial-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  background-color: var(--nlos-bg-canvas, #111214);
+  border: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* L3 Dagster Orthogonal DAG Canvas */
+.nlos-task-dag-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background-color: var(--nlos-bg-canvas, #111214);
+  border-top: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 0px;
+}
+
+.nlos-task-dag-canvas__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nlos-task-dag-canvas__title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nlos-task-dag-canvas__groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nlos-dag-group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  background-color: var(--nlos-bg-panel, #17191c);
+  border: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 2px;
+  font-size: 11px;
+}
+
+.nlos-task-dag-canvas__viewport {
+  position: relative;
+  overflow: auto;
+  background-color: var(--nlos-bg-panel, #17191c);
+  border: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 4px;
+}
+
+.nlos-task-dag-canvas__edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  color: var(--nlos-text-muted, #6e7582);
+}
+
+.nlos-dag-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background-color: var(--nlos-bg-elevated, #1e2126);
+  border: 1px solid var(--nlos-border-strong, #383c44);
+  border-radius: 4px;
+}
+
+.nlos-dag-node[data-node-kind="LAZY_SUPERNODE"] {
+  border-style: dashed;
+}
+
+.nlos-dag-node[data-node-editable="false"] {
+  background-color: var(--nlos-bg-panel, #17191c);
+}
+
+.nlos-dag-node__header,
+.nlos-dag-node__meta,
+.nlos-dag-node__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+/* L3 Temporal Attempt Racing Swimlanes */
+.nlos-attempt-swimlanes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background-color: var(--nlos-bg-canvas, #111214);
+  border-top: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 0px;
+}
+
+.nlos-attempt-swimlanes__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nlos-attempt-swimlanes__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nlos-attempt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background-color: var(--nlos-bg-panel, #17191c);
+  border: 1px solid var(--nlos-border-hairline, #2a2d32);
+  border-radius: 4px;
+}
+
+.nlos-attempt-card__header,
+.nlos-attempt-card__identity,
+.nlos-attempt-card__meta,
+.nlos-attempt-card__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.nlos-attempt-card__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  background-color: var(--nlos-bg-elevated, #1e2126);
+  border: 1px solid var(--nlos-border-strong, #383c44);
+  border-radius: 2px;
+  font-family: var(--nlos-font-mono, "JetBrains Mono", monospace);
+  font-size: 10px;
+}
