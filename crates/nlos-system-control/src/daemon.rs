@@ -148,8 +148,11 @@ use ed25519_dalek::Signer as _;
 use crate::application_inspector::ApplicationAuthorityInspector;
 use crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor;
 use crate::auth::EndpointListener;
-use crate::auth::authenticated_serve_one_control;
+use crate::auth::{authenticated_serve_one_control_with_channel, serve_validated_with_channel};
 use crate::cell_inspector::LocalSingleNodeCellInspector;
+use crate::channel_control::{
+    AllowAllChannelControlAuthorizer, ChannelControlAuthorizer, ChannelControlService,
+};
 use crate::control::{
     CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand, ControlError,
     ControlReceipt,
@@ -606,6 +609,12 @@ impl SystemControlAuthorizer for ControlCapabilityPolicy {
     }
 }
 
+impl ChannelControlAuthorizer for ControlCapabilityPolicy {
+    fn authorize(&self, _method: &str, context: &SabiRequestContext) -> Result<(), &'static str> {
+        authorize_capability(context)
+    }
+}
+
 fn authorize_capability(context: &SabiRequestContext) -> Result<(), &'static str> {
     let expected = nlos_schema::sabi::v1::CapabilityHandle {
         slot: CONTROL_CAPABILITY_SLOT,
@@ -897,6 +906,19 @@ impl SystemControlDaemon {
     #[must_use]
     pub fn search_service(&self) -> &SearchService {
         self.search.as_ref()
+    }
+
+    /// Handles one `ChannelControl` SABI request in-process against the
+    /// daemon's durable [`ChannelAuthority`] (`L-002`, `W73`).
+    #[must_use]
+    pub fn handle_channel_for_ipc(
+        &self,
+        request: &nlos_schema::sabi::v1::Envelope,
+        now_monotonic_ns: u64,
+        now_wall_ms: i64,
+    ) -> nlos_schema::sabi::v1::Envelope {
+        ChannelControlService::new(self.channel.as_ref(), AllowAllChannelControlAuthorizer)
+            .handle_for_ipc(request, now_monotonic_ns, now_wall_ms)
     }
 
     /// Registers one supervisor-observed OS pid mapping for an
@@ -1203,10 +1225,13 @@ pub async fn serve_authenticated_endpoint(
         .with_command_status_ledger(daemon.desktop_surface.command_ledger())
         .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
         .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
-        let outcome = authenticated_serve_one_control(
+        let channel =
+            ChannelControlService::new(daemon.channel.as_ref(), AllowAllChannelControlAuthorizer);
+        let outcome = authenticated_serve_one_control_with_channel(
             &mut listener,
             TransportConfig::default(),
             &control,
+            &channel,
             daemon.identity.as_ref(),
             daemon.clock.as_ref(),
             daemon.handshake.as_ref(),
@@ -1286,8 +1311,13 @@ pub async fn serve_plain_endpoint(
                     .with_command_status_ledger(daemon.desktop_surface.command_ledger())
                     .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
                     .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
-                    let response = crate::auth::serve_validated(
+                    let channel = ChannelControlService::new(
+                        daemon.channel.as_ref(),
+                        AllowAllChannelControlAuthorizer,
+                    );
+                    let response = serve_validated_with_channel(
                         &control,
+                        &channel,
                         daemon.clock.as_ref(),
                         monotonic_now_ns(),
                         validated.envelope(),

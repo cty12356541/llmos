@@ -5,9 +5,9 @@ use nlos_schema::sabi::v1::{
     BarrierObservationSignature, BarrierObservationTarget, CallerIdentity, CancelCommand,
     CancelOperationRequest, CapabilityHandle, ContextResidencyTier, ControlCommand,
     ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource, ControlScope,
-    DisableApplicationCommand, DriverProviderCancelAck, DriverProviderCancelRequest,
-    DriverProviderCompleteAck, DriverProviderCompleteRequest, DriverProviderDispatchAck,
-    DriverProviderDispatchRequest, DriverProviderIsolationReport,
+    CreateChannelRequestWire, DisableApplicationCommand, DriverProviderCancelAck,
+    DriverProviderCancelRequest, DriverProviderCompleteAck, DriverProviderCompleteRequest,
+    DriverProviderDispatchAck, DriverProviderDispatchRequest, DriverProviderIsolationReport,
     DriverProviderQueryIsolationRequest, DriverProviderRegisterAck, DriverProviderRegisterRequest,
     DriverProviderRequest, DriverProviderResponse, DriverProviderTerminalOutcome,
     DurableOperationSnapshot, DurableOperationState, DurableOperationStatus, Envelope,
@@ -32,16 +32,17 @@ use nlos_schema::sabi::v1::{
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
-    MAX_DRIVER_PROVIDER_PAYLOAD_BYTES, MAX_ENVELOPE_BYTES, MAX_HANDSHAKE_CHANNEL_BINDING_BYTES,
-    MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES, MAX_PROVIDER_PROFILE_BYTES,
-    MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
+    MAX_CHANNEL_CONTROL_PAYLOAD_BYTES, MAX_DRIVER_PROVIDER_PAYLOAD_BYTES, MAX_ENVELOPE_BYTES,
+    MAX_HANDSHAKE_CHANNEL_BINDING_BYTES, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES,
+    MAX_PROVIDER_PROFILE_BYTES, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
     MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES,
-    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_DRIVER_PROVIDER_SCHEMA,
-    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
-    SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA,
-    SABI_WAIT_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
-    decode_barrier_observation_record, decode_cancel_operation_request,
-    decode_control_command_result, decode_driver_provider_request, decode_driver_provider_response,
+    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_CHANNEL_CONTROL_SCHEMA,
+    SABI_DRIVER_PROVIDER_SCHEMA, SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA,
+    SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
+    SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA, channel_control_schema_identity,
+    decode_artifact_recovery_operations_snapshot, decode_barrier_observation_record,
+    decode_cancel_operation_request, decode_control_command_result, decode_create_channel_request,
+    decode_driver_provider_request, decode_driver_provider_response,
     decode_durable_operation_snapshot, decode_exchange_request, decode_exchange_response,
     decode_execution_fiber_operations_snapshot, decode_get_system_control_request,
     decode_operation_status, decode_principal_handshake_attestation,
@@ -53,18 +54,19 @@ use nlos_schema::{
     decode_task_node_operations_snapshot, decode_topic_operations_snapshot,
     driver_provider_schema_identity, encode_artifact_recovery_operations_snapshot,
     encode_barrier_observation_record, encode_cancel_operation_request,
-    encode_control_command_result, encode_driver_provider_request, encode_driver_provider_response,
-    encode_durable_operation_snapshot, encode_exchange_request, encode_exchange_response,
-    encode_execution_fiber_operations_snapshot, encode_get_system_control_request,
-    encode_operation_status, encode_principal_handshake_attestation,
-    encode_principal_handshake_challenge, encode_query_operation_request,
-    encode_register_wait_request, encode_resolve_service_request, encode_resolve_service_response,
-    encode_resource_recovery_operations_snapshot, encode_sabi_envelope,
-    encode_semantic_recovery_operations_snapshot, encode_submit_barrier_observation_request,
-    encode_submit_control_command_request, encode_task_group_operations_snapshot,
-    encode_task_node_operations_snapshot, encode_topic_operations_snapshot,
-    operation_control_schema_identity, principal_handshake_schema_identity, registry_frozen,
-    schema_registry, service_directory_schema_identity, system_control_schema_identity,
+    encode_control_command_result, encode_create_channel_request, encode_driver_provider_request,
+    encode_driver_provider_response, encode_durable_operation_snapshot, encode_exchange_request,
+    encode_exchange_response, encode_execution_fiber_operations_snapshot,
+    encode_get_system_control_request, encode_operation_status,
+    encode_principal_handshake_attestation, encode_principal_handshake_challenge,
+    encode_query_operation_request, encode_register_wait_request, encode_resolve_service_request,
+    encode_resolve_service_response, encode_resource_recovery_operations_snapshot,
+    encode_sabi_envelope, encode_semantic_recovery_operations_snapshot,
+    encode_submit_barrier_observation_request, encode_submit_control_command_request,
+    encode_task_group_operations_snapshot, encode_task_node_operations_snapshot,
+    encode_topic_operations_snapshot, operation_control_schema_identity,
+    principal_handshake_schema_identity, registry_frozen, schema_registry,
+    service_directory_schema_identity, system_control_schema_identity,
     takeover_control_schema_identity, validate_sabi_request_context,
     validate_sabi_response_context, wait_control_schema_identity,
 };
@@ -195,7 +197,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 8);
+    assert_eq!(registry.len(), 9);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -248,6 +250,11 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_DRIVER_PROVIDER_SCHEMA)
         .unwrap();
     assert_eq!((driver_provider.major, driver_provider.minor), (1, 0));
+    let channel_control = registry
+        .iter()
+        .find(|entry| entry.name == SABI_CHANNEL_CONTROL_SCHEMA)
+        .unwrap();
+    assert_eq!((channel_control.major, channel_control.minor), (1, 0));
 }
 
 #[test]
@@ -260,6 +267,7 @@ fn registry_freeze_markers_match_adr_0014() {
         SABI_TAKEOVER_CONTROL_SCHEMA,
         SABI_WAIT_CONTROL_SCHEMA,
         SABI_DRIVER_PROVIDER_SCHEMA,
+        SABI_CHANNEL_CONTROL_SCHEMA,
     ];
     for name in frozen_names {
         assert_eq!(registry_frozen(name), Some(true), "{name} must be frozen");
@@ -329,6 +337,50 @@ fn wait_control_payloads_are_bounded_and_registry_validated() {
     };
     assert!(matches!(
         encode_register_wait_request(&oversized),
+        Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+}
+
+#[test]
+fn channel_control_payloads_are_bounded_and_registry_validated() {
+    let request = CreateChannelRequestWire {
+        schema: Some(channel_control_schema_identity()),
+        capacity_bytes: 1_024,
+        policy_digest: vec![0x21; 32],
+        idempotency_key: vec![0x22; 16],
+        created_at_ms: 2_000,
+    };
+    let wire = encode_create_channel_request(&request).unwrap();
+    assert_eq!(decode_create_channel_request(&wire).unwrap(), request);
+
+    let unbound_wire = CreateChannelRequestWire {
+        schema: None,
+        ..request.clone()
+    }
+    .encode_to_vec();
+    assert!(matches!(
+        decode_create_channel_request(&unbound_wire),
+        Err(CompatibilityError::MissingSchemaIdentity)
+    ));
+
+    let mut foreign_identity = channel_control_schema_identity();
+    foreign_identity.name = SABI_OPERATION_CONTROL_SCHEMA.to_owned();
+    let foreign_wire = CreateChannelRequestWire {
+        schema: Some(foreign_identity),
+        ..request.clone()
+    }
+    .encode_to_vec();
+    assert!(matches!(
+        decode_create_channel_request(&foreign_wire),
+        Err(CompatibilityError::UnknownSchema(name)) if name == SABI_OPERATION_CONTROL_SCHEMA
+    ));
+
+    let oversized = CreateChannelRequestWire {
+        policy_digest: vec![0; MAX_CHANNEL_CONTROL_PAYLOAD_BYTES + 1],
+        ..request
+    };
+    assert!(matches!(
+        encode_create_channel_request(&oversized),
         Err(CompatibilityError::FrameTooLarge { .. })
     ));
 }

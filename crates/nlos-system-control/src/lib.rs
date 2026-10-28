@@ -161,6 +161,9 @@ mod executor_receipt;
 /// documentation for the renderer contract and remaining B-TASK-006M scope.
 pub mod openmetrics;
 
+/// SABI `nlos.sabi.ChannelControl` (`v1.0`) handler surface (`L-002`, `W73`).
+pub mod channel_control;
+
 /// ADR-0011 opt-in authenticated control-plane entry points (`cli`
 /// feature). Strictly additive: the local trust-domain paths above keep
 /// their exact semantics; this module adds one authenticated serve variant

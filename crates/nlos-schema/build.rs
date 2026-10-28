@@ -54,6 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "../../schema/nlos/sabi/v1/wait_control.proto",
         "../../schema/nlos/sabi/v1/principal_handshake.proto",
         "../../schema/nlos/sabi/v1/driver_provider.proto",
+        "../../schema/nlos/sabi/v1/channel_control.proto",
     ];
     for proto in protos {
         println!("cargo:rerun-if-changed={proto}");

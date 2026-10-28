@@ -66,6 +66,9 @@ use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::NamedPipeClient;
 
+use crate::channel_control::{
+    CHANNEL_CONTROL_SERVICE, ChannelControlAuthorizer, ChannelControlBackend, ChannelControlService,
+};
 use crate::control::{
     ApplicationInspector, ControlCommand, ControlError, ControlReceipt, NotificationInspector,
     ProcessInspector, ResourceInspector, SearchInspector, build_request_envelope,
@@ -218,6 +221,88 @@ where
         }
         Err(_) => failure_envelope(request, &SystemControlError::ClockWallUnavailable),
     }
+}
+
+/// Projects one validated request through either [`ChannelControlService`]
+/// (when `request.service == "channel"`) or [`RecoverySystemControl`] (with the
+/// `AuthorityClock` wall reading).
+pub fn serve_validated_with_channel<H, A, B, CA>(
+    control: &RecoverySystemControl<'_, H, A>,
+    channel: &ChannelControlService<'_, B, CA>,
+    clock: &AuthorityClock,
+    now_monotonic_ns: u64,
+    request: &Envelope,
+) -> Envelope
+where
+    H: RecoveryHealthSource,
+    A: SystemControlAuthorizer,
+    B: ChannelControlBackend,
+    CA: ChannelControlAuthorizer,
+{
+    if request.service == CHANNEL_CONTROL_SERVICE {
+        return channel.handle_for_ipc(request, now_monotonic_ns, 0);
+    }
+    serve_validated(control, clock, now_monotonic_ns, request)
+}
+
+/// Authenticated single-connection serve entry with [`ChannelControlService`]
+/// mounted alongside [`RecoverySystemControl`] (`L-002`, `W73`).
+///
+/// # Errors
+///
+/// Fails closed with the typed [`HandshakeError`] of the underlying transport
+/// facility when the handshake or peer pre-gate rejects the connection.
+#[allow(clippy::too_many_arguments)]
+pub async fn authenticated_serve_one_control_with_channel<H, A, B, CA, P, N>(
+    listener: &mut EndpointListener,
+    config: TransportConfig,
+    control: &RecoverySystemControl<'_, H, A>,
+    channel: &ChannelControlService<'_, B, CA>,
+    identity: &IdentityAuthority,
+    clock: &AuthorityClock,
+    handshake: &ServerHandshakeContext,
+    peer_gate: &P,
+    now_monotonic_ns: u64,
+    next_nonce: N,
+) -> Result<AuthenticatedServeOutcome, HandshakeError>
+where
+    H: RecoveryHealthSource,
+    A: SystemControlAuthorizer,
+    B: ChannelControlBackend,
+    CA: ChannelControlAuthorizer,
+    P: PeerAuthorizer,
+    N: FnOnce() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    let nonce = next_nonce();
+    let verified_at_ms = clock
+        .wall_now(NowRequest {
+            idempotency_key: handshake_wall_key(&nonce),
+        })
+        .map_err(|error| HandshakeError::Identity(IdentityAuthorityError::Clock(error)))?
+        .reading()
+        .as_u64();
+    authenticated_serve_one(
+        listener,
+        config,
+        identity,
+        handshake.nonces(),
+        handshake.binding(),
+        peer_gate,
+        |validated| async move {
+            Ok(OutboundResponse::Typed(ExchangeResponse {
+                envelope: Some(serve_validated_with_channel(
+                    control,
+                    channel,
+                    clock,
+                    now_monotonic_ns,
+                    validated.envelope(),
+                )),
+            }))
+        },
+        move || nonce,
+        verified_at_ms,
+    )
+    .await
 }
 
 fn bounded_correlation(request: &Envelope) -> Option<[u8; REQUEST_ID_BYTES]> {

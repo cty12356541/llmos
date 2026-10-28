@@ -28,6 +28,9 @@ pub const SABI_PRINCIPAL_HANDSHAKE_SCHEMA: &str = "nlos.sabi.PrincipalHandshake"
 /// ADR-0024 driver provider channel; the eighth canonical registry entry,
 /// promoted to frozen status under ADR-0014 (`#9 C-PROVIDER-REAL`).
 pub const SABI_DRIVER_PROVIDER_SCHEMA: &str = "nlos.sabi.DriverProvider";
+/// Durable local Channel endpoint control channel; the ninth canonical
+/// registry entry, promoted to frozen status under ADR-0014 (`L-002`).
+pub const SABI_CHANNEL_CONTROL_SCHEMA: &str = "nlos.sabi.ChannelControl";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -36,6 +39,7 @@ pub const MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_WAIT_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES: usize = 4 * 1024;
 pub const MAX_DRIVER_PROVIDER_PAYLOAD_BYTES: usize = 16 * 1024;
+pub const MAX_CHANNEL_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_PROVIDER_PROFILE_BYTES: usize = 128;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
@@ -169,6 +173,14 @@ const SABI_DRIVER_PROVIDER_V1: SchemaDescriptor = SchemaDescriptor {
     frozen: true,
 };
 
+const SABI_CHANNEL_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_CHANNEL_CONTROL_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+    frozen: true,
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
@@ -178,6 +190,7 @@ const REGISTRY: &[SchemaDescriptor] = &[
     SABI_WAIT_CONTROL_V1,
     SABI_PRINCIPAL_HANDSHAKE_V1,
     SABI_DRIVER_PROVIDER_V1,
+    SABI_CHANNEL_CONTROL_V1,
 ];
 
 #[must_use]
@@ -1844,6 +1857,497 @@ pub fn decode_inspect_wait_result(
     let result: sabi::v1::InspectWaitResult =
         decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
     validate_wait_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Returns the v1 identity required on every `ChannelControl` payload.
+#[must_use]
+pub fn channel_control_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_CHANNEL_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+fn validate_channel_control_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_CHANNEL_CONTROL_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+/// Validates and encodes a bounded `ChannelControl.create_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_create_channel_request(
+    request: &sabi::v1::CreateChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.create_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_create_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::CreateChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::CreateChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.create_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_create_channel_result(
+    result: &sabi::v1::CreateChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.create_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_create_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::CreateChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::CreateChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.rotate_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_rotate_channel_request(
+    request: &sabi::v1::RotateChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.rotate_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_rotate_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::RotateChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::RotateChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.rotate_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_rotate_channel_result(
+    result: &sabi::v1::RotateChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.rotate_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_rotate_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::RotateChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::RotateChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.enqueue` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_enqueue_channel_request(
+    request: &sabi::v1::EnqueueChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.enqueue` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_enqueue_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::EnqueueChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::EnqueueChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.enqueue` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_enqueue_channel_result(
+    result: &sabi::v1::EnqueueChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.enqueue` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_enqueue_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::EnqueueChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::EnqueueChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.receive` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_receive_channel_request(
+    request: &sabi::v1::ReceiveChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.receive` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_receive_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ReceiveChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::ReceiveChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.receive` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_receive_channel_result(
+    result: &sabi::v1::ReceiveChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.receive` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_receive_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ReceiveChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::ReceiveChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.ack` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_ack_channel_request(
+    request: &sabi::v1::AckChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.ack` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_ack_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::AckChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::AckChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.ack` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_ack_channel_result(
+    result: &sabi::v1::AckChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.ack` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_ack_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::AckChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::AckChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.compact` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_compact_channel_request(
+    request: &sabi::v1::CompactChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.compact` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_compact_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::CompactChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::CompactChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.compact` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_compact_channel_result(
+    result: &sabi::v1::CompactChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.compact` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_compact_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::CompactChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::CompactChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.inspect_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_channel_request(
+    request: &sabi::v1::InspectChannelRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.inspect_channel` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_channel_request(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectChannelRequestWire, CompatibilityError> {
+    let request: sabi::v1::InspectChannelRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.inspect_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_channel_result(
+    result: &sabi::v1::InspectChannelResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.inspect_channel` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_channel_result(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectChannelResultWire, CompatibilityError> {
+    let result: sabi::v1::InspectChannelResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.inspect_queue` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_queue_request(
+    request: &sabi::v1::InspectQueueRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.inspect_queue` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_queue_request(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectQueueRequestWire, CompatibilityError> {
+    let request: sabi::v1::InspectQueueRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.inspect_queue` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_queue_result(
+    result: &sabi::v1::InspectQueueResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.inspect_queue` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_queue_result(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectQueueResultWire, CompatibilityError> {
+    let result: sabi::v1::InspectQueueResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ChannelControl.register_queue_consumption` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_register_queue_consumption_request(
+    request: &sabi::v1::RegisterQueueConsumptionRequestWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.register_queue_consumption` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_register_queue_consumption_request(
+    wire: &[u8],
+) -> Result<sabi::v1::RegisterQueueConsumptionRequestWire, CompatibilityError> {
+    let request: sabi::v1::RegisterQueueConsumptionRequestWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ChannelControl.register_queue_consumption` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_register_queue_consumption_result(
+    result: &sabi::v1::RegisterQueueConsumptionResultWire,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_channel_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ChannelControl.register_queue_consumption` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_register_queue_consumption_result(
+    wire: &[u8],
+) -> Result<sabi::v1::RegisterQueueConsumptionResultWire, CompatibilityError> {
+    let result: sabi::v1::RegisterQueueConsumptionResultWire =
+        decode_bounded_with_limit(wire, MAX_CHANNEL_CONTROL_PAYLOAD_BYTES)?;
+    validate_channel_control_identity(result.schema.as_ref())?;
     Ok(result)
 }
 
