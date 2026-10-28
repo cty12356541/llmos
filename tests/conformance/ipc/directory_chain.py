@@ -43,9 +43,13 @@ from nlos_sdk import (  # noqa: E402
     validate_response_context,
 )
 
+_ENDPOINT_SEQ = 0
+
 
 def endpoint(label: str) -> str:
-    unique = f"{os.getpid():x}-{time.time_ns() & 0xFFFFFFF:x}-{label[0]}"
+    global _ENDPOINT_SEQ
+    _ENDPOINT_SEQ += 1
+    unique = f"{os.getpid():x}-{time.time_ns():x}-{_ENDPOINT_SEQ:x}-{label}"
     if sys.platform == "win32":
         return rf"\\.\pipe\nlos-directory-{unique}"
     return str(Path(tempfile.gettempdir()) / f"nlos-directory-{unique}.sock")
@@ -166,9 +170,14 @@ def operation_status(payload: bytes) -> OperationStatus:
 async def main() -> None:
     directory_endpoint = endpoint("bootstrap")
     business_endpoint = endpoint("business")
+    assert directory_endpoint != business_endpoint
     authority_path = str(
         Path(tempfile.gettempdir())
         / f"nlos-directory-{os.getpid()}-{time.time_ns()}-authority.sqlite3"
+    )
+    print(
+        "[conformance/directory_chain] phase 1/6: commit phase + mid-exchange disconnect",
+        flush=True,
     )
     server = await start_server(
         directory_endpoint,
@@ -204,6 +213,10 @@ async def main() -> None:
         await connected.client.close()
 
         assert await server.wait() == 0
+        print(
+            "[conformance/directory_chain] phase 2/6: recover phase + idempotent replay + conflict rejection",
+            flush=True,
+        )
         server = await start_server(
             directory_endpoint,
             business_endpoint,
@@ -253,6 +266,10 @@ async def main() -> None:
         )
         await conflict_client.close()
 
+        print(
+            "[conformance/directory_chain] phase 3/6: pending operation query + cancel + cancel replay",
+            flush=True,
+        )
         pending_client = await LocalRpcClient.connect(
             business_endpoint,
             transport_config,
@@ -360,6 +377,10 @@ async def main() -> None:
         )
         await query_cancelled_client.close()
 
+        print(
+            "[conformance/directory_chain] phase 4/6: worker_deadline queued -> cancelled_before_effect",
+            flush=True,
+        )
         worker_deadline_client = await LocalRpcClient.connect(
             business_endpoint, transport_config
         )
@@ -414,6 +435,10 @@ async def main() -> None:
         assert query_deadline_status.receipt.receipt_id == bytes([0xA7]) * 16
         await query_deadline_client.close()
 
+        print(
+            "[conformance/directory_chain] phase 5/6: deadline_before_dispatch + replay",
+            flush=True,
+        )
         deadline_before_client = await LocalRpcClient.connect(
             business_endpoint,
             transport_config,
@@ -452,6 +477,10 @@ async def main() -> None:
         assert deadline_replay_context.correlation_id == bytes([11]) * 16
         await deadline_replay_client.close()
 
+        print(
+            "[conformance/directory_chain] phase 6/6: cancel_before_dispatch + cancel_after_dispatch + deadline_after_dispatch",
+            flush=True,
+        )
         cancel_before_client = await LocalRpcClient.connect(
             business_endpoint,
             transport_config,
@@ -507,6 +536,7 @@ async def main() -> None:
         await deadline_after_client.close()
 
         assert await server.wait() == 0
+        print("[conformance/directory_chain] ALL 6 PHASES PASSED", flush=True)
     except BaseException:
         server.kill()
         await server.wait()

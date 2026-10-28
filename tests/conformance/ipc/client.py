@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "gen" / "python"))
 
 from nlos.sabi.v1.envelope_pb2 import ExchangeRequest  # noqa: E402
 from nlos_sdk import IpcError, LocalRpcClient, TransportConfig  # noqa: E402
+from nlos_sdk.local_rpc import _require_windows_pipe_connection_factory  # noqa: E402
 
 
 def endpoint(label: str) -> str:
@@ -68,6 +69,41 @@ async def start_server(address: str, delay_ms: int) -> asyncio.subprocess.Proces
     return process
 
 
+def _verify_non_proactor_loop_diagnostic() -> None:
+    class _FakeSelectorEventLoop:
+        pass
+
+    try:
+        _require_windows_pipe_connection_factory(_FakeSelectorEventLoop())
+    except IpcError as error:
+        assert error.code == "UNSUPPORTED_PLATFORM"
+        assert "ProactorEventLoop" in str(error)
+        assert "_FakeSelectorEventLoop" in str(error)
+    else:
+        raise AssertionError("loop without create_pipe_connection was accepted")
+
+    if sys.platform == "win32":
+        selector_loop = asyncio.SelectorEventLoop()
+        try:
+            try:
+                selector_loop.run_until_complete(
+                    LocalRpcClient.connect(
+                        endpoint("selector"),
+                        TransportConfig(connect_timeout=0.2),
+                    )
+                )
+            except IpcError as error:
+                assert error.code == "UNSUPPORTED_PLATFORM"
+                assert "ProactorEventLoop" in str(error)
+                assert "SelectorEventLoop" in str(error)
+            else:
+                raise AssertionError(
+                    "SelectorEventLoop unexpectedly connected to Windows named pipe"
+                )
+        finally:
+            selector_loop.close()
+
+
 async def main() -> None:
     for invalid_timeout in (0, float("nan"), float("inf")):
         try:
@@ -76,6 +112,8 @@ async def main() -> None:
             assert error.code == "INVALID_CONFIG"
         else:
             raise AssertionError("invalid timeout was accepted")
+    await asyncio.to_thread(_verify_non_proactor_loop_diagnostic)
+    print("[conformance/ipc] invalid_timeout_rejected (x3)", flush=True)
 
     address = endpoint("py")
     server = await start_server(address, 100)
@@ -96,6 +134,10 @@ async def main() -> None:
             assert error.code == "COMPATIBILITY"
         else:
             raise AssertionError("unknown schema major was accepted")
+        print(
+            "[conformance/ipc] schema_major_compatibility_rejected",
+            flush=True,
+        )
         first = asyncio.create_task(client.exchange(request(7)))
         await asyncio.sleep(0)
         try:
@@ -107,6 +149,10 @@ async def main() -> None:
         response = await first
         assert response.envelope.request_id == bytes([7]) * 16
         assert response.envelope.payload == b"\x01\x02\x03"
+        print(
+            "[conformance/ipc] concurrent_exchange_backpressure_and_echo_roundtrip",
+            flush=True,
+        )
         await client.close()
         assert await server.wait() == 0
     except BaseException:
@@ -123,6 +169,8 @@ async def main() -> None:
         assert error.code in {"CONNECT", "TIMEOUT"}
     else:
         raise AssertionError("missing endpoint unexpectedly connected")
+    print("[conformance/ipc] missing_endpoint_connect_rejected", flush=True)
+    print("[conformance/ipc] ALL 4 CASES PASSED", flush=True)
 
 
 if __name__ == "__main__":

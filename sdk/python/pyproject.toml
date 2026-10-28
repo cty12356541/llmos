@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlos-sdk"
+version = "0.1.0"
+description = "Python SDK for NLOS SABI local RPC, ServiceDirectory negotiation, and common metadata validation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "protobuf>=5.26.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nlos_sdk*"]

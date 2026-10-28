@@ -6,10 +6,30 @@ import asyncio
 import math
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from google.protobuf.message import DecodeError
-from nlos.sabi.v1.envelope_pb2 import ExchangeRequest, ExchangeResponse
+
+
+def _ensure_gen_python_path() -> None:
+    """Ensure `<repo_root>/gen/python` is importable in editable repo checkouts."""
+
+    try:
+        import nlos.sabi.v1.envelope_pb2  # noqa: F401
+    except ModuleNotFoundError:
+        resolved = Path(__file__).resolve()
+        if len(resolved.parents) > 3:
+            candidate = resolved.parents[3] / "gen" / "python"
+            if candidate.is_dir():
+                candidate_str = str(candidate)
+                if candidate_str not in sys.path:
+                    sys.path.insert(0, candidate_str)
+
+
+_ensure_gen_python_path()
+
+from nlos.sabi.v1.envelope_pb2 import ExchangeRequest, ExchangeResponse  # noqa: E402
 
 MAXIMUM_SCHEMA_FRAME_BYTES = 1024 * 1024
 SUPPORTED_SCHEMA = "nlos.sabi.Envelope"
@@ -161,6 +181,25 @@ class LocalRpcClient:
             pass
 
 
+def _require_windows_pipe_connection_factory(
+    loop: object,
+) -> Callable[
+    [Callable[[], asyncio.StreamReaderProtocol], str],
+    Coroutine[Any, Any, tuple[asyncio.BaseTransport, asyncio.BaseProtocol]],
+]:
+    create_pipe_connection = getattr(loop, "create_pipe_connection", None)
+    if create_pipe_connection is None:
+        loop_type = type(loop).__name__
+        raise IpcError(
+            "UNSUPPORTED_PLATFORM",
+            "Windows named pipe IPC requires ProactorEventLoop, but the active "
+            f"event loop is {loop_type} (missing create_pipe_connection); "
+            "configure asyncio.set_event_loop_policy("
+            "asyncio.WindowsProactorEventLoopPolicy()) instead of SelectorEventLoop",
+        )
+    return create_pipe_connection
+
+
 async def _open_platform_stream(
     endpoint: str,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -168,19 +207,10 @@ async def _open_platform_stream(
         return await asyncio.open_unix_connection(endpoint)
 
     loop = asyncio.get_running_loop()
-    create_pipe_connection = getattr(loop, "create_pipe_connection", None)
-    if create_pipe_connection is None:
-        raise IpcError(
-            "UNSUPPORTED_PLATFORM",
-            "the active Windows event loop cannot connect to named pipes",
-        )
+    connect = _require_windows_pipe_connection_factory(loop)
     reader = asyncio.StreamReader(limit=MAXIMUM_SCHEMA_FRAME_BYTES + 4)
     protocol = asyncio.StreamReaderProtocol(reader)
     factory: Callable[[], asyncio.StreamReaderProtocol] = lambda: protocol
-    connect: Callable[
-        [Callable[[], asyncio.StreamReaderProtocol], str],
-        Coroutine[Any, Any, tuple[asyncio.BaseTransport, asyncio.BaseProtocol]],
-    ] = create_pipe_connection
     transport, _ = await connect(factory, endpoint)
     writer = asyncio.StreamWriter(transport, protocol, reader, loop)
     return reader, writer
