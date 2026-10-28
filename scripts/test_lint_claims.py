@@ -335,6 +335,99 @@ class StageCV11Tests(unittest.TestCase):
         )
 
 
+STAGE_D_CLAIM_H4 = """\
+
+- requirement_id: ROAD-D-001
+  stage: D
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 3d81a90
+  evidence_refs:
+    - docs/evidence/stage-d/d-tokens-kit-001.md
+    - docs/evidence/stage-d/reviews/w74-demo.md
+  assurance: H4
+  limitations: []
+  source: "stage-d-progress.md §D.3 ROAD-D-001 / D-TOKENS-KIT 行（base 3d81a90）"
+
+- requirement_id: D-TOKENS-KIT
+  stage: D
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 3d81a90
+  evidence_refs:
+    - docs/evidence/stage-d/d-tokens-kit-001.md
+    - docs/evidence/stage-d/reviews/w74-demo.md
+  assurance: H4
+  limitations: []
+  source: "stage-d-progress.md §D.3 D-TOKENS-KIT 行（base 3d81a90）"
+"""
+
+STAGE_D_INDEX_H4 = """\
+
+- id: d-tokens-kit-001
+  path: docs/evidence/stage-d/d-tokens-kit-001.md
+  title: "D-TOKENS-KIT-001：阶段 D 设计 Token 与组件套件证据"
+  scope: "阶段 D 设计 Token 与组件套件证据"
+  assurance: H4
+  date: "2026-10-29"
+
+- id: w74-demo
+  path: docs/evidence/stage-d/reviews/w74-demo.md
+  title: "W74-DEMO：阶段 D 评审证据"
+  scope: "阶段 D 评审证据"
+  assurance: H4
+  date: "2026-10-29"
+"""
+
+
+class StageDV12Tests(unittest.TestCase):
+    def _make_stage_d_repo(self, claims=None, index=None) -> Path:
+        root = make_repo(
+            claims=GOOD_CLAIMS + (STAGE_D_CLAIM_H4 if claims is None else claims),
+            index=GOOD_INDEX + (STAGE_D_INDEX_H4 if index is None else index),
+        )
+        ev_d = root / "docs/evidence/stage-d"
+        rev_d = ev_d / "reviews"
+        rev_d.mkdir(parents=True)
+        (ev_d / "d-tokens-kit-001.md").write_text("# D-TOKENS-KIT-001\n", encoding="utf-8")
+        (rev_d / "w74-demo.md").write_text("# W74-DEMO\n", encoding="utf-8")
+        return root
+
+    def test_stage_d_claim_with_h4_evidence_passes(self):
+        root = self._make_stage_d_repo()
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(stats["index"], 3)
+        self.assertEqual(stats["on_disk"], 3)
+
+    def test_stage_d_claim_exceeding_evidence_assurance_fails_closed(self):
+        root = self._make_stage_d_repo(
+            claims=STAGE_D_CLAIM_H4.replace("assurance: H4", "assurance: H5", 1),
+        )
+        errs = errors(root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0][1], "claims/ROAD-D-001")
+        self.assertIn("Claim≤Evidence 违例", errs[0][2])
+
+    def test_stage_d_reviews_subdir_unindexed_file_fails_closed(self):
+        root = self._make_stage_d_repo()
+        (root / "docs/evidence/stage-d/reviews/w74-unindexed.md").write_text(
+            "# UNINDEXED\n", encoding="utf-8"
+        )
+        unindexed_errs = errors(root)
+        self.assertEqual(len(unindexed_errs), 1, unindexed_errs)
+        self.assertEqual(unindexed_errs[0][1], "evidence-index")
+        self.assertIn(
+            "目录文件未收录: docs/evidence/stage-d/reviews/w74-unindexed.md",
+            unindexed_errs[0][2],
+        )
+
+
 class RealRepoTests(unittest.TestCase):
     def test_real_ledger_lints_clean(self):
         """仓库自检门：三份台账 + 索引双向一致必须全绿。"""

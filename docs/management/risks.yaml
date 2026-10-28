@@ -95,7 +95,9 @@
     - docs/evidence/stage-d/d-compositor-001-five-plane-tiling-wm-and-session.md
     - docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md
     - docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
-  review_point: "W73 已完成工作站 GUI 战役并闭合 U-3；desktop 引入新重依赖或发布 OS 原生签名安装包前须过 README §7 选型门"
+    - docs/evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  review_point: "W73/W74 已完成工作站 GUI 战役（闭合 U-3）、ROAD-D-001 非开发者多应用 E2E 门禁与阶段 D 独立退出评审；desktop 引入新重依赖或发布 OS 原生签名安装包前须过 README §7 选型门"
 
 - id: RISK-B-07
   category: scale-impersonation

@@ -613,3 +613,14 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | `W73-INT`（单一集成器） | 主控 | `desktop/src-tauri/src/lib.rs`、`desktop/src/{main.ts,style.css}`、`desktop/README.md`、`docs/management/` | 挂载 `A11yI18nState` 与 6 项新 Tauri 句柄（总计 108 项），回填 `claims.yaml` `C-XHOST` 五包与 `C-GUI-CAMPAIGN`（`106` claims）、`risks.yaml`、`exit-unknown-risks.md`、`evidence-index.yaml`（`185/185`），更新 §C.5.5.1 就绪度表并呈请维护者批准阶段 C `EXITED` |
 
 **诚实边界**：阶段 C 单机 + 跨物理主机（`C-XHOST`）全部技术实现、H6 证据终审与机器台账已 100% 就绪，按 `AGENTS.md` 第 7 条与 §C.5.5 条件 4 维持 `IN_PROGRESS / NOT EXITED`（待维护者显式批准翻转 `EXITED`）；紧接解锁并并发派发最终波 `W74` 三车道（`W74-D-ROADD001` ‖ `W74-SCHEMA-V12` ‖ `W74-D-EXIT-REVIEW`）。
+
+2026-10-29（W74 波：三车道写集互斥并行 + 单一集成器收口——`W74-D-ROADD001` 阶段 D `[ROAD-D-001]` 非开发者多应用端到端验收门禁、`W74-SCHEMA-V12` 机器台账 `ledger-schema v1.1 -> v1.2` 升级、`W74-D-EXIT-REVIEW` 阶段 D 独立退出门综合证据终审与 `ADR-0025` 晋升 `VERIFIED`）：于 `W73` 屏障提交 `40f9967a` 上并发派发三条写集两两严格互斥的子代理车道，全部通过领域验证后由 `W74-INT` 收口：
+
+| 车道 | 子代理 | 写集域 | 交付内容与验证 |
+|---|---|---|---|
+| `W74-D-ROADD001` | `a8380da6` | `desktop/src-tauri/tests/d_road_001_non_dev_multi_app_e2e.rs`、`docs/evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md` | **阶段 D `[ROAD-D-001]` 非开发者多应用端到端验收门禁（`PARTIAL_PASS`，`H4`）**：`d_road_001_non_dev_multi_app_e2e` `6/0` 全绿，验证非开发者在 `L0/L1/L2` 零行话/零 Emoji 下完成三应用 `4px` 平铺、双语切换、`Ctrl+Space` 自然语言跨应用目标与 `[NL-AMBIG-001]` 澄清、`Z4` `350ms` 授权、`L1` 16 态承诺表、`L2` 单行按需归因抽屉、`L3` 正交 DAG Path A/B 编辑重授权、通知 `ActionToken` 核销、`Ctrl+K` `0x1F` 零写搜索、`ChooserGrant` 保存与 `[DUI-OFFLINE-001]` 断网自治恢复，落地 [D-ROAD-001](../evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md) |
+| `W74-SCHEMA-V12` | `7746d1e3` | `docs/management/ledger-schema.md`、`scripts/lint_claims.py`、`scripts/test_lint_claims.py` | **机器台账 `v1.1 -> v1.2` 纯增量升级**：开放 `claims.yaml` `stage: "B" | "C" | "D"` 与 `docs/evidence/stage-d/`（含 `reviews/`）双向索引单测（`test_lint_claims` `36/36` 全绿） |
+| `W74-D-EXIT-REVIEW` | `b0318a7f` | `docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md` | **阶段 D 独立退出门综合证据终审（`SATISFIED-WITH-BOUNDARIES`，`H4`，`P0 = 0`）**：独立审计 `v0.5 §28.4` 七大交付物、`[ROAD-D-001]`、`[UI-PARITY-001]`、`D-core` 八包与 §D.5.5 六项退出条件，核准 [ADR-0025](./adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md) 晋升 `VERIFIED`，落地 [w74-stage-d-exit-gates.md](../evidence/stage-d/reviews/w74-stage-d-exit-gates.md) |
+| `W74-INT`（单一集成器） | 主控 | `docs/management/` | 按 `ledger-schema v1.2` 向 `claims.yaml` 回填阶段 D 10 条核心声明（总计 `116` claims），同步 `risks.yaml`、`exit-unknown-risks.md`、`evidence-index.yaml`（`188/188`，`lint_claims.py` `0 ERROR`），完成 `W68 -> W74` 双轨计划收官并呈请维护者批准阶段 C 与阶段 D `EXITED` |
+
+**诚实边界**：`W68 -> W74` 双轨并行计划（`Stage D || Stage C C-XHOST`）全部技术交付、H3–H6 验证、独立退出门终审与机器台账 `v1.2` 已 100% 闭环；按 `AGENTS.md` 第 7 条与 §C.5.5 / §D.5.5 铁律，阶段 C 与阶段 D 状态均维持 `IN_PROGRESS / NOT EXITED`（待维护者显式批准翻转 `EXITED`）。

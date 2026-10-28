@@ -1861,3 +1861,196 @@
   limitations:
     - "已实证 ChaosTcpProxy 混沌代理（丢包、RTT 抖动、单向/三角形非对称分区、TCP 半开黑洞、载荷中段 RST、密文篡改、时钟偏斜越界）下 ROAD-C-001-XHOST 与 ROAD-C-002-XHOST（数据面 0 Raft RPC + 五类故障负载）H6 复合门禁及 xhost_cluster_harness.py 自检；外部物理设备/不可逆外部 API 副作用擦除与 1M_LOGICAL 裸金属 WAN 集群留界（RISK-B-11 分域保留）"
   source: "stage-c-progress.md §C.3.3 C-XHOST-GATE + W73 独立退出评审（W72-W73，base 5c052e53）：PARTIAL_PASS"
+
+# ===== 阶段 D 完整自然语言桌面（stage-d-progress.md §D.1/§D.3.1，ledger-schema v1.2，W69-W74 回填）=====
+
+- requirement_id: ROAD-D-001
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src
+    - desktop/src-tauri/src
+  test_refs:
+    - desktop/src-tauri/tests/d_road_001_non_dev_multi_app_e2e.rs
+    - desktop/e2e/__tests__/gui-campaign.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md
+    - docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证非开发者在 L0/L1/L2 零内部架构行话（0 CausalCone/LeaseEpoch/TypedIntent/0x1F/TaskAttempt/ExecutionFiber/receipt_hex）与零 Emoji 下持续使用多应用 4px 平铺、Ctrl+Space 自然语言跨应用目标与歧义澄清、Z4 350ms 安全授权、L1 16 态任务流与 L2 单行按需归因抽屉、L3 正交 DAG 编辑重授权、通知 ActionToken 核销、Ctrl+K 0x1F 零写搜索、ChooserGrant 保存与 [DUI-OFFLINE-001] 断网自治恢复；物理 macOS 触控板硬件巡检与 OS 原生安装器签名公证属发布部署边界"
+  source: "stage-d-progress.md §D.1.1/§D.5.5 ROAD-D-001 + W74 独立退出评审（W69-W74，base 40f9967a）：PARTIAL_PASS（SATISFIED-WITH-BOUNDARIES）"
+
+- requirement_id: UI-PARITY-001
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-system-control/src
+    - desktop/src-tauri/src/ipc.rs
+    - desktop/src/views/control-center
+  test_refs:
+    - desktop/src-tauri/tests/ipc_enum_symmetry_side.rs
+    - desktop/src-tauri/tests/control_center_settings_cas_side.rs
+    - desktop/src-tauri/tests/d_road_001_non_dev_multi_app_e2e.rs
+  evidence_refs:
+    - docs/evidence/stage-d/d-ipc-001-twelve-domain-enum-and-symmetry.md
+    - docs/evidence/stage-d/d-control-settings-001-twelve-domain-tree-and-settings-cas.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 12 域有界游标枚举（limit<=64 O(visible_rows) 懒拉取）与显式 ControlScope 受控写入在 TRUSTED_GUI / NL_SHELL / CLI / STRUCTURED_API 四入口 receipt_hex 字节级对等，并硬锁 5+1 法定不可篡改禁区（0x1F 零写、IRREVERSIBLE 零撤销、已完成/运行中 TaskNode 禁改、TaskAttempt 禁手工标 commit、EFFECT_UNKNOWN 禁盲重试、QUARANTINED 租约禁本地 TTL 解锁）；阶段 E 应用商店跨组织治理未纳入"
+  source: "stage-d-progress.md §D.1.1 UI-PARITY-001 + ADR-0025（W69-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-TOKENS-KIT
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/styles
+    - desktop/src/ui
+  test_refs:
+    - desktop/src/ui/__tests__/tokens-and-primitives.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-tokens-001-workstation-tokens-and-sota-kit.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H3
+  limitations:
+    - "已实证 Graphite (#111214/#18191C/#1E2024 + #2563EB) 与 Paper (#E5E7EB/#FFFFFF/#F3F4F6 + #1D4ED8) 100% 实心工业工作站双主题、ANTI-AI-01..07 静态门禁（0 backdrop-filter、0 霓虹发光、0 Emoji、{0,2,4,6px} 圆角白名单）、32x20 凹陷单色 Gerono 防伪印章及 Nomad/Temporal/Headlamp/Terraform 四大 SOTA 原语（10 套件 698 断言全绿）；不含 OS 内核态显示驱动合成"
+  source: "stage-d-progress.md §D.3.1 D-TOKENS-KIT（W69-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-IPC-ENUM
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/system_control.proto
+    - crates/nlos-system-control/src
+    - desktop/src-tauri/src/ipc.rs
+    - desktop/src/ipc.ts
+  test_refs:
+    - desktop/src-tauri/tests/ipc_enum_symmetry_side.rs
+  evidence_refs:
+    - docs/evidence/stage-d/d-ipc-001-twelve-domain-enum-and-symmetry.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 IPC-D1..D8 12 域 limit<=64 游标枚举、可插拔 CellTopologyInspector/CellLeaseInspector、存量 Tauri 显控断头路闭合、显式 ControlScope、PreviewControlBlastRadius、ControlCommandId 对账恢复与 PollDesktopWatermarkEvents 单调水位流；跨组织联邦目录枚举留归阶段 E"
+  source: "stage-d-progress.md §D.3.1 D-IPC-ENUM（W69-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-COMPOSITOR-WM
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/compositor
+    - desktop/src/wm
+    - desktop/src/dock
+    - desktop/src/store
+    - desktop/src-tauri/src/compositor.rs
+    - desktop/src-tauri/src/session.rs
+    - desktop/src-tauri/src/input_router.rs
+  test_refs:
+    - desktop/src-tauri/tests/compositor_wm_side.rs
+    - desktop/src/compositor/__tests__/compositor-wm.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-compositor-001-five-plane-tiling-wm-and-session.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 Z0-Z4 五平面工作站合成器、DesktopSession (LOCKED/ACTIVE/SUSPENDED/CLOSED) 代际围栏、4px 五模式平铺求解器、30px 可信标题栏、36px 底部贴边任务栏（L0）与 [DUI-LAUNCH-001] 启动器、<16ms L0-L3 披露 Store 及 [DUI-INPUT-001] 五输入源防伪路由；宿主层基于 Tauri v2 WebView 而非裸机 Wayland/DWM 内核驱动（§29.1 非目标）"
+  source: "stage-d-progress.md §D.3.1 D-COMPOSITOR-WM + ADR-0025（W70-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-OMNIBAR-MULTIMODAL
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/views/omnibar
+    - desktop/src/multimodal
+    - desktop/src-tauri/src/omnibar.rs
+  test_refs:
+    - desktop/src-tauri/tests/omnibar_multimodal_side.rs
+    - desktop/src/views/omnibar/__tests__/omnibar-multimodal.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-omnibar-001-command-intent-palette-and-multimodal.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 Z3 Ctrl+Space 按需唤起 580px 4px 圆角实心 Command & Intent Palette（平时 0px 霸屏）、L1/L2 零行话与 L3 TypedIntent 预览、[NL-AMBIG-001] 四轴高风险歧义强制澄清门（未澄清零执行）、InputSource::Voice 语音转写流与内容寻址附件标签；离线本地 ASR 声学模型推理属外部驱动边界"
+  source: "stage-d-progress.md §D.3.1 D-OMNIBAR-MULTIMODAL（W71-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-TRUSTED-UI
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/trusted-ui
+    - desktop/src-tauri/src/trusted_ui.rs
+  test_refs:
+    - desktop/src-tauri/tests/trusted_ui_scrim_chooser_clip_side.rs
+    - desktop/src/trusted-ui/__tests__/trusted-ui-security.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-trusted-ui-001-z4-consent-chooser-and-taint-clipboard.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 Z4 UAC/Polkit 实心系统安全确认屏（rgba(10,11,13,0.78) 暗幕、2px 钢蓝顶条、32x20 凹陷单色 Gerono 防伪印章、四行键值规格表、350ms 防点击劫持门、会话代际锁定、IRREVERSIBLE 零伪撤销与逐目标部分失败回执）、ChooserGrant 衰减 Capability 选择器（零宿主裸路径泄露）与污点感知剪贴板/拖拽跨应用强制 Z4 升级门；独立物理安全副屏通道留归阶段 E"
+  source: "stage-d-progress.md §D.3.1 D-TRUSTED-UI + ADR-0025（W71-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-TASK-SPACE-DAG
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/store/disclosure-model.ts
+    - desktop/src/views/task-space
+    - desktop/src-tauri/src/plan_editor.rs
+  test_refs:
+    - desktop/src-tauri/tests/task_space_dag_override_side.rs
+    - desktop/src/views/task-space/__tests__/task-space-dag.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-task-space-001-l1-l3-disclosure-dag-and-attempts.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 TASK_SPACE_GAPS 1-3 全量清零、TaskSpaceLazyCursorCoordinator（limit<=64 O(visible_rows) 懒拉取，L1/L2 零 L3 图谱预拉）、L1 16 态零行话承诺表与 [TASK-REOPEN-001] 重试/微调、L2 单行按需非模态 Headlamp 归因抽屉、L3 Ctrl+Shift+E Dagster 待物化折叠超节点正交 DAG 与 Path A 受限命令 / Path B 重编译 + Z4 diff 重新授权、Temporal TaskAttempt 竞速泳道与 ExecutionFiber 四段瀑布条；跨组织分布式协同画布留归阶段 E"
+  source: "stage-d-progress.md §D.3.1 D-TASK-SPACE-DAG（W72-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-NOTIFY-SEARCH-OFFLINE
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/views/notifications
+    - desktop/src/views/spotlight
+    - desktop/src/views/offline-cluster
+    - desktop/src-tauri/src/notify_search_offline.rs
+  test_refs:
+    - desktop/src-tauri/tests/notify_token_search_offline_side.rs
+    - desktop/src/views/notifications/__tests__/notify-search-offline.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-notify-search-001-action-token-spotlight-and-offline.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证右下角实心通知中心（[TASK-NOTIFY-001] 16 态生命周期通知与 [DUI-NOTIFY-001] SHA-256 一次性 ActionToken 核销、重放与跨应用冒用双拒绝）、Ctrl+K Spotlight 搜索（硬锁 0x1F NON_AUTHORITATIVE 五门零写禁区与强制权威回跳重验）及 [DUI-OFFLINE-001] 本地六大表面 100% 离线自治与 L0 托盘 PartitionAutonomyGate 态势指示；移动端推送网关不在桌面范围内"
+  source: "stage-d-progress.md §D.3.1 D-NOTIFY-SEARCH-OFFLINE（W72-W74，base 40f9967a）：PARTIAL_PASS"
+
+- requirement_id: D-CONTROL-SETTINGS-A11Y
+  stage: D
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src/views/control-center
+    - desktop/src/views/settings
+    - desktop/src/i18n
+    - desktop/src/a11y
+    - desktop/src-tauri/src/settings_keychain.rs
+    - desktop/src-tauri/src/a11y_i18n.rs
+  test_refs:
+    - desktop/src-tauri/tests/control_center_settings_cas_side.rs
+    - desktop/src-tauri/tests/a11y_i18n_conformance_side.rs
+    - desktop/src/views/control-center/__tests__/control-center-settings.test.ts
+    - desktop/src/a11y/__tests__/a11y-i18n.test.ts
+  evidence_refs:
+    - docs/evidence/stage-d/d-control-settings-001-twelve-domain-tree-and-settings-cas.md
+    - docs/evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md
+    - docs/evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md
+    - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  assurance: H4
+  limitations:
+    - "已实证 12 域 SystemControlCenter（System Informer 十层父子归属树、阶段 C Cell 三族租约检视与 RequestProcessMigration、Headlamp 裁剪与 5+1 法定锁、Terraform +/-/~ 爆炸半径预览与 Topic Purge 5 秒武装确认、ControlCommandId 对账恢复）、四层 SettingsDomain CAS/watch、可撤销 ContentTypeAssociation、零明文 KeychainReference、WCAG 2.2 AA 20 组对比度审计、Z0-Z4 ARIA 语义树与 Z4 焦点陷阱、prefers-reduced-motion 冻结及 zh-CN/en-US 100% 键值与零行话对偶；第三语言扩展与硬件读屏器外设矩阵留归阶段 E"
+  source: "stage-d-progress.md §D.3.1 D-CONTROL-SETTINGS-A11Y（W72-W74，base 40f9967a）：PARTIAL_PASS"

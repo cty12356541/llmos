@@ -1120,3 +1120,15 @@
   scope: "desktop/e2e 跨平台工业工作站交互战役矩阵（五模式 4px 平铺/分屏与 L0 窗框代际路由、锁屏/切用户会话代际围栏、Z4 350ms 防点击劫持审批/ChooserGrant 零路径泄露/高污点剪贴板升级、36px 底栏水位增量唤醒与 ControlCommandId 对账、Provider 限流/断网离线自治/歧义澄清降级三连）+ CJK 中日英 IME 组合态防误触探针与多模态附件通道 + 1000 轮 100K 逻辑任务 O(visible_rows)<=64 零泄漏长稳浸泡测试 + desktop/scripts/gui-campaign/run_workstation_campaign.py 实机探针；gui-campaign.test.ts 8 套件 70 项断言与 Windows 10.0.26200 实机探针全绿，闭合 U-3 并更新 RISK-B-06"
   assurance: H4
   date: "2026-10-28"
+- id: d-road-001-non-developer-multi-app-e2e-gate
+  path: docs/evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md
+  title: "D-ROAD-001 / W74-D-ROADD001：阶段 D [ROAD-D-001] 非开发者多应用与后台任务零行话端到端验收门禁"
+  scope: "desktop/src-tauri/tests/d_road_001_non_dev_multi_app_e2e.rs 6 项端到端集成测试，完整覆盖非开发者在 L0/L1/L2 零内部架构行话与零 Emoji 下并排启动三应用 4px 平铺、zh-CN/en-US 原子双语切换、Ctrl+Space 自然语言跨应用目标与语音/附件输入、[NL-AMBIG-001] 高风险歧义澄清、Z4 350ms 实心安全确认屏授权、L1 16 态承诺流与 L2 单行按需 Headlamp 归因抽屉、L3 Ctrl+Shift+E Dagster 待物化超节点正交 DAG Path A/B 编辑与 Z4 diff 重新授权、通知一次性 ActionToken 核销与 Ctrl+K 搜索 0x1F 五门零写硬锁、ChooserGrant 零宿主裸路径保存与污点剪贴板升级、四层 SettingsDomain CAS 与 [DUI-OFFLINE-001] 本地六表面 100% 离线自治及 ControlCommandId 恢复对账"
+  assurance: H4
+  date: "2026-10-29"
+- id: w74-stage-d-exit-gates
+  path: docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+  title: "W74-D-EXIT-REVIEW：阶段 D 完整自然语言桌面独立退出门综合证据终审报告（ROAD-D-001 / UI-PARITY-001 / D-core 八包 / 安全负路径）"
+  scope: "独立审查 v0.5 §28.4 七大核心交付物、[ROAD-D-001]、[UI-PARITY-001]、D-core 八大工作包（D-TOKENS-KIT / D-IPC-ENUM / D-COMPOSITOR-WM / D-OMNIBAR-MULTIMODAL / D-TRUSTED-UI / D-TASK-SPACE-DAG / D-NOTIFY-SEARCH-OFFLINE / D-CONTROL-SETTINGS-A11Y）、#3 C-GUI-CAMPAIGN 与 stage-d-progress.md §D.5.5 六项退出条件（证据 D-TOKENS-001..D-ROAD-001）；晋升 ADR-0025 为 VERIFIED；裁定阶段 D 达成 SATISFIED-WITH-BOUNDARIES（H4，P0=0），呈请维护者显式批准翻转 EXITED"
+  assurance: H4
+  date: "2026-10-29"
