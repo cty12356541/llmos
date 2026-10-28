@@ -60,7 +60,7 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 |---|---|---|---|---|---|
 | P0 | Rust | `SDK-2 PARTIAL` | 核心实现 + 首个 SDK | 内核、系统服务、CLI、可信 adapter | 不能让 Rust type/layout 泄漏成公共 ABI |
 | P0 | TypeScript | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | Tauri/Node 控制工具、桌面 UI 配套生态 | WebView 与 Node 权限边界；discovery/common semantics 尚未完成 |
-| P0 | Python | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界、打包与 common semantics 尚未完成 |
+| P0 | Python | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界（已在 `W73` 补齐显式 `UNSUPPORTED_EVENT_LOOP` fail-fast 检测）、`sdk/python/pyproject.toml` 打包入口与 `ChannelClient` SABI 通道（[W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md)）已就位；跨平台发布流水线待 `SDK-4` |
 | P1 | C#/.NET | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | Windows 桌面、企业、Unity/.NET；原生 `System.IO.Pipes` | macOS/Linux profile、peer identity、版本最低线和 NuGet 发布 |
 | P1 | Go | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | CLI、系统代理、基础设施和后续远程节点；部署简单 | Windows named pipe 通常需额外 adapter；context cancel 与 uncertain retry 映射 |
 | P2 | Java/Kotlin | `UNASSESSED` | 需求驱动评估 | 企业服务、JVM 工具、Android/Kotlin 生态 | Windows named pipe 缺少同等直接标准路径；JVM/runtime 体量 |
