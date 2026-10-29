@@ -6,10 +6,12 @@ use nlos_ipc::{
     ExactPeerAuthorizer, FramedIo, IoOperation, IpcError, LocalRpcClient, OutboundResponse,
     PeerAuthorizer, PeerCredentialBinding, PeerIdentity, TransportConfig, serve_one,
 };
+use nlos_schema::sabi::v1::local_rpc::Client as _;
 use nlos_schema::sabi::v1::{Envelope, ExchangeRequest, ExchangeResponse, SchemaIdentity};
 use nlos_schema::{SABI_ENVELOPE_SCHEMA, decode_exchange_response, encode_exchange_response};
 use tokio::io::{AsyncWriteExt, duplex};
-use tokio::time::sleep;
+use tokio::sync::Notify;
+use tokio::time::{sleep, timeout};
 
 fn envelope(request_id: u8) -> Envelope {
     Envelope {
@@ -321,4 +323,130 @@ async fn frame_too_large_send_leaves_connection_usable() {
     let response = client.exchange_validated(request(2)).await.unwrap();
     assert_eq!(response.envelope().request_id, vec![2; 16]);
     server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_exchange_marks_connection_unusable_and_reconnects_cleanly() {
+    let config = TransportConfig::new(
+        4_096,
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let (conn1_client, conn1_server) = duplex(4_096);
+    let (conn2_client, conn2_server) = duplex(4_096);
+
+    let request1_received = Arc::new(Notify::new());
+    let request1_received_srv = Arc::clone(&request1_received);
+    let release_stale_reply = Arc::new(Notify::new());
+    let release_stale_reply_srv = Arc::clone(&release_stale_reply);
+    let stale_reply_written = Arc::new(Notify::new());
+    let stale_reply_written_srv = Arc::clone(&stale_reply_written);
+
+    let server1 = tokio::spawn(async move {
+        let _ = serve_one(
+            conn1_server,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            move |validated| async move {
+                assert_eq!(validated.envelope().request_id, vec![1; 16]);
+                request1_received_srv.notify_one();
+                release_stale_reply_srv.notified().await;
+                Ok(OutboundResponse::Typed(ExchangeResponse {
+                    envelope: Some(envelope(1)),
+                }))
+            },
+        )
+        .await;
+        stale_reply_written_srv.notify_one();
+    });
+
+    let server2 = tokio::spawn(async move {
+        serve_one(
+            conn2_server,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            |validated| async move {
+                assert_eq!(validated.envelope().request_id, vec![2; 16]);
+                Ok(OutboundResponse::Typed(ExchangeResponse {
+                    envelope: Some(envelope(2)),
+                }))
+            },
+        )
+        .await
+    });
+
+    let mut client = LocalRpcClient::new(conn1_client, config);
+    let mut backup_stream = Some(conn2_client);
+
+    // Cancel the first `exchange` mid-`.await` once the server has read request 1.
+    {
+        let timed_out = timeout(Duration::from_millis(25), async {
+            client.exchange(request(1)).await
+        });
+        tokio::pin!(timed_out);
+        tokio::select! {
+            res = &mut timed_out => panic!("expected timeout cancellation, got {res:?}"),
+            () = request1_received.notified() => {}
+        }
+        assert!(timed_out.await.is_err());
+    }
+
+    // Let the first server flush its delayed reply for request 1 onto conn1 so
+    // stale bytes are sitting in conn1's receive buffer.
+    release_stale_reply.notify_one();
+    stale_reply_written.notified().await;
+
+    // A caller that reconnects on `ConnectionUnusable` must immediately observe
+    // `ConnectionUnusable` on the cancelled client (never reading stale reply 1
+    // into a `RequestIdMismatch`) and succeed cleanly on the fresh stream.
+    let second_response = match client.exchange(request(2)).await {
+        Err(IpcError::ConnectionUnusable) => {
+            client = LocalRpcClient::new(
+                backup_stream.take().expect("fresh reconnect stream"),
+                config,
+            );
+            client.exchange(request(2)).await.unwrap()
+        }
+        other => panic!("expected ConnectionUnusable after mid-await drop, got {other:?}"),
+    };
+    assert_eq!(
+        second_response
+            .envelope
+            .expect("response envelope")
+            .request_id,
+        vec![2; 16]
+    );
+
+    server1.await.unwrap();
+    server2.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_exchange_mid_send_marks_connection_unusable() {
+    let config = TransportConfig::new(
+        4_096,
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    // Tiny 8-byte duplex buffer with nobody reading blocks `send` mid-frame.
+    let (client_stream, _stalled_server_stream) = duplex(8);
+    let client = LocalRpcClient::new(client_stream, config);
+
+    let send_cancelled = timeout(
+        Duration::from_millis(20),
+        client.exchange_validated(request(5)),
+    )
+    .await;
+    assert!(send_cancelled.is_err());
+
+    assert!(matches!(
+        client.exchange_validated(request(6)).await,
+        Err(IpcError::ConnectionUnusable)
+    ));
 }

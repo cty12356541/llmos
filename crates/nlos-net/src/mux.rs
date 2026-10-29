@@ -584,6 +584,28 @@ impl MultiplexedSession {
             .len()
     }
 
+    /// Number of currently in-flight outbound `ControlRpc` calls awaiting a
+    /// response on this session.
+    #[must_use]
+    pub fn pending_rpc_count(&self) -> usize {
+        self.shared
+            .pending_rpcs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// Number of currently registered outbound bulk stream senders on this
+    /// session.
+    #[must_use]
+    pub fn pending_bulk_sender_count(&self) -> usize {
+        self.shared
+            .pending_bulk_senders
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
     /// Returns the authenticated 5-axis peer session context pinned at handshake.
     #[must_use]
     pub const fn peer_session(&self) -> &AuthenticatedPeerSession {
@@ -675,6 +697,10 @@ impl MultiplexedSession {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(stream_id, resp_tx);
         }
+        let _pending_guard = PendingRpcGuard {
+            shared: &self.shared,
+            stream_id,
+        };
 
         let write_started = Arc::new(AtomicBool::new(false));
         let (write_done_tx, write_done_rx) = oneshot::channel();
@@ -697,11 +723,6 @@ impl MultiplexedSession {
             })
             .is_err()
         {
-            self.shared
-                .pending_rpcs
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&stream_id);
             let kind = SocketFailureKind::ConnectionReset;
             return (
                 classify_transport_failure(
@@ -719,11 +740,6 @@ impl MultiplexedSession {
         let write_res = timeout(call_timeout, write_done_rx).await;
         match write_res {
             Err(_) => {
-                self.shared
-                    .pending_rpcs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&stream_id);
                 let phase = if write_started.load(Ordering::Acquire) {
                     WriteProgressPhase::AfterFirstPayloadByte
                 } else {
@@ -736,11 +752,6 @@ impl MultiplexedSession {
                 );
             }
             Ok(Err(_)) => {
-                self.shared
-                    .pending_rpcs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&stream_id);
                 let phase = if write_started.load(Ordering::Acquire) {
                     WriteProgressPhase::AfterFirstPayloadByte
                 } else {
@@ -753,11 +764,6 @@ impl MultiplexedSession {
                 );
             }
             Ok(Ok(Err((phase, kind)))) => {
-                self.shared
-                    .pending_rpcs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&stream_id);
                 return (
                     classify_transport_failure(contract, phase, kind, elapsed_ticks_on_timeout),
                     Some(kind),
@@ -826,11 +832,6 @@ impl MultiplexedSession {
                 )
             }
             Err(_) => {
-                self.shared
-                    .pending_rpcs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&stream_id);
                 let kind = SocketFailureKind::ReadTimeout;
                 (
                     classify_transport_failure(
@@ -878,12 +879,10 @@ impl MultiplexedSession {
                 .insert(stream_id, (Arc::clone(&flow), ack_tx));
         }
 
-        let cleanup = || {
-            self.shared
-                .pending_bulk_senders
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&stream_id);
+        let mut pending_guard = PendingBulkSenderGuard {
+            shared: &self.shared,
+            stream_id,
+            abort_session_on_drop: false,
         };
 
         let open_started = Arc::new(AtomicBool::new(false));
@@ -909,6 +908,7 @@ impl MultiplexedSession {
                         SocketFailureKind::ConnectionReset,
                     )
                 })?;
+            pending_guard.arm_session_abort();
 
             match open_done_rx.await {
                 Ok(Ok(())) => {
@@ -1040,16 +1040,14 @@ impl MultiplexedSession {
             }
         };
 
-        match timeout(transfer_timeout, run).await {
-            Ok(Ok((observed_epoch, replayed, receipt))) => {
-                cleanup();
-                (
-                    contract.classify_succeeded(receipt, observed_epoch, replayed),
-                    None,
-                )
-            }
+        let outcome = timeout(transfer_timeout, run).await;
+        pending_guard.disarm_session_abort();
+        match outcome {
+            Ok(Ok((observed_epoch, replayed, receipt))) => (
+                contract.classify_succeeded(receipt, observed_epoch, replayed),
+                None,
+            ),
             Ok(Err((fail_phase, kind))) => {
-                cleanup();
                 if fail_phase == WriteProgressPhase::AfterFirstPayloadByte {
                     self.shared.record_failure_and_abort_all(kind);
                 }
@@ -1064,7 +1062,6 @@ impl MultiplexedSession {
                 )
             }
             Err(_) => {
-                cleanup();
                 let fail_phase = if post_first_byte.load(Ordering::Acquire)
                     || open_started.load(Ordering::Acquire)
                 {
@@ -1084,6 +1081,51 @@ impl MultiplexedSession {
                     Some(kind),
                 )
             }
+        }
+    }
+}
+
+struct PendingRpcGuard<'a> {
+    shared: &'a SharedMuxState,
+    stream_id: u64,
+}
+
+impl Drop for PendingRpcGuard<'_> {
+    fn drop(&mut self) {
+        self.shared
+            .pending_rpcs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.stream_id);
+    }
+}
+
+struct PendingBulkSenderGuard<'a> {
+    shared: &'a SharedMuxState,
+    stream_id: u64,
+    abort_session_on_drop: bool,
+}
+
+impl PendingBulkSenderGuard<'_> {
+    const fn arm_session_abort(&mut self) {
+        self.abort_session_on_drop = true;
+    }
+
+    const fn disarm_session_abort(&mut self) {
+        self.abort_session_on_drop = false;
+    }
+}
+
+impl Drop for PendingBulkSenderGuard<'_> {
+    fn drop(&mut self) {
+        self.shared
+            .pending_bulk_senders
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.stream_id);
+        if self.abort_session_on_drop {
+            self.shared
+                .record_failure_and_abort_all(SocketFailureKind::UnexpectedEofOrTlsTruncation);
         }
     }
 }
@@ -1401,5 +1443,252 @@ const fn extract_codec_failure(err: &FrameCodecError) -> (WriteProgressPhase, So
             WriteProgressPhase::AfterFirstPayloadByte,
             SocketFailureKind::UnexpectedEofOrTlsTruncation,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+
+    use nlos_cell::{CellFencingToken, CellIdentity};
+    use nlos_types::{ControlDomainId, Generation, KeyId, PrincipalId, SchedulerDomainId};
+    use tokio::io::duplex;
+
+    use super::*;
+    use crate::handshake::PeerFenceClaims;
+
+    fn sample_claims(tag: u8) -> PeerFenceClaims {
+        PeerFenceClaims {
+            cell_identity: CellIdentity::from_domain(SchedulerDomainId::from_bytes([tag; 16])),
+            node_boot_generation: Generation::new(NonZeroU64::new(1).expect("non-zero")),
+            principal_id: PrincipalId::from_bytes([tag.wrapping_add(1); 16]),
+            cell_epoch: CellEpoch::from_u64(3).expect("non-zero epoch"),
+            cell_fencing_token: CellFencingToken::from_u64(30).expect("non-zero token"),
+            key_id: KeyId::from_bytes([tag.wrapping_add(2); 16]),
+            key_generation: Generation::new(NonZeroU64::new(1).expect("non-zero")),
+        }
+    }
+
+    fn sample_peer_session(local_tag: u8, peer_tag: u8) -> AuthenticatedPeerSession {
+        AuthenticatedPeerSession {
+            local_claims: sample_claims(local_tag),
+            peer_claims: sample_claims(peer_tag),
+            peer_control_domain: ControlDomainId::from_bytes([peer_tag.wrapping_add(3); 16]),
+            tls_exporter_binding: [0x55; 32],
+            session_transcript_digest: [0xaa; 32],
+        }
+    }
+
+    fn sample_contract(seed: u8) -> RemoteCallContract {
+        RemoteCallContract::new(
+            [seed; 16],
+            IdempotencyKey::from_bytes([seed.wrapping_add(0x80); 16]),
+            100,
+            2,
+            0,
+            true,
+        )
+    }
+
+    struct GatedRpcHandler {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl RpcRequestHandler for GatedRpcHandler {
+        fn handle_rpc(
+            &self,
+            request: IncomingRpcRequest,
+        ) -> Pin<Box<dyn Future<Output = RpcHandlerReply> + Send + 'static>> {
+            let entered = Arc::clone(&self.entered);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                if request.payload == b"slow" {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+                let mut out = b"ack:".to_vec();
+                out.extend_from_slice(&request.payload);
+                RpcHandlerReply {
+                    observed_epoch: CellEpoch::from_u64(3).expect("non-zero epoch"),
+                    idempotency_replayed: false,
+                    status: RpcWireStatus::Ok,
+                    payload: out,
+                }
+            })
+        }
+    }
+
+    struct StalledBulkHandler {
+        opened: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl BulkStreamHandler for StalledBulkHandler {
+        fn handle_bulk_stream(
+            &self,
+            _meta: IncomingBulkMeta,
+            mut reader: BulkStreamReader,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<BulkHandlerCompletion, &'static str>> + Send + 'static>,
+        > {
+            let opened = Arc::clone(&self.opened);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                opened.notify_one();
+                release.notified().await;
+                while (reader.next_chunk().await?).is_some() {}
+                Ok(BulkHandlerCompletion {
+                    observed_epoch: CellEpoch::from_u64(3).expect("non-zero epoch"),
+                    idempotency_replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_call_rpc_mid_await_cleans_up_pending_rpcs_immediately() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (client_r, client_w) = tokio::io::split(client_io);
+        let (server_r, server_w) = tokio::io::split(server_io);
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let rpc_handler: Arc<dyn RpcRequestHandler> = Arc::new(GatedRpcHandler {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+
+        let server = MultiplexedSession::spawn(
+            server_r,
+            server_w,
+            sample_peer_session(0x20, 0x10),
+            MuxConfig::default(),
+            Some(rpc_handler),
+            None,
+        );
+        let client = MultiplexedSession::spawn(
+            client_r,
+            client_w,
+            sample_peer_session(0x10, 0x20),
+            MuxConfig::default(),
+            None,
+            None,
+        );
+
+        let contract_slow = sample_contract(1);
+        {
+            let timed_call = timeout(
+                Duration::from_millis(25),
+                client.call_rpc(&contract_slow, b"slow".to_vec(), Duration::from_secs(5), 10),
+            );
+            tokio::pin!(timed_call);
+            tokio::select! {
+                res = &mut timed_call => panic!("expected timeout cancellation, got {res:?}"),
+                () = entered.notified() => {}
+            }
+            assert!(timed_call.await.is_err());
+        }
+
+        // Immediately upon dropping `call_rpc`, `pending_rpcs` must have 0 leaked entries.
+        assert_eq!(client.pending_rpc_count(), 0);
+
+        // Release the delayed server reply; late response for stream 1 is ignored
+        // and subsequent RPCs on the same multiplexed session succeed cleanly.
+        release.notify_one();
+        let contract_fast = sample_contract(2);
+        let (outcome, fail_kind) = client
+            .call_rpc(&contract_fast, b"fast".to_vec(), Duration::from_secs(5), 10)
+            .await;
+        assert!(fail_kind.is_none());
+        match outcome {
+            RemoteCallOutcome::Succeeded { value, .. } => {
+                assert_eq!(value.payload, b"ack:fast");
+            }
+            other => panic!("expected Succeeded on follow-up RPC, got {other:?}"),
+        }
+        assert_eq!(client.pending_rpc_count(), 0);
+
+        client.close();
+        server.close();
+    }
+
+    #[tokio::test]
+    async fn dropping_send_bulk_chunks_mid_await_cleans_up_pending_bulk_senders_immediately() {
+        let (client_io, server_io) = duplex(256 * 1024);
+        let (client_r, client_w) = tokio::io::split(client_io);
+        let (server_r, server_w) = tokio::io::split(server_io);
+
+        let opened = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let bulk_handler: Arc<dyn BulkStreamHandler> = Arc::new(StalledBulkHandler {
+            opened: Arc::clone(&opened),
+            release: Arc::clone(&release),
+        });
+
+        let mux_cfg = MuxConfig {
+            bulk_window_bytes: MAX_BULK_CHUNK_BYTES,
+            ..MuxConfig::default()
+        };
+        let server = MultiplexedSession::spawn(
+            server_r,
+            server_w,
+            sample_peer_session(0x20, 0x10),
+            mux_cfg,
+            None,
+            Some(bulk_handler),
+        );
+        let client = MultiplexedSession::spawn(
+            client_r,
+            client_w,
+            sample_peer_session(0x10, 0x20),
+            mux_cfg,
+            None,
+            None,
+        );
+
+        // Two 64 KiB chunks against a 64 KiB credit window: chunk 0 fills the
+        // window while `StalledBulkHandler` holds without draining, parking
+        // `send_bulk_chunks` mid-`.await` on chunk 1's window-credit wait.
+        let contract = sample_contract(3);
+        let chunks = vec![
+            vec![0xaa; MAX_BULK_CHUNK_BYTES],
+            vec![0xbb; MAX_BULK_CHUNK_BYTES],
+        ];
+        let total_bytes = (2 * MAX_BULK_CHUNK_BYTES) as u64;
+        {
+            let timed_bulk = timeout(
+                Duration::from_millis(30),
+                client.send_bulk_chunks(&contract, total_bytes, chunks, Duration::from_secs(5), 10),
+            );
+            tokio::pin!(timed_bulk);
+            tokio::select! {
+                res = &mut timed_bulk => panic!("expected timeout cancellation, got {res:?}"),
+                () = opened.notified() => {}
+            }
+            assert!(timed_bulk.await.is_err());
+        }
+
+        // Immediately upon dropping `send_bulk_chunks`, `pending_bulk_senders`
+        // must contain 0 leaked entries.
+        assert_eq!(client.pending_bulk_sender_count(), 0);
+        assert!(!client.is_healthy());
+
+        // Unblock the server handler and verify the aborted half-open stream
+        // cleans up both inbound stream state and buffered byte accounting.
+        release.notify_one();
+        for _ in 0..50 {
+            if server.active_inbound_bulk_stream_count() == 0
+                && server.current_bulk_buffered_bytes() == 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(server.active_inbound_bulk_stream_count(), 0);
+        assert_eq!(server.current_bulk_buffered_bytes(), 0);
+
+        client.close();
+        server.close();
     }
 }

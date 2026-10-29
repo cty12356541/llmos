@@ -442,33 +442,25 @@ where
         if !connection.usable {
             return Err(IpcError::ConnectionUnusable);
         }
+        // Pre-poison `usable` before entering any `.await` suspension point so
+        // dropping/cancelling this future mid-send or mid-receive prevents
+        // subsequent calls from reusing a half-written or stale-buffered stream.
+        connection.usable = false;
         if let Err(error) = connection.framed.send(&wire).await {
-            // 写前界检失败(FrameTooLarge)零字节上网,连接仍然完好,不毒化
+            // 写前界检失败(FrameTooLarge)零字节上网,连接仍然完好,恢复可用
             // ——与编码失败路径对称(深审计 36 D2);其余 send 失败(写超时/
-            // 写中 I/O 错误)可能已留下部分写,毒化并要求上层重连。
-            if !matches!(error, IpcError::FrameTooLarge { .. }) {
-                connection.usable = false;
+            // 写中 I/O 错误)可能已留下部分写,保持 usable = false 要求上层重连。
+            if matches!(error, IpcError::FrameTooLarge { .. }) {
+                connection.usable = true;
             }
             return Err(error);
         }
-        let response_wire = match connection.framed.receive().await {
-            Ok(wire) => wire,
-            Err(error) => {
-                connection.usable = false;
-                return Err(error);
-            }
-        };
-        let response = match decode_exchange_response(&response_wire) {
-            Ok(response) => response,
-            Err(error) => {
-                connection.usable = false;
-                return Err(error.into());
-            }
-        };
+        let response_wire = connection.framed.receive().await?;
+        let response = decode_exchange_response(&response_wire)?;
         if response.envelope().request_id != request_id {
-            connection.usable = false;
             return Err(IpcError::RequestIdMismatch);
         }
+        connection.usable = true;
         Ok(response)
     }
 }
