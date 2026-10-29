@@ -33,14 +33,13 @@
 
 mod common;
 
-use std::fs;
 use std::path::Path;
 
 use common::{
     CuttableSignChannel, FileSignChannel, acquire_incumbent_lease, assignment_state_codes,
     bootstrap_barrier_signer, commit_segment, demand_count, fixed_hex, heartbeat_counter, hex,
-    lease_history_rows, publish, raw_count, spawn_fault_child, spawn_heartbeat,
-    wait_for_file_while_alive, wait_heartbeat_at_least,
+    lease_history_rows, publish, raw_count, remove_file_if_exists_retried, spawn_fault_child,
+    spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least, write_retried,
 };
 use nlos_identity::IdentityAuthority;
 use nlos_slice_k::{CrossCellTakeoverRequest, TakeoverDriveError, drive_cross_cell_takeover};
@@ -173,7 +172,7 @@ fn migration_with_mid_chain_fault_reaches_the_fault_free_terminal_state() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -207,6 +206,7 @@ fn migration_with_mid_chain_fault_reaches_the_fault_free_terminal_state() {
         SqliteTaskAuthority::open(&store_path).expect("successor opens the shared task store");
     let identity = IdentityAuthority::open(store_dir.path().join("identity"))
         .expect("successor opens identity root");
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let hb_baseline = heartbeat_counter(&heartbeat);
     assert!(hb_baseline > 0);
 
@@ -418,7 +418,7 @@ fn migration_with_mid_chain_fault_reaches_the_fault_free_terminal_state() {
         "both Cells must be live when the terminal-state evidence is cited"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -429,6 +429,6 @@ fn migration_with_mid_chain_fault_reaches_the_fault_free_terminal_state() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

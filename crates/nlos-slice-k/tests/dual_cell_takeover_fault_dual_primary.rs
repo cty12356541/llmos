@@ -53,7 +53,6 @@
 
 mod common;
 
-use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -62,8 +61,8 @@ use common::{
     assert_invariants_all_hold, assert_successor_wait_left_no_durable_effect,
     assignment_state_codes, bootstrap_barrier_signer, commit_segment, demand_count, fixed_hex,
     heartbeat_counter, hex, holder_from_pid, lease_history_rows, publish, raw_count,
-    spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least,
-    wait_while_alive,
+    read_to_string_retried, remove_file_if_exists_retried, spawn_fault_child, spawn_heartbeat,
+    wait_for_file_while_alive, wait_heartbeat_at_least, wait_while_alive, write_retried,
 };
 use ed25519_dalek::SigningKey;
 use nlos_cell::{CellDirectory, CheckpointDigest, FailureDetectorConfig};
@@ -367,7 +366,7 @@ fn dual_primary_partition_arbitrates_a_single_winner() {
         &release,
         &post_cas,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -412,6 +411,7 @@ fn dual_primary_partition_arbitrates_a_single_winner() {
         SqliteTaskAuthority::open(&store_path).expect("successor opens the shared task store");
     let identity = IdentityAuthority::open(store_dir.path().join("identity"))
         .expect("successor opens identity root");
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let hb_baseline = heartbeat_counter(&heartbeat);
     assert!(hb_baseline > 0, "the old Cell is heartbeating");
     wait_while_alive(
@@ -511,14 +511,14 @@ fn dual_primary_partition_arbitrates_a_single_winner() {
 
     // Stage 4: the still-alive old Cell proves the loser's face — every
     // submission rejected, nothing durable appended.
-    fs::write(&post_cas, b"post-cas").expect("signal the post-CAS stage");
+    write_retried(&post_cas, b"post-cas").expect("signal the post-CAS stage");
     wait_while_alive(
         &mut child,
         "the loser's arbitration receipts",
         &out,
         "post_cas_done",
     );
-    let receipts = fs::read_to_string(&out).expect("read the loser's receipts");
+    let receipts = read_to_string_retried(&out).expect("read the loser's receipts");
     assert!(receipts.contains("post_cas:renew_refused:authority_lease_held"));
     assert!(
         receipts.contains("post_cas:permit_rejected:authority_lease_fenced")
@@ -635,7 +635,7 @@ fn dual_primary_partition_arbitrates_a_single_winner() {
         "both Cells must be live when the dual-primary evidence is cited"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -647,6 +647,6 @@ fn dual_primary_partition_arbitrates_a_single_winner() {
         &release,
         &post_cas,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

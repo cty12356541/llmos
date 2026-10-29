@@ -63,15 +63,14 @@
 
 mod common;
 
-use std::fs;
 use std::path::Path;
 
 use common::{
     CuttableSignChannel, FileSignChannel, MidFlightAttempts, acquire_incumbent_lease, append_line,
     assignment_state_codes, bootstrap_barrier_signer, commit_segment, fixed_hex, heartbeat_counter,
     hex, holder_from_pid, lease_history_rows, open_mid_flight_attempts, publish, raw_count,
-    spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least,
-    wait_while_alive,
+    read_to_string_retried, remove_file_if_exists_retried, spawn_fault_child, spawn_heartbeat,
+    wait_for_file_while_alive, wait_heartbeat_at_least, wait_while_alive, write_retried,
 };
 use nlos_identity::IdentityAuthority;
 use nlos_slice_k::{
@@ -446,7 +445,7 @@ fn stale_epoch_submissions_are_all_refused() {
         &sign_request,
         &sign_response,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -476,6 +475,7 @@ fn stale_epoch_submissions_are_all_refused() {
     let domain = ControlDomainId::from_bytes(fixed_hex(lines.next().expect("domain line")));
     let key_id = KeyId::from_bytes(fixed_hex(lines.next().expect("key line")));
     assert_ne!(child_pid, std::process::id());
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let successor_store =
         SqliteTaskAuthority::open(&store_path).expect("successor opens the shared task store");
     let identity = IdentityAuthority::open(store_dir.path().join("identity"))
@@ -544,14 +544,14 @@ fn stale_epoch_submissions_are_all_refused() {
 
     // Stage 3: the still-live old Cell submits under the stale term-1
     // lease — every injectable class must be refused.
-    fs::write(&stale, b"stale").expect("signal the stale-submission stage");
+    write_retried(&stale, b"stale").expect("signal the stale-submission stage");
     wait_while_alive(
         &mut child,
         "the stale-submission receipts",
         &out,
         "stale_done",
     );
-    let receipts = fs::read_to_string(&out).expect("read the stale receipts");
+    let receipts = read_to_string_retried(&out).expect("read the stale receipts");
     assert!(receipts.contains("stale:fence_prepare:authority_lease_fenced"));
     assert!(
         receipts.contains("stale:permit:authority_lease_fenced")
@@ -601,7 +601,7 @@ fn stale_epoch_submissions_are_all_refused() {
         "both Cells must be live when the stale-epoch evidence is cited"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -612,6 +612,6 @@ fn stale_epoch_submissions_are_all_refused() {
         &sign_request,
         &sign_response,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

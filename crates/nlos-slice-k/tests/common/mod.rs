@@ -84,10 +84,66 @@ pub(crate) const POLL: Duration = Duration::from_millis(10);
 pub(crate) const CHILD_WAIT: Duration = Duration::from_secs(30);
 /// Heartbeat cadence of the old Cell's liveness thread.
 pub(crate) const HEARTBEAT: Duration = Duration::from_millis(50);
+/// Retry cadence for transient Windows file-sharing / Defender scan locks.
+const FILE_LOCK_RETRY_STEP: Duration = Duration::from_millis(5);
+/// Total retry budget for transient Windows file-sharing / Defender scan locks.
+const FILE_LOCK_RETRY_BUDGET: Duration = Duration::from_millis(500);
+/// Retry attempts for removing [`TempDir`] on drop while Windows releases handles.
+const TEMP_DIR_REMOVE_RETRIES: usize = 30;
+/// Delay between [`TempDir`] removal retries.
+const TEMP_DIR_REMOVE_RETRY_STEP: Duration = Duration::from_millis(10);
 
 // ---------------------------------------------------------------------------
 // Temp dirs, atomic publication, codec — the dual-Cell family conventions.
 // ---------------------------------------------------------------------------
+
+fn is_transient_file_lock(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(5 | 32))
+}
+
+/// Retries `op` when Windows returns a transient sharing/access lock
+/// (`PermissionDenied`, `ERROR_ACCESS_DENIED = 5`, or
+/// `ERROR_SHARING_VIOLATION = 32`), stepping every 5 ms up to 500 ms.
+pub(crate) fn retry_transient_file_lock<T>(
+    mut op: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let deadline = Instant::now() + FILE_LOCK_RETRY_BUDGET;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error) if is_transient_file_lock(&error) && Instant::now() < deadline => {
+                thread::sleep(FILE_LOCK_RETRY_STEP);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Reads `path` to string, retrying transient Windows file-sharing locks.
+pub(crate) fn read_to_string_retried(path: &Path) -> std::io::Result<String> {
+    retry_transient_file_lock(|| fs::read_to_string(path))
+}
+
+/// Writes `contents` to `path`, retrying transient Windows file-sharing locks.
+pub(crate) fn write_retried(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let bytes = contents.as_ref();
+    retry_transient_file_lock(|| fs::write(path, bytes))
+}
+
+/// Removes `path`, retrying transient Windows file-sharing locks.
+pub(crate) fn remove_file_retried(path: &Path) -> std::io::Result<()> {
+    retry_transient_file_lock(|| fs::remove_file(path))
+}
+
+/// Removes `path` if present, retrying transient Windows file-sharing locks.
+pub(crate) fn remove_file_if_exists_retried(path: &Path) -> std::io::Result<()> {
+    match remove_file_retried(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 /// Per-run scratch directory (auto-removed on drop).
 pub(crate) struct TempDir {
@@ -103,7 +159,7 @@ impl TempDir {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create cs0d temp root");
+        retry_transient_file_lock(|| fs::create_dir_all(&root)).expect("create cs0d temp root");
         Self { root }
     }
 
@@ -114,31 +170,53 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        match fs::remove_dir_all(&self.root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("remove cs0d temp root: {error}"),
+        let mut last_error: Option<std::io::Error> = None;
+        for attempt in 0..=TEMP_DIR_REMOVE_RETRIES {
+            match fs::remove_dir_all(&self.root) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < TEMP_DIR_REMOVE_RETRIES {
+                        thread::sleep(TEMP_DIR_REMOVE_RETRY_STEP);
+                    }
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            if std::thread::panicking() {
+                eprintln!(
+                    "warning: failed to remove cs0d temp root {} during unwind: {error}",
+                    self.root.display()
+                );
+            } else {
+                panic!("remove cs0d temp root {}: {error}", self.root.display());
+            }
         }
     }
+}
+
+/// Atomically (temp file + rename) publishes `payload` at `path`, retrying
+/// transient Windows file-sharing locks and returning any persistent I/O error.
+pub(crate) fn try_publish(path: &Path, payload: &str) -> std::io::Result<()> {
+    let mut staging = path.as_os_str().to_os_string();
+    staging.push(".tmp");
+    let staging = PathBuf::from(staging);
+    write_retried(&staging, payload)?;
+    retry_transient_file_lock(|| fs::rename(&staging, path))
 }
 
 /// Atomically (temp file + rename) publishes `payload` at `path`, so the
 /// polling reader never observes a half-written file.
 pub(crate) fn publish(path: &Path, payload: &str) {
-    let mut staging = path.as_os_str().to_os_string();
-    staging.push(".tmp");
-    let staging = PathBuf::from(staging);
-    fs::write(&staging, payload).expect("write staging file");
-    fs::rename(&staging, path).expect("publish file atomically");
+    try_publish(path, payload).expect("publish file atomically");
 }
 
 /// Appends one receipt line to a stage receipt file.
 pub(crate) fn append_line(path: &Path, line: &str) {
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-        .expect("open receipt file for append");
+    let mut file =
+        retry_transient_file_lock(|| OpenOptions::new().append(true).create(true).open(path))
+            .expect("open receipt file for append");
     writeln!(file, "{line}").expect("append receipt line");
 }
 
@@ -567,39 +645,88 @@ pub(crate) fn open_mid_flight_attempts(
 // Child side: spawn, heartbeat thread, the block-aware sign server.
 // ---------------------------------------------------------------------------
 
-/// Spawns one `#[ignore]` child helper of this test binary (the dual-Cell
-/// convention: `current_exe` + `--exact` + env, no product IPC).
-pub(crate) fn spawn_fault_child(helper: &str, envs: &[(&str, std::ffi::OsString)]) -> Child {
-    Command::new(std::env::current_exe().expect("test executable"))
-        .args(["--exact", helper, "--nocapture", "--ignored"])
-        .envs(
-            envs.iter()
-                .map(|(key, value)| (key.to_string(), value.clone())),
-        )
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn the child Cell process")
+/// RAII guard around a spawned fault-harness child Cell process.
+///
+/// `std::process::Child` does not terminate the OS process on drop; if a
+/// test panics mid-flight, an unguarded child stays alive holding SQLite
+/// and temp-file handles inside [`TempDir`], both leaking an orphan
+/// process and blocking temp-directory cleanup on Windows (`os error 32`).
+/// Dropping this guard best-effort kills and reaps any still-running child
+/// without panicking.
+pub(crate) struct FaultChildGuard(Child);
+
+impl std::ops::Deref for FaultChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-/// Old-Cell liveness thread: appends `hb <n>` (n increasing) to the
-/// heartbeat file every 50 ms until the stop flag appears, then `hb_end`.
-/// This is the file outside the blocked demand channel that proves the
-/// child process stays alive (and executing) through every cut window.
+impl std::ops::DerefMut for FaultChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for FaultChildGuard {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+/// Spawns one `#[ignore]` child helper of this test binary (the dual-Cell
+/// convention: `current_exe` + `--exact` + env, no product IPC).
+pub(crate) fn spawn_fault_child(
+    helper: &str,
+    envs: &[(&str, std::ffi::OsString)],
+) -> FaultChildGuard {
+    FaultChildGuard(
+        Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", helper, "--nocapture", "--ignored"])
+            .envs(
+                envs.iter()
+                    .map(|(key, value)| (key.to_string(), value.clone())),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn the child Cell process"),
+    )
+}
+
+/// Old-Cell liveness thread: synchronously records an initial `hb <n>` beat
+/// before returning (so any registration published after `spawn_heartbeat`
+/// guarantees `heartbeat_counter >= 1`), then appends monotonically
+/// increasing `hb <n>` lines every 50 ms until the stop flag appears, then
+/// `hb_end`. This is the file outside the blocked demand channel that
+/// proves the child process stays alive (and executing) through every cut
+/// window.
 pub(crate) fn spawn_heartbeat(heartbeat: &Path, stop: &Path) -> thread::JoinHandle<()> {
+    let mut counter = heartbeat_counter(heartbeat);
+    if !stop.exists() {
+        counter += 1;
+        append_line(heartbeat, &format!("hb {counter}"));
+    }
     let heartbeat = heartbeat.to_path_buf();
     let stop = stop.to_path_buf();
     thread::spawn(move || {
-        let mut counter: u64 = 0;
         loop {
+            if stop.exists() {
+                append_line(&heartbeat, "hb_end");
+                return;
+            }
+            thread::sleep(HEARTBEAT);
             if stop.exists() {
                 append_line(&heartbeat, "hb_end");
                 return;
             }
             counter += 1;
             append_line(&heartbeat, &format!("hb {counter}"));
-            thread::sleep(HEARTBEAT);
         }
     })
 }
@@ -609,7 +736,8 @@ pub(crate) fn spawn_heartbeat(heartbeat: &Path, stop: &Path) -> thread::JoinHand
 /// appears. While the block flag exists, every arriving demand is refused
 /// (neither consumed nor answered) — the child-side half of the injected
 /// cut. Every served demand is appended to the heartbeat file as
-/// `demand <n>` so the parent can prove delivery counts.
+/// `demand <n>` before the response is published so the parent can prove
+/// delivery counts without racing response visibility.
 pub(crate) fn serve_observations(
     sign_request: &Path,
     sign_response: &Path,
@@ -625,9 +753,13 @@ pub(crate) fn serve_observations(
             Instant::now() < deadline,
             "old Cell timed out serving barrier observations"
         );
-        let Ok(request) = fs::read_to_string(sign_request) else {
-            thread::sleep(POLL);
-            continue;
+        let request = match read_to_string_retried(sign_request) {
+            Ok(request) => request,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                thread::sleep(POLL);
+                continue;
+            }
+            Err(error) => panic!("read sign request: {error}"),
         };
         if block.exists() {
             // Refuse: leave the request unconsumed and unanswered. The
@@ -635,7 +767,7 @@ pub(crate) fn serve_observations(
             thread::sleep(POLL);
             continue;
         }
-        fs::remove_file(sign_request).expect("consume sign request");
+        remove_file_retried(sign_request).expect("consume sign request");
         let mut lines = request.lines();
         let takeover_receipt_id =
             ReceiptId::from_bytes(fixed_hex(lines.next().expect("takeover receipt line")));
@@ -684,6 +816,8 @@ pub(crate) fn serve_observations(
             fence_set_root,
         );
         let signature = signing_key.sign(&message).to_bytes();
+        served += 1;
+        append_line(heartbeat, &format!("demand {served}"));
         publish(
             sign_response,
             &format!(
@@ -693,8 +827,6 @@ pub(crate) fn serve_observations(
                 hex(signature.as_slice()),
             ),
         );
-        served += 1;
-        append_line(heartbeat, &format!("demand {served}"));
     }
 }
 
@@ -704,7 +836,7 @@ pub(crate) fn serve_observations(
 /// first heartbeat when the parent's bounded wait loop polls, and that race
 /// must keep polling (the loop's deadline bounds it), not panic.
 pub(crate) fn heartbeat_counter(path: &Path) -> u64 {
-    let text = match fs::read_to_string(path) {
+    let text = match read_to_string_retried(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
         Err(error) => panic!("read heartbeat file: {error}"),
@@ -718,7 +850,7 @@ pub(crate) fn heartbeat_counter(path: &Path) -> u64 {
 /// Parses how many demands the child served so far (same not-yet-created
 /// semantics as [`heartbeat_counter`]).
 pub(crate) fn demand_count(path: &Path) -> usize {
-    let text = match fs::read_to_string(path) {
+    let text = match read_to_string_retried(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
         Err(error) => panic!("read heartbeat file: {error}"),
@@ -760,8 +892,11 @@ pub(crate) fn wait_heartbeat_at_least(child: &mut Child, heartbeat: &Path, at_le
 pub(crate) fn wait_while_alive(child: &mut Child, what: &str, path: &Path, needle: &str) {
     let deadline = Instant::now() + CHILD_WAIT;
     loop {
-        if fs::read_to_string(path).is_ok_and(|text| text.contains(needle)) {
-            return;
+        match read_to_string_retried(path) {
+            Ok(text) if text.contains(needle) => return,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("read {what} file {}: {error}", path.display()),
         }
         match child.try_wait() {
             Ok(Some(status)) => panic!("child exited before {what}: {status:?}"),
@@ -778,8 +913,10 @@ pub(crate) fn wait_while_alive(child: &mut Child, what: &str, path: &Path, needl
 pub(crate) fn wait_for_file_while_alive(child: &mut Child, what: &str, path: &Path) -> String {
     let deadline = Instant::now() + CHILD_WAIT;
     loop {
-        if let Ok(text) = fs::read_to_string(path) {
-            return text;
+        match read_to_string_retried(path) {
+            Ok(text) => return text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("read {what} file {}: {error}", path.display()),
         }
         match child.try_wait() {
             Ok(Some(status)) => panic!("child exited before {what}: {status:?}"),
@@ -831,7 +968,9 @@ impl BarrierObservationSource for FileSignChannel<'_> {
         &mut self,
         demand: BarrierObservationDemand,
     ) -> Result<SignedBarrierObservation, TakeoverDriveError> {
-        let _ = fs::remove_file(&self.response_path);
+        remove_file_if_exists_retried(&self.response_path).map_err(|error| {
+            TakeoverDriveError::BarrierSource(format!("clear stale response: {error}"))
+        })?;
         let participant = demand.participant;
         let payload = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n",
@@ -842,7 +981,7 @@ impl BarrierObservationSource for FileSignChannel<'_> {
             hex(participant.admission_receipt_id.as_bytes()),
             hex(demand.fence_set_root.as_slice()),
         );
-        fs::write(&self.request_path, payload)
+        try_publish(&self.request_path, &payload)
             .map_err(|error| TakeoverDriveError::BarrierSource(format!("sign request: {error}")))?;
         let response = wait_for_file_while_alive(
             self.child,
@@ -854,7 +993,7 @@ impl BarrierObservationSource for FileSignChannel<'_> {
             ReceiptId::from_bytes(fixed_hex(lines.next().expect("remote receipt line")));
         let barrier_digest: [u8; 32] = fixed_hex(lines.next().expect("barrier digest line"));
         let signature: [u8; 64] = fixed_hex(lines.next().expect("signature line"));
-        fs::remove_file(&self.response_path).map_err(|error| {
+        remove_file_retried(&self.response_path).map_err(|error| {
             TakeoverDriveError::BarrierSource(format!("consume response: {error}"))
         })?;
         Ok(SignedBarrierObservation {

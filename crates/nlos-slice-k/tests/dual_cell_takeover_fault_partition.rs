@@ -45,15 +45,14 @@
 
 mod common;
 
-use std::fs;
 use std::path::Path;
 
 use common::{
     CuttableSignChannel, FileSignChannel, acquire_incumbent_lease, append_line,
     assert_successor_wait_left_no_durable_effect, assignment_state_codes, bootstrap_barrier_signer,
     commit_segment, demand_count, fixed_hex, heartbeat_counter, hex, lease_history_rows, publish,
-    raw_count, spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive,
-    wait_heartbeat_at_least,
+    raw_count, remove_file_if_exists_retried, spawn_fault_child, spawn_heartbeat,
+    wait_for_file_while_alive, wait_heartbeat_at_least, write_retried,
 };
 use nlos_identity::IdentityAuthority;
 use nlos_slice_k::{CrossCellTakeoverRequest, TakeoverDriveError, drive_cross_cell_takeover};
@@ -144,6 +143,7 @@ fn child_partition_old_cell_helper() {
     let identity = IdentityAuthority::open(Path::new(&store_dir).join("identity"))
         .expect("old Cell opens the identity root");
     let binding = bootstrap_barrier_signer(&identity, SIGNER_SEED);
+    let heartbeat_thread = spawn_heartbeat(Path::new(&heartbeat), Path::new(&release));
     publish(
         Path::new(&out),
         &format!(
@@ -154,7 +154,6 @@ fn child_partition_old_cell_helper() {
             hex(binding.key_id.as_bytes()),
         ),
     );
-    let heartbeat_thread = spawn_heartbeat(Path::new(&heartbeat), Path::new(&release));
     common::serve_observations(
         Path::new(&sign_request),
         Path::new(&sign_response),
@@ -193,7 +192,7 @@ fn partition_cut_blocks_takeover_until_channel_recovers() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -233,6 +232,7 @@ fn partition_cut_blocks_takeover_until_channel_recovers() {
         .expect("read the incumbent lease");
     assert_eq!(pre_lease.term, 1);
     assert_eq!(pre_lease.holder_id, child_holder);
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let hb_baseline = heartbeat_counter(&heartbeat);
     assert!(hb_baseline > 0, "the old Cell is heartbeating");
 
@@ -514,7 +514,7 @@ fn partition_cut_blocks_takeover_until_channel_recovers() {
         "both Cells must be live when the recovery evidence is cited"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -525,6 +525,6 @@ fn partition_cut_blocks_takeover_until_channel_recovers() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

@@ -40,14 +40,13 @@
 
 mod common;
 
-use std::fs;
 use std::path::Path;
 
 use common::{
     CuttableSignChannel, FileSignChannel, acquire_incumbent_lease, assert_invariants_all_hold,
     commit_segment, demand_count, fixed_hex, heartbeat_counter, hex, holder_from_pid,
-    kill_and_reap, publish, spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive,
-    wait_heartbeat_at_least,
+    kill_and_reap, publish, remove_file_if_exists_retried, remove_file_retried, spawn_fault_child,
+    spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least, write_retried,
 };
 use ed25519_dalek::SigningKey;
 use nlos_cell::{CellDirectory, CellIdentity, CheckpointDigest, CheckpointFact};
@@ -295,7 +294,7 @@ fn restart_continues_from_durable_prefix_and_converges() {
     let sign_response = base.join(format!("nlos-slice-k-cs0d-restart-resp-{stamp}.txt"));
     let release = base.join(format!("nlos-slice-k-cs0d-restart-release-{stamp}.flag"));
     for path in [&out, &heartbeat, &sign_request, &sign_response, &release] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
     let envs = |role: &str| {
         [
@@ -334,6 +333,7 @@ fn restart_continues_from_durable_prefix_and_converges() {
     let issuer = PrincipalId::from_bytes(fixed_hex(signer_lines[0]));
     let domain = ControlDomainId::from_bytes(fixed_hex(signer_lines[1]));
     let key_id = KeyId::from_bytes(fixed_hex(signer_lines[2]));
+    wait_heartbeat_at_least(&mut first, &heartbeat, 1);
     let hb_before_kill = heartbeat_counter(&heartbeat);
     assert!(hb_before_kill > 0);
     assert_ne!(first_pid, std::process::id());
@@ -347,10 +347,11 @@ fn restart_continues_from_durable_prefix_and_converges() {
     // Its registration goes to the same receipt path, so the first
     // generation's receipt is cleared first (wait_for_file must not read
     // the stale one).
-    fs::remove_file(&out).expect("clear the first generation's receipt");
+    remove_file_retried(&out).expect("clear the first generation's receipt");
     let mut child = spawn_fault_child("child_restart_old_cell_helper", &envs("restart"));
     let restart_registration =
         wait_for_file_while_alive(&mut child, "restarted process registration", &out);
+    wait_heartbeat_at_least(&mut child, &heartbeat, hb_before_kill + 1);
     let (restart_pid, restart_cell, restart_digest) = read_registration(&restart_registration);
     assert_eq!(
         restart_cell, old_cell,
@@ -477,13 +478,13 @@ fn restart_continues_from_durable_prefix_and_converges() {
         "both Cells must be live when the restart evidence is cited"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(
         status.success(),
         "restarted Cell process failed: {status:?}"
     );
     for path in [&out, &heartbeat, &sign_request, &sign_response, &release] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

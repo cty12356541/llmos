@@ -40,7 +40,8 @@ mod common;
 use common::{
     FileSignChannel, acquire_incumbent_lease, assignment_state_codes, bootstrap_barrier_signer,
     commit_segment, fixed_hex, heartbeat_counter, hex, lease_history_rows, publish, raw_count,
-    spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least,
+    remove_file_if_exists_retried, spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive,
+    wait_heartbeat_at_least, write_retried,
 };
 use nlos_identity::IdentityAuthority;
 use nlos_slice_k::{BarrierObservationDemand, BarrierObservationSource as _};
@@ -176,7 +177,7 @@ fn duplicate_message_replays_are_idempotent() {
         &block,
         &release,
     ] {
-        let _ = std::fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -205,6 +206,7 @@ fn duplicate_message_replays_are_idempotent() {
     let domain = ControlDomainId::from_bytes(fixed_hex(lines.next().expect("domain line")));
     let key_id = KeyId::from_bytes(fixed_hex(lines.next().expect("key line")));
     assert_ne!(child_pid, std::process::id());
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let parent_holder = common::holder_from_pid(std::process::id(), PARENT_HOLDER_TAG);
     let store = SqliteTaskAuthority::open(&store_path).expect("successor opens the shared store");
     let identity = IdentityAuthority::open(store_dir.path().join("identity"))
@@ -397,7 +399,7 @@ fn duplicate_message_replays_are_idempotent() {
         "both Cells must be live when the duplicate evidence is cited"
     );
 
-    std::fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -408,6 +410,6 @@ fn duplicate_message_replays_are_idempotent() {
         &block,
         &release,
     ] {
-        let _ = std::fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }

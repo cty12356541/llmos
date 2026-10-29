@@ -32,15 +32,15 @@
 
 mod common;
 
-use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::{
     CuttableSignChannel, FileSignChannel, bootstrap_barrier_signer, demand_count, fixed_hex,
-    heartbeat_counter, hex, publish, spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive,
-    wait_heartbeat_at_least,
+    heartbeat_counter, hex, publish, remove_file_if_exists_retried, remove_file_retried,
+    spawn_fault_child, spawn_heartbeat, wait_for_file_while_alive, wait_heartbeat_at_least,
+    write_retried,
 };
 use ed25519_dalek::SigningKey;
 use nlos_identity::IdentityAuthority;
@@ -89,6 +89,7 @@ fn child_channel_old_cell_helper() {
     let identity = IdentityAuthority::open(Path::new(&store_dir).join("identity"))
         .expect("old Cell opens the identity root");
     let binding = bootstrap_barrier_signer(&identity, SIGNER_SEED);
+    let heartbeat_thread = spawn_heartbeat(Path::new(&heartbeat), Path::new(&release));
     publish(
         Path::new(&out),
         &format!(
@@ -99,7 +100,6 @@ fn child_channel_old_cell_helper() {
             hex(binding.key_id.as_bytes()),
         ),
     );
-    let heartbeat_thread = spawn_heartbeat(Path::new(&heartbeat), Path::new(&release));
     common::serve_observations(
         Path::new(&sign_request),
         Path::new(&sign_response),
@@ -152,7 +152,7 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 
     let mut child = spawn_fault_child(
@@ -181,6 +181,7 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
     let domain = ControlDomainId::from_bytes(fixed_hex(lines.next().expect("domain line")));
     let key_id = KeyId::from_bytes(fixed_hex(lines.next().expect("key line")));
     assert_ne!(child_pid, std::process::id());
+    wait_heartbeat_at_least(&mut child, &heartbeat, 1);
     let hb_baseline = heartbeat_counter(&heartbeat);
     assert!(hb_baseline > 0, "the old Cell must be heartbeating already");
 
@@ -233,10 +234,10 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
     // the old Cell has looped at least once under the flag does a demand
     // file get written directly (bypassing the parent-side wrapper). The
     // old Cell neither consumes nor answers it — and still lives.
-    fs::write(&block, b"block").expect("set the child-side block flag");
+    write_retried(&block, b"block").expect("set the child-side block flag");
     let hb_at_block = heartbeat_counter(&heartbeat);
     wait_heartbeat_at_least(&mut child, &heartbeat, hb_at_block + 2);
-    fs::write(&sign_request, "leaked\npayload\n").expect("write a leaked demand file");
+    publish(&sign_request, "leaked\npayload\n");
     wait_heartbeat_at_least(&mut child, &heartbeat, hb_at_block + 6);
     assert!(
         !sign_response.exists(),
@@ -254,8 +255,8 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
             .is_none(),
         "the old Cell must stay alive through the block window"
     );
-    fs::remove_file(&sign_request).expect("clean the leaked demand");
-    fs::remove_file(&block).expect("clear the block flag");
+    remove_file_retried(&sign_request).expect("clean the leaked demand");
+    remove_file_retried(&block).expect("clear the block flag");
 
     // Stage 5: restore resumes delivery — the same demand round-trips and
     // the served counter advances to two.
@@ -278,7 +279,7 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
         "the old Cell must still be alive after restore"
     );
 
-    fs::write(&release, b"release").expect("signal child release");
+    write_retried(&release, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
     assert!(status.success(), "old Cell process failed: {status:?}");
     for path in [
@@ -289,6 +290,6 @@ fn cut_channel_blocks_delivery_while_both_cells_stay_alive() {
         &block,
         &release,
     ] {
-        let _ = fs::remove_file(path);
+        let _ = remove_file_if_exists_retried(path);
     }
 }
