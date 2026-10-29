@@ -1,7 +1,7 @@
-# 需求 Claim 台账（claims.yaml，schema v1.1，W34-B 阶段 B 全量回填 + W67 阶段 C 全量回填）
+# 需求 Claim 台账（claims.yaml，schema v1.3，W34-B 阶段 B + W67/W73 阶段 C + W74 阶段 D 全量回填 + W76 v1.3 兼容升级与 B-SCALE-RELEASE-001 回填；阶段 E 立项零空壳 claim）
 #
 # 纪律：
-# - 只登记 stage-b-progress §3/§6.5 与 stage-c-progress §C.3/§C.5.5 行已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
+# - 只登记 stage-{b,c,d,e}-progress 权威进度单已断言且有落盘证据支撑的事实（source 字段给出出处行与基线 commit），不发明 claim，禁止为未开工阶段预填 DESIGN 空壳条目；
 # - assurance ≤ 被引证据可支撑等级（Claim≤Evidence，由 scripts/lint_claims.py 机械校验）；
 # - 退出门裁定约束 status：ROAD-B-001/002 按 W33-H 评审裁 PARTIAL；ROAD-B-004 六门 SATISFIED-WITH-BOUNDARIES
 #   （W31-G）仍登记 PARTIAL_PASS——具名边界随裁定带入 limitations，release 复测等开放项未清即不升 DONE；
@@ -1265,8 +1265,8 @@
   assurance: H6
   limitations:
     - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（SQLite WAL+FULL）实测 1->2->4->8 子进程分片无全局锁扩展（release 4.44x）、8-Cell 10K/100K_LOGICAL、以及跨网络套接字 1/2/4 Cell 分片数据面 spawn/message/commit 0 Raft RPC 扩展与五类故障全覆盖（C-XHOST-005）；1M_LOGICAL 裸金属多数据中心 WAN 档位显式未声称"
-    - "单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 多平台 release CI 规模数字待常设门回填（RISK-B-07 / U-1），故不发布无限定生产量级口号"
-  source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W73 + W73 退出门终审（base 5c052e53）：SATISFIED-WITH-BOUNDARIES"
+    - "W76（e77c094，Run 40868357139）已回填 Ubuntu/macOS/Windows 三平台 CI --release 五探针数字（B-SCALE-RELEASE-001 §6.1），但单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 8-Cell 分片基准与 1M_LOGICAL 未覆盖（RISK-B-07 / U-1），故不发布无限定生产量级口号"
+  source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W76 + W73 退出门终审 + W76 三平台 release 回填（base e77c094）：SATISFIED-WITH-BOUNDARIES"
 
 # ===== 阶段 C 核心工作包（stage-c-progress.md §C.3.1 C-core）=====
 
@@ -1526,8 +1526,8 @@
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
   assurance: H6
   limitations:
-    - "已具备三平台 release-probe CI 管线（B-SCALE-RELEASE-001）及 Windows 11 x86_64 --release 8-Cell 分片 10K/100K_LOGICAL 实盘数字（C-BENCH-001）；按 §C.1.2 第 5 条生产量级口号与阶段 C 退出解耦，在三平台 CI release 常设数字齐备前维持限定口径、不发布无边界生产容量声明（RISK-B-07 / U-1）"
-  source: "stage-c-progress.md §C.3.2 C-SCALE-RELEASE（移交#5）+ §C.1.2 第 5 条（base 9e5e0edc）：PARTIAL_PASS"
+    - "W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1，闭合 U-1 多平台 CI 基线半边），结合 Windows 11 x86_64 --release 8-Cell 分片 10K/100K_LOGICAL 实盘数字（C-BENCH-001）；按 §C.1.2 第 5 条，在 1M_LOGICAL 与 Linux/macOS 8-Cell 分片基准齐备前维持 PARTIAL_PASS 限定口径、严禁无边界生产容量声明（RISK-B-07 / U-1）"
+  source: "stage-c-progress.md §C.3.2 C-SCALE-RELEASE（移交#5）+ B-SCALE-RELEASE-001 §6.1 W76 三平台 CI 回填（base e77c094）：PARTIAL_PASS"
 
 - requirement_id: C-RUNTIME-SCALE
   stage: C

@@ -1,6 +1,6 @@
-# 阶段 B 证据索引（evidence-index.yaml，schema v1，W27-E / X-4 生成）
+# 跨阶段证据索引（evidence-index.yaml，schema v1.3，W27-E 生成 + W67/W73/W74/W76 演进同步）
 #
-# - 覆盖 docs/evidence/stage-b/ 全部文件；由 scripts/lint_claims.py 校验与目录双向一致。
+# - 覆盖 docs/evidence/stage-{b,c,d,e}/（含各阶段 reviews/）全部证据文件；由 scripts/lint_claims.py 校验与目录双向一致。
 # - assurance 为该证据工件可支撑的最高 claim 等级（保守评定）：POC=实验/PoC，H2=模型/生成/golden 级，
 #   H3=单进程/单节点 durable 或真实 IPC 证据，H4=单节点纵切面；POC 证据最多支撑 H3 claim。
 # - date 优先取文件头声明的日期；未声明者取 git 首次提交日期（生成时快照）。
@@ -235,9 +235,9 @@
 - id: b-scale-release-001
   path: docs/evidence/stage-b/b-scale-release-001.md
   title: "B-SCALE-RELEASE-001：release-profile 多平台规模重测管线 + 首批同机对照数字（移交#5 前片）"
-  scope: "release 规模探针 CI 管线（三 OS 矩阵）+ 五探针家族同机 release↔debug 首批数字与校准裁决"
+  scope: "release 规模探针 CI 管线（三 OS 矩阵）+ 五探针家族同机 release↔debug 首批数字与校准裁决 + W76 三平台 CI release 实跑回填（Run 40868357139）"
   assurance: H3
-  date: "2026-09-21"
+  date: "2026-10-29"
 - id: b-schema-001-protobuf-envelope
   path: docs/evidence/stage-b/b-schema-001-protobuf-envelope.md
   title: "B-SCHEMA-001：Protobuf 公共兼容信封初始证据"

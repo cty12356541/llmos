@@ -1,16 +1,16 @@
-# 阶段 B / 阶段 C / 阶段 D 退出未知与残余风险清单（W34-C 基线 + W67/W73/W74 阶段 C & D 退出评审同步）
+# 阶段 B / 阶段 C / 阶段 D 退出未知与残余风险清单（W34-C 基线 + W67/W73/W74 评审 + W76 阶段 C & D 正式 EXITED 与阶段 E 立项同步）
 
-> 状态：`W34-C` 交付（2026-09-21），经 `W67`（2026-10-26）、`W73`（2026-10-28）与 **`W74` 阶段 D 独立退出评审同步更新**（2026-10-29，base `40f9967a`；同时满足 [stage-b-progress §6.5.5](./stage-b-progress.md)、[stage-c-progress §C.5.5](./stage-c-progress.md) 与 [stage-d-progress §D.5.5](./stage-d-progress.md) 条件 3）。
+> 状态：`W34-C` 交付（2026-09-21），经 `W67`（2026-10-26）、`W73`（2026-10-28）、`W74`（2026-10-29）与 **`W76` 阶段 C & D 正式 `EXITED` 及阶段 E 立项同步更新**（2026-10-29，base `e77c094`；同时满足 [stage-b-progress §6.5.5](./stage-b-progress.md)、[stage-c-progress §C.5.5](./stage-c-progress.md) 与 [stage-d-progress §D.5.5](./stage-d-progress.md) 条件 3，并作为 [stage-e-progress.md](./stage-e-progress.md) §E.1.3 跨阶段延续风险台账输入）。
 >
 > 对应 [stage-b-progress §6.5.5](./stage-b-progress.md)、[stage-c-progress §C.5.5](./stage-c-progress.md) 与 [stage-d-progress §D.5.5](./stage-d-progress.md) 条件 3（「未知风险清单显式列出，各项有 owner 与缓解措施」）与条件 4 的清单半边；[管理机制 §7](./README.md#7-评审与决策机制)「Stage 退出或 production claim」三件套之一。
 >
-> 机器台账权威：[risks.yaml](./risks.yaml)（本清单为其人读视图 + 未知项扩展，两者同源同步，W34-B/W74 同波维护）；claims 侧口径限制见 [claims.yaml](./claims.yaml) 各 limitations（`ledger-schema v1.2`）。
+> 机器台账权威：[risks.yaml](./risks.yaml)（本清单为其人读视图 + 未知项扩展，两者同源同步，W34-B/W74/W76 同波维护）；claims 侧口径限制见 [claims.yaml](./claims.yaml) 各 limitations（[ledger-schema.md](./ledger-schema.md) `v1.3`，`ed64ae3`）。
 >
 > 评审输入：阶段 B [W31-G](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[W33-H](../evidence/stage-b/reviews/w33h-road-b001-b002.md)、[W34-A](../evidence/stage-b/reviews/w34a-six-gate-matrix.md)；阶段 C [W67 单机退出门评审](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md) + [W73 跨主机联合退出门终审](../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)；阶段 D [W74 独立退出门综合证据终审](../evidence/stage-d/reviews/w74-stage-d-exit-gates.md)（`ROAD-D-001` / `UI-PARITY-001` / `D-core` 八包 / 安全负路径审计）。
 
 ## 0. P0 声明（§6.5.5 / §C.5.5 / §D.5.5 条件 1 的 P0 半边 + 条件 3 的清零确认）
 
-**截至 2026-10-29（W74，base `40f9967a`）：阶段 B、阶段 C 与阶段 D 全仓范围内 P0 未决风险 = 0。**
+**截至 2026-10-29（W76，base `e77c094`）：阶段 B、阶段 C、阶段 D（均已正式 `EXITED`）与阶段 E（立项启动）全仓范围内 P0 未决风险 = 0。**
 
 依据：
 
@@ -26,7 +26,7 @@
 
 - 下表默认 owner 为**维护者**（单人）；不构成缓解，只构成登记事实。
 - **W34-D 用户门须显式称量**：(a) 是否接受 RISK-B-08 维持 open 退出；(b) 阶段 C 是否引入第二维护者及本清单各项 owner 重新分配。
-- 知识外化缓解已全库化：143+ 证据文件、ADR-0001..0017、机器台账（claims/risks/evidence-index + lint 机械门）、§6.5.3 车道编排与增量日志、本清单。
+- 知识外化缓解已全库化：`188` 份证据文件、[ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)..[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)、机器台账 `ledger-schema v1.3`（`116 claims / 12 risks / 188 evidence-index` + `lint_claims.py` 机械门 `44/44` 单测）、`stage-b/c/d/e` 全波次车道编排与增量日志、本清单。
 
 ## 2. 已登记风险视图（risks.yaml 摘要，含 owner/缓解/复查点）
 
@@ -36,11 +36,11 @@
 | RISK-B-02 | durable-state-loss | P1/partial | 维护者 | 双 Attempt 唯一 permit + 全表组故障矩阵 + 统一恢复面 + 六域闭环验收 + 分层掉电阶梯（层 1/2） | 真实硬件掉电证据（X-6 推进）+ Artifact 混合终结门补齐 |
 | RISK-B-03 | resource-oversell | P1/partial | 维护者 | 单机高水位/隔离/退款 + ADR-0017 coordinator + 阶段 C 三族持久租约对账（C-LEASE-001）、网关验签结算（C-CUSTODY-001）与断网有界损耗守恒（C-PARTITION-001） | 宿主内核级 enforcement shim 与物理设备重置驱动 |
 | RISK-B-04 | cancel-effect-unknown | P1/partial | 维护者 | EFFECT_UNKNOWN reconcile + 统一恢复 + 跨进程 provider cancel-epoch fence（C-PROVIDER-001）+ teardown 链 | pause/resume/cancel 宿主执行器深层接线 |
-| RISK-B-05 | premature-format-freeze | P1/partial | 维护者 | ADR-0014 additive-only + ADR-0024 冻结第 8 通道 `DriverProvider` v1.0（闭合 driver codec 残余）+ W66 零 `.proto` 破坏解冻 | 阶段 E 发布 SABI v1.0 长期二进制兼容承诺前复审 |
+| RISK-B-05 | premature-format-freeze | P1/partial | 维护者 | ADR-0014 additive-only + ADR-0024 冻结第 8 通道 `DriverProvider` v1.0（闭合 driver codec 残余）+ W66 零 `.proto` 破坏解冻 + W76 立项 [ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（`CANDIDATE`）与 [stage-e-progress.md](./stage-e-progress.md)（`E1`/`E2`/`E7` + 决策点 `E2`） | 阶段 E 跨版本兼容回归门通过并晋升 SABI v1.0 长期二进制兼容承诺前复审 |
 | RISK-B-06 | runtime-ui-lockin | P2/partial（2026-10-29 W74 分域：工业工作站五平面合成、12 域显控同构、WCAG 2.2 AA/双语、跨平台五阶段 GUI 战役/CJK IME/1000 轮零泄漏浸泡及 `ROAD-D-001` 非开发者多应用 E2E 门禁均已证，闭合 U-3 并晋升 ADR-0025 为 VERIFIED） | 维护者 | ADR-0001/0015/0025 + 单认证控制脊柱 108 句柄 + 四入口 Receipt parity + `D-A11Y-I18N-001` + `D-GUI-CAMPAIGN-001` + `D-ROAD-001` + [W74 独立终审](../evidence/stage-d/reviews/w74-stage-d-exit-gates.md) | 物理 macOS 触控板人工巡检与 OS 原生安装器签名公证 + 新重依赖选型门 |
-| RISK-B-07 | scale-impersonation | P1/partial | 维护者 | B-SCALE-RELEASE-001 管线 + C-BENCH-001 Windows `--release` 8-Cell 分片 `10K/100K_LOGICAL`（`WAL+FULL`）实盘数字 + claims 严格限定 | `1M_LOGICAL` 与三平台 CI release 常设数字（见 U-1） |
-| RISK-B-08 | single-person-dependency | P1/open | 维护者（兼唯一知识载体） | 188 份证据、ADR-0001..0026、台账 v1.2（116 claims）与记忆恢复手册全库化——登记态非闭环 | 第二人类维护者实际接入并独立复现全仓门 |
-| RISK-B-09 | third-party-supply-chain | P2/open | 维护者 | 锁文件入库、核心 Rust 工作区零未审查新重依赖（open；desktop Node 面仍在） | 周期依赖树专项复审 + license/维护性检查记录 |
+| RISK-B-07 | scale-impersonation | P1/partial | 维护者 | [B-SCALE-RELEASE-001 §6.1](../evidence/stage-b/b-scale-release-001.md) W76（`e77c094`，Run `40868357139`）三平台（Ubuntu/macOS/Windows）CI `--release` 五探针实跑回填 + C-BENCH-001 Windows `--release` 8-Cell 分片 `10K/100K_LOGICAL`（`WAL+FULL`）实盘数字 + claims 严格限定 | `1M_LOGICAL` 裸金属/WAN、Linux/macOS 8-Cell 分片基准与单分片 `O(N/S)` 扫描二级索引化（见 U-1） |
+| RISK-B-08 | single-person-dependency | P1/open | 维护者（兼唯一知识载体） | 188 份证据、ADR-0001..0027、台账 v1.3（`116 claims / 12 risks / 188 evidence-index`）与 `stage-b/c/d/e` 全波次编排及记忆恢复手册全库化——登记态非闭环 | 第二人类维护者实际接入并独立复现全仓门 |
+| RISK-B-09 | third-party-supply-chain | P2/open | 维护者 | 锁文件入库、核心 Rust 工作区零未审查新重依赖 + W76（`6141dd1` / `6dc79eb`，三 OS CI Run `40868357139` `13/13` 全绿）已清空全部 6 个在途 Dependabot PR（`#30/#31/#35/#36/#37/#38`）；自动化供应链/license 门禁在阶段 E（`E5`/`E7`）落地前维持 `open` | 阶段 E（`E5`/`E7`）自动化供应链/license 审计门落地 + 周期依赖树复审 |
 | RISK-B-10 | cancel-effect-unknown | P1/partial（2026-10-24 分域：Windows 同权限父子树实杀与 B2-1 兄弟树隔离已证；跨权限/breakaway 残域保留，见 U-2） | 维护者 | `b-process-003 §13` 实机双测试 + claims 口径限定 | 残域：Windows Job Object 禁 breakaway 或跨权限回收证据 |
 | RISK-B-11 | durable-state-loss | P1/partial（2026-10-28 W73 分域：ADR-0018 单机多进程域 + ADR-0026 `C-XHOST-001..005` 跨主机 mTLS 五轴传输、保守时钟偏斜租约、嵌入式 Raft 控制面多数派与 `ChaosTcpProxy` H6 复合门禁均已闭合；仅保留远端外部物理副作用擦除证明与 `1M_LOGICAL` WAN 边界，见 U-5） | 维护者 | `QuarantineDisposition` 严格区分账本围栏与物理清理证明 + `PartitionBoundedLossProof` 精确守恒 + [W73 独立终审](../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md) | 物理 cleanup 残域：硬件级 STONITH/IPMI 或外部物理副作用擦除证明 |
 | RISK-B-12 | durable-state-loss | P1/closed | 维护者 | 已于 `87ef288`（`B-SLICE-K-001 §17`）根因处置并钉死回归测试，排除误收在册 blob | 已闭环（GC 引用集语义变更时按 §17.2 复验） |
@@ -49,19 +49,19 @@
 
 每项：未知内容 / owner / 当前缓解（防外推）/ 何种证据可退役。
 
-- **U-1 release-profile 与多平台规模行为（分域口径 2026-10-26，W66/W67）**：**Windows `--release` 分片实盘半边已证**——[C-BENCH-001](../evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md) 已在 Windows 11 x86_64 `--release`（`SQLite WAL+FULL`）实测 `1->8` 子进程分片扩展与 8-Cell `10K_LOGICAL` / `100K_LOGICAL`（`1%/5%/10%` 工作集、checkpoint/rehydrate、手动控制 `p50=84–85µs`），且三平台 CI 管线 [B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md) 已入库；**残域显式保留**：Linux/macOS 同口径 release 常设汇总数字与 `1M_LOGICAL` 档位仍待回填。owner：维护者。缓解：`RISK-B-07`（partial）+ 维持生产量级口号禁令（§C.1.2 第 5 条）。
+- **U-1 release-profile 与多平台规模行为（分域口径 2026-10-29，W76 `e77c094`）**：**Windows `--release` 8-Cell 分片实盘与三平台 CI `--release` 五探针基线双半边已证**——[C-BENCH-001](../evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md) 已在 Windows 11 x86_64 `--release`（`SQLite WAL+FULL`）实测 `1->8` 子进程分片扩展与 8-Cell `10K_LOGICAL` / `100K_LOGICAL`（`1%/5%/10%` 工作集、checkpoint/rehydrate、手动控制 `p50=84–85µs`），且 `W76`（`e77c094`，`workflow_dispatch` Run [40868357139](https://github.com/cty12356541/llmos/actions/runs/40868357139) `13/13` 全绿）已将 Ubuntu / macOS / Windows 三平台 `--release` 规模探针 `--nocapture` 实测数字回填至 [B-SCALE-RELEASE-001 §6.1](../evidence/stage-b/b-scale-release-001.md)，闭合多平台 CI `--release` 五探针基线半边；**残域显式保留**：`1M_LOGICAL` 裸金属/WAN 档位、Linux/macOS 8-Cell 分片基准、单分片 `O(N/S)` 扫描二级索引化及自然定时 `schedule` 例行采样仍待推进（已移交 [stage-e-progress.md](./stage-e-progress.md) §E.1.3）。owner：维护者。缓解：`RISK-B-07`（partial）+ 维持生产量级口号禁令（§C.1.2 第 5 条）。
 - **U-2 Windows 实机终止语义（分域口径 2026-10-24，W62-CWINKILL）**：**同权限父子进程树半边已证**——`taskkill /F /T` 在真实 Windows 宿主终止父+子双活进程树（B6-2）及 B2-1 双活三层场景同机兄弟进程树零误伤隔离（[b-process-003 §13](../evidence/stage-b/b-process-003-crash-propagation.md)）。**残域显式保留**：跨权限/UAC 提权子进程、Job Object breakaway 脱离父进程树的孤儿进程回收语义仍未证。owner：维护者。缓解：RISK-B-10（partial）+ claims 口径限定。残域退役证据：Windows Job Object 强制绑定（禁止 breakaway）或跨权限终止验证证据。
 - **U-3 GUI 真机可用性（分域闭合 2026-10-28，W73-D-GUI-CAMPAIGN）**：**工业工作站五阶段交互战役、中日英 CJK IME 组合态探针与 1000 轮长稳零泄漏浸泡已证**——[D-GUI-CAMPAIGN-001](../evidence/stage-d/d-gui-campaign-001-cross-platform-workstation-campaign.md) 与 [D-A11Y-I18N-001](../evidence/stage-d/d-a11y-i18n-001-wcag22-aria-and-bilingual-conformance.md) 已在真实 Windows 10.0.26200 宿主及跨平台（Windows/macOS/Linux）确定性战役套件验证多窗口 `4px` 平铺/分屏、代际焦点围栏、`Z4` `350ms` 安全确认屏/受限选择器/高污点剪贴板升级、`36px` 底栏水位唤醒与 `ControlCommandId` 对账、三级降级、`zh-CN / ja-JP / en-US` IME `compositionstart/update/end` 防误触与 1,000 轮 `100K` 逻辑任务 `O(visible_rows) <= 64` 零泄漏长稳运行；**残域仅保留**：物理 macOS 硬件触控板手势人工巡检与 OS 原生安装器代码签名公证。owner：维护者。缓解：`RISK-B-06`（partial）。
 - **U-4 真实硬件掉电**：kill-9=页缓存存活建模；层 1 APFS 校准与层 2 dm-flakey 已有，M4/M6/M8 模型校准无专项数据，真实物理掉电未做。owner：维护者。缓解：分层阶梯策略 + 各 evidence disclaimer 不外推。退役证据：真机掉电设备证据，或 M4/M6/M8 校准完成（B-STORE-FS-SEMANTICS-001 推进）。
 - **U-5 多 Cell/跨机原子提交与分布式收敛（分域口径 2026-10-28，W73）**：**①ADR-0018 单机多进程拓扑（W35–W67）与 ②ADR-0026 跨物理主机扩展（W69–W73 `C-XHOST-001..005`）双域机制全部已证**——除单机多进程九包外，[C-XHOST-001](../evidence/stage-c/c-xhost-001-mtls-transport-and-fence-handshake.md)..[005](../evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md) 及 [W73 独立终审](../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md) 已实证跨主机 TLS 1.3 mTLS 五轴 Exporter 传输、跨硬件时钟域保守非重叠偏斜包络（$\text{TTL}_{\text{holder}} = \text{TTL}_{\text{grant}} - 2\Delta_{\text{max\_skew}} - \Delta_{\text{safety}}$）、`N >= 3` 嵌入式确定性 Raft 控制面多数派日志（严守 `[CONS-SCOPE-001]` 数据面 `0` Raft RPC + `N=1` 零开销直通，晋升 [ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md) / [ADR-0026](./adrs/0026-cross-physical-host-transport-and-consensus-expansion.md) 为 `VERIFIED`）、跨网络流式检查点/分块制品传输、跨宿主八步进程迁移及 `ChaosTcpProxy` 下 `ROAD-C-001-XHOST` / `ROAD-C-002-XHOST` H6 复合混沌门禁。**唯一保留残域**：远端失联物理主机或不可逆外部设备/API 在途副作用的物理级擦除证明（`QUARANTINE` 账本围栏 ≠ 远端物理擦除，`ADR-0019` R2.3 第 2 条）与 `1M_LOGICAL` 裸金属多数据中心 WAN 战役。owner：维护者。缓解：`QuarantineDisposition` 类型化区分账本围栏与物理清理证明；`RISK-B-11`（partial）。
 - **U-6 slice-k-demo 09d 根因（已退役 closed，2026-09-21）**：已由 `87ef288`（[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)）定位为 install-scoped 预埋孤儿收集并补齐回归测试，`RISK-B-12` 已 `closed`。
-- **U-7 G3 未证伪三条件与授权面**：Namespace/ResourceContract/fanout gate 对应权威未落，门语义三条件不可证伪；WAITING_AUTHORIZATION 解除无 enforcement。owner：维护者。缓解：W31-G 边界带入 ROAD-B-004 limitations。退役证据：对应权威落地后的门测试（物化门负路径扩展）。
-- **U-8 G4 生态 selector 半边**：Package/Skill/Tool/Model/Artifact/Topic/外部服务 typed selector→generation handle 解析未落，其上的「latest 不得当已授权依赖」不可判定。owner：维护者。缓解：现以 input_selectors_digest 摘要绑定。退役证据：生态 selector 解析车道落地 + 负路径测试。
-- **U-9 载荷执行面（分域口径 2026-10-25，W65-CAPP-PAYLOAD）**：**CLI 全周期与确定性驱动回执载荷执行半边已证**——[C-APP-PAYLOAD-001](../evidence/stage-c/c-app-payload-001-sample-cli-execution.md) 已跑通 `nlos-package` 全命令与 `examples/sample-app` 跨代际 `app.bin` 载荷回执闭环；**残域保留**：客户机不可信任意 Wasm/ELF 字节码虚拟机沙箱直跑仍按 ADR-0015 分层推进。owner：维护者。
+- **U-7 G3 未证伪三条件与授权面**：Namespace/ResourceContract/fanout gate 对应权威未落，门语义三条件不可证伪；WAITING_AUTHORIZATION 解除无 enforcement。owner：维护者。缓解：W31-G 边界带入 ROAD-B-004 limitations；已排入阶段 E `E-core`（[stage-e-progress.md](./stage-e-progress.md) `E4`/`E5`）闭环计划。退役证据：对应权威落地后的门测试（物化门负路径扩展）。
+- **U-8 G4 生态 selector 半边**：Package/Skill/Tool/Model/Artifact/Topic/外部服务 typed selector→generation handle 解析未落，其上的「latest 不得当已授权依赖」不可判定。owner：维护者。缓解：现以 input_selectors_digest 摘要绑定；已排入阶段 E `E-core`（[stage-e-progress.md](./stage-e-progress.md) `E4` 有类型生态选择器与确定性求解器 + `E5` Store 信任门）闭环计划。退役证据：生态 selector 解析车道落地 + 负路径测试。
+- **U-9 载荷执行面（分域口径 2026-10-25，W65-CAPP-PAYLOAD；阶段 E 立项排期 2026-10-29）**：**CLI 全周期与确定性驱动回执载荷执行半边已证**——[C-APP-PAYLOAD-001](../evidence/stage-c/c-app-payload-001-sample-cli-execution.md) 已跑通 `nlos-package` 全命令与 `examples/sample-app` 跨代际 `app.bin` 载荷回执闭环；**残域保留**：客户机不可信任意 Wasm 字节码虚拟机沙箱直跑仍按 ADR-0015 分层推进，已排入阶段 E `E-core`（[stage-e-progress.md](./stage-e-progress.md) `E6` `nlos-wasm-sandbox` 三平台 Process + Wasmtime 双层隔离沙箱）闭环。owner：维护者。
 - **U-10 真实 provider 行为（分域口径 2026-10-25，W65-CPROVIDER-REAL）**：**独立子 OS 进程 Provider Worker、跨平台 ADR-0011 认证 IPC、ADR-0024 冻结通道与隔离姿态门控半边已证**——见 [C-PROVIDER-001](../evidence/stage-c/c-provider-001-real-process-provider-codec.md)；**残域保留**：外部商业云 LLM HTTP 供应商尾延迟谱系与硬件 TEE 远程证明根证书在线核验属生产适配层边界。owner：维护者。
 - **U-11 矩阵与探针缺口**：100K@50% working-set cell、occupancy 回收再入场动态、调度器自身规模探针、PINNED tier、apply 侧 TaskNode admission consult、100K 级 cancel 探针。owner：维护者。缓解：逐项登记（W31-G §8.2 / W34-A §6）；不据此宣称门正式达成之外的能力。退役证据：各缺口补跑/落地后追加 evidence 节。
 - **U-12 跨进程并发 GC tick**：单写者前提下键不相交为构造性论证，跨进程并发 tick 未证明。owner：维护者。缓解：B-ARTIFACT-004 §8.7 登记。退役证据：并发 tick 测试或显式单写者契约文档化。
-- **U-13 当前 CI run 结论**：HEAD `a01fd57` run `35531478487`（+ Pages `35531478300`）为 B-001/B-003/B-004/G6 边界/X-5 共同收口载体，W34-A 评审时 in_progress——最终 conclusion 未知。owner：维护者。缓解：workspace 全仓门已本地收口（275 二进制/1536 passed/0 failed/20 ignored）。退役证据：run 绿 + 链接回填 §6 对应行。
+- **U-13 远端 CI 常设与云端四工作流收口基线（已更新至 2026-10-29，W75/W76）**：`W75` 推送提交 `481ae0f` 已获远端常设 `Rust cross-platform verification` Run [40843567735](https://github.com/cty12356541/llmos/actions/runs/40843567735)（`9/9` 全绿）与 `Deploy to GitHub Pages` Run [40843567713](https://github.com/cty12356541/llmos/actions/runs/40843567713) 全绿；`W76` 在基线 `ed64ae3` 上验证远端四条工作流全部 `completed / success`——`Deploy to GitHub Pages` Run [40868267903](https://github.com/cty12356541/llmos/actions/runs/40868267903)、`Schema fuzz smoke` Run [40868267928](https://github.com/cty12356541/llmos/actions/runs/40868267928)、`Power-loss simulation (Layer 2)` 自然 `schedule` Run [40798612701](https://github.com/cty12356541/llmos/actions/runs/40798612701) 与 `workflow_dispatch` Run [40868450278](https://github.com/cty12356541/llmos/actions/runs/40868450278)、以及 `Rust cross-platform verification` `workflow_dispatch` Run [40868357139](https://github.com/cty12356541/llmos/actions/runs/40868357139)（`13/13` jobs 全绿，含三平台 `Scale probe release` 与 `Scale probe (include-ignored)`；诚实口径：`workflow_dispatch` 触发不冒充夜间自然 `schedule` 采样）。owner：维护者。
 - **U-14 TS/Python conformance 覆盖漂移（已退役 closed）**：已由 `5c6f4c7`（[B-SCHEMA-002 §6](../evidence/stage-b/b-schema-002-cross-language-generation.md)）及 `W65` [ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md) 三语言黄金向量同步闭合。
 
 ## 4. 已决定递延项（非未知：登记在案、有明确处置路径，W34-D 裁量豁免/移交阶段 C）
@@ -73,4 +73,4 @@
 ## 5. 维护
 
 - 本清单与 risks.yaml / claims.yaml 同波更新（W34-B/C 交付）；风险状态变化（尤其 RISK-B-12 重定级）必须同步两处。
-- lint（`python3 scripts/lint_claims.py`）覆盖机器台账 `v1.2` 一致性（含 `stage: B/C/D` 与 `docs/evidence/<stage>/` 双向索引检查）；本清单为管理文档，位于 `docs/management/`，不入 `evidence-index.yaml`。
+- lint（`python3 scripts/lint_claims.py`）覆盖机器台账 `v1.3` 一致性（含 `stage: B/C/D/E` 与 `docs/evidence/<stage>/` 双向索引检查，`ed64ae3`）；本清单为管理文档，位于 `docs/management/`，不入 `evidence-index.yaml`。

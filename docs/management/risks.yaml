@@ -1,9 +1,9 @@
-# 风险台账（risks.yaml，schema v1.1，W27-E 种子 + W34-B 阶段 B 回填 + W67 阶段 C 退出评审同步）
+# 风险台账（risks.yaml，schema v1.3，W27-E 种子 + W34-B/W67/W73/W74 回填 + W76 阶段 C & D EXITED 与阶段 E 立项同步）
 #
 # 纪律：
 # - 九类来自管理机制 README §9；severity 按 影响×发生概率×不可逆性 保守评定；
 # - status 只反映已有 Evidence 支撑的缓解现状，诚实优先；无证据支撑的缓解不得写 mitigated；
-# - P0 阻止阶段退出（当前 P0=0，经 W34-C 与 W67 阶段 C 退出评审双重确认，见 docs/management/exit-unknown-risks.md）；
+# - P0 阻止阶段退出（当前 P0=0，经 W34-C、W67/W73、W74 及 W76 阶段 C & D 正式 EXITED 与阶段 E 立项确认，见 docs/management/exit-unknown-risks.md）；
 # - P1 须有缓解措施与复查点（owner 字段 v1 未强制，owner 于 exit-unknown-risks.md 逐项登记，v2 候选）；
 # - 收官波（W27–W33）登记 residual 已逐项入账：release-profile 口径（RISK-B-07）、Windows 实杀（RISK-B-10）、
 #   GUI 真机战役（RISK-B-06）、multi-cell（RISK-B-11）、单人知识（RISK-B-08）、slice-k-demo 09d defect（RISK-B-12）。
@@ -73,13 +73,13 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；W65 经 ADR-0024 正式冻结第 8 个 SABI 通道 nlos.sabi.DriverProvider v1.0（16 KiB 有界载荷 + TS/Python/Rust 黄金向量钉死，闭合 W34-A §3 driver payload codec 残余项，C-PROVIDER-001）；W66 Search/Notify 控制探查复用既有授权通道零 .proto 破坏性变更；SABI 长期二进制兼容承诺仍按 §29.2 留阶段 E"
+  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；W65 经 ADR-0024 正式冻结第 8 个 SABI 通道 nlos.sabi.DriverProvider v1.0（16 KiB 有界载荷 + TS/Python/Rust 黄金向量钉死，闭合 W34-A §3 driver payload codec 残余项，C-PROVIDER-001）；W66 Search/Notify 控制探查复用既有授权通道零 .proto 破坏性变更；W76 已立项 ADR-0027（CANDIDATE）与 stage-e-progress.md（E1/E2/E7 + 决策点 E2），在跨版本兼容回归门通过前维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
     - docs/evidence/stage-b/b-plan-002-manifest-template.md
     - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
-  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；阶段 E 发布长期 SABI v1.0 兼容承诺前必复审"
+  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；W76 已立项 ADR-0027，阶段 E 决策点 E2 跨版本兼容回归通过并晋升长期 SABI v1.0 兼容承诺前必复审"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
@@ -104,7 +104,7 @@
   severity: P1
   status: partial
   description: "规模目标被冷 metadata 数量冒充或以 debug/test 口径外推：以注册行/waiting Fiber 冒充 10K/100K 逻辑 TaskNode，或以单平台 debug-profile 数字冒充生产量级"
-  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死，阶段 C 新增三平台 scale-probe-release CI 管线（B-SCALE-RELEASE-001）与 Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL（1%/5%/10% 活跃工作集、634 B/node 终态落盘、p50=84-85us 手动控制响应）及 1->8 子进程分片无全局锁扩展基准（C-BENCH-001）；残余未证域为 1M_LOGICAL 档位、单分片 O(N/S) select 二级索引化以及三平台例行 CI release 汇总数字，故仍维持 partial 并严禁无边界生产容量口号"
+  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死；W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1，闭合多平台 CI --release 五探针基线半边），结合阶段 C Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL（1%/5%/10% 活跃工作集、634 B/node 终态落盘、p50=84-85us 手动控制响应）及 1->8 子进程分片无全局锁扩展基准（C-BENCH-001）；残余未证域为 1M_LOGICAL 裸金属/WAN 档位、Linux/macOS 8-Cell 分片基准与单分片 O(N/S) select 二级索引化，故仍维持 partial 并严禁无边界生产容量口号"
   evidence_refs:
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
@@ -113,25 +113,25 @@
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
     - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
-  review_point: "W67 已核入 Windows --release 8-Cell 100K_LOGICAL 实盘基准；推进 1M_LOGICAL 或发布跨平台生产量级声明前必复审"
+  review_point: "W67 核入 Windows --release 8-Cell 100K_LOGICAL 实盘基准，W76（e77c094）核入三平台 CI --release 五探针数字；推进 1M_LOGICAL、Linux/macOS 8-Cell 分片基准或发布跨平台生产量级声明前必复审"
 
 - id: RISK-B-08
   category: single-person-dependency
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——169 份证据文件逐车道留痕、ADR-0001..0024、机器台账 v1.1（101 claims / 12 risks / 169 evidence-index + lint 机械门）、stage-b/stage-c 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——188 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 188 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
-  review_point: "W34-D 用户门对 owner 分配与阶段 C 人员接入明确表态；每四个周期复审知识分布清单"
+  review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 
 - id: RISK-B-09
   category: third-party-supply-chain
   severity: P2
   status: open
   description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
-  mitigation: ""
+  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）验证清空全部 6 个在途 Dependabot PR；自动化供应链与许可证门禁在阶段 E（E5/E7）落地前仍维持 open"
   evidence_refs: []
-  review_point: "每四个周期依赖/选型复审（README §11）；新依赖须过 §7 技术选型记录门槛；desktop 依赖树首次升级时专项复审"
+  review_point: "W76 已完成 Rust + desktop npm 依赖树升级清空 6 个 Dependabot PR；阶段 E（E5/E7）落地自动化供应链/license 门禁及每四个周期依赖复审时复查"
 
 - id: RISK-B-10
   category: cancel-effect-unknown
