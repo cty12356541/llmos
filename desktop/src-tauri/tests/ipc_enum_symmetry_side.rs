@@ -136,7 +136,18 @@ fn ensure_cli_binary() -> &'static Path {
             } else {
                 "system-control-cli"
             };
-            let bin_path = workspace_root.join("target").join("debug").join(bin_name);
+            let target_dir = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+                || workspace_root.join("target"),
+                |dir| {
+                    let path = PathBuf::from(dir);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        workspace_root.join(path)
+                    }
+                },
+            );
+            let bin_path = target_dir.join("debug").join(bin_name);
             assert!(
                 bin_path.exists(),
                 "expected built CLI binary at {}",
@@ -759,6 +770,7 @@ impl SymmetryHarness {
             )),
         );
 
+        let cli_bin = ensure_cli_binary().to_path_buf();
         let handshake =
             Arc::new(ServerHandshakeContext::new(&auth_endpoint, 32).expect("handshake ctx"));
         let mut auth_listener = bind_endpoint(&auth_endpoint);
@@ -791,7 +803,7 @@ impl SymmetryHarness {
                         .with_cell_topology_inspector(auth_cells.as_ref())
                         .with_cell_lease_inspector(auth_cells.as_ref());
                 let nonce = next_nonce(&nonce_counter);
-                let _ = authenticated_serve_one_control(
+                match authenticated_serve_one_control(
                     &mut auth_listener,
                     TransportConfig::default(),
                     &control,
@@ -802,7 +814,18 @@ impl SymmetryHarness {
                     10,
                     move || nonce,
                 )
-                .await;
+                .await
+                {
+                    Ok(outcome) => {
+                        let _ = outcome.served();
+                    }
+                    Err(nlos_ipc::handshake::HandshakeError::Transport(
+                        nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept),
+                    )) => continue,
+                    Err(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
             }
         });
 
@@ -814,8 +837,13 @@ impl SymmetryHarness {
 
         let plain_loop = tokio::spawn(async move {
             loop {
-                let Ok((stream, peer)) = accept_plain(&mut plain_listener).await else {
-                    continue;
+                let (stream, peer) = match accept_plain(&mut plain_listener).await {
+                    Ok(connection) => connection,
+                    Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
+                    Err(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
                 };
                 let tasks_ref = Arc::clone(&plain_tasks);
                 let clock_ref = Arc::clone(&plain_clock);
@@ -859,7 +887,7 @@ impl SymmetryHarness {
             principal_hex: Some(hex(binding.principal_id.as_bytes())),
             key_file: Some(key_file.to_string_lossy().into_owned()),
             cli_socket: Some(plain_endpoint.to_string_lossy().into_owned()),
-            cli_path: Some(ensure_cli_binary().to_string_lossy().into_owned()),
+            cli_path: Some(cli_bin.to_string_lossy().into_owned()),
             resource_root: None,
             application_root: None,
             source: ConfigSourceDto::Session,

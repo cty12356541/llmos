@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_ipc::windows::{NamedPipeListenerAdapter, connect};
 use nlos_ipc::{
-    ExactPeerAuthorizer, FramedIo, IpcError, LocalRpcClient, OutboundResponse, PeerAuthorizer,
-    PeerCredentialBinding, PeerIdentity, TransportConfig, serve_one,
+    ExactPeerAuthorizer, FramedIo, IoOperation, IpcError, LocalRpcClient, OutboundResponse,
+    PeerAuthorizer, PeerCredentialBinding, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::SABI_ENVELOPE_SCHEMA;
 use nlos_schema::sabi::v1::{Envelope, ExchangeRequest, ExchangeResponse, SchemaIdentity};
@@ -148,4 +148,91 @@ async fn exact_peer_authorizer_enforces_the_os_observed_pid() {
         serve_failure,
         IpcError::AuthorizationDenied(reason) if reason.contains("exact binding")
     ));
+}
+
+#[tokio::test]
+async fn accept_timeout_and_cancellation_preserve_listener_and_anti_squat_ownership() {
+    let name = pipe_name("idle-cancel");
+    let short_cfg = TransportConfig::new(
+        4_096,
+        Duration::from_millis(40),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut listener = NamedPipeListenerAdapter::bind(&name, 2, short_cfg).unwrap();
+
+    // Two consecutive idle timeouts without a client must both return
+    // `Timeout(Accept)` rather than losing `self.next` into `InvalidConfig`.
+    for round in 1..=2 {
+        let err = listener
+            .accept(short_cfg)
+            .await
+            .expect_err("idle accept without client must time out");
+        assert!(
+            matches!(err, IpcError::Timeout(IoOperation::Accept)),
+            "idle round {round} must return Timeout(Accept), got {err:?}",
+        );
+    }
+
+    // Mid-flight cancellation of the `accept` future must also leave the
+    // underlying listening pipe instance intact.
+    let cancelled =
+        tokio::time::timeout(Duration::from_millis(15), listener.accept(config())).await;
+    assert!(
+        cancelled.is_err(),
+        "outer timeout must cancel the in-flight accept future"
+    );
+
+    // Kernel pipe-namespace anti-squat ownership (`first_pipe_instance(true)`)
+    // must still hold after both idle timeouts and future cancellation.
+    let Err(squat_err) = NamedPipeListenerAdapter::bind(&name, 2, config()) else {
+        panic!("second first-instance bind on the live pipe name must be rejected");
+    };
+    assert!(
+        matches!(
+            squat_err,
+            IpcError::Io {
+                operation: IoOperation::Accept,
+                ..
+            }
+        ),
+        "expected OS first-instance rejection, got {squat_err:?}",
+    );
+
+    // The same listener must subsequently serve two real serial clients
+    // end-to-end without re-binding.
+    let server = tokio::spawn(async move {
+        let mut received = Vec::with_capacity(2);
+        for seq in 1_u32..=2 {
+            let (stream, peer) = listener.accept(config()).await?;
+            let PeerIdentity::WindowsNamedPipe {
+                process_id: Some(observed_pid),
+            } = peer
+            else {
+                panic!("accept #{seq} must report an OS-observed client pid");
+            };
+            assert_eq!(observed_pid, std::process::id());
+            let mut framed = FramedIo::new(stream, config());
+            let payload = framed.receive().await?;
+            framed.send(&payload).await?;
+            received.push(payload);
+        }
+        Ok::<_, IpcError>(received)
+    });
+
+    for seq in 1_u32..=2 {
+        let (stream, _peer) = connect(&name, config()).await.unwrap();
+        let mut framed = FramedIo::new(stream, config());
+        let msg = seq.to_be_bytes();
+        framed.send(&msg).await.unwrap();
+        let echoed = framed.receive().await.unwrap();
+        assert_eq!(echoed, msg);
+    }
+
+    let server_received = server.await.unwrap().unwrap();
+    assert_eq!(
+        server_received,
+        vec![1_u32.to_be_bytes().to_vec(), 2_u32.to_be_bytes().to_vec()]
+    );
 }

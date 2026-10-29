@@ -16,6 +16,7 @@ use crate::{IoOperation, IpcError, PeerIdentity, TransportConfig, map_io, timeou
 pub struct NamedPipeListenerAdapter {
     name: OsString,
     maximum_instances: usize,
+    bind_config: TransportConfig,
     next: Option<NamedPipeServer>,
 }
 
@@ -41,12 +42,18 @@ impl NamedPipeListenerAdapter {
         Ok(Self {
             name,
             maximum_instances,
+            bind_config: config,
             next: Some(next),
         })
     }
 
     /// Accepts one client and creates the next listening instance before
     /// handing the connected stream to the caller.
+    ///
+    /// Cancel-safe: dropping the returned future or hitting `connect_timeout`
+    /// leaves the listening pipe instance intact in `self.next`, preserving
+    /// kernel pipe-namespace ownership (`first_pipe_instance`) across idle
+    /// windows.
     ///
     /// # Errors
     ///
@@ -55,27 +62,61 @@ impl NamedPipeListenerAdapter {
         &mut self,
         config: TransportConfig,
     ) -> Result<(NamedPipeServer, PeerIdentity), IpcError> {
-        let server = self.next.take().ok_or(IpcError::InvalidConfig(
+        let server = self.next.as_ref().ok_or(IpcError::InvalidConfig(
             "named-pipe listener lost its next instance",
         ))?;
-        timeout_io(
+        match timeout_io(
             IoOperation::Accept,
             config.connect_timeout(),
             server.connect(),
         )
-        .await?;
+        .await
+        {
+            Ok(()) => {}
+            Err(err @ IpcError::Timeout(IoOperation::Accept)) => return Err(err),
+            Err(err) => {
+                // Underlying OS error on the listening instance: open a fresh
+                // handle BEFORE dropping the faulted one so the kernel pipe
+                // namespace never drops to zero open server handles.
+                if let Ok(replacement) =
+                    create_server(&self.name, self.maximum_instances, config, false).or_else(|_| {
+                        create_server(&self.name, self.maximum_instances, self.bind_config, false)
+                    })
+                {
+                    self.next = Some(replacement);
+                }
+                return Err(err);
+            }
+        }
+        let replacement = match create_server(&self.name, self.maximum_instances, config, false) {
+            Ok(replacement) => replacement,
+            Err(err) => {
+                // `self.next` just transitioned to connected; replace or
+                // disconnect it so the listener never stays bound to an
+                // unserved client or loses its listening slot.
+                if let Ok(fallback) =
+                    create_server(&self.name, self.maximum_instances, self.bind_config, false)
+                {
+                    self.next = Some(fallback);
+                } else if let Some(connected) = self.next.as_ref() {
+                    let _ = connected.disconnect();
+                }
+                return Err(err);
+            }
+        };
+        let Some(connected) = self.next.replace(replacement) else {
+            return Err(IpcError::InvalidConfig(
+                "named-pipe listener lost its next instance",
+            ));
+        };
         // Fail closed: the peer identity carries the kernel-observed client
         // pid or the accept fails with a typed error — never an unknown
-        // credential that would make the pre-gate vacuously match.
-        let process_id = client_process_id(&server)?;
-        self.next = Some(create_server(
-            &self.name,
-            self.maximum_instances,
-            config,
-            false,
-        )?);
+        // credential that would make the pre-gate vacuously match. `self.next`
+        // already holds `replacement`, so dropping `connected` on a transient
+        // client disconnect here never poisons the listener.
+        let process_id = client_process_id(&connected)?;
         Ok((
-            server,
+            connected,
             PeerIdentity::WindowsNamedPipe {
                 process_id: Some(process_id),
             },
