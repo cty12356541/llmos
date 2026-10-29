@@ -358,17 +358,26 @@ fn monotonic_checkpoint_trail_orders_without_wall_clock_and_rejects_gaps_and_tam
     assert_eq!(entries[1], entry_2);
     assert_eq!(entries[2], entry_3);
 
-    // Tamper with one on-disk `.mchk` file and verify `read_monotonic_checkpoint_trail` fails closed.
+    // Tamper with the genesis on-disk `.mchk` file (sorted deterministically by filename
+    // across filesystems whose `readdir` order is hash-indexed, e.g. ext4 htree) and verify
+    // `read_monotonic_checkpoint_trail` fails closed.
     let mchk_dir = temp.path().join("monotonic-checkpoints");
-    let first_file = fs::read_dir(&mchk_dir)
+    let mut mchk_files: Vec<PathBuf> = fs::read_dir(&mchk_dir)
         .expect("read mchk dir")
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("mchk"))
-        .expect("at least one mchk file");
-    let original = fs::read_to_string(&first_file).expect("read mchk");
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("mchk"))
+        .collect();
+    mchk_files.sort();
+    assert_eq!(mchk_files.len(), 3);
+    let first_file = &mchk_files[0];
+    let original = fs::read_to_string(first_file).expect("read mchk");
     let tampered_text = original.replace("token=1", "token=99");
-    fs::write(&first_file, tampered_text).expect("tamper mchk");
+    assert_ne!(
+        tampered_text, original,
+        "checkpoint tampering must mutate file contents"
+    );
+    fs::write(first_file, tampered_text).expect("tamper mchk");
 
     assert!(matches!(
         directory.read_monotonic_checkpoint_trail(cell_a),
