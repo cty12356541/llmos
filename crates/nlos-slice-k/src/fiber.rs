@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use nlos_artifact::{ContentDigest, StageRevisionRequest, staging_id_for};
 use nlos_operation::{CompletionOutcome, OperationHandle, OperationSpec};
-use nlos_runtime::{FiberExit, FiberFuture, FiberHandle, FiberSpec};
+use nlos_runtime::{FiberExit, FiberFuture, FiberHandle, FiberSpec, FiberState, RuntimeAdapter};
 use nlos_runtime_tokio::TokioRuntimeAdapter;
 use nlos_task::{ArtifactCommitPlanId, ArtifactPublicationExpectation, PlanArtifactCommitRequest};
 use nlos_types::{
@@ -74,18 +74,40 @@ pub fn spawn_write_fiber(
     ),
     nlos_runtime::RuntimeError,
 > {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let (raw_sender, raw_receiver) = tokio::sync::oneshot::channel();
     let future: FiberFuture = Box::pin(async move {
         let outcome = run_write_job(&runtime, &spec, &job);
         let succeeded = outcome.is_ok();
-        let _ = sender.send(outcome);
+        let _ = raw_sender.send(outcome);
         if succeeded {
             FiberExit::Completed
         } else {
             FiberExit::Failed
         }
     });
-    let handle = nlos_runtime::RuntimeAdapter::spawn_fiber(adapter, spec, future)?;
+    let handle = RuntimeAdapter::spawn_fiber(adapter, spec, future)?;
+    let Ok(rt_handle) = tokio::runtime::Handle::try_current() else {
+        return Ok((handle, raw_receiver));
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let adapter_watch = adapter.clone();
+    // `raw_sender.send` runs inside `FiberFuture` right before returning
+    // `FiberExit` to `TokioRuntimeAdapter::run_fiber`; gate the external
+    // `sender` on `RuntimeAdapter::inspect` reaching a terminal `FiberState`
+    // so multi-core callers waking from `receiver.await` never observe a
+    // transient `Running` state.
+    rt_handle.spawn(async move {
+        let outcome = raw_receiver.await;
+        while !matches!(
+            RuntimeAdapter::inspect(&adapter_watch, handle),
+            Ok(FiberState::Completed | FiberState::Failed | FiberState::Cancelled) | Err(_)
+        ) {
+            tokio::task::yield_now().await;
+        }
+        if let Ok(outcome) = outcome {
+            let _ = sender.send(outcome);
+        }
+    });
     Ok((handle, receiver))
 }
 
