@@ -1072,9 +1072,23 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
         &n3
     };
     assert!(new_leader.current_term() > old_leader_term);
-    assert_eq!(new_leader.consensus_commit_index(), 6);
+    // Raft §5.4.1 guarantees `new_leader` holds all 6 pre-crash entries in its
+    // durable WAL; under Raft §5.4.2 (`core.rs`), if `child1` was hard-killed
+    // before `leader_commit = 6` reached `new_leader` (because the other survivor
+    // completed `child1`'s `linearizable_read` quorum), `new_leader` holds
+    // `commit_index == 5` until its first `new_term` proposal commits `6` and `7`.
+    assert_eq!(new_leader.uncompacted_log_len(), 6);
+    assert!(
+        (5..=6).contains(&new_leader.consensus_commit_index()),
+        "unexpected pre-proposal commit_index on successor leader: {}",
+        new_leader.consensus_commit_index()
+    );
+    let committed_6_survivor = [&n2, &n3]
+        .into_iter()
+        .find(|node| node.consensus_commit_index() == 6)
+        .expect("at least one survivor must have observed leader_commit == 6 before hard_kill");
     assert_eq!(
-        hex_encode_32(&new_leader.state_root_digest()),
+        hex_encode_32(&committed_6_survivor.state_root_digest()),
         pre_crash_digest
     );
 
