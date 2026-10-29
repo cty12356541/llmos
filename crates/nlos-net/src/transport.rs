@@ -1614,8 +1614,21 @@ mod tests {
             1,
             "singleflight dial must perform exactly 1 client fence handshake signature"
         );
+
+        // `run_server_fence_handshake` flushes `TAG_SERVER_READY_ACK` before the
+        // spawned `authenticate_inbound_stream` task acquires `server_accounting`'s
+        // connection guard and records the `MultiplexedSession` in `accepted_sessions`.
+        let accept_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (running_listener.accepted_sessions().is_empty()
+            || server_accounting.active_connection_count() == 0)
+            && std::time::Instant::now() < accept_deadline
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(running_listener.accepted_sessions().len(), 1);
+        assert_eq!(server_accounting.active_connection_count(), 1);
         assert_eq!(client_accounting.active_connection_count(), 1);
+        assert_eq!(running_listener.total_rejected_handshakes(), 0);
 
         drop(sessions);
         transport.close_all_sessions();
