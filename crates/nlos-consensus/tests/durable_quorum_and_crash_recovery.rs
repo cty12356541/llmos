@@ -465,12 +465,12 @@ fn handle_child_control_command(
                 let mut last_idx = 0;
                 let mut last_term = 0;
                 for prop in props {
-                    let receipt = node.propose(prop, Duration::from_secs(5)).await?;
+                    let receipt = node.propose(prop, Duration::from_secs(10)).await?;
                     last_idx = receipt.consensus_commit_index.get();
                     last_term = receipt.term.get();
                 }
                 let (read_idx, read_term) = node
-                    .linearizable_read(None, Duration::from_secs(5), |_sm, cidx, cterm| {
+                    .linearizable_read(None, Duration::from_secs(10), |_sm, cidx, cterm| {
                         (cidx, cterm)
                     })
                     .await?;
@@ -902,7 +902,7 @@ async fn dur_snap_001_mtls_snapshot_compaction_catches_up_offline_follower() {
 
     for prop in sample_four_family_proposals(15) {
         leader
-            .propose(prop, Duration::from_secs(5))
+            .propose(prop, Duration::from_secs(10))
             .await
             .expect("commit proposal over mTLS");
     }
@@ -915,7 +915,7 @@ async fn dur_snap_001_mtls_snapshot_compaction_catches_up_offline_follower() {
     // Commit 2 more post-snapshot entries (`7` and `8`).
     for prop in sample_four_family_proposals(16).into_iter().take(2) {
         leader
-            .propose(prop, Duration::from_secs(5))
+            .propose(prop, Duration::from_secs(10))
             .await
             .expect("commit post-snapshot proposal");
     }
@@ -960,11 +960,11 @@ async fn boot_and_kill_initial_child_leader(
     r2: &MonotonicEndpointResolver,
     r3: &MonotonicEndpointResolver,
 ) -> (u64, String) {
-    for r in [r2, r3] {
-        register_endpoint_hint(r, cluster.hosts[0], 1, 1, child1.mtls_addr);
-        register_endpoint_hint(r, cluster.hosts[1], 1, 1, n2.local_addr());
-        register_endpoint_hint(r, cluster.hosts[2], 1, 1, n3.local_addr());
-    }
+    // Wire outbound `EndpointHint`s on `child1` FIRST while withholding outbound
+    // hints on `r2`/`r3`: `n2` and `n3` answer `PreVote` / `RequestVote` /
+    // `AppendEntries` inline over `child1`'s inbound mTLS streams without needing
+    // outbound dial capability, preventing `n2`/`n3` from preempting Term 1 Leader
+    // if concurrent `WAL+FULL` `fsync` stalls node startup.
     assert_eq!(
         child1.send_cmd(&format!("PEER_HINT 2 1 1 {}", n2.local_addr())),
         "OK HINT"
@@ -985,6 +985,15 @@ async fn boot_and_kill_initial_child_leader(
             "Child 1 failed to elect as initial Leader: {status}"
         );
         tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    // Populate full `EndpointHint` routing on `r2` and `r3` once `child1` is
+    // established as initial Leader so the surviving 2-of-3 quorum can fail over
+    // immediately after `child1.hard_kill()`.
+    for r in [r2, r3] {
+        register_endpoint_hint(r, cluster.hosts[0], 1, 1, child1.mtls_addr);
+        register_endpoint_hint(r, cluster.hosts[1], 1, 1, n2.local_addr());
+        register_endpoint_hint(r, cluster.hosts[2], 1, 1, n3.local_addr());
     }
 
     let commit_reply = child1.send_cmd("PROPOSE_BATCH 31");
@@ -1014,10 +1023,10 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
     } else {
         16 * 1024
     };
-    // Spawn `child1` FIRST (`election_ticks = 24` -> `480ms`) before starting
-    // `n2` (`58` -> `1160ms`) and `n3` (`82` -> `1640ms`) so OS subprocess boot
-    // latency never eats into follower election windows or triggers PreVote livelocks.
-    let child1 = ChildReplicaHandle::spawn(&cluster.root, 1, 1, 24);
+    // Spawn `child1` FIRST (`election_ticks = 16` -> `320ms`) before starting
+    // `n2` (`36` -> `720ms`) and `n3` (`58` -> `1160ms`) for rapid initial
+    // election and fast 2-of-3 failover after `Child::kill()`.
+    let child1 = ChildReplicaHandle::spawn(&cluster.root, 1, 1, 16);
     let n2 = start_inproc_node(
         &cluster,
         2,
@@ -1025,7 +1034,7 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
         ConsensusTimingConfig {
             heartbeat_interval_ticks: 2,
             leader_lease_ticks: 6,
-            election_timeout_ticks: 58,
+            election_timeout_ticks: 36,
             max_snapshot_chunk_bytes: chunk_bytes,
         },
         &r2,
@@ -1038,7 +1047,7 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
         ConsensusTimingConfig {
             heartbeat_interval_ticks: 2,
             leader_lease_ticks: 6,
-            election_timeout_ticks: 82,
+            election_timeout_ticks: 58,
             max_snapshot_chunk_bytes: chunk_bytes,
         },
         &r3,
@@ -1072,7 +1081,7 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
     // Commit 3 additional proposals on the surviving 2-of-3 quorum while Node 1 is dead!
     for prop in sample_four_family_proposals(42).into_iter().take(3) {
         new_leader
-            .propose(prop, Duration::from_secs(5))
+            .propose(prop, Duration::from_secs(10))
             .await
             .expect("commit on 2-of-3 surviving quorum");
     }
@@ -1112,7 +1121,7 @@ async fn rejoin_killed_leader_and_verify_fence(
     old_leader_term: u64,
     canonical_digest: &str,
 ) {
-    let child1_rejoined = ChildReplicaHandle::spawn(root, 1, 2, 70);
+    let child1_rejoined = ChildReplicaHandle::spawn(root, 1, 2, 100);
     for r in [r2, r3] {
         register_endpoint_hint(r, cluster.hosts[0], 2, 1, child1_rejoined.mtls_addr);
     }

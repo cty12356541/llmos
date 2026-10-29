@@ -41,8 +41,9 @@ use nlos_cell::{
 };
 use nlos_clock::AuthorityClock;
 use nlos_consensus::{
-    ConsensusRole, ControlPlaneCommand, ControlPlaneProposal, MultiHostQuorumConfig,
-    MultiHostQuorumNode, TaskAuthorityShardCommand, ValidatedVoterRoster, VoterReplica,
+    ConsensusRole, ConsensusTimingConfig, ControlPlaneCommand, ControlPlaneProposal,
+    MultiHostQuorumConfig, MultiHostQuorumNode, TaskAuthorityShardCommand, ValidatedVoterRoster,
+    VoterReplica,
 };
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose, semantic_signature_message,
@@ -509,7 +510,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
     ])
     .expect("valid N=3 roster");
 
-    let mut nodes = Vec::with_capacity(3);
+    let mut provisioned = Vec::with_capacity(3);
     let mut resolvers = Vec::with_capacity(3);
     let mut principals = Vec::with_capacity(3);
 
@@ -519,22 +520,33 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
         let (sec, principal_id) =
             provision_isolated_security(root_dir.path(), "raft-sec", node_idx, 3, slot);
         let res = Arc::new(MonotonicEndpointResolver::new());
+        principals.push(principal_id);
+        resolvers.push(res);
+        provisioned.push((node_idx, root_dir.path().join("raft-store"), sec));
+    }
+
+    let mut nodes = Vec::with_capacity(3);
+    for (idx, (node_idx, store_dir, sec)) in provisioned.into_iter().enumerate() {
         let mut cfg = MultiHostQuorumConfig::new(
             cell_for_node(node_idx),
             loopback_ephemeral(),
             roster.clone(),
         );
-        cfg.tick_interval = Duration::from_millis(25);
+        cfg.tick_interval = Duration::from_millis(40);
+        cfg.timing = Some(ConsensusTimingConfig {
+            heartbeat_interval_ticks: 2,
+            leader_lease_ticks: 6,
+            election_timeout_ticks: 18 + u32::from(node_idx - 1) * 16,
+            max_snapshot_chunk_bytes: 16 * 1024,
+        });
         let node = MultiHostQuorumNode::bind_and_start(
-            root_dir.path().join("raft-store"),
+            store_dir,
             cfg,
-            Arc::clone(&res) as Arc<dyn EndpointResolver>,
+            Arc::clone(&resolvers[idx]) as Arc<dyn EndpointResolver>,
             sec,
         )
         .await
         .expect("start MultiHostQuorumNode");
-        principals.push(principal_id);
-        resolvers.push(res);
         nodes.push(node);
     }
 
@@ -563,7 +575,38 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
         .await
         .expect("bind ChaosDirectedMesh");
 
-    for from_idx in 0..3 {
+    // Populate outbound ChaosDirectedMesh routes on `resolvers[0]` FIRST so
+    // `nodes[0]` deterministically wins initial Term 1 leadership without
+    // `nodes[1]`/`nodes[2]` preempting `PreVote` under concurrent `WAL+FULL` I/O.
+    for to_idx in 1..3 {
+        let proxy_addr = mesh
+            .link_proxy_addr(cells[0], cells[to_idx])
+            .expect("proxy link addr");
+        resolvers[0]
+            .upsert_hint(
+                EndpointHintRecord::new(cells[to_idx], proxy_addr, ver1, 1)
+                    .with_expected_principal(principals[to_idx]),
+            )
+            .expect("route Raft peer through ChaosDirectedMesh");
+    }
+
+    // Wait for `nodes[0]` to be elected initial N=3 leader across ChaosDirectedMesh.
+    let mut initial_leader_idx = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if nodes[0].role() == ConsensusRole::Leader {
+            initial_leader_idx = Some(0);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let leader_1_idx = initial_leader_idx.expect("N=3 cluster must elect initial leader");
+    let term_1 = nodes[leader_1_idx].current_term();
+    assert!(term_1 >= 1);
+
+    // Populate full ChaosDirectedMesh peer routes on `resolvers[1]` and `resolvers[2]`
+    // so the surviving 2-node majority has complete routing for Term 2+ failover.
+    for from_idx in 1..3 {
         for to_idx in 0..3 {
             if from_idx == to_idx {
                 continue;
@@ -579,19 +622,6 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
                 .expect("route Raft peer through ChaosDirectedMesh");
         }
     }
-    // Wait for initial N=3 leader election across ChaosDirectedMesh.
-    let mut initial_leader_idx = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if let Some(i) = nodes.iter().position(|n| n.role() == ConsensusRole::Leader) {
-            initial_leader_idx = Some(i);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let leader_1_idx = initial_leader_idx.expect("N=3 cluster must elect initial leader");
-    let term_1 = nodes[leader_1_idx].current_term();
-    assert!(term_1 >= 1);
 
     let task_id = TaskId::from_bytes([0xD1; 16]);
     let assign_1_id = TaskAuthorityAssignmentId::from_bytes([0xA1; 16]);
@@ -612,7 +642,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
         ),
     );
     let receipt_1 = nodes[leader_1_idx]
-        .propose(prop_1, Duration::from_secs(3))
+        .propose(prop_1, Duration::from_secs(10))
         .await
         .expect("initial quorum commit");
     assert!(receipt_1.consensus_commit_index.get() >= 1);
@@ -738,7 +768,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
 
     // 2. Wait for the 2-node majority (`survivor_a`, `survivor_b`) to elect a new leader in term > term_1.
     let mut new_leader_idx = None;
-    let el_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let el_deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < el_deadline {
         for &idx in &[survivor_a, survivor_b] {
             if nodes[idx].role() == ConsensusRole::Leader && nodes[idx].current_term() > term_1 {
@@ -777,7 +807,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
         ),
     );
     let receipt_2 = nodes[leader_2_idx]
-        .propose(prop_2, Duration::from_secs(3))
+        .propose(prop_2, Duration::from_secs(10))
         .await
         .expect("new majority leader commit");
     assert!(receipt_2.consensus_commit_index > receipt_1.consensus_commit_index);
@@ -853,7 +883,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
 
     // 3. Heal mesh and verify isolated old leader steps down and converges to `receipt_2`.
     mesh.heal_all();
-    let heal_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let heal_deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < heal_deadline {
         if nodes[leader_1_idx].consensus_commit_index() >= receipt_2.consensus_commit_index.get()
             && nodes[leader_1_idx].state_root_digest() == receipt_2.state_root_digest

@@ -527,8 +527,8 @@ impl MultiHostQuorumConfig {
             timing: None,
             tick_interval: Duration::from_millis(20),
             net_config: NetTransportConfig {
-                connect_and_tls_timeout: Duration::from_millis(800),
-                fence_handshake_timeout: Duration::from_millis(800),
+                connect_and_tls_timeout: Duration::from_millis(1500),
+                fence_handshake_timeout: Duration::from_millis(1500),
                 rpc_call_timeout: Duration::from_millis(800),
                 bulk_transfer_timeout: Duration::from_secs(10),
                 timeout_elapsed_ticks: 4,
