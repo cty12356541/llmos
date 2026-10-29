@@ -428,6 +428,242 @@ class StageDV12Tests(unittest.TestCase):
         )
 
 
+STAGE_E_CLAIM_DESIGN = """\
+
+- requirement_id: E-STORE-GOV
+  stage: "E"
+  status: READY
+  implementation_refs: []
+  test_refs: []
+  evidence_refs: []
+  assurance: DESIGN
+  limitations:
+    - "仅有阶段 E 设计基线"
+  source: "stage-e-progress.md §E.2"
+"""
+
+STAGE_E_CLAIMS_H4_H7 = """\
+
+- requirement_id: E-SABI-COMPAT
+  stage: "E"
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 481ae0f
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-compat-001.md
+  assurance: H4
+  limitations: []
+  source: "stage-e-progress.md §E.3 E-SABI-COMPAT 行（base 481ae0f）"
+
+- requirement_id: ROAD-E-001
+  stage: E
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 481ae0f
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-compat-001.md
+    - docs/evidence/stage-e/reviews/w76-stage-e-demo.md
+  assurance: H7
+  limitations: []
+  source: "stage-e-progress.md §E.5 ROAD-E-001 行（base 481ae0f）"
+"""
+
+STAGE_E_INDEX_H4_H7 = """\
+
+- id: e-sabi-compat-001
+  path: docs/evidence/stage-e/e-sabi-compat-001.md
+  title: "E-SABI-COMPAT-001：阶段 E SABI 长期二进制兼容政策证据"
+  scope: "阶段 E SABI 长期二进制兼容政策证据"
+  assurance: H4
+  date: "2026-10-29"
+
+- id: w76-stage-e-demo
+  path: docs/evidence/stage-e/reviews/w76-stage-e-demo.md
+  title: "W76-STAGE-E-DEMO：阶段 E 生态兼容与评审证据"
+  scope: "阶段 E 生态兼容与评审证据"
+  assurance: H7
+  date: "2026-10-29"
+"""
+
+STAGE_E_RISK_01 = """\
+
+- id: RISK-E-01
+  category: premature-format-freeze
+  severity: P1
+  status: partial
+  description: "阶段 E 第三方商店发布者签名轮换与旧包兼容窗口风险"
+  mitigation: "SABI 通道兼容性门禁与签名吊销演练在册"
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-compat-001.md
+  review_point: "阶段 E 退出评审门"
+"""
+
+
+class StageEV13Tests(unittest.TestCase):
+    def _make_stage_e_repo(self, claims=None, risks=None, index=None) -> Path:
+        root = make_repo(
+            claims=GOOD_CLAIMS + (STAGE_E_CLAIM_DESIGN + STAGE_E_CLAIMS_H4_H7 if claims is None else claims),
+            risks=GOOD_RISKS + (STAGE_E_RISK_01 if risks is None else risks),
+            index=GOOD_INDEX + (STAGE_E_INDEX_H4_H7 if index is None else index),
+        )
+        ev_e = root / "docs/evidence/stage-e"
+        rev_e = ev_e / "reviews"
+        rev_e.mkdir(parents=True)
+        (ev_e / "e-sabi-compat-001.md").write_text("# E-SABI-COMPAT-001\n", encoding="utf-8")
+        (rev_e / "w76-stage-e-demo.md").write_text("# W76-STAGE-E-DEMO\n", encoding="utf-8")
+        return root
+
+    def test_stage_e_design_claim_passes(self):
+        root = make_repo(claims=GOOD_CLAIMS + STAGE_E_CLAIM_DESIGN)
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(stats["claims"].get("READY"), 1)
+
+    def test_stage_e_h4_and_h7_claims_with_stage_e_and_reviews_evidence_pass(self):
+        root = self._make_stage_e_repo()
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(stats["index"], 3)
+        self.assertEqual(stats["on_disk"], 3)
+
+    def test_stage_e_poc_evidence_impersonating_h7_claim_fails_closed(self):
+        poc_claim_h7 = """\
+
+- requirement_id: E-POC-OVERCLAIM
+  stage: "E"
+  status: DONE
+  implementation_refs:
+    - crates/demo
+  test_refs:
+    - 481ae0f
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-compat-001.md
+  assurance: H7
+  limitations: []
+  source: "stage-e-progress.md §E.3 E-POC-OVERCLAIM 行（base 481ae0f）"
+"""
+        poc_index = STAGE_E_INDEX_H4_H7.replace("assurance: H4", "assurance: POC", 1)
+        root = self._make_stage_e_repo(claims=poc_claim_h7, index=poc_index)
+        errs = errors(root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0][1], "claims/E-POC-OVERCLAIM")
+        self.assertIn("Claim≤Evidence 违例", errs[0][2])
+        self.assertIn("assurance=H7 (rank 7) > 被引证据最高支撑 rank 3", errs[0][2])
+
+    def test_risk_e_01_entry_passes(self):
+        cross_stage_risks = """\
+
+- id: RISK-C-01
+  category: durable-state-loss
+  severity: P2
+  status: mitigated
+  description: "阶段 C 延续风险"
+
+- id: RISK-D-01
+  category: runtime-ui-lockin
+  severity: P2
+  status: mitigated
+  description: "阶段 D 延续风险"
+""" + STAGE_E_RISK_01
+        root = self._make_stage_e_repo(risks=cross_stage_risks)
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(sum(stats["risks"].values()), 5)
+
+    def test_stage_e_unindexed_files_on_disk_fail_closed(self):
+        root = self._make_stage_e_repo()
+        (root / "docs/evidence/stage-e/e-unindexed-001.md").write_text("# UNINDEXED\n", encoding="utf-8")
+        (root / "docs/evidence/stage-e/reviews/w76-unindexed.md").write_text("# UNINDEXED\n", encoding="utf-8")
+        errs = errors(root)
+        self.assertEqual(len(errs), 2, errs)
+        self.assertTrue(
+            any("目录文件未收录: docs/evidence/stage-e/e-unindexed-001.md" in f[2] for f in errs),
+            errs,
+        )
+        self.assertTrue(
+            any("目录文件未收录: docs/evidence/stage-e/reviews/w76-unindexed.md" in f[2] for f in errs),
+            errs,
+        )
+
+    def test_stage_e_orphan_index_entry_fails_closed(self):
+        orphan_index = STAGE_E_INDEX_H4_H7 + """\
+
+- id: e-orphan-999
+  path: docs/evidence/stage-e/e-orphan-999.md
+  title: "E-ORPHAN-999：孤儿索引条目"
+  scope: "孤儿索引条目"
+  assurance: H4
+  date: "2026-10-29"
+"""
+        root = self._make_stage_e_repo(index=orphan_index)
+        errs = errors(root)
+        self.assertTrue(
+            any(
+                f[1] == "evidence-index/e-orphan-999"
+                and "指向不存在的文件: docs/evidence/stage-e/e-orphan-999.md" in f[2]
+                for f in errs
+            ),
+            errs,
+        )
+        self.assertTrue(
+            any(
+                f[1] == "evidence-index"
+                and "索引收录了目录外/不存在文件: docs/evidence/stage-e/e-orphan-999.md" in f[2]
+                for f in errs
+            ),
+            errs,
+        )
+
+    def test_unapproved_stage_f_fails_closed_with_v13_enum(self):
+        errs = errors(make_repo(claims=GOOD_CLAIMS.replace("stage: B", "stage: F", 1)))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0][1], "claims/TEST-001")
+        self.assertIn("stage 非法（v1.3 仅允许 B/C/D/E）: F", errs[0][2])
+
+    def test_stages_b_c_d_e_backward_compatible_coexistence(self):
+        root = make_repo(
+            claims=(
+                GOOD_CLAIMS
+                + STAGE_C_CLAIM_H6
+                + STAGE_D_CLAIM_H4
+                + STAGE_E_CLAIM_DESIGN
+                + STAGE_E_CLAIMS_H4_H7
+            ),
+            risks=GOOD_RISKS + STAGE_E_RISK_01,
+            index=(
+                GOOD_INDEX
+                + STAGE_C_INDEX_H6
+                + STAGE_C_REVIEW_INDEX
+                + STAGE_D_INDEX_H4
+                + STAGE_E_INDEX_H4_H7
+            ),
+        )
+        for rel in (
+            "docs/evidence/stage-c/c-demo-001.md",
+            "docs/evidence/stage-c/reviews/w67-demo.md",
+            "docs/evidence/stage-d/d-tokens-kit-001.md",
+            "docs/evidence/stage-d/reviews/w74-demo.md",
+            "docs/evidence/stage-e/e-sabi-compat-001.md",
+            "docs/evidence/stage-e/reviews/w76-stage-e-demo.md",
+        ):
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"# {p.stem.upper()}\n", encoding="utf-8")
+        findings, stats = lint.run(root)
+        errs = [f for f in findings if f[0] == "ERROR"]
+        self.assertEqual(errs, [])
+        self.assertEqual(sum(stats["claims"].values()), 8)
+        self.assertEqual(stats["index"], 7)
+        self.assertEqual(stats["on_disk"], 7)
+
+
 class RealRepoTests(unittest.TestCase):
     def test_real_ledger_lints_clean(self):
         """仓库自检门：三份台账 + 索引双向一致必须全绿。"""

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""claims/risks/evidence-index 机器台账 lint v1.2（schema 见 docs/management/ledger-schema.md）。
+"""claims/risks/evidence-index 机器台账 lint v1.3（schema 见 docs/management/ledger-schema.md）。
 
 零依赖（stdlib）：内置 canonical YAML 子集解析器；环境装有 pyyaml 时交叉验证两者解析一致。
 
 检查项：
   (a) refs 可解析——repo 相对路径存在或 commit 串（7–40 hex）；evidence_refs 额外
       限定为 evidence-index 已收录的 docs/evidence/<stage>/ 路径；
-  (b) 枚举（claims.stage ∈ {B, C, D}，v1 仅 B，v1.1 新增 C，v1.2 新增 D）/必填字段/未知字段（v1 FROZEN）/ID 唯一/引用文法合法性；
+  (b) 枚举（claims.stage ∈ {B, C, D, E}，v1 仅 B，v1.1 新增 C，v1.2 新增 D，v1.3 (W76) 新增 E）/必填字段/未知字段（v1 FROZEN）/ID 唯一/引用文法合法性；
   (c) Claim≤Evidence——DESIGN ⇒ 空 evidence_refs；非 DESIGN ⇒ ≥1 条 evidence 且
       rank(assurance) ≤ max(rank(被引索引条目))，rank(POC)=3、rank(Hn)=n；
   (d) evidence-index 与 docs/evidence/<stage>/ 目录（递归含子目录）双向一致。
@@ -25,9 +25,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAIMS_PATH = "docs/management/claims.yaml"
 RISKS_PATH = "docs/management/risks.yaml"
 INDEX_PATH = "docs/management/evidence-index.yaml"
-EVIDENCE_ROOT = "docs/evidence"  # v2: 扩域任意 stage 目录(stage-b/stage-c/stage-d/...);v1 曾限定 stage-b
+EVIDENCE_ROOT = "docs/evidence"  # v2: 扩域任意 stage 目录(stage-b/stage-c/stage-d/stage-e/...);v1 曾限定 stage-b
 
-CLAIM_STAGES = {"B", "C", "D"}  # v1: {"B"}; v1.1 (W67): 新增 "C"; v1.2 (W74): 新增 "D"
+CLAIM_STAGES = {"B", "C", "D", "E"}  # v1: {"B"}; v1.1 (W67): 新增 "C"; v1.2 (W74): 新增 "D"; v1.3 (W76): 新增 "E"
 CLAIM_STATUSES = {"DONE", "PARTIAL_PASS", "IN_PROGRESS", "READY", "BLOCKED", "NOT_STARTED"}
 CLAIM_ASSURANCES = {"DESIGN", "H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8"}
 EVIDENCE_ASSURANCES = {"POC", "H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8"}
@@ -245,7 +245,7 @@ def check_claims(claims, root: Path, index_paths: set, index_rank: dict, finding
         if assurance not in CLAIM_ASSURANCES:
             findings.append(("ERROR", where, f"assurance 非法: {assurance}"))
         if c["stage"] not in CLAIM_STAGES:
-            findings.append(("ERROR", where, f"stage 非法（v1.2 仅允许 B/C/D）: {c['stage']}"))
+            findings.append(("ERROR", where, f"stage 非法（v1.3 仅允许 B/C/D/E）: {c['stage']}"))
         if not isinstance(c["source"], str) or not c["source"].strip():
             findings.append(("ERROR", where, "source 必须为非空字符串（断言出处）"))
         _require_str_list(where, c["limitations"], "limitations", findings)
@@ -414,7 +414,7 @@ def run(root: Path) -> tuple[list, dict]:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="claims/risks/evidence-index 台账 lint v1.2")
+    parser = argparse.ArgumentParser(description="claims/risks/evidence-index 台账 lint v1.3")
     parser.add_argument("--root", default=str(REPO_ROOT), help="仓库根目录（默认脚本所在仓库）")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
