@@ -5,8 +5,8 @@
 //! These tests use scripted in-memory fakes only — no `SQLite` store and no
 //! Tokio runtime — so timing assertions stay deterministic.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use nlos_operation::OperationState;
@@ -62,6 +62,69 @@ fn item(sequence: u64) -> OutboxItem {
     }
 }
 
+/// Deterministic gate holding a scripted fake's post-failure recovery pass at
+/// the recovery boundary until the test thread has observed the peak failure
+/// health surface. Without this gate, OS preemption of the test thread across
+/// the final backoff step lets the fake's first healthy pass clear the
+/// consecutive-failure counters before the test's first health poll runs.
+#[derive(Clone)]
+struct RecoveryGate {
+    inner: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl RecoveryGate {
+    fn closed() -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn open() -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(true), Condvar::new())),
+        }
+    }
+
+    fn allow_recovery(&self) {
+        let (allowed, ready) = &*self.inner;
+        *lock(allowed) = true;
+        ready.notify_all();
+    }
+
+    fn wait_until_allowed(&self) {
+        let (allowed, ready) = &*self.inner;
+        let deadline = Instant::now() + RESOLVE;
+        let mut allowed = lock(allowed);
+        while !*allowed {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            let (guard, _) = ready
+                .wait_timeout(allowed, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            allowed = guard;
+        }
+    }
+
+    /// Arms an RAII guard that opens the gate on drop. Bind this *after* the
+    /// [`OutboxPump`] local so reverse-declaration drop order releases a
+    /// parked worker thread before [`OutboxPump::drop`] joins it on unwind.
+    fn release_on_drop(&self) -> RecoveryGateGuard {
+        RecoveryGateGuard { gate: self.clone() }
+    }
+}
+
+struct RecoveryGateGuard {
+    gate: RecoveryGate,
+}
+
+impl Drop for RecoveryGateGuard {
+    fn drop(&mut self) {
+        self.gate.allow_recovery();
+    }
+}
+
 /// Shared observation handle for [`FlakySource`].
 struct FlakyProbe {
     attempts: Arc<AtomicUsize>,
@@ -84,16 +147,22 @@ impl FlakyProbe {
 }
 
 /// Source that fails `pending` until `failures_remaining` hits zero, then
-/// serves empty batches. Every attempt timestamp is recorded so the test can
-/// observe the backoff directly.
+/// waits for `recovery_gate` before serving empty batches. Every attempt
+/// timestamp is recorded before publishing the attempt count so the test can
+/// observe the backoff directly without racing recovery clearing `health()`.
 struct FlakySource {
     failures_remaining: AtomicUsize,
     attempts: Arc<AtomicUsize>,
     timestamps: Arc<Mutex<Vec<Instant>>>,
+    recovery_gate: RecoveryGate,
 }
 
 impl FlakySource {
     fn new(failures: usize) -> (Self, FlakyProbe) {
+        Self::with_recovery_gate(failures, RecoveryGate::open())
+    }
+
+    fn with_recovery_gate(failures: usize, recovery_gate: RecoveryGate) -> (Self, FlakyProbe) {
         let attempts = Arc::new(AtomicUsize::new(0));
         let timestamps = Arc::new(Mutex::new(Vec::new()));
         let probe = FlakyProbe {
@@ -105,6 +174,7 @@ impl FlakySource {
                 failures_remaining: AtomicUsize::new(failures),
                 attempts,
                 timestamps,
+                recovery_gate,
             },
             probe,
         )
@@ -113,14 +183,15 @@ impl FlakySource {
 
 impl OutboxSource for FlakySource {
     fn pending(&self, _limit: usize) -> Result<Vec<OutboxItem>, OutboxError> {
-        self.attempts.fetch_add(1, Ordering::AcqRel);
         lock(&self.timestamps).push(Instant::now());
+        self.attempts.fetch_add(1, Ordering::AcqRel);
         if self.failures_remaining.load(Ordering::Acquire) > 0 {
             self.failures_remaining.fetch_sub(1, Ordering::AcqRel);
             return Err(OutboxError::Source {
                 detail: "scripted persistent read failure".to_owned(),
             });
         }
+        self.recovery_gate.wait_until_allowed();
         Ok(Vec::new())
     }
 
@@ -258,19 +329,22 @@ fn zero_batch_limit_is_rejected_at_start() {
 #[test]
 fn failing_source_is_observed_through_health_and_backoff() {
     const FAILURES: usize = 5;
-    let (source, probe) = FlakySource::new(FAILURES);
+    let gate = RecoveryGate::closed();
+    let (source, probe) = FlakySource::with_recovery_gate(FAILURES, gate.clone());
     let pump = start(
         source,
         PanickingWakeSink, // never reached: `pending` is what fails
         RecordingReconcileSink::default(),
         config(Duration::from_millis(5), 16),
     );
+    let _release_gate_on_drop = gate.release_on_drop();
 
     wait_until("all scripted failures to happen", || {
         pump.health().consecutive_failures >= FAILURES
     });
     let health = pump.health();
     assert_eq!(health.state, PumpState::Running);
+    assert_eq!(health.consecutive_failures, FAILURES);
     assert!(
         health
             .last_error
@@ -282,10 +356,13 @@ fn failing_source_is_observed_through_health_and_backoff() {
     // Backoff: with a 5ms poll interval the minimum waits after failures
     // 1..=5 are 5/10/20/40/80ms. Runner scheduling may delay any attempt by
     // an arbitrary amount, so assert each configured lower bound rather than
-    // comparing ratios between two scheduler-inflated observations.
-    wait_until("the source to recover and serve again", || {
-        probe.attempts() > FAILURES
-    });
+    // comparing ratios between two scheduler-inflated observations. The
+    // (FAILURES + 1)-th `pending` records its post-backoff timestamp and then
+    // parks on `gate`, keeping `health()` pinned at the peak failure state.
+    wait_until(
+        "the post-backoff recovery attempt to reach the gate",
+        || probe.attempts() > FAILURES,
+    );
     let gaps = probe.gaps();
     assert!(
         gaps.len() >= FAILURES,
@@ -301,13 +378,19 @@ fn failing_source_is_observed_through_health_and_backoff() {
         );
     }
 
-    // Recovery: once the source serves again, a successful drain resets the
-    // failure counter while attempts keep increasing.
+    // Recovery: releasing the gate lets the parked `pending` return empty, so
+    // the completed drain resets the failure surface while attempts stay past
+    // `FAILURES`.
+    gate.allow_recovery();
     wait_until("recovery resets the failure counter", || {
-        pump.health().consecutive_failures == 0 && probe.attempts() > FAILURES
+        let health = pump.health();
+        health.consecutive_failures == 0
+            && health.last_error.is_none()
+            && probe.attempts() > FAILURES
     });
     let health = pump.health();
     assert_eq!(health.state, PumpState::Running);
+    assert_eq!(health.consecutive_failures, 0);
     assert_eq!(health.last_error, None);
 
     pump.stop();
@@ -397,7 +480,7 @@ impl ReconcileSink for PoisonReconcileSink {
 /// acknowledged, then serves empty batches.
 struct UntilAckedSource {
     entry: OutboxItem,
-    acked: Arc<std::sync::atomic::AtomicBool>,
+    acked: Arc<AtomicBool>,
 }
 
 impl OutboxSource for UntilAckedSource {
@@ -415,31 +498,35 @@ impl OutboxSource for UntilAckedSource {
     }
 }
 
-/// Reconcile sink that fails its first `failures` attempts and then
-/// succeeds, recording every attempt.
+/// Reconcile sink that fails its first `failures` attempts and then waits for
+/// `recovery_gate` before succeeding, recording every completed attempt.
 struct FlakyReconcileSink {
     failures_remaining: AtomicUsize,
     attempts: Arc<AtomicUsize>,
+    recovery_gate: RecoveryGate,
 }
 
 impl FlakyReconcileSink {
-    fn new(failures: usize) -> Self {
+    fn new(failures: usize, recovery_gate: RecoveryGate) -> Self {
         Self {
             failures_remaining: AtomicUsize::new(failures),
             attempts: Arc::new(AtomicUsize::new(0)),
+            recovery_gate,
         }
     }
 }
 
 impl ReconcileSink for FlakyReconcileSink {
     fn reconcile(&self, _item: &OutboxItem) -> Result<(), OutboxError> {
-        self.attempts.fetch_add(1, Ordering::AcqRel);
         if self.failures_remaining.load(Ordering::Acquire) > 0 {
             self.failures_remaining.fetch_sub(1, Ordering::AcqRel);
+            self.attempts.fetch_add(1, Ordering::AcqRel);
             return Err(OutboxError::Reconcile {
                 detail: "transient reconcile failure".to_owned(),
             });
         }
+        self.recovery_gate.wait_until_allowed();
+        self.attempts.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 }
@@ -517,9 +604,10 @@ fn poison_reconcile_entry_backs_off_and_is_visible_in_health() {
 #[test]
 fn apply_stop_recovery_clears_health_and_acknowledges_the_entry() {
     const TRANSIENT_FAILURES: usize = 3;
-    let sink = FlakyReconcileSink::new(TRANSIENT_FAILURES);
+    let gate = RecoveryGate::closed();
+    let sink = FlakyReconcileSink::new(TRANSIENT_FAILURES, gate.clone());
     let attempts = Arc::clone(&sink.attempts);
-    let acked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let acked = Arc::new(AtomicBool::new(false));
     let pump = start(
         UntilAckedSource {
             entry: reconcile_item(7),
@@ -529,6 +617,7 @@ fn apply_stop_recovery_clears_health_and_acknowledges_the_entry() {
         sink,
         config(Duration::from_millis(5), 16),
     );
+    let _release_gate_on_drop = gate.release_on_drop();
 
     wait_until("the same-sequence stops to accumulate", || {
         pump.health().consecutive_apply_failures >= TRANSIENT_FAILURES
@@ -543,12 +632,18 @@ fn apply_stop_recovery_clears_health_and_acknowledges_the_entry() {
             .is_some_and(|error| error.contains("transient reconcile failure")),
         "last_apply_error carries the stop cause: {during:?}"
     );
+    assert!(
+        !acked.load(Ordering::Acquire),
+        "entry must stay unacknowledged until recovery is allowed"
+    );
 
+    gate.allow_recovery();
     wait_until("recovery clears the apply-failure surface", || {
+        let health = pump.health();
         acked.load(Ordering::Acquire)
-            && pump.health().stuck_sequence.is_none()
-            && pump.health().consecutive_apply_failures == 0
-            && pump.health().last_apply_error.is_none()
+            && health.stuck_sequence.is_none()
+            && health.consecutive_apply_failures == 0
+            && health.last_apply_error.is_none()
     });
     assert!(
         attempts.load(Ordering::Acquire) > TRANSIENT_FAILURES,
