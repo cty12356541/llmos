@@ -751,6 +751,7 @@ struct MultiHostClientState {
     inbound_rpc_handler: Option<Arc<dyn RpcRequestHandler>>,
     inbound_bulk_handler: Option<Arc<dyn BulkStreamHandler>>,
     pooled_sessions: Mutex<BTreeMap<CellIdentity, (SocketAddr, MultiplexedSession)>>,
+    dial_locks: Mutex<BTreeMap<CellIdentity, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Drop for MultiHostClientState {
@@ -838,6 +839,7 @@ impl MtlsCellTransport {
                 inbound_rpc_handler,
                 inbound_bulk_handler,
                 pooled_sessions: Mutex::new(BTreeMap::new()),
+                dial_locks: Mutex::new(BTreeMap::new()),
             }),
         })
     }
@@ -872,6 +874,22 @@ impl MtlsCellTransport {
         {
             old_session.close();
         }
+    }
+
+    fn invalidate_session_if_matching(&self, target: CellIdentity, failed: &MultiplexedSession) {
+        if let Some(state) = &self.active_mode {
+            let mut pool = state
+                .pooled_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if pool
+                .get(&target)
+                .is_some_and(|(_, cached)| cached.same_session(failed))
+            {
+                let _ = pool.remove(&target);
+            }
+        }
+        failed.close();
     }
 
     /// Explicitly closes and evicts all pooled outbound [`MultiplexedSession`]s
@@ -914,15 +932,50 @@ impl MtlsCellTransport {
             return Err(DialSessionError::SelfDialForbidden(target));
         }
 
+        let initial_hint = state
+            .resolver
+            .resolve(target)
+            .ok_or(DialSessionError::EndpointUnresolved(target))?;
+
+        // Fast path: reuse pooled session with zero async lock overhead if it is
+        // still healthy, its routing hint matches the authoritative EndpointResolver
+        // SocketAddr (`[DIST-NAME-001]`), and any expected PrincipalId matches.
+        {
+            let pool = state
+                .pooled_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some((cached_addr, session)) = pool.get(&target) {
+                let principal_ok = initial_hint
+                    .expected_principal
+                    .is_none_or(|exp_p| session.peer_session().peer_claims.principal_id == exp_p);
+                if *cached_addr == initial_hint.addr_hint && principal_ok && session.is_healthy() {
+                    return Ok(session.clone());
+                }
+            }
+        }
+
+        // Slow path: per-target async singleflight dial lock prevents concurrent
+        // TLS 1.3 + custody signing thundering herds to the same peer.
+        let target_dial_lock = {
+            let mut locks = state
+                .dial_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(
+                locks
+                    .entry(target)
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        let _dial_guard = target_dial_lock.lock().await;
+
         let hint = state
             .resolver
             .resolve(target)
             .ok_or(DialSessionError::EndpointUnresolved(target))?;
 
-        // Reuse pooled session ONLY if it is still healthy, its routing hint
-        // matches the authoritative EndpointResolver SocketAddr (`[DIST-NAME-001]`),
-        // and any expected PrincipalId matches the pinned peer claims.
-        {
+        let stale_to_close = {
             let mut pool = state
                 .pooled_sessions
                 .lock()
@@ -934,21 +987,25 @@ impl MtlsCellTransport {
                 if *cached_addr == hint.addr_hint && principal_ok && session.is_healthy() {
                     return Ok(session.clone());
                 }
-                if let Some((_, stale_session)) = pool.remove(&target) {
-                    stale_session.close();
-                }
             }
+            pool.remove(&target).map(|(_, stale)| stale)
+        };
+        if let Some(stale_session) = stale_to_close {
+            stale_session.close();
         }
 
         let fresh = self
             .dial_fresh_session_to_addr(state, target, hint.addr_hint, hint.expected_principal)
             .await?;
+        let displaced = state
+            .pooled_sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(target, (hint.addr_hint, fresh.clone()));
+        if let Some((_, old_session)) = displaced
+            && !old_session.same_session(&fresh)
         {
-            state
-                .pooled_sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(target, (hint.addr_hint, fresh.clone()));
+            old_session.close();
         }
         Ok(fresh)
     }
@@ -1083,7 +1140,7 @@ impl MtlsCellTransport {
             .await;
 
         if fail_kind.is_some() {
-            self.invalidate_cached_session(target);
+            self.invalidate_session_if_matching(target, &session);
         }
         if matches!(
             outcome,
@@ -1211,7 +1268,7 @@ impl MtlsCellTransport {
             .await;
 
         if fail_kind.is_some() {
-            self.invalidate_cached_session(target);
+            self.invalidate_session_if_matching(target, &session);
         }
         if matches!(
             outcome,
@@ -1294,5 +1351,471 @@ impl BulkStreamTransport for MtlsCellTransport {
                 .await?;
             Ok(outcome)
         })
+    }
+}
+#[cfg(test)]
+#[allow(clippy::too_many_lines)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::num::NonZeroU64;
+
+    use ed25519_dalek::{Signature, Signer, SigningKey};
+    use nlos_cell::{CellEpoch, CellFencingToken};
+    use nlos_types::{ControlDomainId, Generation, IdempotencyKey, KeyId, SchedulerDomainId};
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::frame::RpcWireStatus;
+    use crate::handshake::MonotonicPeerFenceGate;
+    use crate::identity::{PeerIdentityError, VerifiedPeerKey};
+    use crate::mux::{IncomingRpcRequest, RpcHandlerReply};
+    use crate::resolver::{EndpointHintRecord, EndpointRoutingVersion, MonotonicEndpointResolver};
+
+    const TEST_NOW_MS: u64 = 1_780_000_000_000;
+
+    fn test_cell(tag: u8) -> CellIdentity {
+        CellIdentity::from_domain(SchedulerDomainId::from_bytes([tag; 16]))
+    }
+
+    struct TestNodeSigner {
+        principal: PrincipalId,
+        domain: ControlDomainId,
+        key_id: KeyId,
+        key_gen: Generation,
+        signing_key: SigningKey,
+        sign_calls: AtomicUsize,
+    }
+
+    impl TestNodeSigner {
+        fn new(tag: u8) -> Self {
+            Self {
+                principal: PrincipalId::from_bytes([tag.wrapping_add(0x10); 16]),
+                domain: ControlDomainId::from_bytes([tag.wrapping_add(0x20); 16]),
+                key_id: KeyId::from_bytes([tag.wrapping_add(0x30); 16]),
+                key_gen: Generation::new(NonZeroU64::new(1).expect("nz")),
+                signing_key: SigningKey::from_bytes(&[tag.wrapping_add(0x40); 32]),
+                sign_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn reset_sign_calls(&self) {
+            self.sign_calls.store(0, Ordering::Release);
+        }
+
+        fn sign_call_count(&self) -> usize {
+            self.sign_calls.load(Ordering::Acquire)
+        }
+    }
+
+    impl PeerDigestSigner for TestNodeSigner {
+        fn principal_id(&self) -> PrincipalId {
+            self.principal
+        }
+
+        fn key_id(&self) -> KeyId {
+            self.key_id
+        }
+
+        fn key_generation(&self) -> Generation {
+            self.key_gen
+        }
+
+        fn sign_domain_digest(
+            &self,
+            _domain_tag: &'static [u8],
+            message_digest: [u8; 32],
+            _signed_at_ms: u64,
+        ) -> Result<[u8; 64], PeerIdentityError> {
+            self.sign_calls.fetch_add(1, Ordering::AcqRel);
+            Ok(self.signing_key.sign(&message_digest).to_bytes())
+        }
+    }
+
+    struct TestDirectoryVerifier {
+        nodes: Vec<Arc<TestNodeSigner>>,
+    }
+
+    impl IdentityPeerVerifier for TestDirectoryVerifier {
+        fn verify_peer_digest(
+            &self,
+            principal: PrincipalId,
+            key_id: KeyId,
+            key_generation: Generation,
+            message_digest: [u8; 32],
+            signature: [u8; 64],
+            _verified_at_ms: u64,
+        ) -> Result<VerifiedPeerKey, PeerIdentityError> {
+            let Some(node) = self.nodes.iter().find(|n| n.principal == principal) else {
+                return Err(PeerIdentityError::PrincipalUnknown(principal));
+            };
+            let sig = Signature::from_bytes(&signature);
+            node.signing_key
+                .verifying_key()
+                .verify_strict(&message_digest, &sig)
+                .map_err(|_| PeerIdentityError::SignatureInvalid)?;
+            Ok(VerifiedPeerKey {
+                principal_id: node.principal,
+                control_domain_id: node.domain,
+                key_id,
+                key_generation,
+            })
+        }
+    }
+
+    fn build_security_deps(
+        cell: CellIdentity,
+        boot_gen: u64,
+        signer: &Arc<TestNodeSigner>,
+        verifier: &Arc<TestDirectoryVerifier>,
+        tls_seed: u8,
+    ) -> NodeSecurityDeps {
+        let creds = NodeTlsCredentials::issue(
+            signer.as_ref(),
+            [tls_seed; 32],
+            TEST_NOW_MS - 60_000,
+            TEST_NOW_MS + 600_000,
+        )
+        .expect("issue test TLS credentials");
+        let boot_generation = Generation::new(NonZeroU64::new(boot_gen).expect("boot_gen"));
+        let fence = CellFence::present(
+            cell,
+            boot_generation,
+            CellEpoch::INITIAL,
+            CellFencingToken::from_u64(u64::from(tls_seed)).expect("nonzero token"),
+        );
+        NodeSecurityDeps {
+            local_fence: Arc::new(move || fence),
+            local_signer: Arc::clone(signer) as Arc<dyn PeerDigestSigner>,
+            peer_verifier: Arc::clone(verifier) as Arc<dyn IdentityPeerVerifier>,
+            fence_policy: Arc::new(MonotonicPeerFenceGate::new(None)),
+            nonce_registry: Arc::new(FenceNonceRegistry::default()),
+            clock_ms: Arc::new(|| TEST_NOW_MS),
+            tls_credentials: creds,
+        }
+    }
+
+    struct SlowOrFastRpcHandler {
+        hang_entered: Arc<Notify>,
+        release_hang: Arc<Notify>,
+    }
+
+    impl RpcRequestHandler for SlowOrFastRpcHandler {
+        fn handle_rpc(
+            &self,
+            request: IncomingRpcRequest,
+        ) -> Pin<Box<dyn Future<Output = RpcHandlerReply> + Send + 'static>> {
+            let hang_entered = Arc::clone(&self.hang_entered);
+            let release_hang = Arc::clone(&self.release_hang);
+            Box::pin(async move {
+                if request.payload == b"hang" {
+                    hang_entered.notify_waiters();
+                    release_hang.notified().await;
+                }
+                RpcHandlerReply {
+                    observed_epoch: CellEpoch::INITIAL,
+                    idempotency_replayed: false,
+                    status: RpcWireStatus::Ok,
+                    payload: b"pong".to_vec(),
+                }
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_get_or_dial_session_coalesces_singleflight_without_socket_leak() {
+        let client_cell = test_cell(1);
+        let server_cell = test_cell(2);
+        let client_signer = Arc::new(TestNodeSigner::new(1));
+        let server_signer = Arc::new(TestNodeSigner::new(2));
+        let verifier = Arc::new(TestDirectoryVerifier {
+            nodes: vec![Arc::clone(&client_signer), Arc::clone(&server_signer)],
+        });
+
+        let client_sec = build_security_deps(client_cell, 1, &client_signer, &verifier, 0x71);
+        let server_sec = build_security_deps(server_cell, 1, &server_signer, &verifier, 0x72);
+        client_signer.reset_sign_calls();
+
+        let server_accounting = SocketActivityAccounting::new();
+        let listener = MtlsEndpointListener::bind(
+            ClusterProfile::MultiHostCluster {
+                local_cell: server_cell,
+                bind_hint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            },
+            server_sec,
+            NetTransportConfig::default(),
+            server_accounting.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("bind server listener");
+        let server_addr = listener.local_addr();
+
+        let resolver = Arc::new(MonotonicEndpointResolver::new());
+        resolver
+            .upsert_hint(
+                EndpointHintRecord::new(
+                    server_cell,
+                    server_addr,
+                    EndpointRoutingVersion::new(Generation::INITIAL, CellEpoch::INITIAL, 1),
+                    1,
+                )
+                .with_expected_principal(server_signer.principal),
+            )
+            .expect("register server endpoint hint");
+
+        let client_accounting = SocketActivityAccounting::new();
+        let transport = Arc::new(
+            MtlsCellTransport::new_multi_host(
+                ClusterProfile::MultiHostCluster {
+                    local_cell: client_cell,
+                    bind_hint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                },
+                Arc::clone(&resolver) as Arc<dyn EndpointResolver>,
+                client_sec,
+                NetTransportConfig::default(),
+                client_accounting.clone(),
+                None,
+                None,
+            )
+            .expect("build multi-host transport"),
+        );
+
+        // Launch 12 concurrent `get_or_dial_session` callers BEFORE starting the
+        // server accept loop so caller #1 blocks in TLS handshake under `dial_locks`
+        // while callers #2..=12 queue behind the singleflight lock.
+        let mut handles = Vec::with_capacity(12);
+        for _ in 0..12 {
+            let tr = Arc::clone(&transport);
+            handles.push(tokio::spawn(async move {
+                tr.get_or_dial_session(server_cell)
+                    .await
+                    .expect("singleflight get_or_dial_session")
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let running_listener = listener.spawn_accept_loop();
+
+        let mut sessions = Vec::with_capacity(12);
+        for h in handles {
+            sessions.push(h.await.expect("join concurrent dialer"));
+        }
+
+        let first = &sessions[0];
+        assert!(first.is_healthy());
+        for s in &sessions[1..] {
+            assert!(
+                s.same_session(first),
+                "all concurrent callers must reuse the singleflight MultiplexedSession"
+            );
+        }
+        assert_eq!(
+            client_signer.sign_call_count(),
+            1,
+            "singleflight dial must perform exactly 1 client fence handshake signature"
+        );
+        assert_eq!(running_listener.accepted_sessions().len(), 1);
+        assert_eq!(client_accounting.active_connection_count(), 1);
+
+        drop(sessions);
+        transport.close_all_sessions();
+        running_listener.shutdown().await;
+
+        let drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (client_accounting.active_connection_count() != 0
+            || server_accounting.active_connection_count() != 0)
+            && std::time::Instant::now() < drain_deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(client_accounting.active_connection_count(), 0);
+        assert_eq!(server_accounting.active_connection_count(), 0);
+        assert_eq!(server_accounting.bound_listener_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stale_session_failure_does_not_evict_replaced_healthy_pooled_session() {
+        let client_cell = test_cell(11);
+        let server_cell = test_cell(12);
+        let client_signer = Arc::new(TestNodeSigner::new(11));
+        let server_signer = Arc::new(TestNodeSigner::new(12));
+        let verifier = Arc::new(TestDirectoryVerifier {
+            nodes: vec![Arc::clone(&client_signer), Arc::clone(&server_signer)],
+        });
+
+        let client_sec = build_security_deps(client_cell, 1, &client_signer, &verifier, 0x81);
+        let server_sec_1 = build_security_deps(server_cell, 1, &server_signer, &verifier, 0x82);
+        let server_sec_2 = build_security_deps(server_cell, 2, &server_signer, &verifier, 0x83);
+
+        let hang_entered = Arc::new(Notify::new());
+        let release_hang = Arc::new(Notify::new());
+        let handler: Arc<dyn RpcRequestHandler> = Arc::new(SlowOrFastRpcHandler {
+            hang_entered: Arc::clone(&hang_entered),
+            release_hang: Arc::clone(&release_hang),
+        });
+
+        let net_cfg = NetTransportConfig {
+            rpc_call_timeout: Duration::from_millis(120),
+            ..NetTransportConfig::default()
+        };
+
+        let server_accounting = SocketActivityAccounting::new();
+        let running_1 = MtlsEndpointListener::bind(
+            ClusterProfile::MultiHostCluster {
+                local_cell: server_cell,
+                bind_hint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            },
+            server_sec_1,
+            net_cfg,
+            server_accounting.clone(),
+            Some(Arc::clone(&handler)),
+            None,
+        )
+        .await
+        .expect("bind listener_1")
+        .spawn_accept_loop();
+
+        let resolver = Arc::new(MonotonicEndpointResolver::new());
+        resolver
+            .upsert_hint(
+                EndpointHintRecord::new(
+                    server_cell,
+                    running_1.local_addr(),
+                    EndpointRoutingVersion::new(Generation::INITIAL, CellEpoch::INITIAL, 1),
+                    1,
+                )
+                .with_expected_principal(server_signer.principal),
+            )
+            .expect("register addr_1");
+
+        let client_accounting = SocketActivityAccounting::new();
+        let transport = Arc::new(
+            MtlsCellTransport::new_multi_host(
+                ClusterProfile::MultiHostCluster {
+                    local_cell: client_cell,
+                    bind_hint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                },
+                Arc::clone(&resolver) as Arc<dyn EndpointResolver>,
+                client_sec,
+                net_cfg,
+                client_accounting,
+                None,
+                None,
+            )
+            .expect("build client transport"),
+        );
+
+        let session_1 = transport
+            .get_or_dial_session(server_cell)
+            .await
+            .expect("dial session_1");
+        assert!(session_1.is_healthy());
+
+        // Start an in-flight RPC on `session_1` that will time out at 120ms.
+        let tr_old = Arc::clone(&transport);
+        let old_rpc_handle = tokio::spawn(async move {
+            let contract = RemoteCallContract::new(
+                [0x01; 16],
+                IdempotencyKey::from_bytes([0x01; 16]),
+                100,
+                0,
+                0,
+                false,
+            );
+            tr_old
+                .call_cell_rpc_detailed(server_cell, &contract, b"hang".to_vec())
+                .await
+                .expect("dispatch old rpc")
+        });
+        hang_entered.notified().await;
+
+        // Detach `session_1` from the pool map without closing it yet so `old_rpc_handle`
+        // stays parked until its 120ms ReadTimeout fires AFTER `session_2` is pooled.
+        if let Some(state) = &transport.active_mode {
+            let _ = state
+                .pooled_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&server_cell);
+        }
+
+        let running_2 = MtlsEndpointListener::bind(
+            ClusterProfile::MultiHostCluster {
+                local_cell: server_cell,
+                bind_hint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            },
+            server_sec_2,
+            net_cfg,
+            server_accounting,
+            Some(handler),
+            None,
+        )
+        .await
+        .expect("bind listener_2")
+        .spawn_accept_loop();
+
+        resolver
+            .upsert_hint(
+                EndpointHintRecord::new(
+                    server_cell,
+                    running_2.local_addr(),
+                    EndpointRoutingVersion::new(
+                        Generation::new(NonZeroU64::new(2).expect("2")),
+                        CellEpoch::INITIAL,
+                        1,
+                    ),
+                    2,
+                )
+                .with_expected_principal(server_signer.principal),
+            )
+            .expect("register addr_2");
+
+        let session_2 = transport
+            .get_or_dial_session(server_cell)
+            .await
+            .expect("dial replacement session_2");
+        assert!(!session_2.same_session(&session_1));
+        assert!(session_2.is_healthy());
+
+        // Wait for `old_rpc_handle` on `session_1` to fail with `ReadTimeout`.
+        let (_old_outcome, old_fail_kind) = old_rpc_handle.await.expect("join old_rpc_handle");
+        assert_eq!(old_fail_kind, Some(SocketFailureKind::ReadTimeout));
+        assert!(
+            !session_1.is_healthy(),
+            "failed old session must still be closed"
+        );
+        assert!(
+            session_2.is_healthy(),
+            "stale session timeout MUST NOT close or evict newly pooled session_2"
+        );
+
+        let reused = transport
+            .get_or_dial_session(server_cell)
+            .await
+            .expect("reuse session_2");
+        assert!(reused.same_session(&session_2));
+
+        let fast_contract = RemoteCallContract::new(
+            [0x02; 16],
+            IdempotencyKey::from_bytes([0x02; 16]),
+            100,
+            0,
+            0,
+            false,
+        );
+        let (fast_outcome, fast_fail) = transport
+            .call_cell_rpc_detailed(server_cell, &fast_contract, b"fast".to_vec())
+            .await
+            .expect("fast rpc on preserved session_2");
+        assert!(fast_fail.is_none());
+        assert!(matches!(
+            fast_outcome,
+            RemoteCallOutcome::Succeeded { ref value, .. } if value.payload == b"pong"
+        ));
+
+        release_hang.notify_waiters();
+        transport.close_all_sessions();
+        running_1.shutdown().await;
+        running_2.shutdown().await;
     }
 }

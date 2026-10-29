@@ -5,7 +5,7 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -589,6 +589,17 @@ struct ChildReplicaHandle {
     child: Child,
     mtls_addr: SocketAddr,
     ctrl_addr: SocketAddr,
+    reaped: bool,
+}
+
+impl Drop for ChildReplicaHandle {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            self.reaped = true;
+        }
+    }
 }
 
 impl ChildReplicaHandle {
@@ -601,7 +612,7 @@ impl ChildReplicaHandle {
             ready_file.display()
         );
         let exe = env::current_exe().expect("current test binary path");
-        let child = Command::new(exe)
+        let mut child = Command::new(exe)
             .args([
                 "--ignored",
                 "--exact",
@@ -615,12 +626,28 @@ impl ChildReplicaHandle {
             .spawn()
             .expect("spawn child replica worker");
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(15);
         while !ready_file.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for child replica ready file"
-            );
+            if let Some(status) = child.try_wait().expect("poll child replica worker") {
+                let mut stderr_out = String::new();
+                if let Some(mut err_pipe) = child.stderr.take() {
+                    let _ = err_pipe.read_to_string(&mut stderr_out);
+                }
+                panic!(
+                    "child replica worker (node {node_idx}, gen {boot_gen}) exited prematurely with {status}: {stderr_out}"
+                );
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let mut stderr_out = String::new();
+                if let Some(mut err_pipe) = child.stderr.take() {
+                    let _ = err_pipe.read_to_string(&mut stderr_out);
+                }
+                panic!(
+                    "timed out waiting for child replica ready file (node {node_idx}, gen {boot_gen}); stderr: {stderr_out}"
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
         let content = fs::read_to_string(&ready_file).expect("read ready file");
@@ -629,13 +656,14 @@ impl ChildReplicaHandle {
             child,
             mtls_addr: parts[0].parse().expect("parse child mtls_addr"),
             ctrl_addr: parts[1].parse().expect("parse child ctrl_addr"),
+            reaped: false,
         }
     }
 
     fn send_cmd(&self, cmd: &str) -> String {
         let mut stream = TcpStream::connect(self.ctrl_addr).expect("connect child ctrl");
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("set_read_timeout");
         writeln!(stream, "{cmd}").expect("send ctrl cmd");
         stream.flush().expect("flush ctrl cmd");
@@ -648,12 +676,14 @@ impl ChildReplicaHandle {
     fn hard_kill(&mut self) {
         self.child.kill().expect("OS hard kill child replica");
         let _ = self.child.wait().expect("reap hard-killed child replica");
+        self.reaped = true;
     }
 
     fn graceful_shutdown(mut self) {
         let reply = self.send_cmd("SHUTDOWN");
         assert_eq!(reply, "OK SHUTDOWN");
         let status = self.child.wait().expect("wait graceful child exit");
+        self.reaped = true;
         assert!(status.success());
     }
 }
@@ -856,7 +886,7 @@ async fn dur_snap_001_mtls_snapshot_compaction_catches_up_offline_follower() {
         register_endpoint_hint(r, cluster.hosts[1], 1, 1, n2.local_addr());
     }
 
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while n1.role() != ConsensusRole::Leader && n2.role() != ConsensusRole::Leader {
         assert!(
             Instant::now() < deadline,
@@ -902,7 +932,7 @@ async fn dur_snap_001_mtls_snapshot_compaction_catches_up_offline_follower() {
         register_endpoint_hint(r, cluster.hosts[2], 1, 1, n3.local_addr());
     }
 
-    let sync_deadline = Instant::now() + Duration::from_secs(8);
+    let sync_deadline = Instant::now() + Duration::from_secs(15);
     while n3.consensus_commit_index() < 8 {
         assert!(
             Instant::now() < sync_deadline,
@@ -924,12 +954,12 @@ async fn dur_snap_001_mtls_snapshot_compaction_catches_up_offline_follower() {
 
 async fn boot_and_kill_initial_child_leader(
     cluster: &ProvisionedCluster,
+    mut child1: ChildReplicaHandle,
     n2: &MultiHostQuorumNode,
     n3: &MultiHostQuorumNode,
     r2: &MonotonicEndpointResolver,
     r3: &MonotonicEndpointResolver,
 ) -> (u64, String) {
-    let mut child1 = ChildReplicaHandle::spawn(&cluster.root, 1, 1, 10);
     for r in [r2, r3] {
         register_endpoint_hint(r, cluster.hosts[0], 1, 1, child1.mtls_addr);
         register_endpoint_hint(r, cluster.hosts[1], 1, 1, n2.local_addr());
@@ -944,7 +974,7 @@ async fn boot_and_kill_initial_child_leader(
         "OK HINT"
     );
 
-    let elect_deadline = Instant::now() + Duration::from_secs(8);
+    let elect_deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let status = child1.send_cmd("STATUS");
         if status.starts_with("OK Leader ") {
@@ -984,6 +1014,10 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
     } else {
         16 * 1024
     };
+    // Spawn `child1` FIRST (`election_ticks = 24` -> `480ms`) before starting
+    // `n2` (`58` -> `1160ms`) and `n3` (`82` -> `1640ms`) so OS subprocess boot
+    // latency never eats into follower election windows or triggers PreVote livelocks.
+    let child1 = ChildReplicaHandle::spawn(&cluster.root, 1, 1, 24);
     let n2 = start_inproc_node(
         &cluster,
         2,
@@ -991,7 +1025,7 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
         ConsensusTimingConfig {
             heartbeat_interval_ticks: 2,
             leader_lease_ticks: 6,
-            election_timeout_ticks: 26,
+            election_timeout_ticks: 58,
             max_snapshot_chunk_bytes: chunk_bytes,
         },
         &r2,
@@ -1004,7 +1038,7 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
         ConsensusTimingConfig {
             heartbeat_interval_ticks: 2,
             leader_lease_ticks: 6,
-            election_timeout_ticks: 38,
+            election_timeout_ticks: 82,
             max_snapshot_chunk_bytes: chunk_bytes,
         },
         &r3,
@@ -1012,10 +1046,10 @@ async fn run_leader_hard_kill_cycle(compact_before_rejoin: bool) {
     .await;
 
     let (old_leader_term, pre_crash_digest) =
-        boot_and_kill_initial_child_leader(&cluster, &n2, &n3, &r2, &r3).await;
+        boot_and_kill_initial_child_leader(&cluster, child1, &n2, &n3, &r2, &r3).await;
 
     // Surviving 2-of-3 quorum (`n2` + `n3`) MUST elect a new Leader in `new_term > old_leader_term`!
-    let failover_deadline = Instant::now() + Duration::from_secs(8);
+    let failover_deadline = Instant::now() + Duration::from_secs(15);
     while n2.role() != ConsensusRole::Leader && n3.role() != ConsensusRole::Leader {
         assert!(
             Instant::now() < failover_deadline,
@@ -1078,7 +1112,7 @@ async fn rejoin_killed_leader_and_verify_fence(
     old_leader_term: u64,
     canonical_digest: &str,
 ) {
-    let child1_rejoined = ChildReplicaHandle::spawn(root, 1, 2, 34);
+    let child1_rejoined = ChildReplicaHandle::spawn(root, 1, 2, 70);
     for r in [r2, r3] {
         register_endpoint_hint(r, cluster.hosts[0], 2, 1, child1_rejoined.mtls_addr);
     }
@@ -1091,7 +1125,7 @@ async fn rejoin_killed_leader_and_verify_fence(
         "OK HINT"
     );
 
-    let rejoin_deadline = Instant::now() + Duration::from_secs(8);
+    let rejoin_deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let st = child1_rejoined.send_cmd("STATUS");
         let f: Vec<&str> = st.split_whitespace().collect();

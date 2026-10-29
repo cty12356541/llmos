@@ -544,6 +544,7 @@ struct PendingProposalWaiter {
 }
 
 struct PendingReadWaiter {
+    round_id: Option<u64>,
     tx: oneshot::Sender<Result<(LogIndex, ConsensusTerm), ConsensusError>>,
 }
 
@@ -560,7 +561,7 @@ struct SharedEngine {
     local_cell: CellIdentity,
     observed_epoch_fn: Arc<dyn Fn() -> CellEpoch + Send + Sync>,
     sync_state: Mutex<DriverSyncState>,
-    outbound_tx: mpsc::UnboundedSender<(CellIdentity, RaftMessage)>,
+    peer_outbound_txs: BTreeMap<CellIdentity, mpsc::UnboundedSender<RaftMessage>>,
     next_read_id: AtomicU64,
     next_rpc_seq: AtomicU64,
     shutting_down: AtomicBool,
@@ -646,9 +647,19 @@ impl SharedEngine {
             }
 
             if let Some((rid, rtx)) = read_waiter {
+                let round_id = effects.iter().find_map(|eff| match eff {
+                    ConsensusEffect::SendMessage {
+                        message:
+                            RaftMessage::AppendEntries {
+                                quorum_round_id, ..
+                            },
+                        ..
+                    } => Some(*quorum_round_id),
+                    _ => None,
+                });
                 guard
                     .pending_reads
-                    .insert(rid, PendingReadWaiter { tx: rtx });
+                    .insert(rid, PendingReadWaiter { round_id, tx: rtx });
             }
 
             // Persist all hard-state, snapshot, truncation, append, and commit
@@ -753,12 +764,25 @@ impl SharedEngine {
         }
 
         if !self.shutting_down.load(Ordering::Acquire) {
-            for item in outbound {
-                let _ = self.outbound_tx.send(item);
+            for (target, message) in outbound {
+                if let Some(peer_tx) = self.peer_outbound_txs.get(&target) {
+                    let _ = peer_tx.send(message);
+                }
             }
         }
 
         Ok(direct_reply)
+    }
+
+    fn snapshot_coalesce_state(&self) -> (ConsensusTerm, Vec<u64>) {
+        let guard = self.lock_state();
+        let local_term = guard.core.current_term();
+        let active_read_rounds = guard
+            .pending_reads
+            .values()
+            .filter_map(|w| w.round_id)
+            .collect();
+        (local_term, active_read_rounds)
     }
 
     fn next_call_contract(&self) -> RemoteCallContract {
@@ -789,6 +813,145 @@ const fn is_response_message(msg: &RaftMessage) -> bool {
             | RaftMessage::AppendEntriesResponse { .. }
             | RaftMessage::InstallSnapshotResponse { .. }
     )
+}
+
+const fn outbound_message_term(msg: &RaftMessage) -> ConsensusTerm {
+    match msg {
+        RaftMessage::RequestPreVote {
+            prospective_term, ..
+        } => *prospective_term,
+        RaftMessage::RequestPreVoteResponse { term, .. }
+        | RaftMessage::RequestVote { term, .. }
+        | RaftMessage::RequestVoteResponse { term, .. }
+        | RaftMessage::AppendEntries { term, .. }
+        | RaftMessage::AppendEntriesResponse { term, .. }
+        | RaftMessage::InstallSnapshotChunk { term, .. }
+        | RaftMessage::InstallSnapshotResponse { term, .. } => *term,
+    }
+}
+
+fn coalesce_outbound_peer_batch(
+    raw_batch: Vec<RaftMessage>,
+    local_current_term: ConsensusTerm,
+    active_read_rounds: &[u64],
+) -> Vec<RaftMessage> {
+    // 1) Drop stale outbound messages whose carried term (or `prospective_term`)
+    //    is strictly less than local `current_term`.
+    let term_filtered: Vec<RaftMessage> = raw_batch
+        .into_iter()
+        .filter(|msg| outbound_message_term(msg) >= local_current_term)
+        .collect();
+
+    // 2) Drop pure empty `AppendEntries` heartbeats superseded by a later
+    //    same-term or higher-term `AppendEntries` or `InstallSnapshotChunk`
+    //    (preserving any round actively backing a pending `ReadIndex` fence).
+    let mut kept_rev = Vec::with_capacity(term_filtered.len());
+    let mut max_later_repl_term: Option<ConsensusTerm> = None;
+    for msg in term_filtered.into_iter().rev() {
+        match &msg {
+            RaftMessage::AppendEntries {
+                term,
+                entries,
+                quorum_round_id,
+                ..
+            } => {
+                let is_droppable_heartbeat =
+                    entries.is_empty() && !active_read_rounds.contains(quorum_round_id);
+                if is_droppable_heartbeat
+                    && max_later_repl_term.is_some_and(|later_term| later_term >= *term)
+                {
+                    continue;
+                }
+                max_later_repl_term =
+                    Some(max_later_repl_term.map_or(*term, |prev| prev.max(*term)));
+                kept_rev.push(msg);
+            }
+            RaftMessage::InstallSnapshotChunk { term, .. } => {
+                max_later_repl_term =
+                    Some(max_later_repl_term.map_or(*term, |prev| prev.max(*term)));
+                kept_rev.push(msg);
+            }
+            _ => kept_rev.push(msg),
+        }
+    }
+    kept_rev.reverse();
+
+    // 3) Deduplicate adjacent identical messages (`msg_a == msg_b`, e.g.,
+    //    duplicate `InstallSnapshotChunk` at the same offset or `RequestPreVote`).
+    kept_rev.dedup();
+    kept_rev
+}
+
+fn spawn_peer_outbound_worker(
+    target: CellIdentity,
+    mut peer_rx: mpsc::UnboundedReceiver<RaftMessage>,
+    eng: Arc<SharedEngine>,
+    tr: Arc<dyn CellRpcTransport>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        'worker: loop {
+            let first_msg = tokio::select! {
+                biased;
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break 'worker;
+                    }
+                    continue 'worker;
+                }
+                maybe_msg = peer_rx.recv() => {
+                    let Some(msg) = maybe_msg else {
+                        break 'worker;
+                    };
+                    msg
+                }
+            };
+
+            let mut raw_batch = vec![first_msg];
+            while let Ok(next_msg) = peer_rx.try_recv() {
+                raw_batch.push(next_msg);
+            }
+
+            let (local_term, active_read_rounds) = eng.snapshot_coalesce_state();
+            let batch = coalesce_outbound_peer_batch(raw_batch, local_term, &active_read_rounds);
+
+            for raft_msg in batch {
+                if eng.shutting_down.load(Ordering::Acquire) || *shutdown_rx.borrow() {
+                    break 'worker;
+                }
+                if outbound_message_term(&raft_msg) < eng.lock_state().core.current_term() {
+                    continue;
+                }
+                let contract = eng.next_call_contract();
+                let payload = encode_raft_message(&raft_msg);
+                let rpc_res = tokio::select! {
+                    biased;
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break 'worker;
+                        }
+                        continue 'worker;
+                    }
+                    res = tr.call_cell_rpc(target, &contract, payload) => res,
+                };
+
+                if let Ok(RemoteCallOutcome::Succeeded { value, .. }) = rpc_res
+                    && !value.payload.is_empty()
+                    && let Ok(reply_msg) = decode_raft_message(&value.payload)
+                {
+                    let _ = eng.step_and_persist(
+                        ConsensusInput::ReceiveMessage {
+                            from: target,
+                            message: reply_msg,
+                        },
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+    })
 }
 
 struct ConsensusRpcAdapter {
@@ -916,8 +1079,17 @@ impl MultiHostQuorumNode {
             recovered.core_state,
         )?;
 
-        let (outbound_tx, mut outbound_rx) =
-            mpsc::unbounded_channel::<(CellIdentity, RaftMessage)>();
+        let mut peer_outbound_txs = BTreeMap::new();
+        let mut peer_receivers = Vec::with_capacity(config.roster.len().saturating_sub(1));
+        for member in config.roster.members() {
+            if member.cell_identity == config.local_cell {
+                continue;
+            }
+            let (peer_tx, peer_rx) = mpsc::unbounded_channel::<RaftMessage>();
+            peer_outbound_txs.insert(member.cell_identity, peer_tx);
+            peer_receivers.push((member.cell_identity, peer_rx));
+        }
+
         let local_fence_fn = Arc::clone(&security.local_fence);
         let observed_epoch_fn: Arc<dyn Fn() -> CellEpoch + Send + Sync> =
             Arc::new(move || (local_fence_fn)().epoch());
@@ -933,7 +1105,7 @@ impl MultiHostQuorumNode {
                 pending_reads: BTreeMap::new(),
                 sticky_fatal_error: None,
             }),
-            outbound_tx,
+            peer_outbound_txs,
             next_read_id: AtomicU64::new(1),
             next_rpc_seq: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
@@ -978,51 +1150,22 @@ impl MultiHostQuorumNode {
         );
 
         let running_listener = listener.spawn_accept_loop();
-        let (shutdown_tx, mut shutdown_rx_dispatch) = watch::channel(false);
+        let (shutdown_tx, _) = watch::channel(false);
         let mut shutdown_rx_tick = shutdown_tx.subscribe();
 
-        // Outbound RPC dispatcher spawning per-message tasks over `CellRpcTransport`
-        // so one slow/dead peer never blocks replication to healthy peers!
-        let dispatch_engine = Arc::clone(&engine);
-        let dispatch_transport = Arc::clone(&transport);
-        let dispatch_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    changed = shutdown_rx_dispatch.changed() => {
-                        if changed.is_err() || *shutdown_rx_dispatch.borrow() {
-                            break;
-                        }
-                    }
-                    maybe_msg = outbound_rx.recv() => {
-                        let Some((target, raft_msg)) = maybe_msg else {
-                            break;
-                        };
-                        let eng = Arc::clone(&dispatch_engine);
-                        let tr = Arc::clone(&dispatch_transport);
-                        tokio::spawn(async move {
-                            let contract = eng.next_call_contract();
-                            let payload = encode_raft_message(&raft_msg);
-                            if let Ok(RemoteCallOutcome::Succeeded { value, .. }) =
-                                tr.call_cell_rpc(target, &contract, payload).await
-                                && !value.payload.is_empty()
-                                && let Ok(reply_msg) = decode_raft_message(&value.payload)
-                            {
-                                let _ = eng.step_and_persist(
-                                    ConsensusInput::ReceiveMessage {
-                                        from: target,
-                                        message: reply_msg,
-                                    },
-                                    None,
-                                    None,
-                                    None,
-                                );
-                            }
-                        });
-                    }
-                }
-            }
-        });
+        // Dedicated per-remote-peer serial outbound dispatch coroutines with
+        // backlog coalescing: peers execute independently in parallel while each
+        // individual peer holds at most 1 in-flight RPC at any instant.
+        let mut worker_handles_vec = Vec::with_capacity(peer_receivers.len().saturating_add(1));
+        for (peer_cell, peer_rx) in peer_receivers {
+            worker_handles_vec.push(spawn_peer_outbound_worker(
+                peer_cell,
+                peer_rx,
+                Arc::clone(&engine),
+                Arc::clone(&transport),
+                shutdown_tx.subscribe(),
+            ));
+        }
 
         // Monotonic tick driver (`ConsensusInput::Tick`).
         let tick_engine = Arc::clone(&engine);
@@ -1051,6 +1194,7 @@ impl MultiHostQuorumNode {
                 }
             }
         });
+        worker_handles_vec.push(tick_handle);
 
         Ok(Self {
             local_cell: config.local_cell,
@@ -1060,7 +1204,7 @@ impl MultiHostQuorumNode {
             engine,
             shutdown_tx,
             listener_slot: tokio::sync::Mutex::new(Some(running_listener)),
-            worker_handles: tokio::sync::Mutex::new(vec![dispatch_handle, tick_handle]),
+            worker_handles: tokio::sync::Mutex::new(worker_handles_vec),
         })
     }
 
@@ -1505,5 +1649,85 @@ impl From<ScopeViolationError> for ConsensusError {
 impl From<crate::store::ConsensusStoreError> for ConsensusError {
     fn from(value: crate::store::ConsensusStoreError) -> Self {
         Self::Store(value)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_cell(tag: u8) -> CellIdentity {
+        CellIdentity::from_domain(SchedulerDomainId::from_bytes([tag; 16]))
+    }
+
+    #[test]
+    fn coalesce_outbound_peer_batch_folds_stale_terms_heartbeats_and_duplicates() {
+        let leader = sample_cell(1);
+        let stale_hb = RaftMessage::AppendEntries {
+            term: 1,
+            leader_id: leader,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: Vec::new(),
+            leader_commit: 0,
+            quorum_round_id: 1,
+        };
+        let stale_prevote = RaftMessage::RequestPreVote {
+            prospective_term: 1,
+            candidate_id: leader,
+            last_log_index: 0,
+            last_log_term: 0,
+        };
+        let read_fence_hb = RaftMessage::AppendEntries {
+            term: 2,
+            leader_id: leader,
+            prev_log_index: 3,
+            prev_log_term: 2,
+            entries: Vec::new(),
+            leader_commit: 3,
+            quorum_round_id: 10,
+        };
+        let superseded_hb_a = RaftMessage::AppendEntries {
+            term: 2,
+            leader_id: leader,
+            prev_log_index: 3,
+            prev_log_term: 2,
+            entries: Vec::new(),
+            leader_commit: 3,
+            quorum_round_id: 11,
+        };
+        let superseded_hb_b = RaftMessage::AppendEntries {
+            term: 2,
+            leader_id: leader,
+            prev_log_index: 3,
+            prev_log_term: 2,
+            entries: Vec::new(),
+            leader_commit: 3,
+            quorum_round_id: 12,
+        };
+        let snap_chunk_0 = RaftMessage::InstallSnapshotChunk {
+            term: 2,
+            leader_id: leader,
+            last_included_index: 6,
+            last_included_term: 2,
+            state_root_digest: [0xAA; 32],
+            snapshot_sha256: [0xBB; 32],
+            total_bytes: 512,
+            offset: 0,
+            chunk_data: vec![0x11; 192],
+            done: false,
+        };
+
+        let raw = vec![
+            stale_hb,
+            stale_prevote,
+            read_fence_hb.clone(),
+            superseded_hb_a,
+            snap_chunk_0.clone(),
+            superseded_hb_b,
+            snap_chunk_0.clone(),
+        ];
+
+        let folded = coalesce_outbound_peer_batch(raw, 2, &[10]);
+        assert_eq!(folded, vec![read_fence_hb, snap_chunk_0]);
     }
 }

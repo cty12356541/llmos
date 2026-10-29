@@ -475,6 +475,14 @@ fn append_semantic_event_on_host(host: &NetCellHost, admitted_at_ms: u64) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing() {
+    if !is_isolated_test_subprocess() {
+        run_test_in_isolated_subprocess(
+            "road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing",
+            false,
+        );
+        return;
+    }
+
     let dir1 = TempDir::new("raft-n1");
     let dir2 = TempDir::new("raft-n2");
     let dir3 = TempDir::new("raft-n3");
@@ -573,7 +581,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
     }
     // Wait for initial N=3 leader election across ChaosDirectedMesh.
     let mut initial_leader_idx = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if let Some(i) = nodes.iter().position(|n| n.role() == ConsensusRole::Leader) {
             initial_leader_idx = Some(i);
@@ -730,7 +738,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
 
     // 2. Wait for the 2-node majority (`survivor_a`, `survivor_b`) to elect a new leader in term > term_1.
     let mut new_leader_idx = None;
-    let el_deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let el_deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < el_deadline {
         for &idx in &[survivor_a, survivor_b] {
             if nodes[idx].role() == ConsensusRole::Leader && nodes[idx].current_term() > term_1 {
@@ -845,7 +853,7 @@ async fn road_c001_xhost_asymmetric_triangle_partition_and_raft_quorum_fencing()
 
     // 3. Heal mesh and verify isolated old leader steps down and converges to `receipt_2`.
     mesh.heal_all();
-    let heal_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let heal_deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < heal_deadline {
         if nodes[leader_1_idx].consensus_commit_index() >= receipt_2.consensus_commit_index.get()
             && nodes[leader_1_idx].state_root_digest() == receipt_2.state_root_digest

@@ -590,6 +590,13 @@ impl MultiplexedSession {
         &self.peer_session
     }
 
+    /// Returns `true` if `self` and `other` refer to the exact same underlying
+    /// multiplexed session instance.
+    #[must_use]
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Returns `true` if the underlying TLS/TCP stream is still healthy.
     #[must_use]
     pub fn is_healthy(&self) -> bool {
