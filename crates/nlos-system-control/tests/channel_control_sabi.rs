@@ -1010,7 +1010,7 @@ async fn serve_validated_with_channel_multiplexes_channel_and_system_control_ove
         ChannelAuthority::open(root.path().join("channel")).expect("open channel authority");
 
     #[cfg(unix)]
-    let mut listener = EndpointListener::bind(&endpoint).expect("bind unix socket");
+    let listener = EndpointListener::bind(&endpoint).expect("bind unix socket");
     #[cfg(windows)]
     let mut listener =
         EndpointListener::bind(&endpoint, 4, TransportConfig::default()).expect("bind named pipe");
