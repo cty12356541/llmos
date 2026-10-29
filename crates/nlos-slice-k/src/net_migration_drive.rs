@@ -3841,7 +3841,8 @@ fn settle_or_close_source_leases_for_step6(
 /// network cut AFTER Step 4 (`SourceFenced`) (`[DIST-FAIL-001]`).
 ///
 /// 1. Queries Target's authoritative migration state (`InspectTargetMigrationState`,
-///    `side_effecting = false`) and clears `PendingReconciliationTracker`.
+///    `side_effecting = false`) and clears both local and transport
+///    `PendingReconciliationTracker`s.
 /// 2. Anchors `MigrationIntent` in `source_host.consensus()` (`consensus_commit_index`).
 /// 3. Reconciles Source's `Quarantined` 3-family leases to `Closed` / `Returned`.
 /// 4. Replays Steps 5–8 with the **exact same** deterministic `(migration_id, step)`
@@ -3877,6 +3878,23 @@ pub async fn reconcile_post_fence_interrupted_migration(
     let _ = interrupted
         .pending_tracker
         .mark_reconciled(interrupted.interrupted_idempotency_key);
+    let _ = source_host
+        .transport()
+        .reconciliation_tracker()
+        .mark_reconciled(interrupted.interrupted_idempotency_key);
+    for step_tag in [
+        STEP_REBIND_CAPABILITIES,
+        STEP_REGRANT_LEASES,
+        STEP_RESTORE_PROCESS,
+        STEP_RECORD_RECEIPT_CKPT,
+    ] {
+        let step_key = derive_migration_rpc_key(interrupted.request.migration_id, step_tag);
+        let _ = interrupted.pending_tracker.mark_reconciled(step_key);
+        let _ = source_host
+            .transport()
+            .reconciliation_tracker()
+            .mark_reconciled(step_key);
+    }
 
     let target_generation = interrupted.request.source_generation.checked_next().ok_or(
         ProcessMigrationDriveError::Placement("source_generation overflowed u64"),

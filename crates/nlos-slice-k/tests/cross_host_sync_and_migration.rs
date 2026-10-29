@@ -2006,6 +2006,24 @@ async fn run_worker_mig_cut_source(host_root: &Path, node_idx: u8) {
     // 2. Reconcile idempotently (`[DIST-FAIL-001]`): inspect Target first, clear
     //    `PendingReconciliationTracker`, settle Source's Quarantined leases, and
     //    replay Steps 5..=8 to `ProcessMigrationStep::Completed`!
+    //    Deterministically record the uncertain side-effecting key in the underlying
+    //    `MtlsCellTransport` tracker so Linux/macOS (`BeforeFirstPayloadByte`) and
+    //    Windows (`AfterFirstPayloadByte` `WSAECONNRESET`) exercise the exact same
+    //    transport-level fence clearing path.
+    source_host
+        .transport()
+        .reconciliation_tracker()
+        .record_uncertain_side_effect(
+            interrupted.interrupted_idempotency_key,
+            nlos_net::SocketFailureKind::ConnectionReset,
+        );
+    assert!(
+        source_host
+            .transport()
+            .reconciliation_tracker()
+            .requires_reconciliation(interrupted.interrupted_idempotency_key)
+    );
+
     let (pre_reconcile_snap, outcome) =
         reconcile_post_fence_interrupted_migration(&source_host, &mut interrupted)
             .await
@@ -2016,6 +2034,12 @@ async fn run_worker_mig_cut_source(host_root: &Path, node_idx: u8) {
     assert!(
         !interrupted
             .pending_tracker
+            .requires_reconciliation(interrupted.interrupted_idempotency_key)
+    );
+    assert!(
+        !source_host
+            .transport()
+            .reconciliation_tracker()
             .requires_reconciliation(interrupted.interrupted_idempotency_key)
     );
     assert_eq!(
