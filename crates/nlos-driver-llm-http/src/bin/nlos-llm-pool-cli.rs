@@ -15,6 +15,8 @@ use nlos_driver_llm_http::{
 };
 use nlos_resource::ResourceAuthority;
 
+const REASONING_EXCERPT_MAX_CHARS: usize = 240;
+
 #[derive(Debug)]
 enum CliCommand {
     Help,
@@ -24,6 +26,7 @@ enum CliCommand {
     Chat {
         prompt: String,
         model: Option<String>,
+        max_tokens: Option<u32>,
         session: Option<String>,
         root: Option<PathBuf>,
         pool_config: Option<PathBuf>,
@@ -60,6 +63,7 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
         CliCommand::Chat {
             prompt,
             model,
+            max_tokens,
             session,
             root,
             pool_config,
@@ -67,6 +71,7 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
             run_chat(
                 &prompt,
                 model.as_deref(),
+                max_tokens,
                 session.as_deref(),
                 root.as_deref(),
                 pool_config.as_deref(),
@@ -130,6 +135,7 @@ fn parse_status_args(rest: &[String]) -> Result<CliCommand, String> {
 fn parse_chat_args(rest: &[String]) -> Result<CliCommand, String> {
     let mut prompt = None;
     let mut model = None;
+    let mut max_tokens = None;
     let mut session = None;
     let mut root = None;
     let mut pool_config = None;
@@ -149,6 +155,19 @@ fn parse_chat_args(rest: &[String]) -> Result<CliCommand, String> {
                     .get(idx)
                     .ok_or_else(|| "missing value after --model".to_owned())?;
                 model = Some(val.clone());
+            }
+            "--max-tokens" => {
+                idx += 1;
+                let raw = rest
+                    .get(idx)
+                    .ok_or_else(|| "missing value after --max-tokens".to_owned())?;
+                let parsed = raw
+                    .parse::<u32>()
+                    .map_err(|_| format!("--max-tokens expects a positive u32, got '{raw}'"))?;
+                if parsed == 0 {
+                    return Err("--max-tokens must be greater than zero".to_owned());
+                }
+                max_tokens = Some(parsed);
             }
             "--session" => {
                 idx += 1;
@@ -182,6 +201,7 @@ fn parse_chat_args(rest: &[String]) -> Result<CliCommand, String> {
     Ok(CliCommand::Chat {
         prompt,
         model,
+        max_tokens,
         session,
         root,
         pool_config,
@@ -294,6 +314,7 @@ async fn run_status(pool_config: Option<&Path>) -> Result<(), String> {
 async fn run_chat(
     prompt: &str,
     model: Option<&str>,
+    max_tokens: Option<u32>,
     session: Option<&str>,
     root: Option<&Path>,
     pool_config: Option<&Path>,
@@ -302,6 +323,9 @@ async fn run_chat(
     let mut req = LlmChatRequest::single_user_prompt(prompt);
     if let Some(m) = model.filter(|s| !s.trim().is_empty()) {
         req = req.with_model(m);
+    }
+    if let Some(limit) = max_tokens {
+        req = req.with_max_tokens(limit);
     }
     if let Some(sid) = session.filter(|s| !s.trim().is_empty()) {
         req = req.with_session_id(sid);
@@ -341,9 +365,41 @@ async fn run_chat(
             receipt.sequence, receipt.cumulative_total_tokens, receipt.cumulative_api_calls
         );
     }
-    println!("--- reply ---");
-    println!("{}", outcome.content);
+    print_chat_reply_section(&outcome.content, outcome.reasoning_content.as_deref());
     Ok(())
+}
+
+fn print_chat_reply_section(content: &str, reasoning_content: Option<&str>) {
+    println!("--- reply ---");
+    if content.trim().is_empty()
+        && let Some(reasoning) = reasoning_content.map(str::trim).filter(|s| !s.is_empty())
+    {
+        println!(
+            "[note: visible reply empty because max_tokens was exhausted during reasoning_content; increase --max-tokens (e.g. 1024) for final answer]"
+        );
+        println!("--- reasoning_excerpt ---");
+        println!(
+            "{}",
+            truncate_chars_with_ellipsis(reasoning, REASONING_EXCERPT_MAX_CHARS)
+        );
+    } else {
+        println!("{content}");
+    }
+}
+
+fn truncate_chars_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = chars.next() else {
+            return out;
+        };
+        out.push(ch);
+    }
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 async fn run_intent(
@@ -433,7 +489,7 @@ fn print_usage() {
          \n\
          USAGE:\n\
            nlos-llm-pool-cli status [--pool-config <PATH>]\n\
-           nlos-llm-pool-cli chat --prompt <TEXT> [--model <MODEL>] [--session <ID>] [--root <STATE_DIR>] [--pool-config <PATH>]\n\
+           nlos-llm-pool-cli chat --prompt <TEXT> [--model <MODEL>] [--max-tokens <N>] [--session <ID>] [--root <STATE_DIR>] [--pool-config <PATH>]\n\
            nlos-llm-pool-cli intent --query <TEXT> [--locale zh-CN|en-US] [--model <MODEL>] [--root <STATE_DIR>] [--pool-config <PATH>]"
     );
 }

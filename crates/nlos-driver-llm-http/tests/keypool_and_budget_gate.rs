@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nlos_driver_llm_http::{
     DirectKeyPoolConfig, DirectKeyPoolScheduler, DirectKeySlotConfig, HttpClient,
     IntentTargetDomain, IntentUndoClass, KeyPoolDiscoverySource, KeySelectionStrategy,
-    LlmChatRequest, LlmDriverError, LlmEnforcementShim, MeteredBudgetContext,
+    LlmChatRequest, LlmDriverError, LlmEnforcementShim, LlmTokenUsage, MeteredBudgetContext,
     PROVIDER_ISOLATION_UNVERIFIED_TAG, REDACTED_CREDENTIAL_MARKER, SecretCredential,
     derive_idempotency_key, derive_operation_id, discover_local_keypool_from_lookup,
     parse_glm_keypool_config_json, sha256_hex16,
@@ -914,6 +914,202 @@ async fn cli_binary_executes_metered_chat_end_to_end_with_redacted_output() {
     assert!(stdout.contains("CLI metered chat verified."));
     assert!(!stdout.contains("cli-slot-01"));
     assert!(!stdout.contains("intent-egress-key"));
+
+    server_task.await.expect("mock server finished");
+}
+
+#[tokio::test]
+async fn inclusive_reasoning_tokens_conserves_total_and_cli_reports_cot_truncation() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind inclusive usage mock server");
+    let port = listener.local_addr().expect("local addr").port();
+
+    let server_task = tokio::spawn(async move {
+        let (mut s1, _) = listener.accept().await.expect("accept inclusive chat");
+        let _r1 = read_incoming_http_request(&mut s1).await;
+        let inclusive_reply = r#"{"model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":"ok","reasoning_content":"deliberated 127 tokens"}}],"usage":{"prompt_tokens":30,"completion_tokens":128,"completion_tokens_details":{"reasoning_tokens":127},"total_tokens":158}}"#;
+        write_mock_http_response(
+            &mut s1,
+            &MockWireResponse {
+                status_code: 200,
+                reason: "OK",
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                body: inclusive_reply.to_owned(),
+                framing: MockBodyFraming::ContentLength,
+            },
+        )
+        .await;
+
+        let (mut s2, _) = listener.accept().await.expect("accept truncated cli chat");
+        let r2 = read_incoming_http_request(&mut s2).await;
+        assert!(r2.body.contains(r#""max_tokens":64"#));
+        let truncated_reply = r#"{"model":"glm-5.3","choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"Step 1: analyzing multi-step request before visible answer..."}}],"usage":{"prompt_tokens":12,"completion_tokens":64,"completion_tokens_details":{"reasoning_tokens":64},"total_tokens":76}}"#;
+        write_mock_http_response(
+            &mut s2,
+            &MockWireResponse {
+                status_code: 200,
+                reason: "OK",
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                body: truncated_reply.to_owned(),
+                framing: MockBodyFraming::ContentLength,
+            },
+        )
+        .await;
+    });
+
+    let tmp = ScopedTempDir::new("inclusive-cot");
+    let cfg_path = tmp.path().join("mock-pool-config.json");
+    let cfg_json = format!(
+        r#"{{"listen":{{"host":"127.0.0.1","port":{port}}},"egressKey":"cot-egress-key","upstreamBase":"https://open.bigmodel.cn","allowModels":["glm-5.3","glm-5.3-flash"]}}"#
+    );
+    std::fs::write(&cfg_path, &cfg_json).expect("write mock config");
+
+    let (resource, account_id) = open_failover_resource_budget(&tmp);
+    let shim = LlmEnforcementShim::discover(Some(&cfg_path)).expect("discover shim");
+    let outcome = shim
+        .execute_metered_chat(
+            Some(MeteredBudgetContext {
+                resource: &resource,
+                account_id,
+                operation_id: derive_operation_id(b"test/inc-op", &[b"1"]),
+                idempotency_key: derive_idempotency_key(b"test/inc-idem", &[b"1"]),
+                now_ms: 1_000_000,
+            }),
+            &LlmChatRequest::single_user_prompt("ping"),
+        )
+        .await
+        .expect("inclusive metered chat");
+    assert_eq!(
+        outcome.usage,
+        LlmTokenUsage {
+            prompt_tokens: 30,
+            completion_tokens: 1,
+            reasoning_tokens: 127,
+            total_tokens: 158,
+            estimated_fallback: false,
+        }
+    );
+    let receipt = outcome.consumption_receipt.expect("receipt");
+    assert_eq!(receipt.completion_tokens, 1);
+    assert_eq!(receipt.reasoning_tokens, 127);
+    assert_eq!(receipt.total_tokens, 158);
+    assert_eq!(receipt.cumulative_total_tokens, 158);
+
+    let cli_bin = env!("CARGO_BIN_EXE_nlos-llm-pool-cli");
+    let cli_out = tokio::task::spawn_blocking(move || {
+        Command::new(cli_bin)
+            .args([
+                "chat",
+                "--prompt",
+                "short max tokens test",
+                "--max-tokens",
+                "64",
+                "--pool-config",
+                cfg_path.to_str().expect("utf8 cfg"),
+            ])
+            .output()
+            .expect("execute nlos-llm-pool-cli")
+    })
+    .await
+    .expect("join cli blocking task");
+    assert!(cli_out.status.success());
+    let stdout = String::from_utf8_lossy(&cli_out.stdout);
+    assert!(stdout.contains("completion_tokens=0 reasoning_tokens=64 total_tokens=76"));
+    assert!(stdout.contains("visible reply empty because max_tokens was exhausted"));
+    assert!(stdout.contains("--- reasoning_excerpt ---"));
+    assert!(stdout.contains("Step 1: analyzing multi-step request"));
+
+    server_task.await.expect("mock server finished");
+}
+
+#[tokio::test]
+async fn compile_nl_intent_recovers_or_fails_safe_on_cot_truncated_empty_content() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind cot intent mock server");
+    let port = listener.local_addr().expect("local addr").port();
+
+    let server_task = tokio::spawn(async move {
+        let (mut s1, _) = listener.accept().await.expect("accept cot destructive");
+        let r1 = read_incoming_http_request(&mut s1).await;
+        assert!(
+            r1.body.contains(r#""max_tokens":2048"#),
+            "compile_nl_intent must request DEFAULT_INTENT_MAX_TOKENS=2048"
+        );
+        assert!(r1.body.contains("without lengthy deliberation"));
+        let cot_truncated_destructive = r#"{"model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"用户要求卸载全部第三方应用并清空缓存，正在进行高危不可逆权限审查..."}}],"usage":{"prompt_tokens":40,"completion_tokens":512,"completion_tokens_details":{"reasoning_tokens":512},"total_tokens":552}}"#;
+        write_mock_http_response(
+            &mut s1,
+            &MockWireResponse {
+                status_code: 200,
+                reason: "OK",
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                body: cot_truncated_destructive.to_owned(),
+                framing: MockBodyFraming::ContentLength,
+            },
+        )
+        .await;
+
+        let (mut s2, _) = listener.accept().await.expect("accept cot json recovery");
+        let _r2 = read_incoming_http_request(&mut s2).await;
+        let cot_embedded_json = r#"{"model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":"","reasoning_content":"Drafting schema {k:v}: {\"summary\":\"查看资源配额\",\"target_domain\":\"resource\",\"undo_class\":\"LOSSLESS\",\"needs_clarification\":false,\"clarification_reason\":\"\",\"steps\":[\"inspect_budget\"]}"}}],"usage":{"prompt_tokens":20,"completion_tokens":60,"completion_tokens_details":{"reasoning_tokens":60},"total_tokens":80}}"#;
+        write_mock_http_response(
+            &mut s2,
+            &MockWireResponse {
+                status_code: 200,
+                reason: "OK",
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                body: cot_embedded_json.to_owned(),
+                framing: MockBodyFraming::ContentLength,
+            },
+        )
+        .await;
+    });
+
+    let tmp = ScopedTempDir::new("cot-intent");
+    let cfg_path = tmp.path().join("mock-pool-config.json");
+    let cfg_json = format!(
+        r#"{{"listen":{{"host":"127.0.0.1","port":{port}}},"egressKey":"cot-egress-key","upstreamBase":"https://open.bigmodel.cn","allowModels":["glm-5.3","glm-5.3-flash"]}}"#
+    );
+    std::fs::write(&cfg_path, &cfg_json).expect("write mock config");
+
+    let (resource, account_id) = open_failover_resource_budget(&tmp);
+    let shim = LlmEnforcementShim::discover(Some(&cfg_path)).expect("discover shim");
+
+    let escalated = shim
+        .compile_nl_intent(
+            Some(MeteredBudgetContext {
+                resource: &resource,
+                account_id,
+                operation_id: derive_operation_id(b"test/cot-op", &[b"1"]),
+                idempotency_key: derive_idempotency_key(b"test/cot-idem", &[b"1"]),
+                now_ms: 1_000_000,
+            }),
+            "卸载全部第三方应用并清空缓存",
+            "zh-CN",
+        )
+        .await
+        .expect("destructive CoT truncation must fail-safe escalate without losing receipt");
+    assert_eq!(escalated.target_domain, IntentTargetDomain::Application);
+    assert_eq!(escalated.undo_class, IntentUndoClass::Irreversible);
+    assert!(escalated.needs_clarification);
+    assert!(escalated.safety_escalated);
+    assert_eq!(
+        escalated
+            .consumption_receipt
+            .expect("preserved receipt")
+            .total_tokens,
+        552
+    );
+
+    let recovered = shim
+        .compile_nl_intent(None, "查看当前资源预算配额", "zh-CN")
+        .await
+        .expect("recover intent JSON object from reasoning_content");
+    assert_eq!(recovered.target_domain, IntentTargetDomain::Resource);
+    assert_eq!(recovered.undo_class, IntentUndoClass::Lossless);
+    assert_eq!(recovered.steps, vec!["inspect_budget".to_owned()]);
 
     server_task.await.expect("mock server finished");
 }

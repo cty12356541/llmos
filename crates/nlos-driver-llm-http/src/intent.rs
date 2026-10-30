@@ -7,8 +7,13 @@ use crate::error::LlmDriverError;
 use crate::json::JsonValue;
 use crate::shim::{
     LlmChatMessage, LlmChatRequest, LlmEnforcementShim, LlmTokenUsage, MeteredBudgetContext,
-    format_receipt_id_hex,
+    MeteredLlmChatOutcome, format_receipt_id_hex,
 };
+
+/// Default `max_tokens` budget for structured NL intent compilation so `CoT`
+/// reasoning models (e.g. `glm-5.3-flash`) do not exhaust `max_tokens` inside
+/// `reasoning_content` before emitting the compact JSON object.
+pub const DEFAULT_INTENT_MAX_TOKENS: u32 = 2048;
 
 /// Destructive keywords in `zh-CN` and `en-US` that unconditionally trigger
 /// `[NL-AMBIG-001]` safety escalation to `IRREVERSIBLE` + `needs_clarification = true`.
@@ -260,7 +265,8 @@ impl LlmEnforcementShim {
              Output ONLY a single compact RFC 8259 JSON object with exact schema: \
              {{\"summary\":\"...\",\"target_domain\":\"task|application|resource|process|workspace|artifact|settings|general\",\
              \"undo_class\":\"LOSSLESS|COMPENSATABLE|IRREVERSIBLE\",\"needs_clarification\":false,\
-             \"clarification_reason\":\"\",\"steps\":[\"...\"]}}. Do not wrap in prose."
+             \"clarification_reason\":\"\",\"steps\":[\"...\"]}}. Do not wrap in prose. \
+             Respond immediately with the compact JSON object without lengthy deliberation."
         );
 
         let chat_req = LlmChatRequest::new(vec![
@@ -269,7 +275,7 @@ impl LlmEnforcementShim {
         ])
         .with_model(model)
         .with_temperature(0.1)
-        .with_max_tokens(512);
+        .with_max_tokens(DEFAULT_INTENT_MAX_TOKENS);
 
         let outcome = self.execute_metered_chat(budget_ctx, &chat_req).await?;
         decode_compiled_intent_outcome(trimmed_query, effective_locale, outcome)
@@ -279,10 +285,44 @@ impl LlmEnforcementShim {
 fn decode_compiled_intent_outcome(
     trimmed_query: &str,
     effective_locale: &str,
-    outcome: crate::shim::MeteredLlmChatOutcome,
+    outcome: MeteredLlmChatOutcome,
 ) -> Result<KeyPoolCompiledIntent, LlmDriverError> {
-    let json_slice = extract_json_object_payload(&outcome.content);
-    let parsed = JsonValue::parse(json_slice)?;
+    let parsed = if !outcome.content.trim().is_empty() {
+        let json_slice = extract_json_object_payload(&outcome.content);
+        let val = JsonValue::parse(json_slice)?;
+        if val.as_object().is_none() {
+            return Err(LlmDriverError::InvalidProviderPayload(
+                "compiled NL intent payload must be a JSON object",
+            ));
+        }
+        val
+    } else if let Some(recovered) = outcome
+        .reasoning_content
+        .as_deref()
+        .and_then(try_extract_intent_json_from_reasoning)
+    {
+        recovered
+    } else if contains_destructive_keyword(trimmed_query) {
+        return Ok(build_destructive_cot_fallback_intent(
+            trimmed_query,
+            effective_locale,
+            outcome,
+        ));
+    } else {
+        return Err(LlmDriverError::InvalidProviderPayload(
+            "compiled NL intent response had empty content after CoT reasoning",
+        ));
+    };
+
+    build_compiled_intent_from_json(trimmed_query, effective_locale, &parsed, outcome)
+}
+
+fn build_compiled_intent_from_json(
+    trimmed_query: &str,
+    effective_locale: &str,
+    parsed: &JsonValue,
+    outcome: MeteredLlmChatOutcome,
+) -> Result<KeyPoolCompiledIntent, LlmDriverError> {
     if parsed.as_object().is_none() {
         return Err(LlmDriverError::InvalidProviderPayload(
             "compiled NL intent payload must be a JSON object",
@@ -361,6 +401,95 @@ fn decode_compiled_intent_outcome(
         consumption_receipt: outcome.consumption_receipt,
         isolation_tag: outcome.isolation_tag,
     })
+}
+
+fn try_extract_intent_json_from_reasoning(reasoning: &str) -> Option<JsonValue> {
+    let primary = extract_json_object_payload(reasoning);
+    if let Ok(val) = JsonValue::parse(primary)
+        && is_valid_intent_json_object(&val)
+    {
+        return Some(val);
+    }
+    let last_close = reasoning.rfind('}')?;
+    for (open_idx, ch) in reasoning[..last_close].char_indices().rev() {
+        if ch == '{'
+            && let Ok(val) = JsonValue::parse(&reasoning[open_idx..=last_close])
+            && is_valid_intent_json_object(&val)
+        {
+            return Some(val);
+        }
+    }
+    None
+}
+
+fn is_valid_intent_json_object(val: &JsonValue) -> bool {
+    val.as_object().is_some()
+        && (val.get("summary").and_then(JsonValue::as_str).is_some()
+            || val
+                .get("target_domain")
+                .and_then(JsonValue::as_str)
+                .is_some())
+}
+
+fn build_destructive_cot_fallback_intent(
+    trimmed_query: &str,
+    effective_locale: &str,
+    outcome: MeteredLlmChatOutcome,
+) -> KeyPoolCompiledIntent {
+    KeyPoolCompiledIntent {
+        summary: trimmed_query.to_owned(),
+        target_domain: infer_target_domain_from_query(trimmed_query),
+        undo_class: IntentUndoClass::Irreversible,
+        needs_clarification: true,
+        clarification_reason: default_destructive_clarification_reason(effective_locale),
+        steps: vec![trimmed_query.to_owned()],
+        safety_escalated: true,
+        model: outcome.model,
+        usage: outcome.usage,
+        consumption_receipt: outcome.consumption_receipt,
+        isolation_tag: outcome.isolation_tag,
+    }
+}
+
+fn infer_target_domain_from_query(query: &str) -> IntentTargetDomain {
+    let lower = query.to_ascii_lowercase();
+    if query.contains("应用")
+        || query.contains("软件")
+        || lower.contains("app")
+        || lower.contains("package")
+        || lower.contains("uninstall")
+    {
+        IntentTargetDomain::Application
+    } else if query.contains("任务") || lower.contains("task") {
+        IntentTargetDomain::Task
+    } else if query.contains("预算")
+        || query.contains("配额")
+        || lower.contains("budget")
+        || lower.contains("resource")
+        || lower.contains("token")
+    {
+        IntentTargetDomain::Resource
+    } else if query.contains("进程") || lower.contains("process") {
+        IntentTargetDomain::Process
+    } else if query.contains("工作区") || lower.contains("workspace") {
+        IntentTargetDomain::Workspace
+    } else if query.contains("产物")
+        || query.contains("缓存")
+        || query.contains("文件")
+        || lower.contains("artifact")
+        || lower.contains("cache")
+        || lower.contains("file")
+    {
+        IntentTargetDomain::Artifact
+    } else if query.contains("设置")
+        || query.contains("配置")
+        || lower.contains("setting")
+        || lower.contains("config")
+    {
+        IntentTargetDomain::Settings
+    } else {
+        IntentTargetDomain::General
+    }
 }
 
 fn default_destructive_clarification_reason(locale: &str) -> String {

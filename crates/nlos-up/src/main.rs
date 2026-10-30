@@ -16,6 +16,8 @@ use nlos_up::{
     resolve_desktop_env, run_trial_compiled_intent, run_trial_metered_chat,
 };
 
+const REASONING_EXCERPT_MAX_CHARS: usize = 240;
+
 const USAGE: &str = "\
 usage:
   nlos-up init [--root <DIR>] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
@@ -142,7 +144,43 @@ where
         }
     }
 
-    match subcommand.as_str() {
+    finalize_parsed_subcommand(
+        &subcommand,
+        options,
+        shell,
+        desktop_dir,
+        dry_run,
+        require_live,
+        ParsedLlmArgs {
+            model,
+            max_tokens,
+            session_id,
+            prompt,
+            query,
+            locale,
+        },
+    )
+}
+
+struct ParsedLlmArgs {
+    model: Option<String>,
+    max_tokens: Option<u32>,
+    session_id: Option<String>,
+    prompt: Option<String>,
+    query: Option<String>,
+    locale: String,
+}
+
+fn finalize_parsed_subcommand(
+    subcommand: &str,
+    options: BootstrapOptions,
+    shell: ShellKind,
+    desktop_dir: Option<PathBuf>,
+    dry_run: bool,
+    require_live: bool,
+    llm: ParsedLlmArgs,
+) -> Result<ParseOutcome, UpError> {
+    match subcommand {
         "init" => Ok(ParseOutcome::Command(Command::Init(options))),
         "env" => Ok(ParseOutcome::Command(Command::Env { options, shell })),
         "daemon" => Ok(ParseOutcome::Command(Command::Daemon(options))),
@@ -156,29 +194,29 @@ where
             require_live,
         })),
         "chat" => {
-            let prompt = prompt.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+            let prompt = llm.prompt.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
                 UpError::InvalidArgument("chat requires non-empty --prompt <TEXT>".to_owned())
             })?;
             Ok(ParseOutcome::Command(Command::Chat(
                 TrialMeteredChatRequest {
                     options,
                     prompt,
-                    model,
-                    max_tokens,
-                    session_id,
+                    model: llm.model,
+                    max_tokens: llm.max_tokens,
+                    session_id: llm.session_id,
                 },
             )))
         }
         "intent" => {
-            let query = query.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+            let query = llm.query.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
                 UpError::InvalidArgument("intent requires non-empty --query <TEXT>".to_owned())
             })?;
             Ok(ParseOutcome::Command(Command::Intent(
                 TrialCompiledIntentRequest {
                     options,
                     query,
-                    locale,
-                    model,
+                    locale: llm.locale,
+                    model: llm.model,
                 },
             )))
         }
@@ -288,9 +326,44 @@ async fn run_chat(request: &TrialMeteredChatRequest) -> Result<(), UpError> {
         );
         println!("cumulative_api_calls    = {}", receipt.cumulative_api_calls);
     }
-    println!("--- reply ---");
-    println!("{}", report.outcome.content);
+    print_chat_reply_section(
+        &report.outcome.content,
+        report.outcome.reasoning_content.as_deref(),
+    );
     Ok(())
+}
+
+fn print_chat_reply_section(content: &str, reasoning_content: Option<&str>) {
+    println!("--- reply ---");
+    if content.trim().is_empty()
+        && let Some(reasoning) = reasoning_content.map(str::trim).filter(|s| !s.is_empty())
+    {
+        println!(
+            "[note: visible reply empty because max_tokens was exhausted during reasoning_content; increase --max-tokens (e.g. 1024) for final answer]"
+        );
+        println!("--- reasoning_excerpt ---");
+        println!(
+            "{}",
+            truncate_chars_with_ellipsis(reasoning, REASONING_EXCERPT_MAX_CHARS)
+        );
+    } else {
+        println!("{content}");
+    }
+}
+
+fn truncate_chars_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = chars.next() else {
+            return out;
+        };
+        out.push(ch);
+    }
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 async fn run_intent(request: &TrialCompiledIntentRequest) -> Result<(), UpError> {

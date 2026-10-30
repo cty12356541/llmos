@@ -749,15 +749,27 @@ fn extract_or_estimate_usage(
             .and_then(JsonValue::as_u64)
             .unwrap_or(0);
 
-        if let (Some(prompt_tokens), Some(completion_tokens)) = (prompt_opt, completion_opt) {
+        if let (Some(prompt_tokens), Some(raw_completion_tokens)) = (prompt_opt, completion_opt) {
+            let wire_total = usage_obj.get("total_tokens").and_then(JsonValue::as_u64);
+            // OpenAI / BigModel CoT models report `completion_tokens` inclusive of
+            // `completion_tokens_details.reasoning_tokens` (`prompt + raw_completion == total`).
+            // Normalize `completion_tokens` to visible non-reasoning output tokens so
+            // `ResourceAuthority::consume_llm_tokens` (`prompt + completion + reasoning`)
+            // conserves `total_tokens` without double-charging `reasoning_tokens`, while
+            // remaining compatible with disjoint wire conventions (`prompt + completion + reasoning == total`).
+            let completion_tokens = if let Some(wt) = wire_total
+                && reasoning_tokens > 0
+                && reasoning_tokens <= raw_completion_tokens
+                && prompt_tokens.saturating_add(raw_completion_tokens) == wt
+            {
+                raw_completion_tokens - reasoning_tokens
+            } else {
+                raw_completion_tokens
+            };
             let computed_total = prompt_tokens
                 .saturating_add(completion_tokens)
                 .saturating_add(reasoning_tokens);
-            let total_tokens = usage_obj
-                .get("total_tokens")
-                .and_then(JsonValue::as_u64)
-                .unwrap_or(computed_total)
-                .max(1);
+            let total_tokens = wire_total.unwrap_or(computed_total).max(1);
             return LlmTokenUsage {
                 prompt_tokens,
                 completion_tokens,
@@ -770,7 +782,11 @@ fn extract_or_estimate_usage(
 
     let prompt_bytes: usize = req.messages.iter().map(|m| m.content.len()).sum();
     let prompt_tokens = estimate_tokens_from_utf8_bytes(prompt_bytes);
-    let completion_tokens = estimate_tokens_from_utf8_bytes(content.len());
+    let completion_tokens = if content.is_empty() && reasoning.is_some() {
+        0
+    } else {
+        estimate_tokens_from_utf8_bytes(content.len())
+    };
     let reasoning_tokens = reasoning.map_or(0, |r| estimate_tokens_from_utf8_bytes(r.len()));
     let total_tokens = prompt_tokens
         .saturating_add(completion_tokens)
