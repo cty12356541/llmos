@@ -507,18 +507,41 @@ async fn run_desktop(
         return Ok(());
     }
 
+    let existing_path = std::env::var("PATH").ok();
+    let existing_rustflags = std::env::var("RUSTFLAGS").ok();
+    let child_envs = augment_desktop_child_env(
+        session_env.entries(),
+        cfg!(all(windows, target_env = "gnu")),
+        Path::new(MSYS2_UCRT64_GCC_PATH).is_file(),
+        existing_path.as_deref(),
+        existing_rustflags.as_deref(),
+    );
+
     let npm_program = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    let mut child = tokio::process::Command::new(npm_program)
+    if !desktop_dir.join("node_modules").is_dir()
+        && desktop_dir.join("package-lock.json").is_file()
+        && let Err(error) =
+            bootstrap_desktop_node_modules(npm_program, &desktop_dir, &child_envs).await
+    {
+        shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+        return Err(error);
+    }
+
+    let mut child = match tokio::process::Command::new(npm_program)
         .args(["run", "tauri", "dev"])
         .current_dir(&desktop_dir)
-        .envs(session_env.entries())
+        .envs(child_envs)
         .spawn()
-        .map_err(|error| {
-            UpError::DesktopProcess(format!(
+    {
+        Ok(child) => child,
+        Err(error) => {
+            shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+            return Err(UpError::DesktopProcess(format!(
                 "failed to spawn '{npm_program} run tauri dev' in {}: {error}",
                 desktop_dir.display()
-            ))
-        })?;
+            )));
+        }
+    };
 
     let child_result = tokio::select! {
         status = child.wait() => Some(status),
@@ -702,4 +725,169 @@ async fn wait_for_shutdown_signal() {
 #[cfg(windows)]
 async fn wait_for_shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+const MSYS2_UCRT64_BIN_DIR: &str = r"C:\msys64\ucrt64\bin";
+const MSYS2_UCRT64_GCC_PATH: &str = r"C:\msys64\ucrt64\bin\gcc.exe";
+const WINDOWS_GNU_DESKTOP_RUSTFLAGS: &str =
+    "-C linker=C:/msys64/ucrt64/bin/gcc.exe -C link-self-contained=no";
+
+fn augment_desktop_child_env<K: Into<String>>(
+    base_entries: Vec<(K, String)>,
+    is_windows_gnu: bool,
+    ucrt64_gcc_exists: bool,
+    existing_path: Option<&str>,
+    existing_rustflags: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut envs: Vec<(String, String)> = base_entries
+        .into_iter()
+        .map(|(k, v)| (k.into(), v))
+        .collect();
+
+    if is_windows_gnu && ucrt64_gcc_exists {
+        let lower_path = existing_path.unwrap_or("").to_ascii_lowercase();
+        let already_has_ucrt64 =
+            lower_path.contains(r"msys64\ucrt64\bin") || lower_path.contains("msys64/ucrt64/bin");
+        if !already_has_ucrt64 {
+            let augmented_path = match existing_path.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(current) => format!(r"{MSYS2_UCRT64_BIN_DIR};{current}"),
+                None => MSYS2_UCRT64_BIN_DIR.to_owned(),
+            };
+            envs.push(("PATH".to_owned(), augmented_path));
+        }
+
+        if existing_rustflags.is_none_or(|s| s.trim().is_empty()) {
+            envs.push((
+                "RUSTFLAGS".to_owned(),
+                WINDOWS_GNU_DESKTOP_RUSTFLAGS.to_owned(),
+            ));
+        }
+    }
+
+    envs
+}
+
+async fn bootstrap_desktop_node_modules(
+    npm_program: &str,
+    desktop_dir: &Path,
+    child_envs: &[(String, String)],
+) -> Result<(), UpError> {
+    let status = tokio::process::Command::new(npm_program)
+        .args(["ci", "--no-audit", "--no-fund"])
+        .current_dir(desktop_dir)
+        .envs(child_envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .status()
+        .await
+        .map_err(|error| {
+            UpError::DesktopProcess(format!(
+                "failed to run '{npm_program} ci --no-audit --no-fund' in {}: {error}",
+                desktop_dir.display()
+            ))
+        })?;
+    if !status.success() {
+        return Err(UpError::DesktopProcess(format!(
+            "'{npm_program} ci --no-audit --no-fund' exited with status {status}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MSYS2_UCRT64_BIN_DIR, WINDOWS_GNU_DESKTOP_RUSTFLAGS, augment_desktop_child_env};
+
+    #[test]
+    fn augment_desktop_child_env_injects_ucrt64_path_and_rustflags_on_windows_gnu() {
+        let base = vec![("LLMOS_DESKTOP_PRINCIPAL", "abcd".to_owned())];
+        let envs = augment_desktop_child_env(
+            base,
+            true,
+            true,
+            Some(r"C:\Windows\System32;D:\sdk\bin"),
+            None,
+        );
+        assert_eq!(
+            envs,
+            vec![
+                ("LLMOS_DESKTOP_PRINCIPAL".to_owned(), "abcd".to_owned()),
+                (
+                    "PATH".to_owned(),
+                    r"C:\msys64\ucrt64\bin;C:\Windows\System32;D:\sdk\bin".to_owned()
+                ),
+                (
+                    "RUSTFLAGS".to_owned(),
+                    WINDOWS_GNU_DESKTOP_RUSTFLAGS.to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn augment_desktop_child_env_handles_empty_path_and_whitespace_rustflags() {
+        let envs =
+            augment_desktop_child_env(Vec::<(&str, String)>::new(), true, true, None, Some("   "));
+        assert_eq!(
+            envs,
+            vec![
+                ("PATH".to_owned(), MSYS2_UCRT64_BIN_DIR.to_owned()),
+                (
+                    "RUSTFLAGS".to_owned(),
+                    WINDOWS_GNU_DESKTOP_RUSTFLAGS.to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn augment_desktop_child_env_preserves_existing_ucrt64_path_and_custom_rustflags() {
+        let backslash_envs = augment_desktop_child_env(
+            vec![("LLMOS_DESKTOP_SOCKET", "pipe-a".to_owned())],
+            true,
+            true,
+            Some(r"D:\sdk\bin;C:\MSYS64\UCRT64\BIN;C:\Windows\System32"),
+            Some("-C target-cpu=x86-64-v3"),
+        );
+        assert_eq!(
+            backslash_envs,
+            vec![("LLMOS_DESKTOP_SOCKET".to_owned(), "pipe-a".to_owned())]
+        );
+
+        let slash_envs = augment_desktop_child_env(
+            Vec::<(&str, String)>::new(),
+            true,
+            true,
+            Some("C:/msys64/ucrt64/bin;C:/Windows/System32"),
+            Some("-C debuginfo=1"),
+        );
+        assert_eq!(slash_envs, Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn augment_desktop_child_env_is_noop_when_not_windows_gnu_or_ucrt64_absent() {
+        let base = vec![("LLMOS_DESKTOP_CLI_SOCKET", "pipe-plain".to_owned())];
+        let non_gnu = augment_desktop_child_env(
+            base.clone(),
+            false,
+            true,
+            Some(r"C:\Windows\System32"),
+            None,
+        );
+        assert_eq!(
+            non_gnu,
+            vec![(
+                "LLMOS_DESKTOP_CLI_SOCKET".to_owned(),
+                "pipe-plain".to_owned()
+            )]
+        );
+
+        let missing_gcc =
+            augment_desktop_child_env(base, true, false, Some(r"C:\Windows\System32"), None);
+        assert_eq!(
+            missing_gcc,
+            vec![(
+                "LLMOS_DESKTOP_CLI_SOCKET".to_owned(),
+                "pipe-plain".to_owned()
+            )]
+        );
+    }
 }

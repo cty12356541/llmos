@@ -388,7 +388,7 @@ impl LlmEnforcementShim {
         }
     }
 
-    /// Fast low-latency intent compilation model (e.g. `"glm-5.3-flash"`).
+    /// Default NL intent compilation model (locked directly to `"glm-5.3"` alongside `default_model`, never auto-selecting `*-flash`).
     #[must_use]
     pub fn fast_intent_model(&self) -> &str {
         match &self.backend {

@@ -239,7 +239,7 @@ async fn online_status_probe_reports_sanitized_pool_snapshot_with_zero_secret_or
     );
     assert_eq!(dto.openai_base_path.as_deref(), Some("/api/coding/paas/v4"));
     assert_eq!(dto.default_model.as_deref(), Some("glm-5.3"));
-    assert_eq!(dto.fast_intent_model.as_deref(), Some("glm-5.3-flash"));
+    assert_eq!(dto.fast_intent_model.as_deref(), Some("glm-5.3"));
     assert_eq!(dto.active_keys, Some(3));
     assert_eq!(dto.total_keys, Some(3));
     assert_eq!(dto.strategy.as_deref(), Some("round-robin"));
@@ -365,7 +365,7 @@ async fn online_chat_and_assist_intent_charge_5d_budget_reuse_trial_marker_and_e
         );
         let assist_resp = r#"{
   "id": "chatcmpl-desktop-02",
-  "model": "glm-5.3-flash",
+  "model": "glm-5.3",
   "choices": [
     {
       "index": 0,
@@ -454,7 +454,7 @@ async fn online_chat_and_assist_intent_charge_5d_budget_reuse_trial_marker_and_e
     assert!(assist_dto.needs_clarification);
     assert!(assist_dto.safety_escalated);
     assert!(!assist_dto.clarification_reason.is_empty());
-    assert_eq!(assist_dto.model.as_deref(), Some("glm-5.3-flash"));
+    assert_eq!(assist_dto.model.as_deref(), Some("glm-5.3"));
     assert_eq!(assist_dto.isolation_tag, PROVIDER_ISOLATION_UNVERIFIED_TAG);
     assert!(assist_dto.fallback_notice.is_none());
 

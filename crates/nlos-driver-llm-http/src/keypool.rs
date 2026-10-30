@@ -364,18 +364,9 @@ pub fn parse_glm_keypool_config_json(
         }
     }
 
-    let default_model = env_model_override
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .or_else(|| top_allow_models.first().cloned())
-        .unwrap_or_else(|| DEFAULT_PRIMARY_MODEL.to_owned());
-
-    let fast_intent_model = allowed_models
-        .iter()
-        .find(|m| m.to_ascii_lowercase().contains("flash"))
-        .cloned()
-        .unwrap_or_else(|| default_model.clone());
+    let default_model =
+        resolve_primary_model(env_model_override, &top_allow_models, &allowed_models);
+    let fast_intent_model = default_model.clone();
 
     Ok(DiscoveredKeyPoolConfig {
         source,
@@ -391,6 +382,35 @@ pub fn parse_glm_keypool_config_json(
         fast_intent_model,
         configured_key_slots,
     })
+}
+
+fn is_flash_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("flash")
+}
+
+fn resolve_primary_model(
+    env_model_override: Option<&str>,
+    top_allow_models: &[String],
+    allowed_models: &[String],
+) -> String {
+    if let Some(explicit) = env_model_override.map(str::trim).filter(|s| !s.is_empty()) {
+        return explicit.to_owned();
+    }
+    if top_allow_models
+        .iter()
+        .chain(allowed_models.iter())
+        .any(|m| m.eq_ignore_ascii_case(DEFAULT_PRIMARY_MODEL))
+    {
+        return DEFAULT_PRIMARY_MODEL.to_owned();
+    }
+    if let Some(non_flash) = top_allow_models
+        .iter()
+        .find(|m| !is_flash_model(m))
+        .or_else(|| allowed_models.iter().find(|m| !is_flash_model(m)))
+    {
+        return non_flash.clone();
+    }
+    DEFAULT_PRIMARY_MODEL.to_owned()
 }
 
 fn parse_listen_host_and_port(root: &JsonValue) -> Result<(String, u16), LlmDriverError> {

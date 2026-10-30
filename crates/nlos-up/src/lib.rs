@@ -26,11 +26,9 @@
 //!      to `DaemonOptions`, rendering ready-to-paste `PowerShell` or POSIX shell blocks.
 //! 3. **Embedded daemon & desktop launcher helpers** ([`daemon_options_for_receipt`]).
 
-use std::collections::hash_map::RandomState;
 use std::error::Error;
 use std::fmt::{self, Write as _};
 use std::fs;
-use std::hash::{BuildHasher as _, Hasher as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1253,6 +1251,9 @@ fn generate_dev_trial_seed() -> Result<[u8; 32], UpError> {
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)]
 fn generate_dev_trial_seed() -> Result<[u8; 32], UpError> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher as _, Hasher as _};
+
     let mut hasher = Sha256::new();
     hasher.update(b"llmos/nlos-up/windows-dev-trial-key-seed/v1");
     hasher.update(std::process::id().to_le_bytes());

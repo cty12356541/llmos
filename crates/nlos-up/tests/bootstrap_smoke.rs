@@ -25,6 +25,21 @@ struct TempTrialDir(PathBuf);
 
 impl TempTrialDir {
     fn new(tag: &str) -> Self {
+        #[cfg(unix)]
+        let dir = {
+            let _ = tag;
+            let base = if Path::new("/tmp").is_dir() {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            base.join(format!(
+                "nlos-up-{}-{}",
+                std::process::id(),
+                NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+            ))
+        };
+        #[cfg(not(unix))]
         let dir = std::env::temp_dir().join(format!(
             "nlos-up-smoke-{tag}-{}-{}",
             std::process::id(),
@@ -535,7 +550,7 @@ fn cli_pool_status_online_and_offline_redacts_secrets_and_slot_names() {
     assert!(live_stdout.contains("NLOS_UP_POOL_STATUS configured=true reachable=true"));
     assert!(live_stdout.contains("openai_base_path     = /api/coding/paas/v4"));
     assert!(live_stdout.contains("default_model        = glm-5.3"));
-    assert!(live_stdout.contains("fast_intent_model    = glm-5.3-flash"));
+    assert!(live_stdout.contains("fast_intent_model    = glm-5.3"));
     assert!(live_stdout.contains("credential_present   = true [REDACTED]"));
     assert!(live_stdout.contains("isolation_tag        = PROVIDER_ISOLATION_UNVERIFIED"));
     assert!(live_stdout.contains("pool_keys            = 3/3"));
@@ -636,7 +651,7 @@ fn spawn_mock_chat_and_intent_server(
         );
         let intent_resp = r#"{
   "id": "chatcmpl-trial-02",
-  "model": "glm-5.3-flash",
+  "model": "glm-5.3",
   "choices": [
     {
       "index": 0,

@@ -227,7 +227,7 @@ fn glm_keypool_v2_config_derivation_and_credential_redaction() {
         Some("http://127.0.0.1:18317/__pool__/status")
     );
     assert_eq!(parsed.default_model, "glm-5.3");
-    assert_eq!(parsed.fast_intent_model, "glm-5.3-flash");
+    assert_eq!(parsed.fast_intent_model, "glm-5.3");
     assert_eq!(
         parsed.allowed_models,
         vec![
@@ -237,6 +237,34 @@ fn glm_keypool_v2_config_derivation_and_credential_redaction() {
         ]
     );
     assert_eq!(parsed.configured_key_slots, 3);
+
+    for (raw_cfg, override_model, expected_model) in [
+        (
+            r#"{"allowModels":["glm-5.3-flash","glm-5.3"]}"#,
+            None,
+            "glm-5.3",
+        ),
+        (r#"{"allowModels":["glm-5.3-flash"]}"#, None, "glm-5.3"),
+        (
+            r#"{"allowModels":["glm-5.3-flash","grok-3-mini"]}"#,
+            None,
+            "grok-3-mini",
+        ),
+        (
+            r#"{"allowModels":["glm-5.3-flash","glm-5.3"]}"#,
+            Some("custom-reasoner-v1"),
+            "custom-reasoner-v1",
+        ),
+    ] {
+        let derived = parse_glm_keypool_config_json(
+            raw_cfg,
+            override_model,
+            KeyPoolDiscoverySource::UserHomeDefault,
+        )
+        .expect("parse model precedence fixture");
+        assert_eq!(derived.default_model, expected_model);
+        assert_eq!(derived.fast_intent_model, expected_model);
+    }
 
     let generic_json = r#"{
         "listen": { "host": "::", "port": 19000 },
@@ -781,10 +809,10 @@ async fn compile_nl_intent_extracts_fenced_json_and_escalates_destructive_querie
         let (mut s1, _) = listener.accept().await.expect("accept intent 1");
         let r1 = read_incoming_http_request(&mut s1).await;
         assert!(
-            r1.body.contains(r#""model":"glm-5.3-flash""#),
-            "compile_nl_intent must default to fast_intent_model"
+            r1.body.contains(r#""model":"glm-5.3""#),
+            "compile_nl_intent must default directly to glm-5.3 without selecting *-flash"
         );
-        let fenced_reply = r#"{"model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":"```json\n{\"summary\":\"查看当前工作区任务列表\",\"target_domain\":\"task\",\"undo_class\":\"LOSSLESS\",\"needs_clarification\":false,\"clarification_reason\":\"\",\"steps\":[\"list_tasks\"]}\n```"}}],"usage":{"prompt_tokens":30,"completion_tokens":25,"total_tokens":55}}"#;
+        let fenced_reply = r#"{"model":"glm-5.3","choices":[{"message":{"role":"assistant","content":"```json\n{\"summary\":\"查看当前工作区任务列表\",\"target_domain\":\"task\",\"undo_class\":\"LOSSLESS\",\"needs_clarification\":false,\"clarification_reason\":\"\",\"steps\":[\"list_tasks\"]}\n```"}}],"usage":{"prompt_tokens":30,"completion_tokens":25,"total_tokens":55}}"#;
         write_mock_http_response(
             &mut s1,
             &MockWireResponse {
@@ -799,7 +827,7 @@ async fn compile_nl_intent_extracts_fenced_json_and_escalates_destructive_querie
 
         let (mut s2, _) = listener.accept().await.expect("accept intent 2");
         let _r2 = read_incoming_http_request(&mut s2).await;
-        let unsafe_model_reply = r#"{"model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":"{\"summary\":\"清理归档\",\"target_domain\":\"artifact\",\"undo_class\":\"LOSSLESS\",\"needs_clarification\":false,\"clarification_reason\":\"\",\"steps\":[\"remove_artifacts\"]}"}}]}"#;
+        let unsafe_model_reply = r#"{"model":"glm-5.3","choices":[{"message":{"role":"assistant","content":"{\"summary\":\"清理归档\",\"target_domain\":\"artifact\",\"undo_class\":\"LOSSLESS\",\"needs_clarification\":false,\"clarification_reason\":\"\",\"steps\":[\"remove_artifacts\"]}"}}]}"#;
         write_mock_http_response(
             &mut s2,
             &MockWireResponse {

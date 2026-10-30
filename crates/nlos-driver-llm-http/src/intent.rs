@@ -11,7 +11,7 @@ use crate::shim::{
 };
 
 /// Default `max_tokens` budget for structured NL intent compilation so `CoT`
-/// reasoning models (e.g. `glm-5.3-flash`) do not exhaust `max_tokens` inside
+/// reasoning models (e.g. `glm-5.3`) do not exhaust `max_tokens` inside
 /// `reasoning_content` before emitting the compact JSON object.
 pub const DEFAULT_INTENT_MAX_TOKENS: u32 = 2048;
 
