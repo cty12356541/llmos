@@ -11,8 +11,9 @@
 //!   `system-control-cli` 二进制做一致性比对。
 //!
 //! 两个入口共享同一类 `RecoverySystemControl` handler(B-TASK-006L 三入口
-//! 字节一致契约的服务侧前提)。夹具密钥为进程内随机生成(/dev/urandom 种子),
-//! 只写入 `0600` 临时文件,绝不入仓库。本模块不承载任何生产语义。
+//! 字节一致契约的服务侧前提)。夹具密钥为进程内随机生成(Unix `/dev/urandom`,
+//! Windows `getrandom` OS CSPRNG),只写入临时文件(Unix `0600`),绝不入仓库。
+//! 本模块不承载任何生产语义。
 
 use std::fs;
 use std::ops::Deref;
@@ -27,7 +28,10 @@ use nlos_commit_coordinator::{
 };
 use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
+#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
+#[cfg(windows)]
+use nlos_ipc::windows::NamedPipeListenerAdapter;
 use nlos_ipc::{OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one};
 use nlos_resource::{
     ActivateReservationRequest, ActivationDecision, ConsumeReservationRequest,
@@ -35,7 +39,7 @@ use nlos_resource::{
     RegisterDriverRequest, ReserveRequest, ResourceAuthority, ResourceDemand,
 };
 use nlos_schema::sabi::v1::{ControlCommand as SabiWireCommand, ExchangeResponse};
-use nlos_system_control::auth::authenticated_serve_one_control;
+use nlos_system_control::auth::{EndpointListener, authenticated_serve_one_control};
 use nlos_system_control::control::{CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT};
 use nlos_system_control::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer};
 use nlos_task::{
@@ -114,11 +118,18 @@ impl RandomSource {
     }
 }
 
+#[cfg(unix)]
 fn read_os_random(buffer: &mut [u8]) -> Result<(), FixtureError> {
     use std::io::Read;
 
     let mut source = fs::File::open("/dev/urandom").map_err(FixtureError::Io)?;
     source.read_exact(buffer).map_err(FixtureError::Io)
+}
+
+#[cfg(windows)]
+fn read_os_random(buffer: &mut [u8]) -> Result<(), FixtureError> {
+    getrandom::fill(buffer)
+        .map_err(|error| FixtureError::Io(std::io::Error::other(error.to_string())))
 }
 
 fn wall_now_ms() -> u64 {
@@ -166,13 +177,32 @@ impl Drop for TempRoot {
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
-/// 短 socket 路径(macOS `SUN_LEN` 上限 104 字节)。
+#[cfg(windows)]
+const FIXTURE_PIPE_INSTANCES: usize = 4;
+
+/// 端点路径:Unix 下为短 socket 路径(macOS `SUN_LEN` 上限 104 字节),
+/// Windows 下为本地命名管道路径(`\\.\pipe\llmosdt-{tag}-{pid}-{seq}-{role}`)。
 struct SocketPath(PathBuf);
 
 impl SocketPath {
-    fn new(label: &str) -> Self {
+    #[cfg(unix)]
+    fn new_role(tag: &str, role: &str) -> Self {
+        let short_role = match role {
+            "auth" => "a",
+            "plain" => "p",
+            other => other,
+        };
         Self(std::env::temp_dir().join(format!(
-            "llmosdt-{label}-{}-{}.sock",
+            "llmosdt-{tag}{short_role}-{}-{}.sock",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed),
+        )))
+    }
+
+    #[cfg(windows)]
+    fn new_role(tag: &str, role: &str) -> Self {
+        Self(PathBuf::from(format!(
+            r"\\.\pipe\llmosdt-{tag}-{}-{}-{role}",
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed),
         )))
@@ -195,8 +225,20 @@ impl AsRef<Path> for SocketPath {
 
 impl Drop for SocketPath {
     fn drop(&mut self) {
+        #[cfg(unix)]
         let _ = fs::remove_file(&self.0);
     }
+}
+
+#[cfg(unix)]
+fn bind_fixture_listener(path: &Path) -> Result<EndpointListener, FixtureError> {
+    UnixListenerAdapter::bind(path).map_err(FixtureError::Bind)
+}
+
+#[cfg(windows)]
+fn bind_fixture_listener(path: &Path) -> Result<EndpointListener, FixtureError> {
+    NamedPipeListenerAdapter::bind(path, FIXTURE_PIPE_INSTANCES, TransportConfig::default())
+        .map_err(FixtureError::Bind)
 }
 
 /// 与 control_ipc_auth.rs 相同形态的健康桩(不含任何敏感诊断)。
@@ -481,8 +523,8 @@ pub struct DevFixture {
     clock: Arc<AuthorityClock>,
     handshake: Arc<ServerHandshakeContext>,
     health: StubHealth,
-    listener_authenticated: Option<UnixListenerAdapter>,
-    listener_plain: Option<UnixListenerAdapter>,
+    listener_authenticated: Option<EndpointListener>,
+    listener_plain: Option<EndpointListener>,
     random: RandomSource,
     principal_hex: String,
     key_seed_hex: String,
@@ -497,7 +539,7 @@ pub struct DevFixture {
 }
 
 impl DevFixture {
-    /// 装配全部真实权威并绑定两个 Unix socket(label 仅用于临时路径命名,≤3 字符)。
+    /// 装配全部真实权威并绑定双入口端点(Unix socket 或 Windows Named Pipe;label 仅用于临时路径命名,≤3 字符)。
     pub fn spawn(label: &str) -> Result<Self, FixtureError> {
         let random = RandomSource::from_os()?;
         let key_seed = random.bytes32();
@@ -565,16 +607,14 @@ impl DevFixture {
             resource_domain_faulted: false,
         });
 
-        let socket_authenticated = SocketPath::new(&format!("{label}a"));
-        let socket_plain = SocketPath::new(&format!("{label}p"));
+        let socket_authenticated = SocketPath::new_role(label, "auth");
+        let socket_plain = SocketPath::new_role(label, "plain");
         let handshake = Arc::new(
             ServerHandshakeContext::new(&socket_authenticated, 64)
                 .map_err(FixtureError::HandshakeContext)?,
         );
-        let listener_authenticated =
-            Some(UnixListenerAdapter::bind(&socket_authenticated).map_err(FixtureError::Bind)?);
-        let listener_plain =
-            Some(UnixListenerAdapter::bind(&socket_plain).map_err(FixtureError::Bind)?);
+        let listener_authenticated = Some(bind_fixture_listener(&socket_authenticated)?);
+        let listener_plain = Some(bind_fixture_listener(&socket_plain)?);
         let settled = create_settled_reservation(&root.0)?;
 
         Ok(Self {
@@ -644,7 +684,8 @@ impl DevFixture {
         }
     }
 
-    /// 把 Ed25519 种子写入 `0600` 密钥文件(客户端派发时读取)。
+    /// 把 Ed25519 种子写入 64-hex 密钥文件(Unix 侧 `0600` 权限;客户端派发时读取)。
+    #[cfg(unix)]
     pub fn write_key_file(&self, path: &Path) -> Result<(), FixtureError> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -653,6 +694,22 @@ impl DevFixture {
             .write(true)
             .create_new(true)
             .mode(0o600)
+            .open(path)
+            .map_err(FixtureError::Io)?;
+        file.write_all(self.key_seed_hex.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(FixtureError::Io)?;
+        Ok(())
+    }
+
+    /// 把 Ed25519 种子写入 64-hex 密钥文件(Windows 侧正常写入;客户端派发时读取)。
+    #[cfg(windows)]
+    pub fn write_key_file(&self, path: &Path) -> Result<(), FixtureError> {
+        use std::io::Write;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
             .open(path)
             .map_err(FixtureError::Io)?;
         file.write_all(self.key_seed_hex.as_bytes())
@@ -710,11 +767,11 @@ impl DevFixture {
         let tasks = Arc::clone(&self.tasks);
         let health = self.health.clone();
         tokio::spawn(async move {
-            let Some(listener) = listener else {
+            let Some(mut listener) = listener else {
                 return;
             };
             loop {
-                let (stream, peer) = match listener.accept(TransportConfig::default()).await {
+                let (stream, peer) = match accept_plain(&mut listener).await {
                     Ok(connection) => connection,
                     Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
                     Err(error) => {
@@ -746,5 +803,93 @@ impl DevFixture {
                 .await;
             }
         })
+    }
+}
+
+#[cfg(unix)]
+async fn accept_plain(
+    listener: &mut EndpointListener,
+) -> Result<(tokio::net::UnixStream, PeerIdentity), nlos_ipc::IpcError> {
+    listener.accept(TransportConfig::default()).await
+}
+
+#[cfg(windows)]
+async fn accept_plain(
+    listener: &mut EndpointListener,
+) -> Result<
+    (
+        tokio::net::windows::named_pipe::NamedPipeServer,
+        PeerIdentity,
+    ),
+    nlos_ipc::IpcError,
+> {
+    listener.accept(TransportConfig::default()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DevFixture;
+    use crate::dto::OutcomeDto;
+    use crate::ipc::dispatch_control;
+    use nlos_system_control::control::{ControlCommand, receipt_to_hex};
+
+    #[tokio::test]
+    async fn dev_fixture_serves_authenticated_and_plain_endpoints() {
+        let mut fixture = DevFixture::spawn("ut").expect("spawn dev fixture");
+        #[cfg(windows)]
+        {
+            let auth = fixture.socket_authenticated().to_string_lossy();
+            let plain = fixture.socket_plain().to_string_lossy();
+            assert!(auth.starts_with(r"\\.\pipe\llmosdt-ut-"));
+            assert!(auth.ends_with("-auth"));
+            assert!(plain.starts_with(r"\\.\pipe\llmosdt-ut-"));
+            assert!(plain.ends_with("-plain"));
+        }
+
+        let key_path = std::env::temp_dir().join(format!(
+            "llmosdt-ut-key-{}-{}.key",
+            std::process::id(),
+            super::NEXT_PATH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = std::fs::remove_file(&key_path);
+        fixture.write_key_file(&key_path).expect("write key file");
+        let key_file_str = key_path.display().to_string();
+
+        let (auth_handle, plain_handle) = fixture.serve_forever();
+
+        let auth_socket = fixture.socket_authenticated().display().to_string();
+        let gui = dispatch_control(
+            &auth_socket,
+            fixture.principal_hex(),
+            &key_file_str,
+            ControlCommand::InspectHealth,
+        )
+        .await
+        .expect("authenticated dispatch");
+        let OutcomeDto::Inspected {
+            worker_state,
+            durable_escalated,
+            ..
+        } = &gui.outcome
+        else {
+            panic!("expected inspected outcome, got {:?}", gui.outcome);
+        };
+        assert_eq!(worker_state, "BackingOff");
+        assert_eq!(*durable_escalated, 1);
+
+        let plain = nlos_system_control::control::dispatch_over_plain_endpoint(
+            fixture.socket_plain(),
+            &ControlCommand::InspectHealth,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("plain dispatch");
+        assert_eq!(gui.receipt_hex, receipt_to_hex(&plain));
+
+        auth_handle.abort();
+        plain_handle.abort();
+        let _ = std::fs::remove_file(&key_path);
     }
 }

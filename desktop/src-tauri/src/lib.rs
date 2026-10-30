@@ -21,11 +21,10 @@ pub mod surfaces;
 pub mod trusted_ui;
 pub mod window_lifecycle;
 
-/// 开发夹具:仅在 Unix + `dev-fixture` feature 下编译(dev_server 示例与
-/// unix 侧集成测试)。夹具 harness 硬编码 Unix socket 路径与
-/// `/dev/urandom`,Windows 移植属后续车道;Windows 侧认证面证据走
-/// `tests/windows_authenticated_pipe_side.rs` 与 `tests/ipc_enum_symmetry_side.rs`(命名管道端到端)。
-#[cfg(all(unix, feature = "dev-fixture"))]
+/// 开发夹具:在 Unix / Windows + `dev-fixture` feature 下编译(`dev_server` 示例与
+/// 集成测试共享)。Unix 侧绑定临时 Unix socket 并读 `/dev/urandom`;Windows 侧绑定
+/// 本地命名管道(`NamedPipeListenerAdapter`)并经 `getrandom` 读取 OS CSPRNG。
+#[cfg(all(any(unix, windows), feature = "dev-fixture"))]
 pub mod devfixture;
 
 pub fn run() {
