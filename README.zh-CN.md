@@ -93,9 +93,9 @@ Tauri 2 桌面（[ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop-com
 | **Stage B** | 单机通用应用平台（[`stage-b-progress.md`](docs/management/stage-b-progress.md)） | `EXITED`（2026-09-21） |
 | **Stage C** | 分布式现代系统：单机多进程 Cell + `C-XHOST` 跨物理主机 mTLS / 保守时钟偏斜租约 / 嵌入式 Raft 控制面（[`stage-c-progress.md`](docs/management/stage-c-progress.md)） | `EXITED`（2026-10-29 `W76`） |
 | **Stage D** | 完整自然语言桌面：五平面 `Z0–Z4` Tauri 2 工业工作站、`L0–L3` 渐进式披露、12 域显控同构、`Z4` 安全确认屏（[`stage-d-progress.md`](docs/management/stage-d-progress.md)） | `EXITED`（2026-10-29 `W76`） |
-| **Stage E** | 兼容制度与生态规模化：`SABI v1.0` 长期兼容、核外兼容垫片、商店治理与 `E0` 开箱试用引导（[`stage-e-progress.md`](docs/management/stage-e-progress.md)、[`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)） | `IN_PROGRESS (DESIGN)`（2026-10-29 `W76` 立项） |
+| **Stage E** | 兼容制度与生态规模化：`SABI v1.0` 长期兼容、核外兼容垫片、商店治理与 `E0` 开箱试用引导（[`stage-e-progress.md`](docs/management/stage-e-progress.md)、[`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)） | `IN_PROGRESS (E0 Verified H4; E1–E7 DESIGN)`（2026-10-30 `W77-PRE`） |
 
-> **证据范围与诚实边界声明：** 阶段 B、阶段 C 与阶段 D 均在独立退出门终审（[W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、[W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)、[W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)）下以 `SATISFIED-WITH-BOUNDARIES`（`P0 = 0`）获批 `EXITED`。阶段 E（`E1`–`E7` 及 `E0` 开箱试用引导）当前处于 `DESIGN` 规划立项态，尚未声称任何阶段 E 运行时工作包已实现。Layer-3+ 物理真机掉电台架（`U-4`）、`1M_LOGICAL` 裸金属跨机 WAN 集群实测（`U-1`）、远端失联主机外部物理副作用擦除证明（`U-5`）、第三方不可信负载三平台双层 Wasm 强沙箱生产接线（`U-9`）、`SABI v1.0` 长期冻结审定（`RISK-B-05`）与宿主 OS 商业安装器代码签名公证（`RISK-B-06`）均按证据分级纪律如实登记于 [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md)。
+> **证据范围与诚实边界声明：** 阶段 B、阶段 C 与阶段 D 均在独立退出门终审（[W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、[W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)、[W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)）下以 `SATISFIED-WITH-BOUNDARIES`（`P0 = 0`）获批 `EXITED`。阶段 E 当前仅完成先行开箱试用工作包 `E0`（`W77-PRE` / `M-E0.5`：`nlos-up` 一键引导、诚实标注 `PROVIDER_ISOLATION_UNVERIFIED` 的用户态 `nlos-driver-llm-http` 本地 KeyPool/HTTP 模型驱动、`starter-assistant-app` 样板包与桌面 KeyPool 桥接，保障等级 `H4`：[E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）；兼容制度与商店治理主线 `E1`–`E7` 仍处于 `DESIGN` 规划态，尚未声称已实现。Layer-3+ 物理真机掉电台架（`U-4`）、`1M_LOGICAL` 裸金属跨机 WAN 集群实测（`U-1`）、远端失联主机外部物理副作用擦除证明（`U-5`）、第三方不可信负载三平台双层 Wasm 强沙箱生产接线（`U-9`）、`SABI v1.0` 长期冻结审定（`RISK-B-05`）与宿主 OS 商业安装器代码签名公证（`RISK-B-06`）均按证据分级纪律如实登记于 [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md)。
 
 ### Stage C 已验证工作包摘要（`C-core` + `C-XHOST`）
 
@@ -130,31 +130,35 @@ Tauri 2 桌面（[ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop-com
 ## 仓库结构
 
 ```text
-crates/              37 个根 workspace Rust 库/二进制 crate（根 Cargo.toml）
-  nlos-types/          标称身份类型（零第三方依赖）
-  nlos-identity/       Principal 与密钥权威（Ed25519）
-  nlos-capability/     Capability 颁发、衰减、撤销与 KEK 托管签名库
-  nlos-task/           Task 权威（CommitPermit、EffectPermit、分片接管）
-  nlos-process/        Process / AgentInstance 生命周期与 8 步迁移状态机
-  nlos-artifact/       内容寻址制品存储与四轴同步策略
-  nlos-semantic/       语义断言准入权威与签名向量检查点
-  nlos-cell/           Cell 权威、本地七件套装配与分区自治门（Stage C）
-  nlos-lease/          持久化 Quota / Capacity / ExclusiveDevice Lease 权威（Stage C）
-  nlos-net/            跨主机 TLS 1.3 mTLS 传输与五轴 CellFence 握手（Stage C C-XHOST）
-  nlos-consensus/      嵌入式确定性 Raft 控制面多数派共识（Stage C C-XHOST）
-  nlos-system-control/ 常驻 system-control-daemon 与 system-control-cli（12 域控制脊柱）
-  nlos-slice-k/        端到端集成切片（Package → Task → Fiber → Artifact）
-  nlos-package/        CLI：keygen · build · conformance · verify · install · run · update · uninstall
+crates/              39 个根 workspace Rust 库/二进制 crate（根 Cargo.toml）
+  nlos-types/           标称身份类型（零第三方依赖）
+  nlos-identity/        Principal 与密钥权威（Ed25519）
+  nlos-capability/      Capability 颁发、衰减、撤销与 KEK 托管签名库
+  nlos-task/            Task 权威（CommitPermit、EffectPermit、分片接管）
+  nlos-process/         Process / AgentInstance 生命周期与 8 步迁移状态机
+  nlos-artifact/        内容寻址制品存储与四轴同步策略
+  nlos-semantic/        语义断言准入权威与签名向量检查点
+  nlos-cell/            Cell 权威、本地七件套装配与分区自治门（Stage C）
+  nlos-lease/           持久化 Quota / Capacity / ExclusiveDevice Lease 权威（Stage C）
+  nlos-net/             跨主机 TLS 1.3 mTLS 传输与五轴 CellFence 握手（Stage C C-XHOST）
+  nlos-consensus/       嵌入式确定性 Raft 控制面多数派共识（Stage C C-XHOST）
+  nlos-system-control/  常驻 system-control-daemon 与 system-control-cli（12 域控制脊柱）
+  nlos-slice-k/         端到端集成切片（Package → Task → Fiber → Artifact）
+  nlos-package/         CLI：keygen · build · conformance · verify · install · run · update · uninstall
+  nlos-driver-llm-http/ 用户态本地 KeyPool/OpenAI HTTP/1.1 模型驱动与五维预算垫片（Stage E E0）
+  nlos-up/              一键跨平台试用引导器、模型池 CLI 与桌面启动器（Stage E E0）
   ...（其余 23 个根 workspace crate）
 
 desktop/             五平面 Z0-Z4 Tauri 2 工业工作站桌面（TypeScript + 独立 Rust workspace）
-examples/sample-app/ 签名样板 NLOS 应用载荷与全生命周期夹具（独立 Cargo 包）
+examples/
+  sample-app/            签名样板 NLOS 应用载荷与全生命周期夹具（独立 Cargo 包）
+  starter-assistant-app/ 参考生产力应用包（v1.0.0/v1.1.0 TaskPlan + 五维 LlmTokenBudget + Artifact 因果血缘）
 docs/
   design/            规范性架构总纲（v0.5，278 KB，200+ 需求 ID）
   discussions/       36 份设计讨论文档（总索引 + 35 篇专题讨论）
   management/
     adrs/            27 份架构决策记录（ADR-0001..0027，另含模板）
-    evidence-index.yaml  188 条证据索引（覆盖 H0-H8 证据等级）
+    evidence-index.yaml  190 条证据索引（覆盖 H0-H8 证据等级）
     claims.yaml      116 条机器可读声明（ledger-schema v1.3：71 条 Stage B + 35 条 Stage C + 10 条 Stage D）
 sdk/                 Python · TypeScript · Go · C# 四语言 SABI SDK
 schema/              Protobuf + CDDL 契约定义 + 黄金线协议测试向量
@@ -170,13 +174,34 @@ fuzz/                3 个 cargo-fuzz 目标与种子语料库（独立于根 wo
 
 **平台支持：** Windows、macOS、Linux（CI 全矩阵覆盖三大平台）。
 
+### 0. 一键开箱引导与直连本地模型 Key 池（`nlos-up`）
+
+若本机已运行 `~/glm-keypool` 号池网关（默认 `http://127.0.0.1:8317/api/coding/paas/v4`）或配置了任意 OpenAI-compatible / 本地 Ollama 端点（`LLMOS_LLM_BASE_URL`），可通过 `nlos-up` 一键完成试用状态根初始化、`ResourceAuthority` 五维 `LlmTokenBudget` 计量对话/意图拆解（全链路凭据脱敏）以及常驻控制面或工业工作站桌面拉起：
+
+```powershell
+# 探测本地 ~/glm-keypool（或 OpenAI-compatible 端点）状态（全链路凭据脱敏）
+cargo run -p nlos-up -- pool-status
+
+# 一键初始化试用状态根并直连本地模型池对话（自动落库 ResourceAuthority 五维 Token 预算回执）
+cargo run -p nlos-up -- chat --model glm-5.3-flash --prompt "用一句话介绍 NLOS 微内核与能力令牌"
+
+# 自然语言意图结构化拆解（内置 [NL-AMBIG-001] 破坏性动作不可逆升级护栏）
+cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
+
+# 一键拉起跨平台常驻控制面（Windows Named Pipe / Unix Socket）或工业工作站桌面
+cargo run -p nlos-up -- daemon --seed-sample-app
+cargo run -p nlos-up -- desktop --seed-sample-app
+```
+
+完整跨平台操作步骤与诚实公证边界见 [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md)，多步 `TaskPlan` + `Artifact` 因果血缘生产力样板见 [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md)。
+
 ### 1. 构建工作区、运行测试与包管理 CLI
 
 ```bash
 git clone https://github.com/cty12356541/llmos
 cd llmos
 
-# 构建根工作区全部 37 个 crate
+# 构建根工作区全部 39 个 crate
 cargo build --workspace
 
 # 运行根工作区全部测试
@@ -272,7 +297,7 @@ npm install
 npm run tauri dev
 ```
 
-> **关于 `npm run dev:server` 的平台说明：** `desktop/` 内置的开发演示夹具 `npm run dev:server`（`desktop/src-tauri/examples/dev_server.rs`）仅限 Unix 平台编译运行（`#[cfg(unix)]`）；在 Windows 平台上，请直接按上方步骤启动跨平台 `system-control-daemon` 并连接其 Named Pipe（`auth_socket`）。
+> **提示（`nlos-up desktop` 与跨平台 `dev_server`）：** `cargo run -p nlos-up -- desktop` 与 `desktop/` 内置开发夹具 `npm run dev:server`（`desktop/src-tauri/examples/dev_server.rs`）现已同时支持 **Windows Named Pipe** 与 **macOS / Linux Unix Domain Socket**。
 
 ---
 
@@ -304,7 +329,7 @@ npm run tauri dev
 | 分布式系统与共识 | `nlos-cell`、`nlos-lease`、`nlos-net`、`nlos-consensus`（Stage C 已 `EXITED`） |
 | 控制面守护进程与 CLI | `nlos-system-control`、`nlos-package`（`system-control-daemon`、`system-control-cli` 与包工具链） |
 | TypeScript / Tauri 2 桌面 | `desktop/`（Stage D 已 `EXITED`，五平面 `Z0–Z4` 工业工作站壳） |
-| 长期兼容与多语言 SDK | `nlos-schema`、`sdk/`（Stage E `IN_PROGRESS (DESIGN)`，详见 [`stage-e-progress.md`](docs/management/stage-e-progress.md)） |
+| 开箱引导、长期兼容与多语言 SDK | `nlos-up`、`nlos-driver-llm-http`、`nlos-schema`、`sdk/`（Stage E `IN_PROGRESS`：`E0` 已验证 `H4`，`E1`–`E7` 为 `DESIGN`；详见 [`stage-e-progress.md`](docs/management/stage-e-progress.md)） |
 
 ---
 
@@ -319,7 +344,7 @@ npm run tauri dev
 | [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B 权威进度台账（`EXITED`） |
 | [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C 权威进度台账（`EXITED`） |
 | [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D 权威进度台账（`EXITED`） |
-| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E 权威进度台账（`IN_PROGRESS / DESIGN`） |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E 权威进度台账（`IN_PROGRESS`：`E0` Verified `H4`；`E1`–`E7` `DESIGN`） |
 | [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D 退出未知与残余风险清单（`P0 = 0`） |
 | [`AGENTS.md`](AGENTS.md) | 仓库内所有 Agent 与贡献者的强制工作规则 |
 

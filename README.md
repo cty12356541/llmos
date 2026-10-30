@@ -93,9 +93,9 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 | **Stage B** | Single-machine application platform ([`stage-b-progress.md`](docs/management/stage-b-progress.md)) | `EXITED` (2026-09-21) |
 | **Stage C** | Distributed modern system: single-host multi-process Cells + `C-XHOST` cross-physical-host mTLS, clock-skew lease envelope & embedded Raft ([`stage-c-progress.md`](docs/management/stage-c-progress.md)) | `EXITED` (2026-10-29 `W76`) |
 | **Stage D** | Complete NL desktop: five-plane `Z0–Z4` Tauri 2 industrial workstation, `L0–L3` progressive disclosure, 12-domain inspect/control symmetry & `Z4` security consent screen ([`stage-d-progress.md`](docs/management/stage-d-progress.md)) | `EXITED` (2026-10-29 `W76`) |
-| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (DESIGN)` (2026-10-29 `W76` chartered) |
+| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (E0 Verified H4; E1–E7 DESIGN)` (2026-10-30 `W77-PRE`) |
 
-> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. Stage E (`E1`–`E7` and `E0` onboarding) is currently in `DESIGN` planning with zero Stage E runtime packages claimed as implemented. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` freeze (`RISK-B-05`), and OS commercial installer notarization (`RISK-B-06`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
+> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. In Stage E, only the out-of-the-box local trial bootstrap work package `E0` (`W77-PRE` / `M-E0.5`: `nlos-up`, user-space `nlos-driver-llm-http` stamped `PROVIDER_ISOLATION_UNVERIFIED`, `starter-assistant-app`, and desktop KeyPool bridge) is verified at `H4` ([E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md), [E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)); core compatibility and store governance work packages `E1`–`E7` remain in `DESIGN` planning with zero runtime claims. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` freeze (`RISK-B-05`), and OS commercial installer notarization (`RISK-B-06`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
 
 ### Stage C verified work packages (`C-core` + `C-XHOST`)
 
@@ -130,31 +130,35 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 ## Repository layout
 
 ```text
-crates/              37 Rust workspace library/binary crates (root Cargo.toml)
-  nlos-types/          Nominal identity types (zero dependencies)
-  nlos-identity/       Principal & key authority (Ed25519)
-  nlos-capability/     Capability issuance, attenuation, revocation & KEK custody
-  nlos-task/           Task authority (CommitPermit, EffectPermit, sharded takeover)
-  nlos-process/        Process / AgentInstance lifecycle & 8-step migration
-  nlos-artifact/       Content-addressed artifact store & sync policy
-  nlos-semantic/       Semantic assertion admission & signed vector checkpoints
-  nlos-cell/           Cell authority, 7-piece local assembly & partition gate (Stage C)
-  nlos-lease/          Durable Quota / Capacity / ExclusiveDevice lease authority (Stage C)
-  nlos-net/            Cross-host TLS 1.3 mTLS transport & 5-axis CellFence (Stage C C-XHOST)
-  nlos-consensus/      Embedded deterministic Raft control-plane quorum (Stage C C-XHOST)
-  nlos-system-control/ Resident system-control-daemon & system-control-cli (12-domain spine)
-  nlos-slice-k/        End-to-end integration slice (Package → Task → Fiber → Artifact)
-  nlos-package/        CLI: keygen · build · conformance · verify · install · run · update · uninstall
+crates/              39 Rust workspace library/binary crates (root Cargo.toml)
+  nlos-types/           Nominal identity types (zero dependencies)
+  nlos-identity/        Principal & key authority (Ed25519)
+  nlos-capability/      Capability issuance, attenuation, revocation & KEK custody
+  nlos-task/            Task authority (CommitPermit, EffectPermit, sharded takeover)
+  nlos-process/         Process / AgentInstance lifecycle & 8-step migration
+  nlos-artifact/        Content-addressed artifact store & sync policy
+  nlos-semantic/        Semantic assertion admission & signed vector checkpoints
+  nlos-cell/            Cell authority, 7-piece local assembly & partition gate (Stage C)
+  nlos-lease/           Durable Quota / Capacity / ExclusiveDevice lease authority (Stage C)
+  nlos-net/             Cross-host TLS 1.3 mTLS transport & 5-axis CellFence (Stage C C-XHOST)
+  nlos-consensus/       Embedded deterministic Raft control-plane quorum (Stage C C-XHOST)
+  nlos-system-control/  Resident system-control-daemon & system-control-cli (12-domain spine)
+  nlos-slice-k/         End-to-end integration slice (Package → Task → Fiber → Artifact)
+  nlos-package/         CLI: keygen · build · conformance · verify · install · run · update · uninstall
+  nlos-driver-llm-http/ User-space KeyPool/OpenAI HTTP/1.1 LLM driver & 5D LlmEnforcementShim (Stage E E0)
+  nlos-up/              One-command cross-platform trial bootstrapper, KeyPool CLI & desktop launcher (Stage E E0)
   ... (23 more workspace crates)
 
 desktop/             Five-plane Z0-Z4 Tauri 2 workstation desktop (TypeScript + independent Rust workspace)
-examples/sample-app/ Sample signed NLOS application payload & lifecycle fixture (independent package)
+examples/
+  sample-app/            Sample signed NLOS application payload & lifecycle fixture (independent package)
+  starter-assistant-app/ Reference productivity bundle (v1.0.0/v1.1.0 TaskPlan + 5D LlmTokenBudget + Artifact lineage)
 docs/
   design/            Canonical architecture specification (v0.5, 278 KB, 200+ requirement IDs)
   discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
     adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
-    evidence-index.yaml  188 evidence entries (H0-H8 assurance levels)
+    evidence-index.yaml  190 evidence entries (H0-H8 assurance levels)
     claims.yaml      116 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D)
 sdk/                 Python · TypeScript · Go · C# SABI SDKs
 schema/              Protobuf + CDDL schemas + golden wire test vectors
@@ -170,13 +174,34 @@ fuzz/                3 cargo-fuzz targets with seed corpora (excluded from root 
 
 **Platform support:** Windows, macOS, and Linux (verified across all three in CI).
 
+### 0. One-Command Bootstrap & Local KeyPool Model Trial (`nlos-up`)
+
+If you run a local `~/glm-keypool` gateway (default `http://127.0.0.1:8317/api/coding/paas/v4`) or any OpenAI-compatible / Ollama endpoint (`LLMOS_LLM_BASE_URL`), `nlos-up` initializes a trial state root, meters every call against `ResourceAuthority` 5D `LlmTokenBudget` with full credential redaction, and launches the daemon or `Z0–Z4` desktop in one command:
+
+```powershell
+# Probe local ~/glm-keypool (or OpenAI-compatible endpoint) status with full credential redaction
+cargo run -p nlos-up -- pool-status
+
+# Bootstrap trial state root & run metered chat (commits durable ResourceAuthority 5D Token budget receipt)
+cargo run -p nlos-up -- chat --model glm-5.3-flash --prompt "用一句话介绍 NLOS 微内核与能力令牌"
+
+# Compile plain-language intent into structured JSON (built-in [NL-AMBIG-001] destructive escalation guardrail)
+cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
+
+# Launch the cross-platform resident control plane (Windows Named Pipe / Unix Socket) or industrial workstation desktop
+cargo run -p nlos-up -- daemon --seed-sample-app
+cargo run -p nlos-up -- desktop --seed-sample-app
+```
+
+See the full step-by-step walkthrough in [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md) and the multi-step `TaskPlan` + `Artifact` productivity bundle in [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md).
+
 ### 1. Build, test, and run the package CLI
 
 ```bash
 git clone https://github.com/cty12356541/llmos
 cd llmos
 
-# Build all 37 root workspace crates
+# Build all 39 root workspace crates
 cargo build --workspace
 
 # Run the root workspace test suite
@@ -272,7 +297,7 @@ npm install
 npm run tauri dev
 ```
 
-> **Platform note on `npm run dev:server`:** The standalone in-repo demo fixture `npm run dev:server` (`desktop/src-tauri/examples/dev_server.rs`) is gated to Unix (`#[cfg(unix)]`). On Windows, connect `npm run tauri dev` directly to the cross-platform `system-control-daemon` Named Pipe (`auth_socket`) as shown above.
+> **Tip (`nlos-up desktop` & cross-platform `dev_server`):** Both `cargo run -p nlos-up -- desktop` and the standalone demo fixture `npm run dev:server` (`desktop/src-tauri/examples/dev_server.rs`) support **Windows Named Pipes** as well as **macOS/Linux Unix domain sockets** out of the box.
 
 ---
 
@@ -304,7 +329,7 @@ The best starting points for contributors and coding agents:
 | Distributed systems | `nlos-cell`, `nlos-lease`, `nlos-net`, `nlos-consensus` (Stage C `EXITED`) |
 | Control plane & CLI | `nlos-system-control`, `nlos-package` (`system-control-daemon`, `system-control-cli`, package tooling) |
 | TypeScript / Tauri 2 desktop | `desktop/` (Stage D `EXITED`, five-plane `Z0–Z4` workstation shell) |
-| Compatibility & SDKs | `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS (DESIGN)`, see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
+| Compatibility, onboarding & SDKs | `nlos-up`, `nlos-driver-llm-http`, `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS`: `E0` Verified `H4`, `E1`–`E7` `DESIGN`; see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
 
 ---
 
@@ -319,7 +344,7 @@ The best starting points for contributors and coding agents:
 | [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D authoritative progress ledger (`EXITED`) |
-| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS / DESIGN`) |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS`: `E0` Verified `H4`; `E1`–`E7` `DESIGN`) |
 | [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D exit unknown & residual risks ledger (`P0 = 0`) |
 | [`AGENTS.md`](AGENTS.md) | Mandatory work rules for all agents and contributors in this repo |
 

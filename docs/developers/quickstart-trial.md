@@ -1,6 +1,6 @@
 # NLOS 本地开箱真实试用指南（Stage E `E0` / `W77-PRE`）
 
-> 状态：`DESIGN+IMPLEMENTED`（`W77-PRE` / `E0` `E-TRIAL-BOOTSTRAP`；样板应用与试用打包证据见 [E-TRIAL-002](../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)，用户态 LLM HTTP 驱动证据见同波 `docs/evidence/stage-e/e-trial-001-llm-http-driver.md`）
+> 状态：`VERIFIED (H4)`（`W77-PRE` / `E0` `E-TRIAL-BOOTSTRAP`；用户态 LLM HTTP 驱动与本机 `glm-keypool` 实盘冒烟证据见 [E-TRIAL-001](../evidence/stage-e/e-trial-001-llm-http-driver.md)，样板应用与试用打包证据见 [E-TRIAL-002](../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）
 >
 > 适用范围：Windows 10/11（PowerShell 5.1+ / PowerShell 7+）与 macOS / Linux（POSIX `sh` / `bash`）本地开发工作站。
 
@@ -37,109 +37,155 @@
 
 ---
 
-## 1. 一键初始化与启动（`nlos-up daemon` / `desktop`）
+## 1. 一键初始化与启动（`nlos-up init | env | daemon | desktop`）
 
-一键引导启动器 [crates/nlos-up](../../crates/nlos-up/Cargo.toml) 负责幂等初始化本机状态根（POSIX 默认 `~/.llmos`，Windows 默认 `$env:USERPROFILE\.llmos`）、生成本机 Ed25519 身份与 operator 会话密钥、在跨平台本地 IPC 端点（Unix Domain Socket 或 Windows Named Pipe）拉起控制面守护进程，并向 [desktop/](../../desktop/README.md) 自动注入 `LLMOS_DESKTOP_*` 会话参数。
+一键引导启动器 [crates/nlos-up](../../crates/nlos-up/Cargo.toml) 负责幂等初始化本机状态根（POSIX 默认 `~/.llmos`，Windows 默认 `$env:USERPROFILE\.llmos`）、生成本机试用 Ed25519 身份与 operator 会话密钥、创建默认五维 `LlmTokenBudget` 账户（记录于 `<ROOT>/trial-account.txt`）、可选预装样板应用包（`--seed-sample-app`）、在跨平台本地 IPC 端点（Unix Domain Socket 或 Windows Named Pipe）拉起控制面守护进程，并向 [desktop/](../../desktop/README.md) 自动注入 `LLMOS_DESKTOP_*` 会话环境变量。
 
 ### 1.1 仅启动后台控制面守护进程（`daemon` 模式）
 
-适用于通过 CLI、SDK 或独立终端联调控制面服务：
+适用于通过 CLI、SDK 或独立终端联调控制面服务（也可先运行 `cargo run -p nlos-up -- init` 或 `cargo run -p nlos-up -- env` 仅执行状态根初始化与环境变量导出）：
 
 - **Windows PowerShell**：
   ```powershell
-  # 默认初始化并复用 $env:USERPROFILE\.llmos
-  cargo run -p nlos-up -- daemon
+  # 默认初始化并复用 $env:USERPROFILE\.llmos（可选附加 --seed-sample-app 预装样板应用）
+  cargo run -p nlos-up -- daemon --seed-sample-app
 
   # 或指定隔离试用状态目录
   $TrialRoot = Join-Path $env:TEMP "llmos-trial-state"
-  cargo run -p nlos-up -- daemon --state-dir $TrialRoot
+  cargo run -p nlos-up -- daemon --root $TrialRoot --seed-sample-app
   ```
 
 - **macOS / Linux POSIX Shell**：
   ```sh
-  # 默认初始化并复用 ~/.llmos
-  cargo run -p nlos-up -- daemon
+  # 默认初始化并复用 ~/.llmos（可选附加 --seed-sample-app 预装样板应用）
+  cargo run -p nlos-up -- daemon --seed-sample-app
 
   # 或指定隔离试用状态目录
   TRIAL_ROOT="${TMPDIR:-/tmp}/llmos-trial-state"
-  cargo run -p nlos-up -- daemon --state-dir "$TRIAL_ROOT"
+  cargo run -p nlos-up -- daemon --root "$TRIAL_ROOT" --seed-sample-app
   ```
 
 ### 1.2 一键拉起守护进程与 `Z0–Z4` 工业工作站桌面（`desktop` 模式）
 
-自动完成状态根引导、后台控制面就绪探测与 Tauri 桌面壳会话绑定（含 Windows Named Pipe 与 Unix Socket 双平台开发夹具）：
+自动完成状态根引导、后台控制面就绪探测与 Tauri 桌面壳会话绑定（同时支持 Windows Named Pipe 与 Unix Domain Socket；附加 `--dry-run` 可在不拉起 GUI 窗口的前提下核验全部注入环境变量与守护进程健康检查）：
 
 - **Windows PowerShell**：
   ```powershell
-  cargo run -p nlos-up -- desktop
+  cargo run -p nlos-up -- desktop --seed-sample-app
   ```
 
 - **macOS / Linux POSIX Shell**：
   ```sh
-  cargo run -p nlos-up -- desktop
+  cargo run -p nlos-up -- desktop --seed-sample-app
   ```
 
-> 若仅需单独调试前端与桌面宿主开发夹具，也可参见 [desktop/README.md](../../desktop/README.md) 在 `desktop/` 目录运行 `npm run dev:server` 与 `npx tauri dev`。
+> 若仅需单独调试前端与桌面宿主开发夹具，也可参见 [desktop/README.md](../../desktop/README.md) 在 `desktop/` 目录运行 `npm run dev:server`（已在 `W77-PRE-A` 补齐 Windows Named Pipe 与 Unix Socket 双平台支持）与 `npm run tauri dev`。
+
+### 1.3 桌面 `Ctrl+Space` 命令面板“模型辅助拆解 / Model Assist”卡片
+
+通过 `nlos-up desktop` 进入工作站桌面后，按 **`Ctrl+Space`**（macOS 可用 `Cmd+Space`）或点击底部 `36px` 任务栏命令槽即可唤起 `Z3` 实心 `4px` 圆角命令与意图面板（[desktop/src/views/omnibar/palette-view.ts](../../desktop/src/views/omnibar/palette-view.ts) 与 [desktop/src-tauri/src/keypool_bridge.rs](../../desktop/src-tauri/src/keypool_bridge.rs)）：
+
+1. **顶部实心 `4px` 本地模型池状态条**：自动调用 `llm_keypool_inspect_status` 探测本机 `~/glm-keypool`（或 `LLMOS_LLM_BASE_URL`），在线时显示 `本地模型池 · 在线`（`Local Model Pool · Online`）、默认模型与活跃通道数；未配置或网关离线时按 `[DUI-OFFLINE-001]` 自动切换为 `本地模型池 · 离线回退`（`Local Model Pool · Local Fallback`），绝不阻塞或锁死面板。
+2. **非权威“模型辅助拆解 / Model Assist”卡片**：在输入框键入自然语言任务后点击 **`模型辅助拆解`**（英文界面为 **`Model Assist`**），后台线程经 `llm_keypool_assist_intent` 调用 `LlmEnforcementShim` 并自动扣减会话 `ResourceAuthority` 五维 `LlmTokenBudget`，在面板内渲染 `辅助拆解建议`（`Assisted Plan Breakdown`）卡片，展示建议步骤、可逆等级徽标与本次模型 Token 用量。
+3. **高危歧义护栏与分层披露纪律**：凡输入包含破坏性关键词（如 `删除`、`卸载`、`清空`、`delete`、`wipe`、`uninstall`），无论模型原始输出为何或处于离线回退模式，均按 `[NL-AMBIG-001]` 强制升级为 `不可逆`（`Irreversible`）并开启候选澄清门，后续提交仍须经由 `ADR-0011` 控制脊柱与 `Z4` 实心安全确认屏审批；`L1/L2` 视图保持零内部架构行话，切换至 `L3` 诊断级别后可检视 `PROVIDER_ISOLATION_UNVERIFIED` 隔离标记与 16 位十六进制 `SHA-256` 脱敏槽位指纹。
 
 ---
 
-## 2. 本机 `~/glm-keypool` 自动发现与 `nlos-llm-pool-cli` 直连测试
+## 2. 本机 `~/glm-keypool` 自动发现、`nlos-up` 一站式模型命令与 `nlos-llm-pool-cli` 直连测试
 
-用户态模型驱动 [crates/nlos-driver-llm-http](../../crates/nlos-driver-llm-http/Cargo.toml)（配套命令行探针 `nlos-llm-pool-cli`）支持自动发现本机 `~/glm-keypool`（Windows 下为 `$env:USERPROFILE\glm-keypool`）代理配置，默认对接本机 OpenAI-compatible 编码网关 `http://127.0.0.1:8317/api/coding/paas/v4`；同时也支持显式环境变量或参数对接本地 Ollama（如 `http://127.0.0.1:11434/v1`）及其他兼容端点。
+用户态模型驱动 [crates/nlos-driver-llm-http](../../crates/nlos-driver-llm-http/Cargo.toml) 与一键引导器 [crates/nlos-up](../../crates/nlos-up/Cargo.toml) 共享 4 层本地端点自动发现机制（显式 `--keypool-config` / `--pool-config` -> `LLMOS_KEYPOOL_CONFIG` -> `LLMOS_LLM_BASE_URL` -> `$USERPROFILE\glm-keypool\config.json` 或 `$HOME/glm-keypool/config.json`）。当检测到 `upstreamBase` 指向 `bigmodel.cn` 时，自动派生 OpenAI-compatible 编码网关路径 `http://127.0.0.1:8317/api/coding/paas/v4` 并选取 `glm-5.3` / `glm-5.3-flash`；同时也支持对接本地 Ollama（如 `http://127.0.0.1:11434/v1`）及其他兼容端点。
 
 ### 2.1 配置出站凭据占位（零明文落库）
 
-若本机已运行 `~/glm-keypool` 代理服务，驱动会按本机工作目录或用户主目录下的 `~/glm-keypool` 运行态配置执行只读自动发现（密钥仅载入 `EnforcementShim` 内存托管区，绝不打印或写入日志）。也可在当前终端会话中显式注入占位变量覆盖：
+若本机已运行 `~/glm-keypool` 代理服务，驱动会直接只读发现 `~/glm-keypool/config.json`（密钥仅封装于 `SecretCredential` 内存托管区，`Debug`/`Display` 恒输出 `<redacted-credential>`，且 `/__pool__/status` 槽位掩码与持有人标签 100% 剥离）。若未部署 `glm-keypool`，也可在当前终端会话中通过 `LLMOS_LLM_*` 环境变量直连任意兼容端点：
 
 - **Windows PowerShell**：
   ```powershell
-  $env:NLOS_LLM_BASE_URL = "http://127.0.0.1:8317/api/coding/paas/v4"
-  $env:NLOS_LLM_EGRESS_KEY = "<YOUR_EGRESS_KEY>"
+  $env:LLMOS_LLM_BASE_URL = "http://127.0.0.1:8317/api/coding/paas/v4"
+  $env:LLMOS_LLM_API_KEY = "<YOUR_EGRESS_KEY>"
+  $env:LLMOS_LLM_MODEL = "glm-5.3-flash"
   ```
 
 - **macOS / Linux POSIX Shell**：
   ```sh
-  export NLOS_LLM_BASE_URL="http://127.0.0.1:8317/api/coding/paas/v4"
-  export NLOS_LLM_EGRESS_KEY="<YOUR_EGRESS_KEY>"
+  export LLMOS_LLM_BASE_URL="http://127.0.0.1:8317/api/coding/paas/v4"
+  export LLMOS_LLM_API_KEY="<YOUR_EGRESS_KEY>"
+  export LLMOS_LLM_MODEL="glm-5.3-flash"
   ```
 
-### 2.2 执行 `status` / `chat` / `intent` 三步直连验证
+### 2.2 推荐方式：使用 `nlos-up pool-status | chat | intent` 一站式快捷命令（自动落库五维预算回执）
 
-1. **查看端点自动发现、凭据掩码状态与五维 Token 预算余量（`status`）**：
-   - **Windows PowerShell**：
-     ```powershell
-     cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- status
-     ```
-   - **macOS / Linux POSIX Shell**：
+`nlos-up` 内置的模型池子命令会自动初始化或复用状态根（默认 `~/.llmos` / `$env:USERPROFILE\.llmos`，也可传 `--root <DIR>`）下的试用预算账户，在每次推理前后执行 `ResourceAuthority` 五维 `LlmTokenBudget` 预检与持久化回执记账：
+
+- **Windows PowerShell**：
+  ```powershell
+  # 1. 探测本地模型池自动发现结果与在线健康状态（附加 --require-live 可在不可达时返回非零退出码）
+  cargo run -p nlos-up -- pool-status
+  cargo run -p nlos-up -- pool-status --require-live
+
+  # 2. 直连本地模型池执行计量对话（自动归一化包含式 reasoning_tokens 并落盘 LlmTokenConsumptionReceipt）
+  cargo run -p nlos-up -- chat --model glm-5.3-flash --max-tokens 1024 `
+    --prompt "用一句话介绍 NLOS 微内核与能力令牌的核心价值"
+
+  # 3. 自然语言意图结构化拆解（内置 [NL-AMBIG-001] 破坏性动作 IRREVERSIBLE 强制升级护栏）
+  cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
+  cargo run -p nlos-up -- intent --query "卸载全部第三方应用并清空缓存"
+  ```
+
+- **macOS / Linux POSIX Shell**：
+  ```sh
+  # 1. 探测本地模型池自动发现结果与在线健康状态
+  cargo run -p nlos-up -- pool-status
+  cargo run -p nlos-up -- pool-status --require-live
+
+  # 2. 直连本地模型池执行计量对话
+  cargo run -p nlos-up -- chat --model glm-5.3-flash --max-tokens 1024 \
+    --prompt "用一句话介绍 NLOS 微内核与能力令牌的核心价值"
+
+  # 3. 自然语言意图结构化拆解
+  cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
+  cargo run -p nlos-up -- intent --query "卸载全部第三方应用并清空缓存"
+  ```
+
+### 2.3 底层探针方式：使用 `nlos-llm-pool-cli` 执行无状态或指定 `--root` 直连验证
+
+如需单独调试驱动 crate 而不触发完整 `nlos-up` 状态根初始化，可直接调用 `nlos-llm-pool-cli`（传入可选 `--root <STATE_DIR>` 时同样开启 `ResourceAuthority` 持久化五维记账）：
+
+1. **查看端点自动发现、脱敏凭据状态与号池在线快照（`status`）**：
+   - **Windows PowerShell / POSIX Shell**：
      ```sh
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- status
      ```
 
-2. **执行受五维 `LlmTokenBudget` 记账保护的单轮对话推理（`chat`）**：
+2. **执行单轮对话推理（`chat`）**：
    - **Windows PowerShell**：
      ```powershell
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- chat `
+       --model glm-5.3-flash --max-tokens 1024 `
        --prompt "Summarize the three core invariants of NLOS ArtifactStore provenance."
      ```
    - **macOS / Linux POSIX Shell**：
      ```sh
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- chat \
+       --model glm-5.3-flash --max-tokens 1024 \
        --prompt "Summarize the three core invariants of NLOS ArtifactStore provenance."
      ```
 
-3. **验证桌面命令面板自然语言意图结构化解析桥（`intent`）**：
+3. **验证自然语言意图结构化拆解与 `[NL-AMBIG-001]` 护栏（`intent`）**：
    - **Windows PowerShell**：
      ```powershell
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- intent `
-       --utterance "Create a two-step release readiness brief and inspect token budget usage"
+       --query "Create a two-step release readiness brief and inspect token budget usage" `
+       --locale en-US
      ```
    - **macOS / Linux POSIX Shell**：
      ```sh
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- intent \
-       --utterance "Create a two-step release readiness brief and inspect token budget usage"
+       --query "Create a two-step release readiness brief and inspect token budget usage" \
+       --locale en-US
      ```
 
-每次调用完成后，`EnforcementShim` 会将模型返回的 `usage` 字段同步至 `ResourceAuthority::consume_llm_tokens`，产出带单调递增序号与幂等键绑定的不可变 `LlmTokenConsumptionReceipt`。
+每次携带状态根调用完成后，`LlmEnforcementShim` 会按 OpenAI/BigModel 包含式思维链口径守恒折算 `prompt_tokens + completion_tokens + reasoning_tokens == total_tokens` 并提交 `ResourceAuthority::consume_llm_tokens`，产出带单调递增 `sequence`、幂等键绑定与 `PROVIDER_ISOLATION_UNVERIFIED` 诚实标签的不可变 `LlmTokenConsumptionReceipt`。
 
 ---
 

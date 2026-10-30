@@ -1,4 +1,4 @@
-# 跨阶段证据索引（evidence-index.yaml，schema v1.3，W27-E 生成 + W67/W73/W74/W76 演进同步）
+# 跨阶段证据索引（evidence-index.yaml，schema v1.3，W27-E 生成 + W67/W73/W74/W76/W77-PRE 演进同步）
 #
 # - 覆盖 docs/evidence/stage-{b,c,d,e}/（含各阶段 reviews/）全部证据文件；由 scripts/lint_claims.py 校验与目录双向一致。
 # - assurance 为该证据工件可支撑的最高 claim 等级（保守评定）：POC=实验/PoC，H2=模型/生成/golden 级，
@@ -1132,3 +1132,15 @@
   scope: "独立审查 v0.5 §28.4 七大核心交付物、[ROAD-D-001]、[UI-PARITY-001]、D-core 八大工作包（D-TOKENS-KIT / D-IPC-ENUM / D-COMPOSITOR-WM / D-OMNIBAR-MULTIMODAL / D-TRUSTED-UI / D-TASK-SPACE-DAG / D-NOTIFY-SEARCH-OFFLINE / D-CONTROL-SETTINGS-A11Y）、#3 C-GUI-CAMPAIGN 与 stage-d-progress.md §D.5.5 六项退出条件（证据 D-TOKENS-001..D-ROAD-001）；晋升 ADR-0025 为 VERIFIED；裁定阶段 D 达成 SATISFIED-WITH-BOUNDARIES（H4，P0=0），呈请维护者显式批准翻转 EXITED"
   assurance: H4
   date: "2026-10-29"
+- id: e-trial-001-llm-http-driver
+  path: docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+  title: "E-TRIAL-001: Bounded Local HTTP/1.1 KeyPool LLM Driver Plane, 5D Token Budget Enforcement Shim, and NL Intent Guardrail Evidence (W77-PRE-B / W77-PRE-D / W77-PRE-INT)"
+  scope: "crates/nlos-driver-llm-http 纯安全 Rust HTTP/1.1 + 有界 RFC 8259 JSON 用户态模型驱动（4 层 glm-keypool v2 自动发现 /api/coding/paas/v4、DirectKeyPoolScheduler 粘性会话与 429 冷却故障转移、SecretCredential 全链路脱敏、LlmEnforcementShim 联动 ResourceAuthority 五维 LlmTokenBudget 预检与包含式 reasoning_tokens 守恒回执、PROVIDER_ISOLATION_UNVERIFIED 诚实标注、[NL-AMBIG-001] 破坏性意图硬护栏，13/13 测试）+ nlos-up pool-status/chat/intent（11/11）+ desktop keypool_bridge（4/4）与 Omnibar 模型辅助面板（726 断言）+ 本机 127.0.0.1:8317 glm-keypool 5 步脱敏实盘冒烟闭环"
+  assurance: H4
+  date: "2026-10-30"
+- id: e-trial-002-quickstart-and-starter-app
+  path: docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md
+  title: "Stage E Evidence — E-TRIAL-002: Starter Productivity Application Bundle, Local Trial Desktop Builder & Cross-Platform Quickstart Guide"
+  scope: "examples/starter-assistant-app 零私有内核依赖生产力样板包（v1.0.0 双节点与 v1.1.0 三节点 TaskPlan 模板、nlos-package CONFORMANT 签名验签、ResourceAuthority 五维 LlmTokenBudget 幂等扣减、ArtifactStore 三修订 ProvenanceSourceTriple 因果血缘、SameMajor 热升级与干净卸载，5/5 测试）+ desktop/scripts/build-trial-bundle.{ps1,sh} 本地未公证试用打包预检与 E-deferred/RISK-B-06 商业公证诚实边界 + docs/developers/quickstart-trial.md 跨平台开箱试用指南"
+  assurance: H4
+  date: "2026-10-30"

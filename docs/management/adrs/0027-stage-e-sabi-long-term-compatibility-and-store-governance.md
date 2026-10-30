@@ -1,13 +1,13 @@
 # ADR-0027：阶段 E SABI v1.0 长期兼容制度、核外兼容垫片与生态商店治理架构（Stage E 立项）
 
-- **状态**：**`CANDIDATE`**（2026-10-29 `W76` 立项，2026-10-30 `W76.1` 增补第 7 通道 `PrincipalHandshake` 9/9 入冻收口路径与 `E0` 用户态真实 LLM 开箱引导边界，保障等级：`DESIGN`；待 `W77` 9/9 通道入冻 + 五语言黄金线协议语料库与 `W78` 核外兼容垫片原型验证通过后晋升 `ACCEPTED`，待 `W81` `[ROAD-E-001]` 跨主系统版本零重编译回归终审通过后晋升 `VERIFIED`）
+- **状态**：**`CANDIDATE`**（2026-10-29 `W76` 立项，2026-10-30 `W76.1` 增补第 7 通道 `PrincipalHandshake` 9/9 入冻收口路径与 `E0` 用户态真实 LLM 开箱引导边界；2026-10-30 `W77-PRE` 已按本 ADR `KABI-SVC-001` / `DRV-CRED-001` / `DRV-SHIM-001` 边界完成先行工作包 `E0` `H4` 实证，核心兼容与商店治理主线 `E1`..`E7` 仍为 `DESIGN`；待 `W77` 9/9 通道入冻 + 五语言黄金线协议语料库与 `W78` 核外兼容垫片原型验证通过后晋升 `ACCEPTED`，待 `W81` `[ROAD-E-001]` 跨主系统版本零重编译回归终审通过后晋升 `VERIFIED`）
 - **日期**：2026-10-29
 - **Owner**：Stage E 兼容制度与生态规模化工作族（先行开箱试用包 `E0` + 核心主线 `E1`..`E7`；唯一编排与进度权威入口：[stage-e-progress.md](../stage-e-progress.md)）
 - **关联 Requirement**：[06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §28.5 `ROAD-E-001`；§9 `COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`KABI-IDEM-001`、`KABI-HANDLE-001`、`KABI-SVC-001`、`KABI-ERR-001`、`KABI-UNCERTAIN-001`、`SABI-DISC-001`、`SABI-COMMON-001`、`SABI-RECEIPT-001`、`SABI-AUTH-001`、`SABI-TRANSPORT-001`、`SABI-CONFORM-001`；§15.1 `DRV-NEGO-001`、`DRV-BOUND-001`、`DRV-ACTIVE-001`、`DRV-CRED-001`、`DRV-PROTO-001`、`DRV-LIFE-001`、`DRV-SHIM-001`、`DRV-DISC-001`；§23.1–§23.2 `PKG-SEP-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`、`PKG-UNINSTALL-001`、`PKG-OCI-001`、`PKG-MULTI-001`、`PKG-APPID-001`；§6 `TCB-BYPASS-001`、`TCB-EGRESS-001`、`TCB-DOWNGRADE-001`；§7 `CAP-UNFORGE-001`、`CAP-ATTEN-001`、`CAP-REVOKE-001`；§29.2 `NLOS-DEFER-001`；§30 `EVID-SCOPE-001`、`EVID-NONLINEAR-001`、`EVID-NEG-001`、`EVID-REPRO-001`、`EVID-GEN-001`
 - **关联前序 ADR**：[ADR-0001](./0001-stage-b-core-language-and-runtime.md)、[ADR-0003](./0003-stage-b-idl-and-canonical-encoding.md)、[ADR-0010](./0010-signed-capability-commands.md)、[ADR-0011](./0011-ipc-principal-auth-signature-passthrough.md)、[ADR-0013](./0013-cross-authority-verify-then-commit-contract.md)、[ADR-0014](./0014-schema-channel-freeze-v1-beta.md)、[ADR-0015](./0015-dual-layer-untrusted-execution-isolation.md)、[ADR-0022](./0022-operator-root-capability-issuance.md)、[ADR-0024](./0024-driver-provider-payload-codec-freeze.md)、[ADR-0025](./0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)、[ADR-0026](./0026-cross-physical-host-transport-and-consensus-expansion.md)
 - **关联工作包与风险项**：阶段 E 八大核心工作包 `E0` + `E1`..`E7`（定义见 [stage-e-progress.md](../stage-e-progress.md) §E.2）；承接 [exit-unknown-risks.md](../exit-unknown-risks.md) 与 [risks.yaml](../risks.yaml) 中的 `RISK-B-05`（`premature-format-freeze`：含第 7 通道 `PrincipalHandshake` 入冻补齐 9/9 通道冻结及 `SABI v1-beta -> v1.0` 正式长期冻结）、`RISK-B-09`（`third-party-supply-chain`）、`U-7` / `U-8`（跨生态 Typed Selector 解析与授权门）、`U-9`（第三方不可信负载双层强沙箱隔离）与 `U-10` 本地开箱真实 LLM HTTP 用户态驱动试用衔接，并预登记阶段 E 专项风险 `RISK-E-01`..`RISK-E-05`
 - **决策来源**：2026-10-29（`W76`）维护者正式批复阶段 C（[stage-c-progress.md](../stage-c-progress.md)）与阶段 D（[stage-d-progress.md](../stage-d-progress.md)）收口退出并开启阶段 E；2026-10-30（`W76.1`）维护者指令将剩余两项协议契约冻结收口动作（`PrincipalHandshake` 第 7 通道入冻 + `SABI v1-beta -> v1.0` 长期冻结）及先行本地开箱真实试用工作包 `E0`（`W77-PRE`）正式排入阶段 E 计划
-- **证据**：**`DESIGN`**（`W76` 与 `W76.1` 仅完成阶段 E 立项、冻结收口排期与总体设计定案，零新增阶段 E 运行时代码，尚未生成 `docs/evidence/stage-e/` 实测证据；在对应验证门禁通过前严禁宣称已实现）
+- **证据**：**`E0` 先行试用边界已验证 `H4`**（[E-TRIAL-001](../../evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](../../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）；**四大核心兼容与商店治理主线 `E1`..`E7` 仍为 `DESIGN`**（在 `W77`–`W81` 对应验证门禁通过前严禁宣称 `E1`..`E7` 已实现）
 - **复审触发器**：见文末第 6 节
 
 ---
@@ -104,7 +104,7 @@
    - **可信 `EnforcementShim`（驻留受控 TCB 边缘）**：独占托管外部 provider 原始凭据（`DRV-CRED-001`），强制校验 `Capability`、`Operation`-bound `Reservation` 一次性激活令牌（`DRV-ACTIVE-001`）、`deadline`、`ActivityContext`、`Process incarnation` 与分布式 `fencing_token`（`DRV-BOUND-001`），并在驱动崩溃后将所有未终结 `Operation` 强制置为 `UNCERTAIN` 直至对账完成（`DRV-LIFE-001`）；
    - **版本转换垫片（`nlos-compat-shim`）**：仅执行纯确定性、无特权的线协议字段映射、默认值补齐与错误码降级翻译；垫片进程**不持有任何根密钥或外部凭据，不能铸造 Capability、不能绕过 Reservation 扣费、也不能伪造已签名的 `UsageReceipt` 或 `ProviderIsolationAttestationWire`**。
 
-   - **先行开箱试用工作包 `E0`（`W77-PRE`）对微内核边界的严格遵守**：在 `W77-PRE` 中用于打通本机连接真实外部/本地大模型“最后一公里”的一键引导器（`crates/nlos-up`）与真实 LLM HTTP 驱动（`crates/nlos-driver-llm-http`，对接 OpenAI-compatible / Gemini / Anthropic / 本地 Ollama）同样严格落在此用户态 `DriverProvider` v1.0 + 可信 `EnforcementShim` 边界之上——由可信 `EnforcementShim` 托管 API Key 并联动 `nlos-resource` v8 五维 LLM Token 预算扣减，**绝不将任何厂商专有 HTTP 模型协议或启动引导拼装塞进微内核或新增 provider-specific KABI**（`KABI-SVC-001`、`DRV-CRED-001`、`DRV-SHIM-001`）。
+   - **先行开箱试用工作包 `E0`（`W77-PRE`）对微内核边界的严格遵守（已于 `2026-10-30` 落地 `H4` 验证）**：`W77-PRE` 交付的一键引导器（`crates/nlos-up`）、用户态 HTTP/1.1 模型驱动（`crates/nlos-driver-llm-http`，4 层自动发现本机 `~/glm-keypool` `/api/coding/paas/v4` 及 OpenAI-compatible / 本地 Ollama 端点）、参考生产力样板包（`examples/starter-assistant-app`）与桌面端 `keypool_bridge` 已于 `2026-10-30` 完整落在此用户态 `LlmEnforcementShim` 边界之上并通过 `H4` 验证（[E-TRIAL-001](../../evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](../../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）——由 `LlmEnforcementShim` 独占托管脱敏凭据、联动 `nlos-resource` v8 五维 `LlmTokenBudget` 守恒回执并诚实标注 `PROVIDER_ISOLATION_UNVERIFIED`，**零厂商专有 HTTP 模型协议进入微内核、零新增 provider-specific KABI**（`KABI-SVC-001`、`DRV-CRED-001`、`DRV-SHIM-001`）；同时核心兼容与商店治理主线 `E1`..`E7` 仍保持 `DESIGN`。
 
 3. **声明式契约与数据迁移辅助工具链（`crates/nlos-migrate`）**：
    面向生态开发者提供离线 CLI 与 CI 检查器 `nlos-migrate`：
@@ -217,7 +217,7 @@
 | 阶段波次 | 目标工作包 | 验证重点与计划产出证据路径 | 目标保障等级 |
 |---|---|---|---|
 | `W76` / `W76.1`（当前） | 立项、冻结收口排期与总体设计 | 本文档（`ADR-0027`）与 [stage-e-progress.md](../stage-e-progress.md) | `DESIGN` |
-| `W77-PRE`（先行波） | `E0` | `nlos-up` 一键本机初始化与跨平台开发夹具、`nlos-driver-llm-http` 用户态真实外部/本地 LLM 驱动（`EnforcementShim` 托管密钥 + `nlos-resource` v8 Token 扣减）、`starter-assistant-app` 与本地试用安装包脚本验证（`docs/evidence/stage-e/e-trial-*.md`） | `H3 -> H4` |
+| `W77-PRE`（先行波，已于 `2026-10-30` `DONE`） | `E0` | `nlos-up` 一键初始化与跨平台开发夹具、`nlos-driver-llm-http` 用户态本地 KeyPool/HTTP 模型驱动（`LlmEnforcementShim` 脱敏托管 + `nlos-resource` v8 五维 Token 守恒回执）、桌面 `keypool_bridge`/Omnibar 辅助面板、`starter-assistant-app` 与本地试用打包脚本验证（[E-TRIAL-001](../../evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](../../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)） | **已达成 `H4`** |
 | `W77` | `E1` | 第 7 通道 `nlos.sabi.PrincipalHandshake` 翻转为 `frozen: true`（达成 9/9 SABI 通道全量入冻）、五语言跨纪元 Golden Wire Corpus、`COMPAT-VER-002` 未知关键扩展拒绝与 `COMPAT-DEPRECATE-001` 弃用遥测测试（`docs/evidence/stage-e/e-sabi-*.md`） | `H2 -> H4` |
 
 | `W78` | `E2`、`E3` | 核外 `nlos-compat-shim` 协议转换与零特权旁路验证、`nlos-migrate` 静态检查与三种迁移回滚演练（`docs/evidence/stage-e/e-shim-*.md`、`e-migrate-*.md`，触发本 ADR 晋升 `ACCEPTED` 评审） | `H4` |
