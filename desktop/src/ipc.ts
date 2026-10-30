@@ -15,6 +15,11 @@ import {
   type ExtendedOutcomeDto,
   type FactCheckDto,
   type InputRouteResultDto,
+  type KeyPoolChatDto,
+  type KeyPoolChatInput,
+  type KeyPoolIntentAssistDto,
+  type KeyPoolIntentAssistInput,
+  type KeyPoolStatusDto,
   type OutcomeDto,
   type ParityDto,
   type PreviewActionDto,
@@ -769,5 +774,44 @@ export async function compositorRouteInput(
   };
   return invoke("compositor_route_input", {
     input: normalized,
+  });
+}
+
+// =========================================================================
+// Stage D (`W77-PRE-D`) 本地 `glm-keypool` 模型池状态探测、辅助拆解与计量推理 IPC
+// =========================================================================
+
+export async function inspectLlmKeyPoolStatus(
+  keypoolConfigPath?: string | null,
+): Promise<KeyPoolStatusDto> {
+  return invoke("llm_keypool_inspect_status", {
+    keypoolConfigPath: keypoolConfigPath ?? null,
+  });
+}
+
+export async function assistIntentWithKeyPool(
+  input: KeyPoolIntentAssistInput,
+): Promise<KeyPoolIntentAssistDto> {
+  return invoke("llm_keypool_assist_intent", {
+    input: {
+      utterance: input.utterance,
+      model: input.model ?? null,
+      locale: input.locale ?? null,
+      keypoolConfigPath: input.keypoolConfigPath ?? null,
+    },
+  });
+}
+
+export async function chatWithLlmKeyPool(
+  input: KeyPoolChatInput,
+): Promise<KeyPoolChatDto> {
+  return invoke("llm_keypool_chat", {
+    input: {
+      prompt: input.prompt,
+      model: input.model ?? null,
+      maxTokens: input.maxTokens ?? null,
+      sessionId: input.sessionId ?? null,
+      keypoolConfigPath: input.keypoolConfigPath ?? null,
+    },
   });
 }

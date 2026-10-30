@@ -32,6 +32,7 @@ use std::fmt::{self, Write as _};
 use std::fs;
 use std::hash::{BuildHasher as _, Hasher as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -42,6 +43,12 @@ use nlos_artifact::{
     ArtifactError, ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole,
     PackageManifest, PackageManifestEntry, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
     package_manifest_message,
+};
+use nlos_driver_llm_http::{
+    HttpUrl, KeyPoolCompiledIntent, KeyPoolHealthSnapshot, LlmChatRequest, LlmDriverError,
+    LlmEnforcementShim, MeteredBudgetContext, MeteredLlmChatOutcome,
+    PROVIDER_ISOLATION_UNVERIFIED_TAG, current_wall_ms, derive_idempotency_key,
+    derive_operation_id, discover_local_keypool, format_receipt_id_hex,
 };
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
@@ -111,6 +118,8 @@ pub enum UpError {
     Application(Box<ApplicationAuthorityError>),
     /// `SystemControlDaemon` assembly failed.
     Daemon(Box<DaemonError>),
+    /// Local `KeyPool` HTTP LLM driver or budget accounting failure.
+    LlmDriver(Box<LlmDriverError>),
     /// CLI or option validation error.
     InvalidArgument(String),
     /// Child desktop dev process failed to launch or exited unsuccessfully.
@@ -153,6 +162,12 @@ impl From<DaemonError> for UpError {
     }
 }
 
+impl From<LlmDriverError> for UpError {
+    fn from(error: LlmDriverError) -> Self {
+        Self::LlmDriver(Box::new(error))
+    }
+}
+
 impl fmt::Display for UpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -173,6 +188,7 @@ impl fmt::Display for UpError {
                 write!(formatter, "sample package install failure: {error}")
             }
             Self::Daemon(error) => write!(formatter, "daemon assembly failure: {error}"),
+            Self::LlmDriver(error) => write!(formatter, "llm driver failure: {error}"),
             Self::InvalidArgument(reason) => write!(formatter, "invalid argument: {reason}"),
             Self::DesktopProcess(reason) => write!(formatter, "desktop launcher failure: {reason}"),
         }
@@ -188,6 +204,7 @@ impl Error for UpError {
             Self::Artifact(error) => Some(error.as_ref()),
             Self::Application(error) => Some(error.as_ref()),
             Self::Daemon(error) => Some(error.as_ref()),
+            Self::LlmDriver(error) => Some(error.as_ref()),
             Self::InvalidKeyFile(_)
             | Self::InsecureKeyMode(_)
             | Self::InvalidArgument(_)
@@ -714,6 +731,393 @@ pub fn probe_keypool_config_file(path: &Path) -> Option<KeypoolProbeSummary> {
         listen_port,
         endpoint_url: format!("http://127.0.0.1:{listen_port}"),
     })
+}
+
+/// Redacted credential marker string emitted by `nlos-up pool-status`.
+pub const POOL_STATUS_REDACTED_MARKER: &str = "[REDACTED]";
+
+static NEXT_TRIAL_LLM_NONCE: AtomicU64 = AtomicU64::new(1);
+
+/// Completely redacted local `KeyPool` configuration and `/__pool__/status` probe report
+/// (`DRV-CRED-001`, `[PD-COMMIT-004]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalKeyPoolStatusReport {
+    /// `true` when a local `KeyPool` configuration source was resolved.
+    pub configured: bool,
+    /// `true` when `/__pool__/status` responded `2xx` with valid telemetry JSON.
+    pub reachable: bool,
+    /// Redacted discovery provenance label (never leaks host user home directories).
+    pub discovery_source: String,
+    /// Loopback gateway origin (e.g. `"http://127.0.0.1:8317"`).
+    pub gateway_origin: Option<String>,
+    /// Full `OpenAI`-compatible base URL (e.g. `"http://127.0.0.1:8317/api/coding/paas/v4"`).
+    pub openai_base_url: Option<String>,
+    /// `OpenAI`-compatible path prefix (e.g. `"/api/coding/paas/v4"` or `"/v1"`).
+    pub openai_base_path: Option<String>,
+    /// Default primary model identifier.
+    pub default_model: Option<String>,
+    /// Fast low-latency intent compilation model identifier.
+    pub fast_intent_model: Option<String>,
+    /// Aggregated model allowlist.
+    pub allowed_models: Vec<String>,
+    /// Count of configured upstream key slots (zero raw keys or nicknames retained).
+    pub configured_key_slots: usize,
+    /// Boolean flag indicating whether an egress bearer token is configured.
+    pub credential_present: bool,
+    /// Fixed redaction marker (`"[REDACTED]"`).
+    pub credential_marker: &'static str,
+    /// Honest `ADR-0024` isolation posture (`"PROVIDER_ISOLATION_UNVERIFIED"`).
+    pub isolation_tag: &'static str,
+    /// Sanitized `/__pool__/status` aggregate telemetry when reachable.
+    pub live_health: Option<KeyPoolHealthSnapshot>,
+    /// Privacy-safe reason when `reachable` is `false`.
+    pub unreachable_reason: Option<String>,
+}
+
+/// Parameters for [`run_trial_metered_chat`] (`nlos-up chat`).
+#[derive(Clone, Debug)]
+pub struct TrialMeteredChatRequest {
+    /// Trial root and optional `--keypool-config` options.
+    pub options: BootstrapOptions,
+    /// Non-empty single-turn user prompt.
+    pub prompt: String,
+    /// Optional target model override (`--model <MODEL>`).
+    pub model: Option<String>,
+    /// Optional `max_tokens` ceiling (`--max-tokens <N>`).
+    pub max_tokens: Option<u32>,
+    /// Optional sticky session affinity identifier (`--session <ID>`).
+    pub session_id: Option<String>,
+}
+
+/// Complete outcome of [`run_trial_metered_chat`], pairing the bootstrapped trial root
+/// receipt with the 5D-budget-metered [`MeteredLlmChatOutcome`].
+#[derive(Clone, Debug)]
+pub struct TrialMeteredChatReport {
+    /// Bootstrapped (or replayed) trial root receipt.
+    pub bootstrap: BootstrapReceipt,
+    /// Redacted model reply, slot fingerprint, token usage, and durable consumption receipt.
+    pub outcome: MeteredLlmChatOutcome,
+    /// 32-lowercase-hex encoding of `outcome.consumption_receipt.receipt_id`.
+    pub receipt_id_hex: Option<String>,
+}
+
+/// Parameters for [`run_trial_compiled_intent`] (`nlos-up intent`).
+#[derive(Clone, Debug)]
+pub struct TrialCompiledIntentRequest {
+    /// Trial root and optional `--keypool-config` options.
+    pub options: BootstrapOptions,
+    /// Non-empty natural-language user query (`--query <TEXT>`).
+    pub query: String,
+    /// Target locale (`zh-CN` or `en-US`).
+    pub locale: String,
+    /// Optional target model override (`--model <MODEL>`).
+    pub model: Option<String>,
+}
+
+/// Complete outcome of [`run_trial_compiled_intent`], pairing the bootstrapped trial root
+/// receipt with the 5D-budget-metered [`KeyPoolCompiledIntent`].
+#[derive(Clone, Debug)]
+pub struct TrialCompiledIntentReport {
+    /// Bootstrapped (or replayed) trial root receipt.
+    pub bootstrap: BootstrapReceipt,
+    /// Structured intent plan with `[NL-AMBIG-001]` safety escalation and durable budget receipt.
+    pub compiled: KeyPoolCompiledIntent,
+    /// 32-lowercase-hex encoding of `compiled.consumption_receipt.receipt_id`.
+    pub receipt_id_hex: Option<String>,
+}
+
+/// Discovers local `KeyPool` configuration and probes `/__pool__/status` with 100%
+/// credential, slot-nickname, and host-path redaction.
+///
+/// When `require_live` is `false`, an unstarted gateway (or missing default auto-discovery
+/// when `keypool_config` is `None`) gracefully reports `reachable = false` with a sanitized
+/// reason instead of failing; when `require_live` is `true`, unreachable or missing gateways
+/// fail closed with [`UpError::LlmDriver`].
+///
+/// # Errors
+///
+/// Fails closed if an explicit `keypool_config` file cannot be read/parsed or if `require_live`
+/// is `true` while the local gateway is unconfigured or unreachable.
+pub async fn inspect_trial_keypool_status(
+    keypool_config: Option<&Path>,
+    require_live: bool,
+) -> Result<LocalKeyPoolStatusReport, UpError> {
+    let discovered = match discover_local_keypool(keypool_config) {
+        Ok(cfg) => cfg,
+        Err(LlmDriverError::DiscoveryNotFound(reason))
+            if keypool_config.is_none() && !require_live =>
+        {
+            return Ok(LocalKeyPoolStatusReport {
+                configured: false,
+                reachable: false,
+                discovery_source: "unconfigured".to_owned(),
+                gateway_origin: None,
+                openai_base_url: None,
+                openai_base_path: None,
+                default_model: None,
+                fast_intent_model: None,
+                allowed_models: Vec::new(),
+                configured_key_slots: 0,
+                credential_present: false,
+                credential_marker: POOL_STATUS_REDACTED_MARKER,
+                isolation_tag: PROVIDER_ISOLATION_UNVERIFIED_TAG,
+                live_health: None,
+                unreachable_reason: Some(reason.to_owned()),
+            });
+        }
+        Err(error) => return Err(UpError::from(error)),
+    };
+
+    let (gateway_origin, openai_base_path) = split_origin_and_path(&discovered.openai_base_url);
+    let discovery_source = discovered.source.redacted_label().to_owned();
+    let openai_base_url = Some(discovered.openai_base_url.clone());
+    let default_model = Some(discovered.default_model.clone());
+    let fast_intent_model = Some(discovered.fast_intent_model.clone());
+    let allowed_models = discovered.allowed_models.clone();
+    let configured_key_slots = discovered.configured_key_slots;
+    let credential_present = !discovered.egress_key.is_empty();
+
+    let shim = LlmEnforcementShim::from_discovered(discovered);
+    match shim.probe_pool_status().await {
+        Ok(snap) => Ok(LocalKeyPoolStatusReport {
+            configured: true,
+            reachable: true,
+            discovery_source,
+            gateway_origin,
+            openai_base_url,
+            openai_base_path,
+            default_model,
+            fast_intent_model,
+            allowed_models,
+            configured_key_slots,
+            credential_present,
+            credential_marker: POOL_STATUS_REDACTED_MARKER,
+            isolation_tag: PROVIDER_ISOLATION_UNVERIFIED_TAG,
+            live_health: Some(snap),
+            unreachable_reason: None,
+        }),
+        Err(probe_err) => {
+            if require_live {
+                return Err(UpError::from(probe_err));
+            }
+            Ok(LocalKeyPoolStatusReport {
+                configured: true,
+                reachable: false,
+                discovery_source,
+                gateway_origin,
+                openai_base_url,
+                openai_base_path,
+                default_model,
+                fast_intent_model,
+                allowed_models,
+                configured_key_slots,
+                credential_present,
+                credential_marker: POOL_STATUS_REDACTED_MARKER,
+                isolation_tag: PROVIDER_ISOLATION_UNVERIFIED_TAG,
+                live_health: None,
+                unreachable_reason: Some(sanitize_llm_error_summary(&probe_err)),
+            })
+        }
+    }
+}
+
+/// Bootstraps (or replays) `<root>`, binds the trial `ResourceAccountId` recorded in
+/// `<root>/trial-account.txt` and `<root>/resource`, and executes a 5D-budget-metered
+/// chat completion via [`LlmEnforcementShim::execute_metered_chat`].
+///
+/// # Errors
+///
+/// Fails closed on empty prompt, trial bootstrap failure, `KeyPool` discovery/transport
+/// failure, or 5D token budget exhaustion.
+pub async fn run_trial_metered_chat(
+    request: &TrialMeteredChatRequest,
+) -> Result<TrialMeteredChatReport, UpError> {
+    let trimmed_prompt = request.prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err(UpError::InvalidArgument(
+            "chat requires non-empty --prompt <TEXT>".to_owned(),
+        ));
+    }
+
+    let bootstrap = bootstrap_trial_root(&request.options)?;
+    let account_id = resolve_bootstrapped_trial_account(&bootstrap)?;
+    let shim = LlmEnforcementShim::discover(request.options.keypool_config_override.as_deref())?;
+
+    let mut chat_req = LlmChatRequest::single_user_prompt(trimmed_prompt);
+    if let Some(model) = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        chat_req = chat_req.with_model(model);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        chat_req = chat_req.with_max_tokens(max_tokens);
+    }
+    if let Some(session_id) = request
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        chat_req = chat_req.with_session_id(session_id);
+    }
+
+    let resource = ResourceAuthority::open(&bootstrap.resource_root)?;
+    let budget = resource.inspect_llm_token_budget(account_id)?;
+    let budget_ctx = build_trial_budget_context(
+        &resource,
+        account_id,
+        &budget,
+        b"llmos/nlos-up/chat-op/v1",
+        b"llmos/nlos-up/chat-idem/v1",
+    );
+    let outcome = shim
+        .execute_metered_chat(Some(budget_ctx), &chat_req)
+        .await?;
+    drop(resource);
+
+    let receipt_id_hex = outcome
+        .consumption_receipt
+        .map(|r| format_receipt_id_hex(r.receipt_id));
+    Ok(TrialMeteredChatReport {
+        bootstrap,
+        outcome,
+        receipt_id_hex,
+    })
+}
+
+/// Bootstraps (or replays) `<root>`, binds the trial `ResourceAccountId` recorded in
+/// `<root>/trial-account.txt` and `<root>/resource`, and compiles a structured NLOS intent
+/// via [`LlmEnforcementShim::compile_nl_intent`] / [`LlmEnforcementShim::compile_nl_intent_with_model`].
+///
+/// # Errors
+///
+/// Fails closed on empty query, trial bootstrap failure, `KeyPool` discovery/transport
+/// failure, malformed JSON completion, or 5D token budget exhaustion.
+pub async fn run_trial_compiled_intent(
+    request: &TrialCompiledIntentRequest,
+) -> Result<TrialCompiledIntentReport, UpError> {
+    let trimmed_query = request.query.trim();
+    if trimmed_query.is_empty() {
+        return Err(UpError::InvalidArgument(
+            "intent requires non-empty --query <TEXT>".to_owned(),
+        ));
+    }
+
+    let bootstrap = bootstrap_trial_root(&request.options)?;
+    let account_id = resolve_bootstrapped_trial_account(&bootstrap)?;
+    let shim = LlmEnforcementShim::discover(request.options.keypool_config_override.as_deref())?;
+
+    let resource = ResourceAuthority::open(&bootstrap.resource_root)?;
+    let budget = resource.inspect_llm_token_budget(account_id)?;
+    let budget_ctx = build_trial_budget_context(
+        &resource,
+        account_id,
+        &budget,
+        b"llmos/nlos-up/intent-op/v1",
+        b"llmos/nlos-up/intent-idem/v1",
+    );
+    let model_override = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let compiled = match model_override {
+        Some(model) => {
+            shim.compile_nl_intent_with_model(
+                Some(budget_ctx),
+                trimmed_query,
+                &request.locale,
+                Some(model),
+            )
+            .await?
+        }
+        None => {
+            shim.compile_nl_intent(Some(budget_ctx), trimmed_query, &request.locale)
+                .await?
+        }
+    };
+    drop(resource);
+
+    let receipt_id_hex = compiled
+        .consumption_receipt
+        .map(|r| format_receipt_id_hex(r.receipt_id));
+    Ok(TrialCompiledIntentReport {
+        bootstrap,
+        compiled,
+        receipt_id_hex,
+    })
+}
+
+fn resolve_bootstrapped_trial_account(
+    bootstrap: &BootstrapReceipt,
+) -> Result<ResourceAccountId, UpError> {
+    let marker_path = bootstrap.root.join(TRIAL_ACCOUNT_FILE);
+    let marker_hex = read_hex16_marker(&marker_path, TRIAL_ACCOUNT_FILE)?;
+    let marker_bytes = parse_hex16(&marker_hex, TRIAL_ACCOUNT_FILE)?;
+    let account_id = ResourceAccountId::from_bytes(marker_bytes);
+    if account_id != bootstrap.account_id {
+        return Err(UpError::InvalidArgument(
+            "trial-account.txt marker diverged from bootstrapped ResourceAccountId".to_owned(),
+        ));
+    }
+    Ok(account_id)
+}
+
+fn build_trial_budget_context<'a>(
+    resource: &'a ResourceAuthority,
+    account_id: ResourceAccountId,
+    budget: &LlmTokenBudgetRecord,
+    op_domain: &[u8],
+    idem_domain: &[u8],
+) -> MeteredBudgetContext<'a> {
+    let wall_ms = current_wall_ms();
+    let now_ms = wall_ms.max(budget.updated_at_ms);
+    let pid_bytes = std::process::id().to_be_bytes();
+    let nanos_bytes = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0_u128, |d| d.as_nanos())
+        .to_be_bytes();
+    let seq_bytes = budget.consumed_api_calls.saturating_add(1).to_be_bytes();
+    let nonce_bytes = NEXT_TRIAL_LLM_NONCE
+        .fetch_add(1, Ordering::Relaxed)
+        .to_be_bytes();
+    let parts: [&[u8]; 5] = [
+        account_id.as_bytes(),
+        &pid_bytes,
+        &nanos_bytes,
+        &seq_bytes,
+        &nonce_bytes,
+    ];
+    MeteredBudgetContext {
+        resource,
+        account_id,
+        operation_id: derive_operation_id(op_domain, &parts),
+        idempotency_key: derive_idempotency_key(idem_domain, &parts),
+        now_ms,
+    }
+}
+
+fn split_origin_and_path(openai_base_url: &str) -> (Option<String>, Option<String>) {
+    let Ok(parsed) = HttpUrl::parse(openai_base_url) else {
+        return (None, None);
+    };
+    let host = if parsed.host.contains(':') && !parsed.host.starts_with('[') {
+        format!("[{}]", parsed.host)
+    } else {
+        parsed.host
+    };
+    let origin = format!("http://{host}:{}", parsed.port);
+    (Some(origin), Some(parsed.path_and_query))
+}
+
+fn sanitize_llm_error_summary(error: &LlmDriverError) -> String {
+    match error {
+        LlmDriverError::ConfigIo(io_err) => format!("config file i/o error ({:?})", io_err.kind()),
+        other => other.to_string(),
+    }
 }
 
 fn resolve_keypool_probe(options: &BootstrapOptions) -> Option<KeypoolProbeSummary> {

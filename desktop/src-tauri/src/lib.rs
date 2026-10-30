@@ -12,6 +12,7 @@ pub mod dto;
 pub mod error;
 pub mod input_router;
 pub mod ipc;
+pub mod keypool_bridge;
 pub mod notify_search_offline;
 pub mod omnibar;
 pub mod plan_editor;
@@ -105,6 +106,9 @@ pub fn run() {
             omnibar::omnibar_submit_proposal,
             omnibar::omnibar_voice_action,
             omnibar::omnibar_set_device_permission,
+            keypool_bridge::llm_keypool_inspect_status,
+            keypool_bridge::llm_keypool_assist_intent,
+            keypool_bridge::llm_keypool_chat,
             trusted_ui::trusted_ui_open_z4_consent,
             trusted_ui::trusted_ui_notify_z4_focus_regained,
             trusted_ui::trusted_ui_decide_z4_consent,

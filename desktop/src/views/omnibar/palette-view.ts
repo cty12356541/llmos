@@ -26,7 +26,11 @@ import {
   type VoiceStreamSnapshot,
   type VoiceTransitionResult,
 } from "../../multimodal";
-import type { DesktopSessionStateDto } from "../../types";
+import type {
+  DesktopSessionStateDto,
+  KeyPoolIntentAssistDto,
+  KeyPoolStatusDto,
+} from "../../types";
 import {
   createBulletMicroBarElement,
   createIconElement,
@@ -50,6 +54,7 @@ export const OMNIBAR_Z_INDEX = 460 as const;
 export const OMNIBAR_BORDER_RADIUS_PX = 4 as const;
 export const OMNIBAR_TASKBAR_TRIGGER_HEIGHT_PX = 26 as const;
 export const OMNIBAR_TOP_PERMANENT_FOOTPRINT_PX = 0 as const;
+export const KEYPOOL_ISOLATION_UNVERIFIED_TAG = "PROVIDER_ISOLATION_UNVERIFIED" as const;
 
 export type OmnibarOpenSource = "keyboard-shortcut" | "taskbar-trigger" | "programmatic";
 export type OmnibarCloseReason = "escape" | "outside-click" | "submitted" | "security-gate" | "programmatic";
@@ -91,6 +96,9 @@ export interface OmnibarPaletteSnapshot {
   readonly lastClarificationBlockMessage: string | null;
   readonly lastSubmittedProposal: SubmittedActionProposal | null;
   readonly voice: VoiceStreamSnapshot;
+  readonly keyPoolStatus: KeyPoolStatusDto | null;
+  readonly keyPoolAssist: KeyPoolIntentAssistDto | null;
+  readonly keyPoolAssistPending: boolean;
 }
 
 export interface OmnibarPaletteControllerOptions {
@@ -110,6 +118,12 @@ export interface OmnibarPaletteControllerOptions {
   readonly onHardwareCaptureChange?: (indicator: DeviceHardwareCaptureState) => void;
   readonly onSubmitProposal?: (submitted: SubmittedActionProposal) => void;
   readonly clearDraftOnDirectSubmit?: boolean;
+  readonly initialKeyPoolStatus?: KeyPoolStatusDto | null;
+  readonly probeKeyPoolStatus?: () => Promise<KeyPoolStatusDto>;
+  readonly requestKeyPoolAssist?: (
+    utterance: string,
+    locale: WorkstationLocale,
+  ) => Promise<KeyPoolIntentAssistDto>;
   readonly doc?: Document;
 }
 
@@ -119,10 +133,23 @@ interface OmnibarCopy {
   readonly dialogAriaLabel: string;
   readonly inputPlaceholder: string;
   readonly voiceBtnLabel: string;
+  readonly assistBtnLabel: string;
+  readonly assistPendingLabel: string;
   readonly clearDraftLabel: string;
   readonly submitReadyLabel: string;
   readonly submitSecurityLabel: string;
   readonly submitClarifyBlockedLabel: string;
+  readonly poolOnlineBadge: string;
+  readonly poolFallbackBadge: string;
+  readonly poolDisconnectedBadge: string;
+  readonly poolModelKey: string;
+  readonly poolSlotsKey: string;
+  readonly assistCardTitle: string;
+  readonly assistStepsKey: string;
+  readonly assistTokenUsageKey: string;
+  readonly undoLosslessBadge: string;
+  readonly undoCompensatableBadge: string;
+  readonly undoIrreversibleBadge: string;
   readonly targetAppKey: string;
   readonly affectedScopeKey: string;
   readonly budgetCeilingKey: string;
@@ -145,10 +172,23 @@ const OMNIBAR_COPY: Readonly<Record<WorkstationLocale, OmnibarCopy>> = {
     dialogAriaLabel: "命令与意图面板",
     inputPlaceholder: "输入命令或自然语言任务说明（Ctrl+Space 唤起 / Esc 收起并保留草稿）",
     voiceBtnLabel: "语音输入",
+    assistBtnLabel: "模型辅助拆解",
+    assistPendingLabel: "解析中...",
     clearDraftLabel: "清空草稿",
     submitReadyLabel: "提交执行",
     submitSecurityLabel: "进入系统安全确认",
     submitClarifyBlockedLabel: "请先选择候选方案",
+    poolOnlineBadge: "本地模型池 · 在线",
+    poolFallbackBadge: "本地模型池 · 离线回退",
+    poolDisconnectedBadge: "本地模型池 · 未连接",
+    poolModelKey: "默认模型",
+    poolSlotsKey: "可用通道",
+    assistCardTitle: "辅助拆解建议",
+    assistStepsKey: "建议步骤",
+    assistTokenUsageKey: "本次模型用量",
+    undoLosslessBadge: "可无损撤销",
+    undoCompensatableBadge: "可补偿回滚",
+    undoIrreversibleBadge: "不可逆",
     targetAppKey: "目标应用",
     affectedScopeKey: "作用范围",
     budgetCeilingKey: "资源上限",
@@ -169,10 +209,23 @@ const OMNIBAR_COPY: Readonly<Record<WorkstationLocale, OmnibarCopy>> = {
     dialogAriaLabel: "Command and Intent Palette",
     inputPlaceholder: "Type a command or plain-language task (Ctrl+Space to toggle / Esc keeps draft)",
     voiceBtnLabel: "Voice Input",
+    assistBtnLabel: "Model Assist",
+    assistPendingLabel: "Analyzing...",
     clearDraftLabel: "Clear Draft",
     submitReadyLabel: "Run Proposal",
     submitSecurityLabel: "Continue to Security Check",
     submitClarifyBlockedLabel: "Select a Candidate First",
+    poolOnlineBadge: "Local Model Pool · Online",
+    poolFallbackBadge: "Local Model Pool · Local Fallback",
+    poolDisconnectedBadge: "Local Model Pool · Disconnected",
+    poolModelKey: "Model",
+    poolSlotsKey: "Active Slots",
+    assistCardTitle: "Assisted Plan Breakdown",
+    assistStepsKey: "Suggested Steps",
+    assistTokenUsageKey: "Model Token Usage",
+    undoLosslessBadge: "Lossless Undo",
+    undoCompensatableBadge: "Compensatable",
+    undoIrreversibleBadge: "Irreversible",
     targetAppKey: "Target App",
     affectedScopeKey: "Affected Scope",
     budgetCeilingKey: "Resource Ceiling",
@@ -190,6 +243,181 @@ const OMNIBAR_COPY: Readonly<Record<WorkstationLocale, OmnibarCopy>> = {
     footerDraftSavedHint: "Dismissing keeps your draft prompt and attachments intact",
   },
 };
+
+const PLAIN_JARGON_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string, string]> = [
+  [/TypedIntent/gi, "结构化请求", "structured request"],
+  [/TaskAttempt/gi, "执行尝试", "task run"],
+  [/ExecutionFiber/gi, "执行流", "execution stream"],
+  [/ROAD-D-001/gi, "桌面规范", "desktop policy"],
+  [/ADR-0011/gi, "认证通道", "authenticated channel"],
+  [/receipt_hex/gi, "回执摘要", "receipt digest"],
+  [/control_command_id/gi, "控制指令编号", "command identifier"],
+  [/CAS_WINNER/gi, "已采纳结果", "committed result"],
+  [/SHARED_THREAD_LIKE/gi, "共享并发模式", "shared execution"],
+  [/LOCAL_SINGLE_NODE/gi, "本地单机模式", "local workstation"],
+  [/0x1f/gi, "非权威检索约束", "non-authoritative filter"],
+  [/quota/gi, "额度", "allowance"],
+  [/Cell(?![a-z])/g, "节点", "node"],
+  [/Z[1-4](?![a-z0-9])/g, "界面层级", "display layer"],
+];
+
+function sanitizeForDisclosure(
+  raw: string,
+  locale: WorkstationLocale,
+  disclosure: DisclosureLevel,
+): string {
+  if (disclosure === "L3") {
+    return raw;
+  }
+  let out = raw;
+  for (const [pattern, zhText, enText] of PLAIN_JARGON_REPLACEMENTS) {
+    out = out.replace(pattern, locale === "en-US" ? enText : zhText);
+  }
+  return out;
+}
+
+function buildDisconnectedKeyPoolStatus(reason: string): KeyPoolStatusDto {
+  return {
+    configured: false,
+    reachable: false,
+    discoverySource: "unconfigured",
+    gatewayOrigin: null,
+    openaiBasePath: null,
+    defaultModel: null,
+    fastIntentModel: null,
+    allowedModels: [],
+    activeKeys: null,
+    totalKeys: null,
+    strategy: null,
+    budgetMetered: false,
+    isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
+    fallbackMode: "LOCAL_DETERMINISTIC",
+    diagnosticSummary: reason,
+  };
+}
+
+function buildClientOfflineFallbackAssist(
+  utterance: string,
+  locale: WorkstationLocale,
+): KeyPoolIntentAssistDto {
+  const lower = utterance.toLowerCase();
+  const zhDestructive = ["删除", "卸载", "清空", "永久移除", "销毁", "格式化", "抹除"];
+  const enDestructive = [
+    "delete",
+    "wipe",
+    "uninstall",
+    "permanently remove",
+    "destroy",
+    "purge",
+    "erase",
+    "format",
+  ];
+  const isDestructive =
+    zhDestructive.some((kw) => utterance.includes(kw)) ||
+    enDestructive.some((kw) => lower.includes(kw));
+
+  const zhMutating = ["转发", "导出", "修改", "更新", "迁移", "归档", "发送"];
+  const enMutating = ["forward", "export", "modify", "update", "migrate", "archive", "send"];
+  const isMutating =
+    !isDestructive &&
+    (zhMutating.some((kw) => utterance.includes(kw)) ||
+      enMutating.some((kw) => lower.includes(kw)));
+
+  const undoClass = isDestructive
+    ? "IRREVERSIBLE"
+    : isMutating
+      ? "COMPENSATABLE"
+      : "LOSSLESS";
+
+  const clarificationReason = isDestructive
+    ? locale === "en-US"
+      ? "High-impact irreversible operation detected; please select an explicit candidate row and complete security confirmation before running."
+      : "检测到高影响不可逆操作关键词，执行前请先点选明确候选方案并通过系统安全确认。"
+    : "";
+
+  const steps =
+    locale === "en-US"
+      ? [
+          `Verify target scope and verified dependencies for: ${utterance}`,
+          "Check active workspace resource ceiling before execution",
+          isDestructive
+            ? "Require explicit candidate selection and system security confirmation"
+            : "Preview reversible action summary before submission",
+        ]
+      : [
+          `核对请求目标与已核验依赖：${utterance}`,
+          "检查当前工作区资源上限与作用范围",
+          isDestructive
+            ? "执行前须点选明确候选解释并通过系统安全确认"
+            : "生成可回退行动方案预览并等待提交确认",
+        ];
+
+  const fallbackNotice =
+    locale === "en-US"
+      ? "Local model pool is currently unreachable; switched to built-in deterministic plan breakdown."
+      : "本地模型池当前不可达，已自动切换至内置确定性方案拆解。";
+
+  return {
+    source: "LOCAL_FALLBACK",
+    summary: utterance,
+    targetDomain: "general",
+    undoClass,
+    needsClarification: isDestructive,
+    clarificationReason,
+    steps,
+    safetyEscalated: isDestructive,
+    model: null,
+    servedSlotFingerprint: null,
+    isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
+    budgetReceipt: null,
+    fallbackNotice,
+  };
+}
+
+function resolveKeyPoolVisualState(
+  status: KeyPoolStatusDto | null,
+  assist: KeyPoolIntentAssistDto | null,
+): "online" | "fallback" | "disconnected" {
+  if (assist?.source === "LOCAL_FALLBACK") {
+    return "fallback";
+  }
+  if (status?.reachable) {
+    return "online";
+  }
+  if (status?.configured) {
+    return "fallback";
+  }
+  return "disconnected";
+}
+
+function formatAssistUndoBadge(
+  undoClass: string,
+  copy: OmnibarCopy,
+): string {
+  switch (undoClass.toUpperCase()) {
+    case "LOSSLESS":
+      return copy.undoLosslessBadge;
+    case "COMPENSATABLE":
+      return copy.undoCompensatableBadge;
+    default:
+      return copy.undoIrreversibleBadge;
+  }
+}
+
+function formatAssistTokenUsageLine(
+  assist: KeyPoolIntentAssistDto,
+  locale: WorkstationLocale,
+  copy: OmnibarCopy,
+): string | null {
+  const receipt = assist.budgetReceipt;
+  if (!receipt) {
+    return null;
+  }
+  if (locale === "en-US") {
+    return `${copy.assistTokenUsageKey}: ${receipt.totalTokens} tokens (Cumulative ${receipt.cumulativeTotalTokens} tokens · Call #${receipt.cumulativeApiCalls})`;
+  }
+  return `${copy.assistTokenUsageKey}: ${receipt.totalTokens} tokens（累计 ${receipt.cumulativeTotalTokens} tokens · 第 ${receipt.cumulativeApiCalls} 次调用）`;
+}
 
 function escapeHtml(raw: string): string {
   return raw
@@ -258,10 +486,19 @@ export class OmnibarPaletteController {
   } | null = null;
   private lastClarificationBlockMessage: string | null = null;
   private lastSubmittedProposal: SubmittedActionProposal | null = null;
+  private keyPoolStatus: KeyPoolStatusDto | null = null;
+  private keyPoolAssist: KeyPoolIntentAssistDto | null = null;
+  private keyPoolAssistPending = false;
+  private assistRequestSeq = 0;
 
   public readonly voiceController: VoiceInputController;
   private readonly onSubmitProposal?: (submitted: SubmittedActionProposal) => void;
   private readonly clearDraftOnDirectSubmit: boolean;
+  private readonly probeKeyPoolStatusFn?: () => Promise<KeyPoolStatusDto>;
+  private readonly requestKeyPoolAssistFn?: (
+    utterance: string,
+    locale: WorkstationLocale,
+  ) => Promise<KeyPoolIntentAssistDto>;
   private readonly defaultDoc?: Document;
   private readonly listeners = new Set<OmnibarPaletteListener>();
   private mountedContainer: HTMLElement | null = null;
@@ -284,6 +521,9 @@ export class OmnibarPaletteController {
     this.catalog = [...(options?.catalog ?? [])];
     this.onSubmitProposal = options?.onSubmitProposal;
     this.clearDraftOnDirectSubmit = options?.clearDraftOnDirectSubmit ?? false;
+    this.keyPoolStatus = options?.initialKeyPoolStatus ?? null;
+    this.probeKeyPoolStatusFn = options?.probeKeyPoolStatus;
+    this.requestKeyPoolAssistFn = options?.requestKeyPoolAssist;
     this.defaultDoc = options?.doc;
 
     this.voiceController = createVoiceInputController({
@@ -337,6 +577,9 @@ export class OmnibarPaletteController {
       lastClarificationBlockMessage: this.lastClarificationBlockMessage,
       lastSubmittedProposal: this.lastSubmittedProposal,
       voice: this.voiceController.getSnapshot(),
+      keyPoolStatus: this.keyPoolStatus,
+      keyPoolAssist: this.keyPoolAssist,
+      keyPoolAssistPending: this.keyPoolAssistPending,
     };
   }
 
@@ -396,6 +639,9 @@ export class OmnibarPaletteController {
           onInputUtterance: (val) => this.setDraftUtterance(val),
           onToggleVoice: () => {
             this.voiceController.toggleCapture();
+          },
+          onRequestAssist: () => {
+            void this.runKeyPoolAssist();
           },
           onRemoveAttachment: (id) => this.removeAttachment(id),
           onSelectCandidate: (candidateId) => this.selectCandidate(candidateId),
@@ -497,6 +743,9 @@ export class OmnibarPaletteController {
     this.open = true;
     this.lastOpenSource = source;
     this.emitAndRefreshDom();
+    if (this.probeKeyPoolStatusFn && this.keyPoolStatus === null) {
+      void this.refreshKeyPoolStatus();
+    }
     return true;
   }
 
@@ -601,6 +850,9 @@ export class OmnibarPaletteController {
     this.draftUtterance = utterance;
     this.selectedCandidateId = null;
     this.lastClarificationBlockMessage = null;
+    this.assistRequestSeq += 1;
+    this.keyPoolAssist = null;
+    this.keyPoolAssistPending = false;
     if (options && "explicitDependency" in options) {
       this.explicitDependency = options.explicitDependency;
     }
@@ -656,8 +908,106 @@ export class OmnibarPaletteController {
     this.compiledBundle = null;
     this.bindingError = null;
     this.lastClarificationBlockMessage = null;
+    this.assistRequestSeq += 1;
+    this.keyPoolAssist = null;
+    this.keyPoolAssistPending = false;
     this.emitAndRefreshDom();
     return this.getSnapshot();
+  }
+
+  public setKeyPoolStatus(status: KeyPoolStatusDto | null): OmnibarPaletteSnapshot {
+    this.keyPoolStatus = status;
+    this.emitAndRefreshDom();
+    return this.getSnapshot();
+  }
+
+  public async refreshKeyPoolStatus(): Promise<KeyPoolStatusDto | null> {
+    if (!this.probeKeyPoolStatusFn) {
+      return this.keyPoolStatus;
+    }
+    try {
+      const nextStatus = await this.probeKeyPoolStatusFn();
+      this.keyPoolStatus = nextStatus;
+      this.emitAndRefreshDom();
+      return nextStatus;
+    } catch {
+      const offlineStatus = buildDisconnectedKeyPoolStatus(
+        "Local KeyPool status probe failed; deterministic local fallback active",
+      );
+      this.keyPoolStatus = offlineStatus;
+      this.emitAndRefreshDom();
+      return offlineStatus;
+    }
+  }
+
+  public async runKeyPoolAssist(): Promise<KeyPoolIntentAssistDto | null> {
+    const utteranceSnapshot = this.draftUtterance.trim();
+    if (utteranceSnapshot.length === 0) {
+      return null;
+    }
+    if (this.z4ModalActive || this.sessionState !== "ACTIVE") {
+      return null;
+    }
+
+    const localeSnapshot = this.locale;
+    const reqSeq = (this.assistRequestSeq += 1);
+    this.keyPoolAssistPending = true;
+    this.emitAndRefreshDom();
+
+    if (!this.requestKeyPoolAssistFn) {
+      const localAssist = buildClientOfflineFallbackAssist(
+        utteranceSnapshot,
+        localeSnapshot,
+      );
+      if (this.assistRequestSeq === reqSeq) {
+        this.keyPoolAssist = localAssist;
+        this.keyPoolAssistPending = false;
+        this.emitAndRefreshDom();
+      }
+      return localAssist;
+    }
+
+    try {
+      const result = await this.requestKeyPoolAssistFn(
+        utteranceSnapshot,
+        localeSnapshot,
+      );
+      if (this.assistRequestSeq !== reqSeq) {
+        return null;
+      }
+      this.keyPoolAssist = result;
+      this.keyPoolAssistPending = false;
+      if (result.source === "LOCAL_FALLBACK" && this.keyPoolStatus?.reachable) {
+        this.keyPoolStatus = {
+          ...this.keyPoolStatus,
+          reachable: false,
+          fallbackMode: "LOCAL_DETERMINISTIC",
+        };
+      }
+      this.emitAndRefreshDom();
+      return result;
+    } catch {
+      if (this.assistRequestSeq !== reqSeq) {
+        return null;
+      }
+      const fallback = buildClientOfflineFallbackAssist(
+        utteranceSnapshot,
+        localeSnapshot,
+      );
+      this.keyPoolAssist = fallback;
+      this.keyPoolAssistPending = false;
+      this.keyPoolStatus = this.keyPoolStatus
+        ? {
+            ...this.keyPoolStatus,
+            reachable: false,
+            fallbackMode: "LOCAL_DETERMINISTIC",
+          }
+        : buildDisconnectedKeyPoolStatus(
+            "Local KeyPool assist call failed; deterministic local fallback active",
+          );
+      this.emitAndRefreshDom();
+      return fallback;
+    }
   }
 
   public selectCandidate(candidateId: string): OmnibarPaletteSnapshot {
@@ -714,6 +1064,9 @@ export class OmnibarPaletteController {
         this.attachments = [];
         this.selectedCandidateId = null;
         this.compiledBundle = null;
+        this.assistRequestSeq += 1;
+        this.keyPoolAssist = null;
+        this.keyPoolAssistPending = false;
       }
       this.onSubmitProposal?.(submitted);
       this.emitAndRefreshDom();
@@ -772,6 +1125,141 @@ export function createOmnibarPaletteController(
   options?: OmnibarPaletteControllerOptions,
 ): OmnibarPaletteController {
   return new OmnibarPaletteController(options);
+}
+
+function renderKeyPoolBarHtml(
+  snapshot: OmnibarPaletteSnapshot,
+  copy: OmnibarCopy,
+): string {
+  if (
+    snapshot.keyPoolStatus === null &&
+    snapshot.keyPoolAssist === null &&
+    !snapshot.keyPoolAssistPending
+  ) {
+    return "";
+  }
+  const poolState = resolveKeyPoolVisualState(
+    snapshot.keyPoolStatus,
+    snapshot.keyPoolAssist,
+  );
+  const badgeText =
+    poolState === "online"
+      ? copy.poolOnlineBadge
+      : poolState === "fallback"
+        ? copy.poolFallbackBadge
+        : copy.poolDisconnectedBadge;
+
+  const status = snapshot.keyPoolStatus;
+  let l2MetaHtml = "";
+  if (
+    (snapshot.disclosure === "L2" || snapshot.disclosure === "L3") &&
+    status !== null
+  ) {
+    const parts: string[] = [];
+    if (status.defaultModel) {
+      parts.push(`${copy.poolModelKey}: ${status.defaultModel}`);
+    }
+    if (status.activeKeys !== null && status.totalKeys !== null) {
+      parts.push(`${copy.poolSlotsKey}: ${status.activeKeys}/${status.totalKeys}`);
+    }
+    if (parts.length > 0) {
+      l2MetaHtml = `<span>${escapeHtml(parts.join(" · "))}</span>`;
+    }
+  }
+
+  const l3MetaHtml =
+    snapshot.disclosure === "L3"
+      ? `<span class="nlos-l3-only">` +
+        `isolation=${escapeHtml(status?.isolationTag ?? snapshot.keyPoolAssist?.isolationTag ?? KEYPOOL_ISOLATION_UNVERIFIED_TAG)} ` +
+        `origin=${escapeHtml(status?.gatewayOrigin ?? "none")} ` +
+        `basePath=${escapeHtml(status?.openaiBasePath ?? "none")} ` +
+        `fallback=${escapeHtml(status?.fallbackMode ?? "LOCAL_DETERMINISTIC")}` +
+        `</span>`
+      : "";
+
+  return (
+    `<div class="nlos-omnibar-keypool-bar" data-keypool-state="${poolState}">` +
+    `<span class="nlos-omnibar-keypool-badge" data-pool-state="${poolState}">${escapeHtml(badgeText)}</span>` +
+    l2MetaHtml +
+    l3MetaHtml +
+    `</div>`
+  );
+}
+
+function renderKeyPoolAssistCardHtml(
+  snapshot: OmnibarPaletteSnapshot,
+  copy: OmnibarCopy,
+): string {
+  const assist = snapshot.keyPoolAssist;
+  if (!assist) {
+    return "";
+  }
+
+  const safeSummary = sanitizeForDisclosure(
+    assist.summary,
+    snapshot.locale,
+    snapshot.disclosure,
+  );
+  const stepsHtml =
+    assist.steps.length > 0
+      ? `<div><span class="nlos-omnibar-kv-label">${escapeHtml(copy.assistStepsKey)}:</span></div>` +
+        `<ol class="nlos-omnibar-assist-steps">` +
+        assist.steps
+          .map(
+            (step) =>
+              `<li>${escapeHtml(sanitizeForDisclosure(step, snapshot.locale, snapshot.disclosure))}</li>`,
+          )
+          .join("") +
+        `</ol>`
+      : "";
+
+  const fallbackHtml =
+    assist.fallbackNotice && assist.fallbackNotice.length > 0
+      ? `<div class="nlos-omnibar-assist-warning" data-assist-fallback="true">` +
+        `${escapeHtml(sanitizeForDisclosure(assist.fallbackNotice, snapshot.locale, snapshot.disclosure))}</div>`
+      : "";
+
+  const clarifyHtml =
+    assist.needsClarification && assist.clarificationReason.length > 0
+      ? `<div class="nlos-omnibar-assist-warning" data-assist-clarification="true">` +
+        `${escapeHtml(sanitizeForDisclosure(assist.clarificationReason, snapshot.locale, snapshot.disclosure))}</div>`
+      : "";
+
+  const tokenUsageLine =
+    snapshot.disclosure === "L2" || snapshot.disclosure === "L3"
+      ? formatAssistTokenUsageLine(assist, snapshot.locale, copy)
+      : null;
+  const tokenHtml = tokenUsageLine
+    ? `<div data-assist-token-usage="true">${escapeHtml(tokenUsageLine)}</div>`
+    : "";
+
+  const receipt = assist.budgetReceipt;
+  const l3Html =
+    snapshot.disclosure === "L3"
+      ? `<div class="nlos-l3-only nlos-omnibar-l3-panel" data-omnibar-assist-tier="L3">` +
+        `<div>KeyPoolAssist: source=${escapeHtml(assist.source)} domain=${escapeHtml(assist.targetDomain)} model=${escapeHtml(assist.model ?? "local-deterministic")} safetyEscalated=${String(assist.safetyEscalated)}</div>` +
+        `<div>ProviderIsolation: tag=${escapeHtml(assist.isolationTag)} slotFingerprint=${escapeHtml(assist.servedSlotFingerprint ?? "none")}</div>` +
+        (receipt
+          ? `<div>LlmTokenReceipt: id=${escapeHtml(receipt.receiptIdHex)} seq=${receipt.sequence} prompt=${receipt.promptTokens} completion=${receipt.completionTokens} reasoning=${receipt.reasoningTokens} total=${receipt.totalTokens}</div>`
+          : "") +
+        `</div>`
+      : "";
+
+  return (
+    `<div class="nlos-omnibar-assist-card" data-assist-source="${escapeHtml(assist.source)}">` +
+    `<div class="nlos-omnibar-assist-header">` +
+    `<span>${escapeHtml(copy.assistCardTitle)}</span>` +
+    `<span class="nlos-omnibar-undo-badge" data-undo-class="${escapeHtml(assist.undoClass)}">` +
+    `${escapeHtml(formatAssistUndoBadge(assist.undoClass, copy))}</span>` +
+    `</div>` +
+    `<div>${escapeHtml(safeSummary)}</div>` +
+    stepsHtml +
+    fallbackHtml +
+    clarifyHtml +
+    tokenHtml +
+    l3Html +
+    `</div>`
+  );
 }
 
 export function renderOmnibarPaletteHtml(
@@ -929,12 +1417,22 @@ export function renderOmnibarPaletteHtml(
       `<div class="nlos-omnibar-preview-section">` +
       summaryHtml +
       l2Html +
+      renderKeyPoolAssistCardHtml(snapshot, copy) +
       ambiguityHtml +
       l3Html +
       `</div>`;
-  } else if (errorBannerHtml.length > 0) {
-    previewHtml = `<div class="nlos-omnibar-preview-section">${errorBannerHtml}</div>`;
+  } else if (errorBannerHtml.length > 0 || snapshot.keyPoolAssist !== null) {
+    previewHtml =
+      `<div class="nlos-omnibar-preview-section">` +
+      errorBannerHtml +
+      renderKeyPoolAssistCardHtml(snapshot, copy) +
+      `</div>`;
   }
+
+  const keyPoolBarHtml = renderKeyPoolBarHtml(snapshot, copy);
+  const assistLabel = snapshot.keyPoolAssistPending
+    ? copy.assistPendingLabel
+    : copy.assistBtnLabel;
 
   return (
     `<div class="nlos-omnibar-scrim" data-nlos-omnibar-open="true" ` +
@@ -948,6 +1446,9 @@ export function renderOmnibarPaletteHtml(
     `placeholder="${escapeHtml(copy.inputPlaceholder)}" aria-label="${escapeHtml(copy.dialogAriaLabel)}" />` +
     `<button type="button" class="nlos-omnibar-voice-btn" data-voice-active="${voiceActive ? "true" : "false"}">` +
     `${micIcon}<span>${escapeHtml(copy.voiceBtnLabel)}</span></button>` +
+    (snapshot.draftUtterance.trim().length > 0
+      ? `<button type="button" class="nlos-omnibar-action-btn" data-omnibar-action="keypool-assist"${snapshot.keyPoolAssistPending ? " disabled" : ""}>${escapeHtml(assistLabel)}</button>`
+      : "") +
     (snapshot.draftUtterance.length > 0 || snapshot.attachments.length > 0
       ? `<button type="button" class="nlos-omnibar-action-btn" data-omnibar-action="clear-draft">${escapeHtml(copy.clearDraftLabel)}</button>`
       : "") +
@@ -955,6 +1456,7 @@ export function renderOmnibarPaletteHtml(
     `${escapeHtml(submitLabel)}</button>` +
     `</div>` +
     voiceBarHtml +
+    keyPoolBarHtml +
     chipsHtml +
     previewHtml +
     `<footer class="nlos-omnibar-footer">` +
@@ -969,11 +1471,203 @@ export function renderOmnibarPaletteHtml(
 export interface OmnibarElementCallbacks {
   readonly onInputUtterance?: (value: string) => void;
   readonly onToggleVoice?: () => void;
+  readonly onRequestAssist?: () => void;
   readonly onRemoveAttachment?: (attachmentId: string) => void;
   readonly onSelectCandidate?: (candidateId: string) => void;
   readonly onClearDraft?: () => void;
   readonly onSubmit?: () => void;
   readonly onOutsideDismiss?: () => void;
+}
+
+function createKeyPoolBarElement(
+  snapshot: OmnibarPaletteSnapshot,
+  copy: OmnibarCopy,
+  doc: Document,
+): HTMLElement | null {
+  if (
+    snapshot.keyPoolStatus === null &&
+    snapshot.keyPoolAssist === null &&
+    !snapshot.keyPoolAssistPending
+  ) {
+    return null;
+  }
+
+  const poolState = resolveKeyPoolVisualState(
+    snapshot.keyPoolStatus,
+    snapshot.keyPoolAssist,
+  );
+  const badgeText =
+    poolState === "online"
+      ? copy.poolOnlineBadge
+      : poolState === "fallback"
+        ? copy.poolFallbackBadge
+        : copy.poolDisconnectedBadge;
+
+  const bar = doc.createElement("div");
+  bar.className = "nlos-omnibar-keypool-bar";
+  bar.setAttribute("data-keypool-state", poolState);
+
+  const badge = doc.createElement("span");
+  badge.className = "nlos-omnibar-keypool-badge";
+  badge.setAttribute("data-pool-state", poolState);
+  badge.textContent = badgeText;
+  bar.appendChild(badge);
+
+  const status = snapshot.keyPoolStatus;
+  if (
+    (snapshot.disclosure === "L2" || snapshot.disclosure === "L3") &&
+    status !== null
+  ) {
+    const parts: string[] = [];
+    if (status.defaultModel) {
+      parts.push(`${copy.poolModelKey}: ${status.defaultModel}`);
+    }
+    if (status.activeKeys !== null && status.totalKeys !== null) {
+      parts.push(`${copy.poolSlotsKey}: ${status.activeKeys}/${status.totalKeys}`);
+    }
+    if (parts.length > 0) {
+      const l2Span = doc.createElement("span");
+      l2Span.textContent = parts.join(" · ");
+      bar.appendChild(l2Span);
+    }
+  }
+
+  const l3Span = doc.createElement("span");
+  l3Span.className = "nlos-l3-only";
+  if (snapshot.disclosure === "L3") {
+    l3Span.hidden = false;
+    const tag =
+      status?.isolationTag ??
+      snapshot.keyPoolAssist?.isolationTag ??
+      KEYPOOL_ISOLATION_UNVERIFIED_TAG;
+    l3Span.textContent = `isolation=${tag} origin=${status?.gatewayOrigin ?? "none"} basePath=${status?.openaiBasePath ?? "none"} fallback=${status?.fallbackMode ?? "LOCAL_DETERMINISTIC"}`;
+  } else {
+    l3Span.hidden = true;
+    l3Span.setAttribute("hidden", "");
+  }
+  bar.appendChild(l3Span);
+
+  return bar;
+}
+
+function createKeyPoolAssistCardElement(
+  snapshot: OmnibarPaletteSnapshot,
+  copy: OmnibarCopy,
+  doc: Document,
+): HTMLElement | null {
+  const assist = snapshot.keyPoolAssist;
+  if (!assist) {
+    return null;
+  }
+
+  const card = doc.createElement("div");
+  card.className = "nlos-omnibar-assist-card";
+  card.setAttribute("data-assist-source", assist.source);
+
+  const header = doc.createElement("div");
+  header.className = "nlos-omnibar-assist-header";
+  const titleSpan = doc.createElement("span");
+  titleSpan.textContent = copy.assistCardTitle;
+  header.appendChild(titleSpan);
+
+  const undoBadge = doc.createElement("span");
+  undoBadge.className = "nlos-omnibar-undo-badge";
+  undoBadge.setAttribute("data-undo-class", assist.undoClass);
+  undoBadge.textContent = formatAssistUndoBadge(assist.undoClass, copy);
+  header.appendChild(undoBadge);
+  card.appendChild(header);
+
+  const summaryRow = doc.createElement("div");
+  summaryRow.textContent = sanitizeForDisclosure(
+    assist.summary,
+    snapshot.locale,
+    snapshot.disclosure,
+  );
+  card.appendChild(summaryRow);
+
+  if (assist.steps.length > 0) {
+    const stepsLabelWrap = doc.createElement("div");
+    const stepsLabel = doc.createElement("span");
+    stepsLabel.className = "nlos-omnibar-kv-label";
+    stepsLabel.textContent = `${copy.assistStepsKey}:`;
+    stepsLabelWrap.appendChild(stepsLabel);
+    card.appendChild(stepsLabelWrap);
+
+    const ol = doc.createElement("ol");
+    ol.className = "nlos-omnibar-assist-steps";
+    for (const step of assist.steps) {
+      const li = doc.createElement("li");
+      li.textContent = sanitizeForDisclosure(
+        step,
+        snapshot.locale,
+        snapshot.disclosure,
+      );
+      ol.appendChild(li);
+    }
+    card.appendChild(ol);
+  }
+
+  if (assist.fallbackNotice && assist.fallbackNotice.length > 0) {
+    const fbBox = doc.createElement("div");
+    fbBox.className = "nlos-omnibar-assist-warning";
+    fbBox.setAttribute("data-assist-fallback", "true");
+    fbBox.textContent = sanitizeForDisclosure(
+      assist.fallbackNotice,
+      snapshot.locale,
+      snapshot.disclosure,
+    );
+    card.appendChild(fbBox);
+  }
+
+  if (assist.needsClarification && assist.clarificationReason.length > 0) {
+    const clBox = doc.createElement("div");
+    clBox.className = "nlos-omnibar-assist-warning";
+    clBox.setAttribute("data-assist-clarification", "true");
+    clBox.textContent = sanitizeForDisclosure(
+      assist.clarificationReason,
+      snapshot.locale,
+      snapshot.disclosure,
+    );
+    card.appendChild(clBox);
+  }
+
+  if (snapshot.disclosure === "L2" || snapshot.disclosure === "L3") {
+    const tokenLine = formatAssistTokenUsageLine(assist, snapshot.locale, copy);
+    if (tokenLine) {
+      const tokRow = doc.createElement("div");
+      tokRow.setAttribute("data-assist-token-usage", "true");
+      tokRow.textContent = tokenLine;
+      card.appendChild(tokRow);
+    }
+  }
+
+  const l3Assist = doc.createElement("div");
+  l3Assist.className = "nlos-l3-only nlos-omnibar-l3-panel";
+  l3Assist.setAttribute("data-omnibar-assist-tier", "L3");
+  if (snapshot.disclosure === "L3") {
+    l3Assist.hidden = false;
+    const lines = [
+      `KeyPoolAssist: source=${assist.source} domain=${assist.targetDomain} model=${assist.model ?? "local-deterministic"} safetyEscalated=${String(assist.safetyEscalated)}`,
+      `ProviderIsolation: tag=${assist.isolationTag} slotFingerprint=${assist.servedSlotFingerprint ?? "none"}`,
+    ];
+    if (assist.budgetReceipt) {
+      const r = assist.budgetReceipt;
+      lines.push(
+        `LlmTokenReceipt: id=${r.receiptIdHex} seq=${r.sequence} prompt=${r.promptTokens} completion=${r.completionTokens} reasoning=${r.reasoningTokens} total=${r.totalTokens}`,
+      );
+    }
+    for (const line of lines) {
+      const row = doc.createElement("div");
+      row.textContent = line;
+      l3Assist.appendChild(row);
+    }
+  } else {
+    l3Assist.hidden = true;
+    l3Assist.setAttribute("hidden", "");
+  }
+  card.appendChild(l3Assist);
+
+  return card;
 }
 
 export function createOmnibarPaletteElement(
@@ -1053,6 +1747,24 @@ export function createOmnibarPaletteElement(
   });
   inputRow.appendChild(voiceBtn);
 
+  if (snapshot.draftUtterance.trim().length > 0) {
+    const assistBtn = doc.createElement("button");
+    assistBtn.type = "button";
+    assistBtn.className = "nlos-omnibar-action-btn";
+    assistBtn.setAttribute("data-omnibar-action", "keypool-assist");
+    assistBtn.disabled = snapshot.keyPoolAssistPending;
+    if (snapshot.keyPoolAssistPending) {
+      assistBtn.setAttribute("disabled", "");
+    }
+    assistBtn.textContent = snapshot.keyPoolAssistPending
+      ? copy.assistPendingLabel
+      : copy.assistBtnLabel;
+    assistBtn.addEventListener("click", () => {
+      callbacks?.onRequestAssist?.();
+    });
+    inputRow.appendChild(assistBtn);
+  }
+
   if (snapshot.draftUtterance.length > 0 || snapshot.attachments.length > 0) {
     const clearBtn = doc.createElement("button");
     clearBtn.type = "button";
@@ -1107,6 +1819,11 @@ export function createOmnibarPaletteElement(
     dialog.appendChild(voiceBar);
   }
 
+  const keyPoolBarEl = createKeyPoolBarElement(snapshot, copy, doc);
+  if (keyPoolBarEl) {
+    dialog.appendChild(keyPoolBarEl);
+  }
+
   if (snapshot.attachments.length > 0) {
     dialog.appendChild(
       createAttachmentChipsElement(snapshot.attachments, {
@@ -1141,6 +1858,10 @@ export function createOmnibarPaletteElement(
     }
     alertBox.appendChild(l3Err);
     previewWrap.appendChild(alertBox);
+    const assistCardOnErr = createKeyPoolAssistCardElement(snapshot, copy, doc);
+    if (assistCardOnErr) {
+      previewWrap.appendChild(assistCardOnErr);
+    }
     dialog.appendChild(previewWrap);
   } else if (proposal && typedIntent) {
     const previewWrap = doc.createElement("div");
@@ -1211,6 +1932,11 @@ export function createOmnibarPaletteElement(
       );
       l2Box.appendChild(barRow);
       previewWrap.appendChild(l2Box);
+    }
+
+    const assistCardEl = createKeyPoolAssistCardElement(snapshot, copy, doc);
+    if (assistCardEl) {
+      previewWrap.appendChild(assistCardEl);
     }
 
     if (proposal.unresolvedAmbiguities.length > 0) {
@@ -1314,6 +2040,14 @@ export function createOmnibarPaletteElement(
     previewWrap.appendChild(l3Panel);
 
     dialog.appendChild(previewWrap);
+  } else if (snapshot.keyPoolAssist !== null) {
+    const previewWrap = doc.createElement("div");
+    previewWrap.className = "nlos-omnibar-preview-section";
+    const assistOnlyCard = createKeyPoolAssistCardElement(snapshot, copy, doc);
+    if (assistOnlyCard) {
+      previewWrap.appendChild(assistOnlyCard);
+    }
+    dialog.appendChild(previewWrap);
   }
 
   const footer = doc.createElement("footer");
@@ -1383,6 +2117,9 @@ export function bindOmnibarToCompositor(
         onInputUtterance: (val) => controller.setDraftUtterance(val),
         onToggleVoice: () => {
           controller.voiceController.toggleCapture();
+        },
+        onRequestAssist: () => {
+          void controller.runKeyPoolAssist();
         },
         onRemoveAttachment: (id) => controller.removeAttachment(id),
         onSelectCandidate: (cid) => controller.selectCandidate(cid),

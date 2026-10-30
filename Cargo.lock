@@ -925,6 +925,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-capability",
  "nlos-clock",
+ "nlos-driver-llm-http",
  "nlos-identity",
  "nlos-ipc",
  "nlos-resource",

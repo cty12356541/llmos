@@ -19,6 +19,7 @@ import {
   ACTION_PROPOSAL_SCHEMA_ID,
   ClarificationRequiredError,
   IntentBindingError,
+  KEYPOOL_ISOLATION_UNVERIFIED_TAG,
   OMNIBAR_BORDER_RADIUS_PX,
   OMNIBAR_TASKBAR_TRIGGER_HEIGHT_PX,
   OMNIBAR_TOP_PERMANENT_FOOTPRINT_PX,
@@ -31,6 +32,8 @@ import {
   finalizeProposalForSubmission,
   renderOmnibarPaletteHtml,
   selectAmbiguityCandidate,
+  type KeyPoolIntentAssistDto,
+  type KeyPoolStatusDto,
   type VerifiedApplicationCatalogItem,
 } from "../index";
 
@@ -1060,6 +1063,295 @@ async function main(): Promise<void> {
       assert(
         allIssues.length === 0,
         `Static ANTI-AI-01..06 scan found violations:\n${allIssues.join("\n")}`,
+      );
+    },
+  );
+
+  await runSuite(
+    "10. Local KeyPool model-assist bridge: online plan breakdown, [DUI-OFFLINE-001] deterministic fallback, non-bypass of [NL-AMBIG-001]/[NL-BIND-001], L1/L2 zero-jargon, and L3 isolation/receipt disclosure",
+    async () => {
+      const { doc, createHost } = createMockDocument();
+      const host = createHost();
+
+      const syntheticOnlineStatus: KeyPoolStatusDto = {
+        configured: true,
+        reachable: true,
+        discoverySource: "explicit_config",
+        gatewayOrigin: "http://127.0.0.1:18317",
+        openaiBasePath: "/v1",
+        defaultModel: "glm-5.1",
+        fastIntentModel: "glm-4.5-air",
+        allowedModels: ["glm-5.1", "glm-4.5-air"],
+        activeKeys: 3,
+        totalKeys: 4,
+        strategy: "round-robin",
+        budgetMetered: true,
+        isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
+        fallbackMode: "NONE",
+        diagnosticSummary: "3/4 redacted slots active",
+      };
+
+      let probeCount = 0;
+      let assistCallCount = 0;
+      const ctrl = createOmnibarPaletteController({
+        catalog: sampleCatalog(),
+        initialDisclosure: "L1",
+        initialLocale: "zh-CN",
+        doc,
+        probeKeyPoolStatus: async () => {
+          probeCount += 1;
+          return syntheticOnlineStatus;
+        },
+        requestKeyPoolAssist: async (utterance, locale) => {
+          assistCallCount += 1;
+          return {
+            source: "KEYPOOL",
+            summary:
+              locale === "en-US"
+                ? `Draft summary via Z3 TypedIntent and Quota check for: ${utterance}`
+                : `通过 Z3 TypedIntent 与 Quota 检查拆解请求：${utterance}`,
+            targetDomain: "document",
+            undoClass: "LOSSLESS",
+            needsClarification: false,
+            clarificationReason: "",
+            steps:
+              locale === "en-US"
+                ? [
+                    "Resolve verified application target on Cell node without 0x1F shortcut",
+                    "Record receipt_hex after execution stream finishes",
+                  ]
+                : [
+                    "在本地 Cell 节点定位已核验应用（拒绝 0x1F 非权威捷径）",
+                    "完成后登记 receipt_hex 并生成可回退摘要",
+                  ],
+            safetyEscalated: false,
+            model: "glm-4.5-air",
+            servedSlotFingerprint: "slot-a91f003c",
+            isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
+            budgetReceipt: {
+              accountIdHex: "aa".repeat(16),
+              budgetIdHex: "bb".repeat(16),
+              receiptIdHex: "cc".repeat(16),
+              sequence: 1,
+              promptTokens: 48,
+              completionTokens: 24,
+              reasoningTokens: 8,
+              totalTokens: 80,
+              cumulativeTotalTokens: 80,
+              cumulativeApiCalls: 1,
+            },
+            fallbackNotice: null,
+          };
+        },
+      });
+
+      ctrl.mount(host as unknown as HTMLElement, { doc });
+      ctrl.openPalette("keyboard-shortcut");
+      await Promise.resolve();
+      await Promise.resolve();
+      assert(probeCount >= 1, "Opening palette probes Local KeyPool status automatically");
+      assert(ctrl.getSnapshot().keyPoolStatus?.reachable === true, "KeyPool status online");
+
+      ctrl.setDraftUtterance("整理文档工作台会议纪要");
+      const assistButtons = host.findAll(
+        (el) => el.getAttribute("data-omnibar-action") === "keypool-assist",
+      );
+      assert(assistButtons.length === 1, "Mounted palette renders keypool-assist button");
+      assistButtons[0]!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      assert(assistCallCount === 1, "Clicking keypool-assist button invokes requestKeyPoolAssist");
+      assert(ctrl.getSnapshot().keyPoolAssist?.source === "KEYPOOL", "Online KeyPool assist stored");
+
+      // Audit L1 and L2 across zh-CN & en-US: zero internal jargon + L3 isolation/receipt strictly hidden
+      for (const locale of ["zh-CN", "en-US"] as const) {
+        ctrl.setLocale(locale);
+        await ctrl.runKeyPoolAssist();
+
+        for (const tier of ["L1", "L2"] as const) {
+          ctrl.setDisclosure(tier);
+          const snap = ctrl.getSnapshot();
+          const html = renderOmnibarPaletteHtml(snap);
+          const strippedHtml = html.replace(/<[^>]*>/g, " ");
+          const visibleDom = ctrl.getVisibleTextForAudit();
+
+          const expectedOnlineBadge =
+            locale === "en-US" ? "Local Model Pool · Online" : "本地模型池 · 在线";
+          assert(
+            visibleDom.includes(expectedOnlineBadge) && html.includes(expectedOnlineBadge),
+            `Online badge rendered in ${locale}@${tier}`,
+          );
+          assert(
+            !visibleDom.includes(KEYPOOL_ISOLATION_UNVERIFIED_TAG) &&
+              !strippedHtml.includes(KEYPOOL_ISOLATION_UNVERIFIED_TAG),
+            `L3 isolation tag hidden in ${locale}@${tier}`,
+          );
+          assert(
+            !visibleDom.includes("slot-a91f003c") && !strippedHtml.includes("cc".repeat(16)),
+            `L3 slot fingerprint and receipt digest hidden in ${locale}@${tier}`,
+          );
+
+          for (const banned of L1_L2_BANNED_JARGON) {
+            assert(
+              !visibleDom.includes(banned),
+              `KeyPool assist DOM text in ${locale}@${tier} leaked banned jargon '${banned}': ${visibleDom}`,
+            );
+            assert(
+              !strippedHtml.includes(banned),
+              `KeyPool assist HTML text in ${locale}@${tier} leaked banned jargon '${banned}': ${strippedHtml}`,
+            );
+          }
+
+          if (tier === "L2") {
+            const expectedSlots =
+              locale === "en-US"
+                ? "Model: glm-5.1 · Active Slots: 3/4"
+                : "默认模型: glm-5.1 · 可用通道: 3/4";
+            const expectedTokens =
+              locale === "en-US" ? "Model Token Usage: 80 tokens" : "本次模型用量: 80 tokens";
+            assert(
+              visibleDom.includes(expectedSlots) && visibleDom.includes(expectedTokens),
+              `L2 displays plain-language model/slots and token accounting in ${locale}`,
+            );
+          }
+        }
+      }
+
+      // L3 reveals PROVIDER_ISOLATION_UNVERIFIED, slot fingerprint, gateway origin, and 5D receipt ID
+      ctrl.setLocale("zh-CN");
+      ctrl.setDisclosure("L3");
+      const l3Visible = ctrl.getVisibleTextForAudit();
+      const l3Html = renderOmnibarPaletteHtml(ctrl.getSnapshot());
+      assert(
+        l3Visible.includes(KEYPOOL_ISOLATION_UNVERIFIED_TAG) &&
+          l3Html.includes(KEYPOOL_ISOLATION_UNVERIFIED_TAG),
+        "L3 discloses PROVIDER_ISOLATION_UNVERIFIED tag",
+      );
+      assert(
+        l3Visible.includes("slotFingerprint=slot-a91f003c") &&
+          l3Visible.includes(`LlmTokenReceipt: id=${"cc".repeat(16)}`) &&
+          l3Visible.includes("origin=http://127.0.0.1:18317") &&
+          l3Visible.includes("basePath=/v1"),
+        "L3 discloses redacted slot fingerprint, 5D LlmTokenReceipt, and gateway endpoint",
+      );
+
+      // [DUI-OFFLINE-001] Offline / rejected KeyPool degrades cleanly to deterministic local fallback
+      const offlineHost = createHost();
+      const offlineCtrl = createOmnibarPaletteController({
+        catalog: sampleCatalog(),
+        initialDisclosure: "L1",
+        initialLocale: "zh-CN",
+        doc,
+        probeKeyPoolStatus: async () => {
+          throw new Error("connect ECONNREFUSED 127.0.0.1:18317");
+        },
+        requestKeyPoolAssist: async () => {
+          throw new Error("upstream socket timeout");
+        },
+      });
+      offlineCtrl.mount(offlineHost as unknown as HTMLElement, { doc });
+      offlineCtrl.openPalette("keyboard-shortcut");
+      const fallbackStatus = await offlineCtrl.refreshKeyPoolStatus();
+      assert(
+        fallbackStatus !== null &&
+          fallbackStatus.reachable === false &&
+          fallbackStatus.fallbackMode === "LOCAL_DETERMINISTIC",
+        "Rejected status probe transitions cleanly to LOCAL_DETERMINISTIC",
+      );
+
+      offlineCtrl.setDraftUtterance("删除旧归档文件");
+      const fallbackAssist = await offlineCtrl.runKeyPoolAssist();
+      assert(offlineCtrl.getSnapshot().open === true, "Z3 palette stays open on KeyPool failure");
+      assert(
+        fallbackAssist !== null &&
+          fallbackAssist.source === "LOCAL_FALLBACK" &&
+          fallbackAssist.undoClass === "IRREVERSIBLE" &&
+          fallbackAssist.needsClarification === true &&
+          fallbackAssist.safetyEscalated === true &&
+          Boolean(fallbackAssist.fallbackNotice && fallbackAssist.fallbackNotice.length > 0),
+        "Offline destructive assist degrades to LOCAL_FALLBACK with IRREVERSIBLE safety escalation",
+      );
+      const offlineVisibleZh = offlineCtrl.getVisibleTextForAudit();
+      assert(
+        offlineVisibleZh.includes("本地模型池 · 离线回退"),
+        "zh-CN offline fallback badge rendered",
+      );
+      for (const banned of L1_L2_BANNED_JARGON) {
+        assert(
+          !offlineVisibleZh.includes(banned),
+          `Offline fallback leaked banned jargon '${banned}': ${offlineVisibleZh}`,
+        );
+      }
+
+      offlineCtrl.setLocale("en-US");
+      await offlineCtrl.runKeyPoolAssist();
+      assert(
+        offlineCtrl.getVisibleTextForAudit().includes("Local Model Pool · Local Fallback"),
+        "en-US offline fallback badge rendered",
+      );
+
+      // Non-bypass of [NL-AMBIG-001] and [NL-BIND-001]: permissive LLM output never overrides local compiler gates
+      const guardCtrl = createOmnibarPaletteController({
+        catalog: sampleCatalog(),
+        doc,
+        requestKeyPoolAssist: async (utterance): Promise<KeyPoolIntentAssistDto> => ({
+          source: "KEYPOOL",
+          summary: utterance,
+          targetDomain: "document",
+          undoClass: "LOSSLESS",
+          needsClarification: false,
+          clarificationReason: "",
+          steps: ["Permissive model suggestion"],
+          safetyEscalated: false,
+          model: "glm-4.5-air",
+          servedSlotFingerprint: "slot-00001111",
+          isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
+          budgetReceipt: null,
+          fallbackNotice: null,
+        }),
+      });
+      guardCtrl.openPalette("keyboard-shortcut");
+
+      // 1) Ambiguous + irreversible request still blocked by ClarificationRequiredError ([NL-AMBIG-001])
+      guardCtrl.setDraftUtterance("永久移除旧笔记");
+      await guardCtrl.runKeyPoolAssist();
+      assert(guardCtrl.getSnapshot().keyPoolAssist?.source === "KEYPOOL", "Assist populated");
+      let ambigBlocked = false;
+      try {
+        guardCtrl.submitProposal();
+      } catch (err) {
+        if (err instanceof ClarificationRequiredError) {
+          ambigBlocked = true;
+        }
+      }
+      assert(
+        ambigBlocked,
+        "Model Assist must NOT bypass [NL-AMBIG-001] ClarificationRequiredError before candidate selection",
+      );
+
+      const firstCand = guardCtrl.getSnapshot().compiledBundle!.proposal.candidates[0]!;
+      guardCtrl.selectCandidate(firstCand.candidateId);
+      const boundSubmitted = guardCtrl.submitProposal();
+      assert(
+        boundSubmitted.proposal.selectedCandidateId === firstCand.candidateId,
+        "Selecting candidate unlocks submission normally alongside KeyPool assist",
+      );
+
+      // 2) Mutable @latest tag still blocked by IntentBindingError("MUTABLE_LATEST_TAG_FORBIDDEN") ([NL-BIND-001])
+      guardCtrl.openPalette("keyboard-shortcut");
+      guardCtrl.setDraftUtterance("run editor@latest on draft");
+      await guardCtrl.runKeyPoolAssist();
+      let latestBlocked = false;
+      try {
+        guardCtrl.submitProposal();
+      } catch (err) {
+        if (err instanceof IntentBindingError && err.code === "MUTABLE_LATEST_TAG_FORBIDDEN") {
+          latestBlocked = true;
+        }
+      }
+      assert(
+        latestBlocked,
+        "Model Assist must NOT bypass [NL-BIND-001] MUTABLE_LATEST_TAG_FORBIDDEN gate",
       );
     },
   );

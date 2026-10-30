@@ -13,6 +13,7 @@ nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-capability = { path = "../nlos-capability" }
 nlos-clock = { path = "../nlos-clock" }
+nlos-driver-llm-http.workspace = true
 nlos-identity = { path = "../nlos-identity" }
 nlos-ipc = { path = "../nlos-ipc" }
 nlos-resource = { path = "../nlos-resource" }

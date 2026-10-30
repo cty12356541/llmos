@@ -14,7 +14,7 @@ publish = false
 
 [lib]
 name = "llmos_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -31,7 +31,6 @@ dev-fixture = [
     "dep:nlos-identity",
     "dep:nlos-ipc",
     "dep:nlos-task",
-    "dep:tokio",
 ]
 
 [[example]]
@@ -42,6 +41,7 @@ required-features = ["dev-fixture"]
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 # W32-F:UI Surface 呈现的本地应用权威直读(ApplicationAuthority inspect 面)。
 nlos-application = { path = "../../crates/nlos-application" }
+nlos-driver-llm-http = { path = "../../crates/nlos-driver-llm-http" }
 nlos-resource = { path = "../../crates/nlos-resource" }
 nlos-schema = { path = "../../crates/nlos-schema" }
 nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource", "application"] }
@@ -49,6 +49,7 @@ nlos-types = { path = "../../crates/nlos-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tokio = { version = "1.48", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 # dev-fixture 可选依赖(与示例/测试共享,默认不启用)。
 nlos-artifact = { path = "../../crates/nlos-artifact", optional = true }
@@ -57,7 +58,6 @@ nlos-commit-coordinator = { path = "../../crates/nlos-commit-coordinator", optio
 nlos-identity = { path = "../../crates/nlos-identity", optional = true }
 nlos-ipc = { path = "../../crates/nlos-ipc", optional = true }
 nlos-task = { path = "../../crates/nlos-task", optional = true }
-tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"], optional = true }
 
 # Windows 命令 id 的 OS 随机源(BCrypt CSPRNG);Unix 侧沿用 /dev/urandom。
 [target.'cfg(windows)'.dependencies]

@@ -1143,3 +1143,84 @@ export interface InputRouteResultDto {
   rejectionMessage: string | null;
   route: FocusAndInputRouteDto;
 }
+
+// =========================================================================
+// Stage D (`W77-PRE-D`) 本地 `glm-keypool` 模型池桥接与五维预算回执脱敏 DTO
+// =========================================================================
+
+export type KeyPoolFallbackModeDto = "LIVE_KEYPOOL" | "LOCAL_DETERMINISTIC";
+
+export type KeyPoolAssistSourceDto = "LIVE_KEYPOOL" | "LOCAL_FALLBACK";
+
+export interface KeyPoolStatusDto {
+  configured: boolean;
+  reachable: boolean;
+  discoverySource: string;
+  gatewayOrigin: string | null;
+  openaiBasePath: string | null;
+  defaultModel: string | null;
+  fastIntentModel: string | null;
+  allowedModels: string[];
+  activeKeys: number | null;
+  totalKeys: number | null;
+  strategy: string | null;
+  budgetMetered: boolean;
+  isolationTag: string;
+  fallbackMode: KeyPoolFallbackModeDto | string;
+  diagnosticSummary: string;
+}
+
+export interface KeyPoolBudgetReceiptDto {
+  receiptIdHex: string;
+  sequence: number;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  cumulativeTotalTokens: number;
+  cumulativeApiCalls: number;
+}
+
+export interface KeyPoolIntentAssistInput {
+  utterance: string;
+  model?: string | null;
+  locale?: "zh-CN" | "en-US" | string | null;
+  keypoolConfigPath?: string | null;
+}
+
+export interface KeyPoolIntentAssistDto {
+  source: KeyPoolAssistSourceDto | string;
+  summary: string;
+  targetDomain: string;
+  undoClass: "LOSSLESS" | "COMPENSATABLE" | "IRREVERSIBLE" | string;
+  needsClarification: boolean;
+  clarificationReason: string;
+  steps: string[];
+  safetyEscalated: boolean;
+  model: string | null;
+  servedSlotFingerprint: string | null;
+  isolationTag: string;
+  budgetReceipt: KeyPoolBudgetReceiptDto | null;
+  fallbackNotice: string | null;
+}
+
+export interface KeyPoolChatInput {
+  prompt: string;
+  model?: string | null;
+  maxTokens?: number | null;
+  sessionId?: string | null;
+  keypoolConfigPath?: string | null;
+}
+
+export interface KeyPoolChatDto {
+  model: string;
+  content: string;
+  servedGroup: string | null;
+  servedSlotFingerprint: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  isolationTag: string;
+  budgetReceipt: KeyPoolBudgetReceiptDto | null;
+}

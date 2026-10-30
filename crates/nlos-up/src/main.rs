@@ -10,9 +10,10 @@ use nlos_system_control::daemon::{
     SystemControlDaemon, assemble, serve_authenticated_endpoint, serve_plain_endpoint,
 };
 use nlos_up::{
-    BootstrapOptions, BootstrapReceipt, DesktopSessionEnv, KeyOrigin, SampleAppSeedStatus,
-    ShellKind, UpError, bootstrap_trial_root, daemon_options_for_receipt, encode_hex,
-    resolve_desktop_env,
+    BootstrapOptions, BootstrapReceipt, DesktopSessionEnv, KeyOrigin, LocalKeyPoolStatusReport,
+    SampleAppSeedStatus, ShellKind, TrialCompiledIntentRequest, TrialMeteredChatRequest, UpError,
+    bootstrap_trial_root, daemon_options_for_receipt, encode_hex, inspect_trial_keypool_status,
+    resolve_desktop_env, run_trial_compiled_intent, run_trial_metered_chat,
 };
 
 const USAGE: &str = "\
@@ -20,7 +21,10 @@ usage:
   nlos-up init [--root <DIR>] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
   nlos-up env [--root <DIR>] [--shell powershell|posix] [--keypool-config <FILE>] [--no-keypool-probe]
   nlos-up daemon [--root <DIR>] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
-  nlos-up desktop [--root <DIR>] [--desktop-dir <DIR>] [--dry-run] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]";
+  nlos-up desktop [--root <DIR>] [--desktop-dir <DIR>] [--dry-run] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
+  nlos-up pool-status [--keypool-config <FILE>] [--require-live]
+  nlos-up chat [--root <DIR>] [--keypool-config <FILE>] [--model <MODEL>] [--max-tokens <N>] [--session <ID>] --prompt <TEXT>
+  nlos-up intent [--root <DIR>] [--keypool-config <FILE>] [--model <MODEL>] [--locale zh-CN|en-US] --query <TEXT>";
 
 enum Command {
     Init(BootstrapOptions),
@@ -34,6 +38,12 @@ enum Command {
         desktop_dir: Option<PathBuf>,
         dry_run: bool,
     },
+    PoolStatus {
+        keypool_config: Option<PathBuf>,
+        require_live: bool,
+    },
+    Chat(TrialMeteredChatRequest),
+    Intent(TrialCompiledIntentRequest),
 }
 
 enum ParseOutcome {
@@ -56,6 +66,13 @@ where
     let mut shell = ShellKind::host_default();
     let mut desktop_dir: Option<PathBuf> = None;
     let mut dry_run = false;
+    let mut require_live = false;
+    let mut model: Option<String> = None;
+    let mut max_tokens: Option<u32> = None;
+    let mut session_id: Option<String> = None;
+    let mut prompt: Option<String> = None;
+    let mut query: Option<String> = None;
+    let mut locale = "zh-CN".to_owned();
 
     while let Some(flag) = args.next() {
         let mut next_val = || {
@@ -65,11 +82,17 @@ where
         };
         match flag.as_str() {
             "-h" | "--help" => return Ok(ParseOutcome::Help),
-            "--root" => options = options.with_root(next_val()?),
-            "--seed-sample-app" => options = options.with_seed_sample_app(true),
-            "--sample-package-dir" => options = options.with_sample_package_dir(next_val()?),
+            "--root" if subcommand != "pool-status" => options = options.with_root(next_val()?),
+            "--seed-sample-app" if subcommand != "pool-status" => {
+                options = options.with_seed_sample_app(true);
+            }
+            "--sample-package-dir" if subcommand != "pool-status" => {
+                options = options.with_sample_package_dir(next_val()?);
+            }
             "--keypool-config" => options = options.with_keypool_config(next_val()?),
-            "--no-keypool-probe" => options = options.without_default_keypool_probe(),
+            "--no-keypool-probe" if subcommand != "pool-status" => {
+                options = options.without_default_keypool_probe();
+            }
             "--shell" if subcommand == "env" => {
                 shell = ShellKind::parse(&next_val()?)?;
             }
@@ -78,6 +101,38 @@ where
             }
             "--dry-run" if subcommand == "desktop" => {
                 dry_run = true;
+            }
+            "--require-live" if subcommand == "pool-status" => {
+                require_live = true;
+            }
+            "--model" if matches!(subcommand.as_str(), "chat" | "intent") => {
+                model = Some(next_val()?);
+            }
+            "--max-tokens" if subcommand == "chat" => {
+                let raw = next_val()?;
+                let parsed = raw.parse::<u32>().map_err(|_| {
+                    UpError::InvalidArgument(format!(
+                        "--max-tokens expects a positive 32-bit integer, got '{raw}'"
+                    ))
+                })?;
+                if parsed == 0 {
+                    return Err(UpError::InvalidArgument(
+                        "--max-tokens must be greater than zero".to_owned(),
+                    ));
+                }
+                max_tokens = Some(parsed);
+            }
+            "--session" if subcommand == "chat" => {
+                session_id = Some(next_val()?);
+            }
+            "--prompt" if subcommand == "chat" => {
+                prompt = Some(next_val()?);
+            }
+            "--query" if subcommand == "intent" => {
+                query = Some(next_val()?);
+            }
+            "--locale" if subcommand == "intent" => {
+                locale = next_val()?;
             }
             other => {
                 return Err(UpError::InvalidArgument(format!(
@@ -96,6 +151,37 @@ where
             desktop_dir,
             dry_run,
         })),
+        "pool-status" => Ok(ParseOutcome::Command(Command::PoolStatus {
+            keypool_config: options.keypool_config_override,
+            require_live,
+        })),
+        "chat" => {
+            let prompt = prompt.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                UpError::InvalidArgument("chat requires non-empty --prompt <TEXT>".to_owned())
+            })?;
+            Ok(ParseOutcome::Command(Command::Chat(
+                TrialMeteredChatRequest {
+                    options,
+                    prompt,
+                    model,
+                    max_tokens,
+                    session_id,
+                },
+            )))
+        }
+        "intent" => {
+            let query = query.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                UpError::InvalidArgument("intent requires non-empty --query <TEXT>".to_owned())
+            })?;
+            Ok(ParseOutcome::Command(Command::Intent(
+                TrialCompiledIntentRequest {
+                    options,
+                    query,
+                    locale,
+                    model,
+                },
+            )))
+        }
         other => Err(UpError::InvalidArgument(format!(
             "unknown subcommand '{other}'"
         ))),
@@ -126,6 +212,12 @@ async fn main() -> ExitCode {
             desktop_dir,
             dry_run,
         } => run_desktop(&options, desktop_dir.as_deref(), dry_run).await,
+        Command::PoolStatus {
+            keypool_config,
+            require_live,
+        } => run_pool_status(keypool_config.as_deref(), require_live).await,
+        Command::Chat(request) => run_chat(&request).await,
+        Command::Intent(request) => run_intent(&request).await,
     };
 
     match outcome {
@@ -147,6 +239,120 @@ fn run_env(options: &BootstrapOptions, shell: ShellKind) -> Result<(), UpError> 
     let session_env = resolve_desktop_env(options)?;
     print!("{}", session_env.render_shell(shell));
     Ok(())
+}
+
+async fn run_pool_status(keypool_config: Option<&Path>, require_live: bool) -> Result<(), UpError> {
+    let report = inspect_trial_keypool_status(keypool_config, require_live).await?;
+    print_pool_status_report(&report);
+    Ok(())
+}
+
+async fn run_chat(request: &TrialMeteredChatRequest) -> Result<(), UpError> {
+    let report = run_trial_metered_chat(request).await?;
+    println!("NLOS_UP_CHAT status=ok");
+    println!(
+        "trial_account           = {}",
+        report.bootstrap.account_id_hex
+    );
+    println!("model                   = {}", report.outcome.model);
+    println!("isolation_tag           = {}", report.outcome.isolation_tag);
+    println!(
+        "served_group            = {}",
+        report.outcome.served_group.as_deref().unwrap_or("none")
+    );
+    println!(
+        "served_slot_fingerprint = {}",
+        report
+            .outcome
+            .served_slot_fingerprint
+            .as_deref()
+            .unwrap_or("none")
+    );
+    println!(
+        "usage                   = prompt_tokens={} completion_tokens={} reasoning_tokens={} total_tokens={} estimated_fallback={}",
+        report.outcome.usage.prompt_tokens,
+        report.outcome.usage.completion_tokens,
+        report.outcome.usage.reasoning_tokens,
+        report.outcome.usage.total_tokens,
+        report.outcome.usage.estimated_fallback
+    );
+    if let (Some(receipt), Some(receipt_hex)) = (
+        report.outcome.consumption_receipt,
+        report.receipt_id_hex.as_deref(),
+    ) {
+        println!("receipt_id              = {receipt_hex}");
+        println!("sequence                = {}", receipt.sequence);
+        println!(
+            "cumulative_total_tokens = {}",
+            receipt.cumulative_total_tokens
+        );
+        println!("cumulative_api_calls    = {}", receipt.cumulative_api_calls);
+    }
+    println!("--- reply ---");
+    println!("{}", report.outcome.content);
+    Ok(())
+}
+
+async fn run_intent(request: &TrialCompiledIntentRequest) -> Result<(), UpError> {
+    let report = run_trial_compiled_intent(request).await?;
+    println!("{}", report.compiled.to_json_value().to_json_pretty());
+    Ok(())
+}
+
+fn print_pool_status_report(report: &LocalKeyPoolStatusReport) {
+    println!(
+        "NLOS_UP_POOL_STATUS configured={} reachable={}",
+        report.configured, report.reachable
+    );
+    println!("discovery_source     = {}", report.discovery_source);
+    println!(
+        "gateway_origin       = {}",
+        report.gateway_origin.as_deref().unwrap_or("none")
+    );
+    println!(
+        "openai_base_path     = {}",
+        report.openai_base_path.as_deref().unwrap_or("none")
+    );
+    println!(
+        "openai_base_url      = {}",
+        report.openai_base_url.as_deref().unwrap_or("none")
+    );
+    println!(
+        "default_model        = {}",
+        report.default_model.as_deref().unwrap_or("none")
+    );
+    println!(
+        "fast_intent_model    = {}",
+        report.fast_intent_model.as_deref().unwrap_or("none")
+    );
+    println!(
+        "allowed_models       = [{}]",
+        report.allowed_models.join(", ")
+    );
+    println!("configured_key_slots = {}", report.configured_key_slots);
+    println!(
+        "credential_present   = {} {}",
+        report.credential_present, report.credential_marker
+    );
+    println!("isolation_tag        = {}", report.isolation_tag);
+    if let Some(health) = &report.live_health {
+        println!("pool_strategy        = {}", health.strategy);
+        println!(
+            "pool_keys            = {}/{}",
+            health.active_keys, health.total_keys
+        );
+        println!("pool_active_sessions = {}", health.active_sessions);
+        println!(
+            "pool_requests        = total={} ok={} failed={}",
+            health.total_requests, health.ok_requests, health.failed_requests
+        );
+        println!(
+            "pool_tokens          = in={} out={}",
+            health.tokens_in, health.tokens_out
+        );
+    } else if let Some(reason) = &report.unreachable_reason {
+        println!("unreachable_reason   = {reason}");
+    }
 }
 
 async fn run_daemon(options: &BootstrapOptions) -> Result<(), UpError> {

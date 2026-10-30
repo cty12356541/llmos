@@ -142,6 +142,81 @@
   color: var(--nlos-text-secondary);
 }
 
+.nlos-omnibar-keypool-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-1) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-chrome);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-omnibar-keypool-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nlos-sp-1);
+  padding: 2px var(--nlos-sp-2);
+  background-color: var(--nlos-bg-elevated);
+  color: var(--nlos-text-primary);
+  border: 1px solid var(--nlos-border-focused);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-mono-xs);
+  font-weight: 500;
+}
+
+.nlos-omnibar-keypool-badge[data-pool-state="online"] {
+  border-color: var(--nlos-accent-primary);
+}
+
+.nlos-omnibar-keypool-badge[data-pool-state="fallback"],
+.nlos-omnibar-keypool-badge[data-pool-state="disconnected"] {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-omnibar-assist-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-omnibar-assist-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nlos-sp-2);
+  font-weight: 600;
+  color: var(--nlos-text-primary);
+}
+
+.nlos-omnibar-assist-steps {
+  margin: 0;
+  padding-left: var(--nlos-sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--nlos-text-primary);
+}
+
+.nlos-omnibar-assist-warning {
+  padding: var(--nlos-sp-1) var(--nlos-sp-2);
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-signal-action-text);
+  border: 1px solid var(--nlos-signal-action);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
 .nlos-omnibar-chip-strip {
   display: flex;
   flex-wrap: wrap;
