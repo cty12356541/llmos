@@ -1,0 +1,28 @@
+[package]
+name = "nlos-compat-shim"
+description = "Out-of-core unprivileged SABI epoch adapter and DriverProvider protocol compatibility shim (Stage E W78 / E2)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+minicbor.workspace = true
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
+nlos-driver-mock = { path = "../nlos-driver-mock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-operation = { path = "../nlos-operation" }
+nlos-resource = { path = "../nlos-resource" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-service-directory = { path = "../nlos-service-directory" }
+nlos-types = { path = "../nlos-types" }
+prost.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

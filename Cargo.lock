@@ -493,6 +493,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-compat-shim"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "minicbor",
+ "nlos-artifact",
+ "nlos-capability",
+ "nlos-driver-mock",
+ "nlos-identity",
+ "nlos-operation",
+ "nlos-resource",
+ "nlos-schema",
+ "nlos-service-directory",
+ "nlos-types",
+ "prost",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-consensus"
 version = "0.1.0"
 dependencies = [
@@ -591,6 +610,23 @@ dependencies = [
  "rusqlite",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "nlos-migrate"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-identity",
+ "nlos-plan",
+ "nlos-schema",
+ "nlos-store-fault",
+ "nlos-task",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
 ]
 
 [[package]]

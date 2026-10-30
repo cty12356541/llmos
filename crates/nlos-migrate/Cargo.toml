@@ -1,0 +1,30 @@
+[package]
+name = "nlos-migrate"
+description = "Declarative SABI contract static checker, package manifest auditor, and three-mode data migration rollback drill toolkit (Stage E W78 / E3)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nlos-migrate"
+path = "src/main.rs"
+
+[dependencies]
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-plan = { path = "../nlos-plan" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-store-fault = { path = "../nlos-store-fault" }
+
+[lints]
+workspace = true
