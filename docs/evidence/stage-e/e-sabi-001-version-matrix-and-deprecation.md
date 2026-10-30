@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W77 / W77-E1A-SABI-REGISTRY`（里程碑 `M-E1` 候选左半片）
 - **日期**: `2026-10-30`
 - **Assurance Level**: `H4`（纯确定性本地宿主单测与跨模块契约集成验证；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE`（待 `W77-INT` 与右半片跨语言黄金矩阵合流晋升 canonical `DONE`）
+- **状态**: `VERIFIED`（经 `W77-INT` 与右半片五语言黄金矩阵合流复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`）、§28（阶段 E 路线图 `M-E1`、`E1`、`E2`）
   - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.1、§2.2、§3.1、§3.2、§3.3

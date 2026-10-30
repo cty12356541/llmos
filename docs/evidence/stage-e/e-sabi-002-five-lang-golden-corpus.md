@@ -1,13 +1,13 @@
 # Evidence e-sabi-002：v1.0 九通道黄金不可变语料库、五语言一致性门禁与黄金篡改拦截验证
 
 - **Evidence ID**：`e-sabi-002`
-- **所属波次与车道**：`Stage E` / `W77` / `W77-E1B-GOLDEN-SDKS`（工作包 `E1` `E-SABI-POLICY-CORPUS` 右半幅，里程碑 `M-E1` 候选证据）
+- **所属波次与车道**：`Stage E` / `W77` / `W77-E1B-GOLDEN-SDKS` + `W77-INT`（工作包 `E1` `E-SABI-POLICY-CORPUS` 右半幅与跨车道集成，里程碑 `M-E1` 已验证证据）
 - **日期**：`2026-10-30`
 - **基线提交（Base HEAD）**：`44fd32e04120bc8e2e0475b5eb859cb23505b439`
 - **验证等级**：`H4`（宿主实测五语言 wire 一致性、跨语言 `[COMPAT-VER-002]` 对抗矩阵与黄金不可变篡改拦截单测；不主张 `H5`–`H7`）
 - **规范与决策依据**：
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（SABI 契约与跨语言 wire 确定性）、§28（演进兼容与 `[COMPAT-VER-002]`）
-  - [ADR-0027：SABI 版本策略、世代生命周期与跨大版本兼容垫片架构](../../management/adrs/0027-sabi-versioning-deprecation-and-compat-shim.md) §2.1、§3.3（黄金不可变语料库）、§6.1
+  - [ADR-0027：阶段 E SABI v1.0 长期兼容制度、核外兼容垫片与生态商店治理架构](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.1、§3.3（黄金不可变语料库）、§6.1
   - [ADR-0014：Schema 通道冻结 v1-beta](../../management/adrs/0014-schema-channel-freeze-v1-beta.md)
   - 历史探针基线：[b-sdk-go-001-golden-probe.md](../stage-b/b-sdk-go-001-golden-probe.md)、[b-sdk-csharp-001-golden-probe.md](../stage-b/b-sdk-csharp-001-golden-probe.md)
 
@@ -55,7 +55,7 @@
 
 | 语言栈 | 实现/校验入口 | 工具链版本与供给来源 | 11 条 `v1.0` 正向编码 = Golden | 11 条解码字段断言 + 重编码 = Golden | 九通道未知字段 `a00607` 保持 | `[COMPAT-VER-002]`（`major!=1` / 未知 `critical` 拒绝，未知 `non_critical` 放行） |
 |---|---|---|---|---|---|---|
-| **Rust** | `crates/nlos-schema`（`prost 0.14.4`，只读引用既有权威实现） | `rustc` / `cargo` 离线校验（`nlos-schema` 41 项单测 + 11 向量交叉核验） | 11/11 PASS | 11/11 PASS（`ValidatedFrame::wire_bytes()` 原样保留未知字段帧） | PASS（`Envelope` 帧级原样透传） | PASS（`CompatibilityError::UnsupportedMajor` / `UnsupportedCriticalExtension`） |
+| **Rust** | `crates/nlos-schema`（`prost 0.14.4` + `tests/epoch_v1_0_golden_corpus.rs`） | `rustc` / `cargo` 离线校验（集成后 `nlos-schema` 共 50 项单测，含 2 项跨车道 `v1.0` 黄金语料常驻回归） | 11/11 PASS | 11/11 PASS（`ValidatedFrame::wire_bytes()` 原样保留未知字段帧） | PASS（`Envelope` 帧级原样透传） | PASS（`CompatibilityError::UnsupportedMajor` / `UnsupportedCriticalExtension`） |
 | **TypeScript** | `sdk/typescript/src/common.ts` + `tests/conformance/schema/envelope.ts` | Node.js + `@bufbuild/protobuf`（`gen/ts`） | 11/11 PASS | 11/11 PASS | 10/10 消息类型（9/9 通道）PASS | 9/9 通道对抗矩阵 PASS（`E_ABI_VERSION` / `UNSUPPORTED_CRITICAL_EXTENSION`） |
 | **Python** | `sdk/python/nlos_sdk/common.py` + `tests/conformance/schema/envelope.py` | Python 3 + `google.protobuf`（`gen/python`） | 11/11 PASS | 11/11 PASS | 10/10 消息类型（9/9 通道）PASS | 9/9 通道对抗矩阵 PASS（`E_ABI_VERSION` / `UNSUPPORTED_CRITICAL_EXTENSION`） |
 | **Go** | `sdk/go/sabi/{messages,marshal,unmarshal,golden_test}.go` | `go1.27.0 darwin/arm64`（仓库外临时目录供给，`go1.27.0.darwin-arm64.tar.gz` SHA-256 `90493b3bbd5e10f91d12153198bf1994fd756399b4fec93b49b0c6e2acdeeb3e`） | 11/11 PASS | 11/11 PASS | 10/10 消息类型（9/9 通道）PASS | 9/9 通道对抗矩阵 PASS（`ErrAbiVersion` / `ErrUnsupportedCriticalExtension`） |
@@ -121,11 +121,11 @@
    $ npm run schema:lint && npm run schema:check-generated && npm run schema:typecheck && npm run schema:test:typescript
    （4 项脚本退出码全部为 0）
    ```
-5. **Rust `nlos-schema` 权威实现离线交叉校验**：
+5. **Rust `nlos-schema` 权威实现与跨车道黄金语料常驻回归校验**：
    ```console
    $ cargo test --offline --locked -p nlos-schema
-   test result: ok. 41 passed; 0 failed
-   （独立校验器验证 11/11 条 v1.0 黄金向量与 nlos-schema encode/decode 逐字节相等且通过全部语义不变量检查）
+   test result: ok. 50 passed; 0 failed
+   （compatibility 42 + epoch_v1_0_golden_corpus 2 + version_matrix_and_deprecation 6 = 50 项全绿，逐字节锁死 11/11 条 v1.0 黄金向量与 9/9 冻结登记）
    ```
 6. **Go 1.27.0 探针门禁（`wire` + `sabi`，共 30 项测试）**：
    ```console

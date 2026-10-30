@@ -76,6 +76,8 @@ jobs:
 
       - name: Type-check and test cross-language schema
         run: |
+          python tools/check_golden_immutability.py
+          python -m unittest discover -s tests/conformance/schema -p "test_*.py"
           npm run schema:typecheck
           npm run schema:test:typescript
           python tests/conformance/schema/envelope.py

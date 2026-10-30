@@ -1,4 +1,4 @@
-# 跨阶段证据索引（evidence-index.yaml，schema v1.3，W27-E 生成 + W67/W73/W74/W76/W77-PRE 演进同步）
+# 跨阶段证据索引（evidence-index.yaml，schema v1.3，W27-E 生成 + W67/W73/W74/W76/W77-PRE/W77 演进同步）
 #
 # - 覆盖 docs/evidence/stage-{b,c,d,e}/（含各阶段 reviews/）全部证据文件；由 scripts/lint_claims.py 校验与目录双向一致。
 # - assurance 为该证据工件可支撑的最高 claim 等级（保守评定）：POC=实验/PoC，H2=模型/生成/golden 级，
@@ -1142,5 +1142,17 @@
   path: docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md
   title: "Stage E Evidence — E-TRIAL-002: Starter Productivity Application Bundle, Local Trial Desktop Builder & Cross-Platform Quickstart Guide"
   scope: "examples/starter-assistant-app 零私有内核依赖生产力样板包（v1.0.0 双节点与 v1.1.0 三节点 TaskPlan 模板、nlos-package CONFORMANT 签名验签、ResourceAuthority 五维 LlmTokenBudget 幂等扣减、ArtifactStore 三修订 ProvenanceSourceTriple 因果血缘、SameMajor 热升级与干净卸载，5/5 测试）+ desktop/scripts/build-trial-bundle.{ps1,sh} 本地未公证试用打包预检与 E-deferred/RISK-B-06 商业公证诚实边界 + docs/developers/quickstart-trial.md 跨平台开箱试用指南"
+  assurance: H4
+  date: "2026-10-30"
+- id: e-sabi-001-version-matrix-and-deprecation
+  path: docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+  title: "E-SABI-001：9/9 SABI v1 通道全冻结、N / N-1 / N-2 版本兼容矩阵与弃用清单遥测证据（W77-E1A）"
+  scope: "crates/nlos-schema 第 7 通道 nlos.sabi.PrincipalHandshake 对端证明扩展槽位与 3911B 黄金帧余量审计并翻转 frozen=true 达成 9/9 SABI v1 通道全量入冻 + MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS=2（N 直通 / N-1..N-2 OutOfCoreCompatShim / <=N-3 与 >N 及未知 critical_extension_ids fail-closed 映射 SabiErrorCode::AbiVersion + DoNotRetry，未知 non_critical 与未知线字段无损透传）+ schema/nlos/sabi/v1/deprecation-manifest.yaml 与零第三方依赖纯安全 Rust 状态机校验器（ACTIVE->DEPRECATED->SUNSET 双纪元宽限与永久 RESERVED 禁重用）+ crates/nlos-service-directory 有界 DeprecationWarningReceipt 协商遥测（nlos-schema 49/49、nlos-service-directory 10/10 通过）"
+  assurance: H4
+  date: "2026-10-30"
+- id: e-sabi-002-five-lang-golden-corpus
+  path: docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  title: "Evidence e-sabi-002：v1.0 九通道黄金不可变语料库、五语言一致性门禁与黄金篡改拦截验证（W77-E1B / W77-INT）"
+  scope: "schema/golden/epochs/v1.0/ 全部 9/9 SABI 通道 11 条确定性黄金向量与双哈希清单 manifest.json（同时锁定全部 7 个根级历史黄金文件零漂移）+ Rust（nlos-schema epoch_v1_0_golden_corpus）、TypeScript、Python、Go 1.27.0（30/30）、C# .NET 8.0.424（30/30）五语言正向确定性编码、解码字段断言、重编码往返、跨九通道未知字段 a00607 保持与 COMPAT-VER-002 对抗矩阵 + tools/check_golden_immutability.py 黄金不可变 CI 门禁及 7/7 正反向篡改拦截单测"
   assurance: H4
   date: "2026-10-30"

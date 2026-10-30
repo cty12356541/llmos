@@ -93,9 +93,9 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 | **Stage B** | Single-machine application platform ([`stage-b-progress.md`](docs/management/stage-b-progress.md)) | `EXITED` (2026-09-21) |
 | **Stage C** | Distributed modern system: single-host multi-process Cells + `C-XHOST` cross-physical-host mTLS, clock-skew lease envelope & embedded Raft ([`stage-c-progress.md`](docs/management/stage-c-progress.md)) | `EXITED` (2026-10-29 `W76`) |
 | **Stage D** | Complete NL desktop: five-plane `Z0–Z4` Tauri 2 industrial workstation, `L0–L3` progressive disclosure, 12-domain inspect/control symmetry & `Z4` security consent screen ([`stage-d-progress.md`](docs/management/stage-d-progress.md)) | `EXITED` (2026-10-29 `W76`) |
-| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (E0 Verified H4; E1–E7 DESIGN)` (2026-10-30 `W77-PRE`) |
+| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (E0–E1 Verified H4; E2–E7 DESIGN)` (2026-10-30 `W77`) |
 
-> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. In Stage E, only the out-of-the-box local trial bootstrap work package `E0` (`W77-PRE` / `M-E0.5`: `nlos-up`, user-space `nlos-driver-llm-http` stamped `PROVIDER_ISOLATION_UNVERIFIED`, `starter-assistant-app`, and desktop KeyPool bridge) is verified at `H4` ([E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md), [E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)); core compatibility and store governance work packages `E1`–`E7` remain in `DESIGN` planning with zero runtime claims. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` freeze (`RISK-B-05`), and OS commercial installer notarization (`RISK-B-06`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
+> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. In Stage E, work packages `E0` (`W77-PRE` / `M-E0.5`: `nlos-up`, user-space `nlos-driver-llm-http` stamped `PROVIDER_ISOLATION_UNVERIFIED`, `starter-assistant-app`, and desktop KeyPool bridge; [E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md), [E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)) and `E1` (`W77` / `M-E1`: `9/9` SABI channels `frozen = true`, `N / N-1 / N-2` compatibility matrix, `deprecation-manifest.yaml` warning telemetry, and 5-language `v1.0` immutable golden wire corpus; [E-SABI-001](docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md), [E-SABI-002](docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)) are verified at `H4`; downstream compatibility shim and store governance work packages `E2`–`E7` remain in `DESIGN` planning with zero runtime claims. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` permanent freeze sign-off (`RISK-B-05`), and OS commercial installer notarization (`RISK-B-06`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
 
 ### Stage C verified work packages (`C-core` + `C-XHOST`)
 
@@ -158,7 +158,7 @@ docs/
   discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
     adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
-    evidence-index.yaml  190 evidence entries (H0-H8 assurance levels)
+    evidence-index.yaml  192 evidence entries (H0-H8 assurance levels)
     claims.yaml      116 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D)
 sdk/                 Python · TypeScript · Go · C# SABI SDKs
 schema/              Protobuf + CDDL schemas + golden wire test vectors
@@ -334,7 +334,7 @@ The best starting points for contributors and coding agents:
 | Distributed systems | `nlos-cell`, `nlos-lease`, `nlos-net`, `nlos-consensus` (Stage C `EXITED`) |
 | Control plane & CLI | `nlos-system-control`, `nlos-package` (`system-control-daemon`, `system-control-cli`, package tooling) |
 | TypeScript / Tauri 2 desktop | `desktop/` (Stage D `EXITED`, five-plane `Z0–Z4` workstation shell) |
-| Compatibility, onboarding & SDKs | `nlos-up`, `nlos-driver-llm-http`, `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS`: `E0` Verified `H4`, `E1`–`E7` `DESIGN`; see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
+| Compatibility, onboarding & SDKs | `nlos-up`, `nlos-driver-llm-http`, `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS`: `E0`–`E1` Verified `H4`, `E2`–`E7` `DESIGN`; see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
 
 ---
 
@@ -349,7 +349,7 @@ The best starting points for contributors and coding agents:
 | [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D authoritative progress ledger (`EXITED`) |
-| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS`: `E0` Verified `H4`; `E1`–`E7` `DESIGN`) |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS`: `E0`–`E1` Verified `H4`; `E2`–`E7` `DESIGN`) |
 | [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D exit unknown & residual risks ledger (`P0 = 0`) |
 | [`AGENTS.md`](AGENTS.md) | Mandatory work rules for all agents and contributors in this repo |
 

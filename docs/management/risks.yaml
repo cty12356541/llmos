@@ -73,13 +73,15 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "crates/nlos-schema REGISTRY 共 9 个 SABI 通道中已有 8 个为 frozen=true（Envelope、ServiceDirectory、OperationControl、SystemControl、TakeoverControl、WaitControl 依 ADR-0014 v1-beta additive 冻结，第 8 通道 DriverProvider v1.0 依 W65 ADR-0024 / C-PROVIDER-001 冻结并闭合 W34-A §3 driver payload codec 残余，第 9 通道 ChannelControl v1.0 依 W73 L-002 冻结），唯一仍为 frozen=false 的是第 7 通道 nlos.sabi.PrincipalHandshake（SABI_PRINCIPAL_HANDSHAKE_V1）；W76/W76.1 已立项并排定两步收口（ADR-0027 CANDIDATE + stage-e-progress.md）：(1) 排入 W77（W77-E1A-SABI-REGISTRY + W77-E1B-GOLDEN-SDKS）补齐 PrincipalHandshake 的 peer attestation 扩展槽审查与五语言黄金向量并翻转为 frozen=true（达成 9/9 SABI 通道全量入冻）；(2) 排入 W77->W78->W81（决策点 E2）依次经五语言跨纪元黄金语料与弃用清单（W77）、核外 nlos-compat-shim（W78）及 ROAD-E-001 N-1->N 零重编译升级门禁（W81）实证后正式从 ADR-0014 v1-beta 晋升为 SABI v1.0 长期冻结承诺；在此之前维持 partial"
+  mitigation: "W77（8c4ad8c2a + 0d1ccce5b，E-SABI-001 / E-SABI-002）已完成两步收口的第一步：对第 7 通道 nlos.sabi.PrincipalHandshake（SABI_PRINCIPAL_HANDSHAKE_V1）完成对端证明增量槽位审查与五语言（Rust/TS/Python/Go/C#）握手黄金向量钉死并翻转为 frozen=true，达成 crates/nlos-schema REGISTRY 全部 9/9 SABI 通道 frozen=true，同步落地 N/N-1/N-2 版本兼容矩阵、COMPAT-VER-002 未知关键扩展拒绝、schema/nlos/sabi/v1/deprecation-manifest.yaml 弃用遥测及 schema/golden/epochs/v1.0/ 五语言黄金不可变语料库；依 ADR-0027 与 stage-e-progress.md 决策点 E2 审慎护栏，第二步仍需经 W78 核外 nlos-compat-shim 与 W81 ROAD-E-001 N-1->N 零重编译升级门禁实证并获维护者签字后，方从 ADR-0014 v1-beta 正式晋升为 SABI v1.0 长期冻结承诺，在此之前维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
     - docs/evidence/stage-b/b-plan-002-manifest-template.md
     - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
-  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；W76.1 已排入两步冻结收口——W77（W77-E1A/E1B）将唯一 frozen=false 的第 7 通道 nlos.sabi.PrincipalHandshake（SABI_PRINCIPAL_HANDSHAKE_V1）翻转为 frozen=true（9/9 通道入冻），经 W77->W78->W81（决策点 E2）零重编译升级回归实证并获维护者签字后晋升 SABI v1.0 长期冻结承诺并闭合本项"
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  review_point: "W77 已完成第一步（PrincipalHandshake 入冻达成 9/9 SABI 通道 frozen=true + 五语言 v1.0 黄金语料库 + 弃用清单遥测，H4）；维持 partial 待 W78（nlos-compat-shim）与 W81（决策点 E2 / ROAD-E-001 零重编译升级回归 + 维护者签字）全部通过后正式晋升 SABI v1.0 长期冻结承诺并闭合本项"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
