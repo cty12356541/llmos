@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -7,16 +9,24 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "gen" / "python"))
 
 from nlos.sabi.v1 import (  # noqa: E402
+    channel_control_pb2,
+    driver_provider_pb2,
     envelope_pb2,
+    operation_control_pb2,
+    principal_handshake_pb2,
     service_directory_pb2,
     system_control_pb2,
+    takeover_control_pb2,
+    wait_control_pb2,
 )
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
 from nlos_sdk.common import (  # noqa: E402
+    SABI_V1_CHANNELS,
     CommonSemanticsError,
     MethodSemantics,
     validate_request_context,
     validate_response_context,
+    validate_schema_compatibility,
 )
 
 
@@ -998,3 +1008,436 @@ assert (
     decoded_operation.SerializeToString(deterministic=True)
     == bytes.fromhex(DURABLE_OPERATION_SNAPSHOT_GOLDEN_HEX)
 )
+
+
+# ---------------------------------------------------------------------------
+# Stage E W77-E1B: Root PrincipalHandshake-v1.hex + schema/golden/epochs/v1.0/
+# 9/9 channel golden corpus bidirectional round-trip & COMPAT-VER-002 gates.
+# ---------------------------------------------------------------------------
+
+
+def _seq_bytes(off: int, n: int) -> bytes:
+    return bytes((off + i) & 0xFF for i in range(n))
+
+
+def _rep_bytes(b: int, n: int) -> bytes:
+    return bytes([b]) * n
+
+
+root_handshake_golden = bytes.fromhex(
+    (ROOT / "schema/golden/nlos.sabi.PrincipalHandshake-v1.hex")
+    .read_text(encoding="ascii")
+    .strip()
+)
+expected_root_handshake = principal_handshake_pb2.PrincipalHandshakeAttestation(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.PrincipalHandshake",
+        major=1,
+        minor=0,
+    ),
+    principal_id=_seq_bytes(0x00, 16),
+    nonce=_rep_bytes(0xA5, 32),
+    channel_binding=b"unix:///tmp/nlos-handshake.sock",
+    signature=_rep_bytes(0xCD, 64),
+)
+assert (
+    expected_root_handshake.SerializeToString(deterministic=True)
+    == root_handshake_golden
+)
+decoded_root_handshake = (
+    principal_handshake_pb2.PrincipalHandshakeAttestation.FromString(
+        root_handshake_golden
+    )
+)
+validate_schema_compatibility(
+    decoded_root_handshake.schema, "nlos.sabi.PrincipalHandshake"
+)
+assert decoded_root_handshake.principal_id == _seq_bytes(0x00, 16)
+assert decoded_root_handshake.nonce == _rep_bytes(0xA5, 32)
+assert decoded_root_handshake.channel_binding == b"unix:///tmp/nlos-handshake.sock"
+assert decoded_root_handshake.signature == _rep_bytes(0xCD, 64)
+assert (
+    decoded_root_handshake.SerializeToString(deterministic=True)
+    == root_handshake_golden
+)
+
+EPOCH_V1_0_DIR = ROOT / "schema" / "golden" / "epochs" / "v1.0"
+epoch_manifest = json.loads(
+    (EPOCH_V1_0_DIR / "manifest.json").read_text(encoding="utf-8")
+)
+assert epoch_manifest["schema"] == "nlos.golden.epoch_manifest.v1"
+assert epoch_manifest["epoch"] == "v1.0"
+assert epoch_manifest["sabi_major"] == 1
+assert epoch_manifest["immutable"] is True
+assert set(epoch_manifest["required_channels"]) == set(SABI_V1_CHANNELS.keys())
+assert len(epoch_manifest["required_channels"]) == 9
+
+manifest_by_file = {vec["file"]: vec for vec in epoch_manifest["vectors"]}
+assert len(manifest_by_file) == 11
+assert {vec["channel"] for vec in epoch_manifest["vectors"]} == set(
+    SABI_V1_CHANNELS.keys()
+)
+
+
+def _load_epoch_vector(filename: str) -> bytes:
+    meta = manifest_by_file[filename]
+    file_path = EPOCH_V1_0_DIR / filename
+    raw_file = file_path.read_bytes()
+    assert hashlib.sha256(raw_file).hexdigest() == meta["sha256_file"]
+    wire = bytes.fromhex(raw_file.decode("ascii").strip())
+    assert len(wire) == meta["byte_length"]
+    assert hashlib.sha256(wire).hexdigest() == meta["sha256_wire"]
+    return wire
+
+
+UNKNOWN_TAIL = bytes((0xA0, 0x06, 0x07))
+
+# 1a. Envelope-v1.0.hex
+g_env_v10 = _load_epoch_vector("nlos.sabi.Envelope-v1.0.hex")
+built_env_v10 = envelope_pb2.Envelope(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.Envelope",
+        major=1,
+        minor=1,
+        non_critical_extension_ids=[42],
+    ),
+    request_id=_seq_bytes(0x10, 16),
+    service="system_control",
+    method="get",
+    request_context=envelope_pb2.SabiRequestContext(
+        caller=envelope_pb2.CallerIdentity(
+            principal_id=_rep_bytes(0x01, 16),
+            application_id=_rep_bytes(0x02, 16),
+            process_id=_rep_bytes(0x03, 16),
+            process_generation=7,
+        ),
+        activity_context=b"w77-epoch-v1.0",
+        task_execution_binding=envelope_pb2.TaskExecutionBinding(
+            task_attempt_id=_rep_bytes(0x04, 16),
+            task_authority_term=9,
+            task_control_epoch=10,
+            cancel_epoch=11,
+            permit_epoch=12,
+            isolation_domain_generation=13,
+        ),
+        correlation_id=_rep_bytes(0x05, 16),
+        idempotency_key=_rep_bytes(0x06, 16),
+        deadline_monotonic_ns=500_000,
+        capability_handles=[
+            envelope_pb2.CapabilityHandle(slot=11, generation=2)
+        ],
+        reservation_handle=envelope_pb2.CapabilityHandle(slot=12, generation=3),
+        proposal_or_input_digest_sha256=_rep_bytes(0x07, 32),
+    ),
+    payload=b"sabi-v1.0-payload",
+)
+assert built_env_v10.SerializeToString(deterministic=True) == g_env_v10
+dec_env_v10 = envelope_pb2.Envelope.FromString(g_env_v10)
+validate_schema_compatibility(dec_env_v10.schema, "nlos.sabi.Envelope")
+validate_request_context(
+    dec_env_v10,
+    MethodSemantics(side_effecting=True, long_running=True),
+    499_999,
+)
+assert dec_env_v10.schema.minor == 1
+assert list(dec_env_v10.schema.non_critical_extension_ids) == [42]
+assert dec_env_v10.service == "system_control"
+assert dec_env_v10.method == "get"
+assert dec_env_v10.payload == b"sabi-v1.0-payload"
+assert dec_env_v10.SerializeToString(deterministic=True) == g_env_v10
+
+# 1b. Envelope-unknown-noncritical-v1.0.hex
+g_env_unk = _load_epoch_vector("nlos.sabi.Envelope-unknown-noncritical-v1.0.hex")
+built_env_unk = envelope_pb2.Envelope(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.Envelope",
+        major=1,
+        minor=1,
+        non_critical_extension_ids=[42, 7001, 9999],
+    ),
+    request_id=_seq_bytes(0x20, 16),
+    service="operation",
+    method="query",
+    payload=b"ext-probe",
+)
+built_env_unk.MergeFromString(UNKNOWN_TAIL)
+assert built_env_unk.SerializeToString(deterministic=True) == g_env_unk
+dec_env_unk = envelope_pb2.Envelope.FromString(g_env_unk)
+validate_schema_compatibility(dec_env_unk.schema, "nlos.sabi.Envelope")
+assert list(dec_env_unk.schema.non_critical_extension_ids) == [42, 7001, 9999]
+assert dec_env_unk.request_id == _seq_bytes(0x20, 16)
+assert dec_env_unk.service == "operation"
+assert dec_env_unk.method == "query"
+assert dec_env_unk.payload == b"ext-probe"
+assert dec_env_unk.SerializeToString(deterministic=True) == g_env_unk
+
+# 2. ServiceDirectory.ResolveServiceRequest-v1.0.hex
+g_svc_dir = _load_epoch_vector(
+    "nlos.sabi.ServiceDirectory.ResolveServiceRequest-v1.0.hex"
+)
+built_svc_dir = service_directory_pb2.ResolveServiceRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.ServiceDirectory", major=1, minor=0
+    ),
+    service="system_control",
+)
+assert built_svc_dir.SerializeToString(deterministic=True) == g_svc_dir
+dec_svc_dir = service_directory_pb2.ResolveServiceRequest.FromString(g_svc_dir)
+validate_schema_compatibility(dec_svc_dir.schema, "nlos.sabi.ServiceDirectory")
+assert dec_svc_dir.service == "system_control"
+assert dec_svc_dir.SerializeToString(deterministic=True) == g_svc_dir
+
+# 3. OperationControl.QueryOperationRequest-v1.0.hex
+g_op_ctrl = _load_epoch_vector(
+    "nlos.sabi.OperationControl.QueryOperationRequest-v1.0.hex"
+)
+built_op_ctrl = operation_control_pb2.QueryOperationRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.OperationControl", major=1, minor=0
+    ),
+    operation=envelope_pb2.OperationReference(
+        operation_id=_seq_bytes(0x30, 16),
+        generation=5,
+    ),
+)
+assert built_op_ctrl.SerializeToString(deterministic=True) == g_op_ctrl
+dec_op_ctrl = operation_control_pb2.QueryOperationRequest.FromString(g_op_ctrl)
+validate_schema_compatibility(dec_op_ctrl.schema, "nlos.sabi.OperationControl")
+assert dec_op_ctrl.operation.operation_id == _seq_bytes(0x30, 16)
+assert dec_op_ctrl.operation.generation == 5
+assert dec_op_ctrl.SerializeToString(deterministic=True) == g_op_ctrl
+
+# 4. SystemControl.GetSystemControlRequest-v1.0.hex
+g_sys_ctrl = _load_epoch_vector(
+    "nlos.sabi.SystemControl.GetSystemControlRequest-v1.0.hex"
+)
+built_sys_ctrl = system_control_pb2.GetSystemControlRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.SystemControl", major=1, minor=7
+    ),
+    view=system_control_pb2.SYSTEM_CONTROL_VIEW_TASK_ATTEMPT_LIST,
+    alert_limit=16,
+    target_id=_seq_bytes(0x40, 16),
+    plan_id=_seq_bytes(0x50, 16),
+    target_generation=4,
+)
+assert built_sys_ctrl.SerializeToString(deterministic=True) == g_sys_ctrl
+dec_sys_ctrl = system_control_pb2.GetSystemControlRequest.FromString(g_sys_ctrl)
+validate_schema_compatibility(dec_sys_ctrl.schema, "nlos.sabi.SystemControl")
+assert dec_sys_ctrl.schema.minor == 7
+assert (
+    dec_sys_ctrl.view
+    == system_control_pb2.SYSTEM_CONTROL_VIEW_TASK_ATTEMPT_LIST
+)
+assert dec_sys_ctrl.alert_limit == 16
+assert dec_sys_ctrl.target_id == _seq_bytes(0x40, 16)
+assert dec_sys_ctrl.plan_id == _seq_bytes(0x50, 16)
+assert dec_sys_ctrl.target_generation == 4
+assert dec_sys_ctrl.SerializeToString(deterministic=True) == g_sys_ctrl
+
+# 5. TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex
+g_takeover = _load_epoch_vector(
+    "nlos.sabi.TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex"
+)
+built_takeover = takeover_control_pb2.SubmitBarrierObservationRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.TakeoverControl", major=1, minor=0
+    ),
+    target=takeover_control_pb2.BarrierObservationTarget(
+        takeover_receipt_id=_rep_bytes(0x61, 16),
+        participant_type=1,
+        participant_id=_rep_bytes(0x62, 16),
+        participant_generation=3,
+        admission_receipt_id=_rep_bytes(0x63, 16),
+    ),
+    evidence=takeover_control_pb2.BarrierObservationEvidence(
+        remote_receipt_id=_rep_bytes(0x64, 16),
+        barrier_digest=_rep_bytes(0x65, 32),
+        observed_at_ms=1_730_000_000_000,
+    ),
+    signature=takeover_control_pb2.BarrierObservationSignature(
+        signer_principal_id=_rep_bytes(0x66, 16),
+        signer_control_domain_id=_rep_bytes(0x67, 16),
+        signer_key_id=_rep_bytes(0x68, 16),
+        signature=_rep_bytes(0x69, 64),
+    ),
+)
+assert built_takeover.SerializeToString(deterministic=True) == g_takeover
+dec_takeover = takeover_control_pb2.SubmitBarrierObservationRequest.FromString(
+    g_takeover
+)
+validate_schema_compatibility(dec_takeover.schema, "nlos.sabi.TakeoverControl")
+assert dec_takeover.target.participant_type == 1
+assert dec_takeover.target.participant_generation == 3
+assert dec_takeover.evidence.observed_at_ms == 1_730_000_000_000
+assert dec_takeover.signature.signature == _rep_bytes(0x69, 64)
+assert dec_takeover.SerializeToString(deterministic=True) == g_takeover
+
+# 6. WaitControl.InspectWaitRequest-v1.0.hex
+g_wait = _load_epoch_vector("nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex")
+built_wait = wait_control_pb2.InspectWaitRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.WaitControl", major=1, minor=0
+    ),
+    wait_id=_seq_bytes(0x70, 16),
+)
+assert built_wait.SerializeToString(deterministic=True) == g_wait
+dec_wait = wait_control_pb2.InspectWaitRequest.FromString(g_wait)
+validate_schema_compatibility(dec_wait.schema, "nlos.sabi.WaitControl")
+assert dec_wait.wait_id == _seq_bytes(0x70, 16)
+assert dec_wait.SerializeToString(deterministic=True) == g_wait
+
+# 7a. PrincipalHandshake.Challenge-v1.0.hex
+g_hs_chal = _load_epoch_vector(
+    "nlos.sabi.PrincipalHandshake.Challenge-v1.0.hex"
+)
+built_hs_chal = principal_handshake_pb2.PrincipalHandshakeChallenge(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.PrincipalHandshake", major=1, minor=0
+    ),
+    nonce=_rep_bytes(0xA5, 32),
+)
+assert built_hs_chal.SerializeToString(deterministic=True) == g_hs_chal
+dec_hs_chal = principal_handshake_pb2.PrincipalHandshakeChallenge.FromString(
+    g_hs_chal
+)
+validate_schema_compatibility(
+    dec_hs_chal.schema, "nlos.sabi.PrincipalHandshake"
+)
+assert dec_hs_chal.nonce == _rep_bytes(0xA5, 32)
+assert dec_hs_chal.SerializeToString(deterministic=True) == g_hs_chal
+
+# 7b. PrincipalHandshake.Attestation-v1.0.hex
+g_hs_att = _load_epoch_vector(
+    "nlos.sabi.PrincipalHandshake.Attestation-v1.0.hex"
+)
+built_hs_att = principal_handshake_pb2.PrincipalHandshakeAttestation(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.PrincipalHandshake",
+        major=1,
+        minor=0,
+        non_critical_extension_ids=[101],
+    ),
+    principal_id=_seq_bytes(0x80, 16),
+    nonce=_rep_bytes(0xA5, 32),
+    channel_binding=b"unix:///tmp/nlos-handshake-v1.0.sock",
+    signature=_rep_bytes(0xCD, 64),
+)
+assert built_hs_att.SerializeToString(deterministic=True) == g_hs_att
+dec_hs_att = principal_handshake_pb2.PrincipalHandshakeAttestation.FromString(
+    g_hs_att
+)
+validate_schema_compatibility(dec_hs_att.schema, "nlos.sabi.PrincipalHandshake")
+assert list(dec_hs_att.schema.non_critical_extension_ids) == [101]
+assert dec_hs_att.principal_id == _seq_bytes(0x80, 16)
+assert dec_hs_att.nonce == _rep_bytes(0xA5, 32)
+assert dec_hs_att.channel_binding == b"unix:///tmp/nlos-handshake-v1.0.sock"
+assert dec_hs_att.signature == _rep_bytes(0xCD, 64)
+assert dec_hs_att.SerializeToString(deterministic=True) == g_hs_att
+
+# 8. DriverProvider.Request-v1.0.hex
+g_drv = _load_epoch_vector("nlos.sabi.DriverProvider.Request-v1.0.hex")
+built_drv = driver_provider_pb2.DriverProviderRequest(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.DriverProvider", major=1, minor=0
+    ),
+    register=driver_provider_pb2.DriverProviderRegisterRequest(
+        operation_id=_rep_bytes(0x91, 16),
+        operation_generation=2,
+        owner_fiber_id=_rep_bytes(0x92, 16),
+        owner_fiber_generation=3,
+        cancellation_scope_id=_rep_bytes(0x93, 16),
+        cancellation_generation=4,
+    ),
+)
+assert built_drv.SerializeToString(deterministic=True) == g_drv
+dec_drv = driver_provider_pb2.DriverProviderRequest.FromString(g_drv)
+validate_schema_compatibility(dec_drv.schema, "nlos.sabi.DriverProvider")
+assert dec_drv.WhichOneof("request") == "register"
+assert dec_drv.register.operation_id == _rep_bytes(0x91, 16)
+assert dec_drv.register.operation_generation == 2
+assert dec_drv.register.owner_fiber_generation == 3
+assert dec_drv.register.cancellation_generation == 4
+assert dec_drv.SerializeToString(deterministic=True) == g_drv
+
+# 9. ChannelControl.CreateChannelRequestWire-v1.0.hex
+g_chan = _load_epoch_vector(
+    "nlos.sabi.ChannelControl.CreateChannelRequestWire-v1.0.hex"
+)
+built_chan = channel_control_pb2.CreateChannelRequestWire(
+    schema=envelope_pb2.SchemaIdentity(
+        name="nlos.sabi.ChannelControl", major=1, minor=0
+    ),
+    capacity_bytes=65536,
+    policy_digest=_rep_bytes(0xB1, 32),
+    idempotency_key=_rep_bytes(0xB2, 16),
+    created_at_ms=1_730_000_000_000,
+)
+assert built_chan.SerializeToString(deterministic=True) == g_chan
+dec_chan = channel_control_pb2.CreateChannelRequestWire.FromString(g_chan)
+validate_schema_compatibility(dec_chan.schema, "nlos.sabi.ChannelControl")
+assert dec_chan.capacity_bytes == 65536
+assert dec_chan.policy_digest == _rep_bytes(0xB1, 32)
+assert dec_chan.idempotency_key == _rep_bytes(0xB2, 16)
+assert dec_chan.created_at_ms == 1_730_000_000_000
+assert dec_chan.SerializeToString(deterministic=True) == g_chan
+
+# Unknown trailing field round-trip across all 9 channels:
+for msg_cls, base_wire in [
+    (envelope_pb2.Envelope, g_env_v10),
+    (service_directory_pb2.ResolveServiceRequest, g_svc_dir),
+    (operation_control_pb2.QueryOperationRequest, g_op_ctrl),
+    (system_control_pb2.GetSystemControlRequest, g_sys_ctrl),
+    (takeover_control_pb2.SubmitBarrierObservationRequest, g_takeover),
+    (wait_control_pb2.InspectWaitRequest, g_wait),
+    (principal_handshake_pb2.PrincipalHandshakeChallenge, g_hs_chal),
+    (principal_handshake_pb2.PrincipalHandshakeAttestation, g_hs_att),
+    (driver_provider_pb2.DriverProviderRequest, g_drv),
+    (channel_control_pb2.CreateChannelRequestWire, g_chan),
+]:
+    extended = base_wire + UNKNOWN_TAIL
+    reencoded = msg_cls.FromString(extended).SerializeToString(
+        deterministic=True
+    )
+    assert reencoded == extended, f"{msg_cls.__name__} dropped unknown field"
+
+# [COMPAT-VER-002] negative & positive compatibility matrix across all 9 channels:
+for channel_name in SABI_V1_CHANNELS:
+    for bad_major in (0, 2, 99):
+        bad_id = envelope_pb2.SchemaIdentity(
+            name=channel_name, major=bad_major, minor=0
+        )
+        try:
+            validate_schema_compatibility(bad_id, channel_name)
+        except CommonSemanticsError as err:
+            assert err.code == "E_ABI_VERSION"
+        else:
+            raise AssertionError(
+                f"{channel_name} accepted unsupported major={bad_major}"
+            )
+
+    for bad_crit in ([7001], [0], [42, 7001]):
+        crit_id = envelope_pb2.SchemaIdentity(
+            name=channel_name,
+            major=1,
+            minor=0,
+            critical_extension_ids=bad_crit,
+        )
+        try:
+            validate_schema_compatibility(crit_id, channel_name)
+        except CommonSemanticsError as err:
+            assert err.code == "UNSUPPORTED_CRITICAL_EXTENSION"
+        else:
+            raise AssertionError(
+                f"{channel_name} accepted critical_extension_ids={bad_crit}"
+            )
+
+    ok_ext_id = envelope_pb2.SchemaIdentity(
+        name=channel_name,
+        major=1,
+        minor=99,
+        non_critical_extension_ids=[42, 7001, 9999],
+    )
+    validated = validate_schema_compatibility(ok_ext_id, channel_name)
+    assert validated.major == 1
+    assert list(validated.non_critical_extension_ids) == [42, 7001, 9999]

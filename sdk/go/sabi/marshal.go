@@ -38,6 +38,10 @@ func putUint32(b []byte, field int, v uint32) []byte {
 	return putUint64(b, field, uint64(v))
 }
 
+func putInt64(b []byte, field int, v int64) []byte {
+	return putUint64(b, field, uint64(v))
+}
+
 func putPackedUint32(b []byte, field int, vs []uint32) []byte {
 	var body []byte
 	for _, v := range vs {
@@ -336,6 +340,255 @@ func (m *ResolveServiceRequest) Marshal() []byte {
 	}
 	if m.Service != "" {
 		b = putString(b, 2, m.Service)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *PrincipalHandshakeChallenge) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if len(m.Nonce) > 0 {
+		b = putBytesField(b, 2, m.Nonce)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *QueryOperationRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.Operation != nil {
+		b = putMessage(b, 2, m.Operation.Marshal())
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *GetSystemControlRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.View != 0 {
+		b = putUint32(b, 2, uint32(m.View))
+	}
+	if m.AlertLimit != 0 {
+		b = putUint32(b, 3, m.AlertLimit)
+	}
+	if len(m.TargetID) > 0 {
+		b = putBytesField(b, 4, m.TargetID)
+	}
+	if len(m.PlanID) > 0 {
+		b = putBytesField(b, 5, m.PlanID)
+	}
+	if m.TargetGeneration != 0 {
+		b = putUint64(b, 6, m.TargetGeneration)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *BarrierObservationTarget) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if len(m.TakeoverReceiptID) > 0 {
+		b = putBytesField(b, 1, m.TakeoverReceiptID)
+	}
+	if m.ParticipantType != 0 {
+		b = putUint32(b, 2, m.ParticipantType)
+	}
+	if len(m.ParticipantID) > 0 {
+		b = putBytesField(b, 3, m.ParticipantID)
+	}
+	if m.ParticipantGeneration != 0 {
+		b = putUint64(b, 4, m.ParticipantGeneration)
+	}
+	if len(m.AdmissionReceiptID) > 0 {
+		b = putBytesField(b, 5, m.AdmissionReceiptID)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *BarrierObservationEvidence) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if len(m.RemoteReceiptID) > 0 {
+		b = putBytesField(b, 1, m.RemoteReceiptID)
+	}
+	if len(m.BarrierDigest) > 0 {
+		b = putBytesField(b, 2, m.BarrierDigest)
+	}
+	if m.ObservedAtMS != 0 {
+		b = putInt64(b, 3, m.ObservedAtMS)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *BarrierObservationSignature) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if len(m.SignerPrincipalID) > 0 {
+		b = putBytesField(b, 1, m.SignerPrincipalID)
+	}
+	if len(m.SignerControlDomainID) > 0 {
+		b = putBytesField(b, 2, m.SignerControlDomainID)
+	}
+	if len(m.SignerKeyID) > 0 {
+		b = putBytesField(b, 3, m.SignerKeyID)
+	}
+	if len(m.Signature) > 0 {
+		b = putBytesField(b, 4, m.Signature)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *SubmitBarrierObservationRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.Target != nil {
+		b = putMessage(b, 2, m.Target.Marshal())
+	}
+	if m.Evidence != nil {
+		b = putMessage(b, 3, m.Evidence.Marshal())
+	}
+	if m.Signature != nil {
+		b = putMessage(b, 4, m.Signature.Marshal())
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *InspectWaitRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if len(m.WaitID) > 0 {
+		b = putBytesField(b, 2, m.WaitID)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *DriverProviderRegisterRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if len(m.OperationID) > 0 {
+		b = putBytesField(b, 1, m.OperationID)
+	}
+	if m.OperationGeneration != 0 {
+		b = putUint64(b, 2, m.OperationGeneration)
+	}
+	if len(m.OwnerFiberID) > 0 {
+		b = putBytesField(b, 3, m.OwnerFiberID)
+	}
+	if m.OwnerFiberGeneration != 0 {
+		b = putUint64(b, 4, m.OwnerFiberGeneration)
+	}
+	if len(m.CancellationScopeID) > 0 {
+		b = putBytesField(b, 5, m.CancellationScopeID)
+	}
+	if m.CancellationGeneration != 0 {
+		b = putUint64(b, 6, m.CancellationGeneration)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *DriverProviderCompleteRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if len(m.OperationID) > 0 {
+		b = putBytesField(b, 1, m.OperationID)
+	}
+	if m.OperationGeneration != 0 {
+		b = putUint64(b, 2, m.OperationGeneration)
+	}
+	if len(m.CallbackID) > 0 {
+		b = putBytesField(b, 3, m.CallbackID)
+	}
+	if len(m.Seed) > 0 {
+		b = putBytesField(b, 4, m.Seed)
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, panicking if multiple request oneof arms are set.
+func (m *DriverProviderRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	if m.Register != nil && m.Complete != nil {
+		panic("sabi: DriverProviderRequest oneof request has multiple arms set")
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.Register != nil {
+		b = putMessage(b, 2, m.Register.Marshal())
+	}
+	if m.Complete != nil {
+		b = putMessage(b, 4, m.Complete.Marshal())
+	}
+	return append(b, m.UnknownFields...)
+}
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *CreateChannelRequestWire) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.CapacityBytes != 0 {
+		b = putUint64(b, 2, m.CapacityBytes)
+	}
+	if len(m.PolicyDigest) > 0 {
+		b = putBytesField(b, 3, m.PolicyDigest)
+	}
+	if len(m.IdempotencyKey) > 0 {
+		b = putBytesField(b, 4, m.IdempotencyKey)
+	}
+	if m.CreatedAtMS != 0 {
+		b = putUint64(b, 5, m.CreatedAtMS)
 	}
 	return append(b, m.UnknownFields...)
 }

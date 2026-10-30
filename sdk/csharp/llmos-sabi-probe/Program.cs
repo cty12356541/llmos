@@ -3,7 +3,9 @@
 // (ADR-0014). Mirrors sdk/go/sabi/golden_test.go and sdk/go/wire/wire_test.go
 // case-for-case; runs as a dependency-free console harness and exits
 // non-zero if any case fails.
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Llmos.Sabi.Probe;
 
 // ----------------------------------------------------------------------
@@ -125,6 +127,61 @@ static void Throws(Action body, string what)
         return;
     }
     throw new Exception($"{what}: expected a failure, got none");
+}
+
+static void ThrowsCompat(Action body, string expectedCode, string what)
+{
+    try
+    {
+        body();
+    }
+    catch (SabiCompatibilityException ex)
+    {
+        Check(ex.Code == expectedCode, $"{what}: expected code {expectedCode}, got {ex.Code} ({ex.Message})");
+        return;
+    }
+    throw new Exception($"{what}: expected SabiCompatibilityException({expectedCode}), got none");
+}
+
+static string Sha256Hex(byte[] data) => Hex(SHA256.HashData(data));
+
+static JsonDocument LoadEpochV10Manifest()
+{
+    string root = FindRepoRoot();
+    string raw = File.ReadAllText(Path.Combine(root, "schema", "golden", "epochs", "v1.0", "manifest.json"));
+    return JsonDocument.Parse(raw);
+}
+
+static byte[] EpochV10Bytes(string name)
+{
+    string root = FindRepoRoot();
+    using JsonDocument doc = LoadEpochV10Manifest();
+    JsonElement? matched = null;
+    foreach (JsonElement vec in doc.RootElement.GetProperty("vectors").EnumerateArray())
+    {
+        if (vec.GetProperty("file").GetString() == name)
+        {
+            matched = vec;
+            break;
+        }
+    }
+    Check(matched != null, $"vector {name} missing from v1.0 manifest.json");
+    JsonElement meta = matched!.Value;
+
+    string fullPath = Path.Combine(root, "schema", "golden", "epochs", "v1.0", name);
+    byte[] rawFile = File.ReadAllBytes(fullPath);
+    string gotFileSha = Sha256Hex(rawFile);
+    string wantFileSha = meta.GetProperty("sha256_file").GetString() ?? "";
+    Check(gotFileSha == wantFileSha, $"{name} sha256_file mismatch: got {gotFileSha}, want {wantFileSha}");
+
+    byte[] wire = Convert.FromHexString(Encoding.UTF8.GetString(rawFile).Trim());
+    int wantLen = meta.GetProperty("byte_length").GetInt32();
+    Check(wire.Length == wantLen, $"{name} byte_length mismatch: got {wire.Length}, want {wantLen}");
+
+    string gotWireSha = Sha256Hex(wire);
+    string wantWireSha = meta.GetProperty("sha256_wire").GetString() ?? "";
+    Check(gotWireSha == wantWireSha, $"{name} sha256_wire mismatch: got {gotWireSha}, want {wantWireSha}");
+    return wire;
 }
 
 // ----------------------------------------------------------------------
@@ -510,6 +567,471 @@ Run("sabi: TestLengthBoundary128", () =>
     var decoded = new Envelope();
     SabiCodec.Unmarshal(decoded, encoded);
     CheckBytes(decoded.Payload, Repeat(0xee, 128), "128-byte payload did not survive the roundtrip");
+});
+
+// ----------------------------------------------------------------------
+// W77-E1B Epoch v1.0 9-channel golden corpus + COMPAT-VER-002 gates.
+// ----------------------------------------------------------------------
+
+Run("sabi: TestEpochV10ManifestAndFingerprints", () =>
+{
+    using JsonDocument doc = LoadEpochV10Manifest();
+    JsonElement rootElem = doc.RootElement;
+    Check(rootElem.GetProperty("schema").GetString() == "nlos.golden.epoch_manifest.v1", "manifest schema");
+    Check(rootElem.GetProperty("epoch").GetString() == "v1.0", "manifest epoch");
+    Check(rootElem.GetProperty("sabi_major").GetInt32() == 1, "manifest sabi_major");
+    Check(rootElem.GetProperty("immutable").GetBoolean(), "manifest immutable");
+
+    var reqChannels = new List<string>();
+    foreach (JsonElement ch in rootElem.GetProperty("required_channels").EnumerateArray())
+    {
+        string chName = ch.GetString() ?? "";
+        Check(SabiRegistry.SabiV1Channels.ContainsKey(chName), $"unexpected manifest channel {chName}");
+        reqChannels.Add(chName);
+    }
+    Check(reqChannels.Count == SabiRegistry.SabiV1Channels.Count, "required_channels count");
+
+    string repoRoot = FindRepoRoot();
+    int legacyCount = 0;
+    foreach (JsonElement lg in rootElem.GetProperty("legacy_root_goldens").EnumerateArray())
+    {
+        legacyCount++;
+        string relPath = (lg.GetProperty("path").GetString() ?? "").Replace('/', Path.DirectorySeparatorChar);
+        byte[] rawFile = File.ReadAllBytes(Path.Combine(repoRoot, relPath));
+        Check(Sha256Hex(rawFile) == lg.GetProperty("sha256_file").GetString(), $"legacy {relPath} sha256_file");
+        byte[] wire = Convert.FromHexString(Encoding.UTF8.GetString(rawFile).Trim());
+        Check(wire.Length == lg.GetProperty("byte_length").GetInt32(), $"legacy {relPath} byte_length");
+        Check(Sha256Hex(wire) == lg.GetProperty("sha256_wire").GetString(), $"legacy {relPath} sha256_wire");
+    }
+    Check(legacyCount == 7, $"legacy_root_goldens count={legacyCount}, want 7");
+
+    var covered = new HashSet<string>(StringComparer.Ordinal);
+    int vectorCount = 0;
+    foreach (JsonElement vec in rootElem.GetProperty("vectors").EnumerateArray())
+    {
+        vectorCount++;
+        string file = vec.GetProperty("file").GetString() ?? "";
+        _ = EpochV10Bytes(file);
+        covered.Add(vec.GetProperty("channel").GetString() ?? "");
+    }
+    Check(vectorCount == 11, $"epoch v1.0 vector count={vectorCount}, want 11");
+    Check(covered.Count == 9, $"epoch v1.0 covered channels={covered.Count}, want 9");
+});
+
+Run("sabi: TestEpochV10EnvelopeGoldens", () =>
+{
+    byte[] g1 = EpochV10Bytes("nlos.sabi.Envelope-v1.0.hex");
+    var env1 = new Envelope
+    {
+        Schema = new SchemaIdentity
+        {
+            Name = "nlos.sabi.Envelope",
+            Major = 1,
+            Minor = 1,
+            NonCriticalExtensionIDs = new uint[] { 42 },
+        },
+        RequestID = Seq(0x10, 16),
+        Service = "system_control",
+        Method = "get",
+        RequestContext = new SabiRequestContext
+        {
+            Caller = new CallerIdentity
+            {
+                PrincipalID = Repeat(0x01, 16),
+                ApplicationID = Repeat(0x02, 16),
+                ProcessID = Repeat(0x03, 16),
+                ProcessGeneration = 7,
+            },
+            ActivityContext = Encoding.UTF8.GetBytes("w77-epoch-v1.0"),
+            TaskExecutionBinding = new TaskExecutionBinding
+            {
+                TaskAttemptID = Repeat(0x04, 16),
+                TaskAuthorityTerm = 9,
+                TaskControlEpoch = 10,
+                CancelEpoch = 11,
+                PermitEpoch = 12,
+                IsolationDomainGeneration = 13,
+            },
+            CorrelationID = Repeat(0x05, 16),
+            IdempotencyKey = Repeat(0x06, 16),
+            DeadlineMonotonicNS = 500000,
+            CapabilityHandles = new List<CapabilityHandle> { new() { Slot = 11, Generation = 2 } },
+            ReservationHandle = new CapabilityHandle { Slot = 12, Generation = 3 },
+            ProposalOrInputDigestSHA256 = Repeat(0x07, 32),
+        },
+        Payload = Encoding.UTF8.GetBytes("sabi-v1.0-payload"),
+    };
+    CheckBytes(SabiCodec.Marshal(env1), g1, "encode Envelope-v1.0 != golden");
+
+    var dec1 = new Envelope();
+    SabiCodec.Unmarshal(dec1, g1);
+    SabiRegistry.ValidateSchemaIdentity(dec1.Schema, "nlos.sabi.Envelope");
+    Check(dec1.Service == "system_control" && dec1.Method == "get", "decoded Envelope-v1.0 service/method");
+    Check(Encoding.UTF8.GetString(dec1.Payload) == "sabi-v1.0-payload", "decoded Envelope-v1.0 payload");
+    CheckBytes(SabiCodec.Marshal(dec1), g1, "re-encode Envelope-v1.0 != golden");
+
+    byte[] g2 = EpochV10Bytes("nlos.sabi.Envelope-unknown-noncritical-v1.0.hex");
+    var env2 = new Envelope
+    {
+        Schema = new SchemaIdentity
+        {
+            Name = "nlos.sabi.Envelope",
+            Major = 1,
+            Minor = 1,
+            NonCriticalExtensionIDs = new uint[] { 42, 7001, 9999 },
+        },
+        RequestID = Seq(0x20, 16),
+        Service = "operation",
+        Method = "query",
+        Payload = Encoding.UTF8.GetBytes("ext-probe"),
+        UnknownFields = new byte[] { 0xa0, 0x06, 0x07 },
+    };
+    CheckBytes(SabiCodec.Marshal(env2), g2, "encode Envelope-unknown-noncritical-v1.0 != golden");
+
+    var dec2 = new Envelope();
+    SabiCodec.Unmarshal(dec2, g2);
+    SabiRegistry.ValidateSchemaIdentity(dec2.Schema, "nlos.sabi.Envelope");
+    Check(dec2.Schema!.NonCriticalExtensionIDs.SequenceEqual(new uint[] { 42, 7001, 9999 }),
+        "decoded non-critical extensions");
+    CheckBytes(dec2.UnknownFields, new byte[] { 0xa0, 0x06, 0x07 }, "decoded unknown fields");
+    CheckBytes(SabiCodec.Marshal(dec2), g2, "re-encode Envelope-unknown-noncritical-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10ServiceDirectoryGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.ServiceDirectory.ResolveServiceRequest-v1.0.hex");
+    var req = new ResolveServiceRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.ServiceDirectory", Major = 1 },
+        Service = "system_control",
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode ServiceDirectory-v1.0 != golden");
+
+    var dec = new ResolveServiceRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.ServiceDirectory");
+    Check(dec.Service == "system_control", "decoded ServiceDirectory-v1.0 service");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode ServiceDirectory-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10OperationControlGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.OperationControl.QueryOperationRequest-v1.0.hex");
+    var req = new QueryOperationRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.OperationControl", Major = 1 },
+        Operation = new OperationReference { OperationID = Seq(0x30, 16), Generation = 5 },
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode OperationControl-v1.0 != golden");
+
+    var dec = new QueryOperationRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.OperationControl");
+    Check(dec.Operation != null && dec.Operation.Generation == 5, "decoded OperationControl generation");
+    CheckBytes(dec.Operation!.OperationID, Seq(0x30, 16), "decoded OperationControl operation_id");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode OperationControl-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10SystemControlGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.SystemControl.GetSystemControlRequest-v1.0.hex");
+    var req = new GetSystemControlRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.SystemControl", Major = 1, Minor = 7 },
+        View = SystemControlView.TaskAttemptList,
+        AlertLimit = 16,
+        TargetID = Seq(0x40, 16),
+        PlanID = Seq(0x50, 16),
+        TargetGeneration = 4,
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode SystemControl-v1.0 != golden");
+
+    var dec = new GetSystemControlRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.SystemControl");
+    Check(dec.Schema!.Minor == 7 && dec.View == SystemControlView.TaskAttemptList &&
+          dec.AlertLimit == 16 && dec.TargetGeneration == 4,
+        "decoded SystemControl fields");
+    CheckBytes(dec.TargetID, Seq(0x40, 16), "decoded SystemControl target_id");
+    CheckBytes(dec.PlanID, Seq(0x50, 16), "decoded SystemControl plan_id");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode SystemControl-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10TakeoverControlGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex");
+    var req = new SubmitBarrierObservationRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.TakeoverControl", Major = 1 },
+        Target = new BarrierObservationTarget
+        {
+            TakeoverReceiptID = Repeat(0x61, 16),
+            ParticipantType = 1,
+            ParticipantID = Repeat(0x62, 16),
+            ParticipantGeneration = 3,
+            AdmissionReceiptID = Repeat(0x63, 16),
+        },
+        Evidence = new BarrierObservationEvidence
+        {
+            RemoteReceiptID = Repeat(0x64, 16),
+            BarrierDigest = Repeat(0x65, 32),
+            ObservedAtMS = 1730000000000L,
+        },
+        Signature = new BarrierObservationSignature
+        {
+            SignerPrincipalID = Repeat(0x66, 16),
+            SignerControlDomainID = Repeat(0x67, 16),
+            SignerKeyID = Repeat(0x68, 16),
+            Signature = Repeat(0x69, 64),
+        },
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode TakeoverControl-v1.0 != golden");
+
+    var dec = new SubmitBarrierObservationRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.TakeoverControl");
+    Check(dec.Target != null && dec.Target.ParticipantType == 1 && dec.Target.ParticipantGeneration == 3,
+        "decoded TakeoverControl target");
+    Check(dec.Evidence != null && dec.Evidence.ObservedAtMS == 1730000000000L,
+        "decoded TakeoverControl evidence");
+    Check(dec.Signature != null, "decoded TakeoverControl signature");
+    CheckBytes(dec.Signature!.Signature, Repeat(0x69, 64), "decoded TakeoverControl signature bytes");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode TakeoverControl-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10WaitControlGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex");
+    var req = new InspectWaitRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.WaitControl", Major = 1 },
+        WaitID = Seq(0x70, 16),
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode WaitControl-v1.0 != golden");
+
+    var dec = new InspectWaitRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.WaitControl");
+    CheckBytes(dec.WaitID, Seq(0x70, 16), "decoded WaitControl wait_id");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode WaitControl-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10PrincipalHandshakeDualGoldens", () =>
+{
+    byte[] gChal = EpochV10Bytes("nlos.sabi.PrincipalHandshake.Challenge-v1.0.hex");
+    var chal = new PrincipalHandshakeChallenge
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.PrincipalHandshake", Major = 1 },
+        Nonce = Repeat(0xa5, 32),
+    };
+    CheckBytes(SabiCodec.Marshal(chal), gChal, "encode Challenge-v1.0 != golden");
+
+    var decChal = new PrincipalHandshakeChallenge();
+    SabiCodec.Unmarshal(decChal, gChal);
+    SabiRegistry.ValidateSchemaIdentity(decChal.Schema, "nlos.sabi.PrincipalHandshake");
+    CheckBytes(decChal.Nonce, Repeat(0xa5, 32), "decoded Challenge nonce");
+    CheckBytes(SabiCodec.Marshal(decChal), gChal, "re-encode Challenge-v1.0 != golden");
+
+    byte[] gAtt = EpochV10Bytes("nlos.sabi.PrincipalHandshake.Attestation-v1.0.hex");
+    var att = new PrincipalHandshakeAttestation
+    {
+        Schema = new SchemaIdentity
+        {
+            Name = "nlos.sabi.PrincipalHandshake",
+            Major = 1,
+            NonCriticalExtensionIDs = new uint[] { 101 },
+        },
+        PrincipalID = Seq(0x80, 16),
+        Nonce = Repeat(0xa5, 32),
+        ChannelBinding = Encoding.UTF8.GetBytes("unix:///tmp/nlos-handshake-v1.0.sock"),
+        Signature = Repeat(0xcd, 64),
+    };
+    CheckBytes(SabiCodec.Marshal(att), gAtt, "encode Attestation-v1.0 != golden");
+
+    var decAtt = new PrincipalHandshakeAttestation();
+    SabiCodec.Unmarshal(decAtt, gAtt);
+    SabiRegistry.ValidateSchemaIdentity(decAtt.Schema, "nlos.sabi.PrincipalHandshake");
+    Check(decAtt.Schema!.NonCriticalExtensionIDs.SequenceEqual(new uint[] { 101 }), "decoded Attestation ext");
+    CheckBytes(decAtt.PrincipalID, Seq(0x80, 16), "decoded Attestation principal_id");
+    Check(Encoding.UTF8.GetString(decAtt.ChannelBinding) == "unix:///tmp/nlos-handshake-v1.0.sock",
+        "decoded Attestation channel_binding");
+    CheckBytes(SabiCodec.Marshal(decAtt), gAtt, "re-encode Attestation-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10DriverProviderGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.DriverProvider.Request-v1.0.hex");
+    var req = new DriverProviderRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.DriverProvider", Major = 1 },
+        Register = new DriverProviderRegisterRequest
+        {
+            OperationID = Repeat(0x91, 16),
+            OperationGeneration = 2,
+            OwnerFiberID = Repeat(0x92, 16),
+            OwnerFiberGeneration = 3,
+            CancellationScopeID = Repeat(0x93, 16),
+            CancellationGeneration = 4,
+        },
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode DriverProvider-v1.0 != golden");
+
+    var dec = new DriverProviderRequest();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.DriverProvider");
+    Check(dec.Register != null && dec.Complete == null, "decoded DriverProvider register arm");
+    CheckBytes(dec.Register!.OperationID, Repeat(0x91, 16), "decoded DriverProvider operation_id");
+    Check(dec.Register.OperationGeneration == 2 &&
+          dec.Register.OwnerFiberGeneration == 3 &&
+          dec.Register.CancellationGeneration == 4,
+        "decoded DriverProvider generations");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode DriverProvider-v1.0 != golden");
+});
+
+Run("sabi: TestDriverProviderOneofBothArmsThrows", () =>
+{
+    Throws(
+        () => SabiCodec.Marshal(new DriverProviderRequest
+        {
+            Register = new DriverProviderRegisterRequest(),
+            Complete = new DriverProviderCompleteRequest(),
+        }),
+        "marshal DriverProviderRequest with both oneof arms set must throw");
+});
+
+Run("sabi: TestEpochV10ChannelControlGolden", () =>
+{
+    byte[] golden = EpochV10Bytes("nlos.sabi.ChannelControl.CreateChannelRequestWire-v1.0.hex");
+    var req = new CreateChannelRequestWire
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.ChannelControl", Major = 1 },
+        CapacityBytes = 65536,
+        PolicyDigest = Repeat(0xb1, 32),
+        IdempotencyKey = Repeat(0xb2, 16),
+        CreatedAtMS = 1730000000000UL,
+    };
+    CheckBytes(SabiCodec.Marshal(req), golden, "encode ChannelControl-v1.0 != golden");
+
+    var dec = new CreateChannelRequestWire();
+    SabiCodec.Unmarshal(dec, golden);
+    SabiRegistry.ValidateSchemaIdentity(dec.Schema, "nlos.sabi.ChannelControl");
+    Check(dec.CapacityBytes == 65536 && dec.CreatedAtMS == 1730000000000UL,
+        "decoded ChannelControl scalar fields");
+    CheckBytes(dec.PolicyDigest, Repeat(0xb1, 32), "decoded ChannelControl policy_digest");
+    CheckBytes(dec.IdempotencyKey, Repeat(0xb2, 16), "decoded ChannelControl idempotency_key");
+    CheckBytes(SabiCodec.Marshal(dec), golden, "re-encode ChannelControl-v1.0 != golden");
+});
+
+Run("sabi: TestEpochV10UnknownFieldRoundtripAllChannels", () =>
+{
+    byte[] tail = { 0xa0, 0x06, 0x07 };
+    (string File, Func<byte[], byte[]> Run)[] cases =
+    {
+        ("nlos.sabi.Envelope-v1.0.hex", b =>
+        {
+            var m = new Envelope();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.ServiceDirectory.ResolveServiceRequest-v1.0.hex", b =>
+        {
+            var m = new ResolveServiceRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.OperationControl.QueryOperationRequest-v1.0.hex", b =>
+        {
+            var m = new QueryOperationRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.SystemControl.GetSystemControlRequest-v1.0.hex", b =>
+        {
+            var m = new GetSystemControlRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex", b =>
+        {
+            var m = new SubmitBarrierObservationRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex", b =>
+        {
+            var m = new InspectWaitRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.PrincipalHandshake.Challenge-v1.0.hex", b =>
+        {
+            var m = new PrincipalHandshakeChallenge();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.PrincipalHandshake.Attestation-v1.0.hex", b =>
+        {
+            var m = new PrincipalHandshakeAttestation();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.DriverProvider.Request-v1.0.hex", b =>
+        {
+            var m = new DriverProviderRequest();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+        ("nlos.sabi.ChannelControl.CreateChannelRequestWire-v1.0.hex", b =>
+        {
+            var m = new CreateChannelRequestWire();
+            SabiCodec.Unmarshal(m, b);
+            return SabiCodec.Marshal(m);
+        }),
+    };
+    foreach ((string file, Func<byte[], byte[]> runCase) in cases)
+    {
+        byte[] extended = Concat(EpochV10Bytes(file), tail);
+        CheckBytes(runCase(extended), extended, $"{file} unknown-field roundtrip");
+    }
+});
+
+Run("sabi: TestCompatVer002SchemaIdentityValidation", () =>
+{
+    ThrowsCompat(
+        () => SabiRegistry.ValidateSchemaIdentity(null),
+        SabiRegistry.CodeMissingSchemaIdentity,
+        "null schema identity");
+    ThrowsCompat(
+        () => SabiRegistry.ValidateSchemaIdentity(new SchemaIdentity { Name = "nlos.sabi.Unknown", Major = 1 }),
+        SabiRegistry.CodeUnknownSchema,
+        "unknown schema name");
+    foreach (string ch in SabiRegistry.SabiV1Channels.Keys)
+    {
+        foreach (uint badMajor in new uint[] { 0, 2, 99 })
+        {
+            ThrowsCompat(
+                () => SabiRegistry.ValidateSchemaIdentity(new SchemaIdentity { Name = ch, Major = badMajor }, ch),
+                SabiRegistry.CodeAbiVersion,
+                $"{ch} major={badMajor}");
+        }
+        foreach (uint[] badCrit in new[] { new uint[] { 7001 }, new uint[] { 0 }, new uint[] { 42, 7001 } })
+        {
+            ThrowsCompat(
+                () => SabiRegistry.ValidateSchemaIdentity(
+                    new SchemaIdentity { Name = ch, Major = 1, CriticalExtensionIDs = badCrit }, ch),
+                SabiRegistry.CodeUnsupportedCriticalExtension,
+                $"{ch} critical_extension_ids");
+        }
+        SabiRegistry.ValidateSchemaIdentity(
+            new SchemaIdentity
+            {
+                Name = ch,
+                Major = 1,
+                Minor = 99,
+                NonCriticalExtensionIDs = new uint[] { 42, 7001, 9999 },
+            },
+            ch);
+    }
 });
 
 // ----------------------------------------------------------------------

@@ -1,0 +1,173 @@
+{
+  "schema": "nlos.golden.epoch_manifest.v1",
+  "epoch": "v1.0",
+  "sabi_major": 1,
+  "immutable": true,
+  "required_channels": [
+    "nlos.sabi.Envelope",
+    "nlos.sabi.ServiceDirectory",
+    "nlos.sabi.OperationControl",
+    "nlos.sabi.SystemControl",
+    "nlos.sabi.TakeoverControl",
+    "nlos.sabi.WaitControl",
+    "nlos.sabi.PrincipalHandshake",
+    "nlos.sabi.DriverProvider",
+    "nlos.sabi.ChannelControl"
+  ],
+  "legacy_root_goldens": [
+    {
+      "path": "schema/golden/nlos.canonical.DigestEnvelope-preimage-v1.hex",
+      "byte_length": 162,
+      "sha256_wire": "d4bd951a18385a72dee85cdd48544aa56e783a896b6612268d881e66eab81923",
+      "sha256_file": "4bb7cbf370dca47dc706a938eb8bbdbaccefb76c70fcdc25d6ce8f09cadd175d"
+    },
+    {
+      "path": "schema/golden/nlos.canonical.DigestEnvelope-v1.hex",
+      "byte_length": 128,
+      "sha256_wire": "6fffe21750702156f4ff059818a917b8537e2c8f4494aae2f24e738e5873009a",
+      "sha256_file": "ce93787d1093e48a2eebf347abfbd7f311806acc54a595063ce9461e9d355ecb"
+    },
+    {
+      "path": "schema/golden/nlos.sabi.Envelope-common-request-v1.hex",
+      "byte_length": 252,
+      "sha256_wire": "fff671f95f99b4d7afd9a06b5f1276e433fae325cee7dc47323086c3a13faa3a",
+      "sha256_file": "e2bb07a2d742bd51396e7dad96ff5dc2d59465235a8c5319e88d6e20ca6d5bb5"
+    },
+    {
+      "path": "schema/golden/nlos.sabi.Envelope-common-uncertain-v1.hex",
+      "byte_length": 164,
+      "sha256_wire": "b4338c436f72c8577340ff89918ded254a29f488e3856b01c3abe5e3703adfa4",
+      "sha256_file": "dfcc54f32cd7da1e9a80230259a21a4d3be9825343cff904669c78f60b175def"
+    },
+    {
+      "path": "schema/golden/nlos.sabi.Envelope-v1.hex",
+      "byte_length": 66,
+      "sha256_wire": "ce270a09badebf5a6f9c6c16b6107c5820d72a011363ffa004fd1bbdaad0174d",
+      "sha256_file": "670f664fb25a0f2c1e5cb34dc7f427e3187cec535b9a1031dff221f4d92debb0"
+    },
+    {
+      "path": "schema/golden/nlos.sabi.PrincipalHandshake-v1.hex",
+      "byte_length": 185,
+      "sha256_wire": "db5ad666c6b0b31401df06932bcea0a2202854bbbc8bb9f258a1ac33305bb8d5",
+      "sha256_file": "c7259dffaf0bd168425c77963a0ae421560cd288bd4381ec2e58e8d25d791963"
+    },
+    {
+      "path": "schema/golden/nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex",
+      "byte_length": 43,
+      "sha256_wire": "062a8627a5104161cdd0ed0e4d1724f3c8ce06cb968fc5ff2cca926dbbc8d65e",
+      "sha256_file": "5d2a1570d03018db58ab397238821cc07f680055d73b0266658bce594615afb7"
+    }
+  ],
+  "vectors": [
+    {
+      "file": "nlos.sabi.Envelope-v1.0.hex",
+      "channel": "nlos.sabi.Envelope",
+      "message": "nlos.sabi.v1.Envelope",
+      "schema_major": 1,
+      "schema_minor": 1,
+      "byte_length": 280,
+      "sha256_wire": "1fcef924ca415e1d44c825755e15ccc9eaaff8480f93d9eb3146fd8cae0c7724",
+      "sha256_file": "bc5192239103c945521ab7d736c19a7b134d2e377520b8088ce7a6f313584b03"
+    },
+    {
+      "file": "nlos.sabi.Envelope-unknown-noncritical-v1.0.hex",
+      "channel": "nlos.sabi.Envelope",
+      "message": "nlos.sabi.v1.Envelope",
+      "schema_major": 1,
+      "schema_minor": 1,
+      "byte_length": 83,
+      "sha256_wire": "61508a0f778c4c34fcba6b8b63390381937515718188cd5dbfa40ae03b5e3382",
+      "sha256_file": "46aecff05503c4ba8181b4aeec9c2bfa7245328a5e05dcb95cc4d75b98abd09c"
+    },
+    {
+      "file": "nlos.sabi.ServiceDirectory.ResolveServiceRequest-v1.0.hex",
+      "channel": "nlos.sabi.ServiceDirectory",
+      "message": "nlos.sabi.v1.ResolveServiceRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 48,
+      "sha256_wire": "f8387d10fc8a72a8f72fcf3f6b0af21358785e505f99d9b19ca2b7aacc58ec70",
+      "sha256_file": "a157960cefdffc71f5bb8cffc910c6681ba7e7e118a11130e986cdc971f75b7d"
+    },
+    {
+      "file": "nlos.sabi.OperationControl.QueryOperationRequest-v1.0.hex",
+      "channel": "nlos.sabi.OperationControl",
+      "message": "nlos.sabi.v1.QueryOperationRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 54,
+      "sha256_wire": "866a3b0811a681f06992b21ff4bfff290966289fc348bbd7ff25148037d378a4",
+      "sha256_file": "ba84512e68ceb8a05de17e6103f67c18227bcda8df4f82de5398fd27513b4cfe"
+    },
+    {
+      "file": "nlos.sabi.SystemControl.GetSystemControlRequest-v1.0.hex",
+      "channel": "nlos.sabi.SystemControl",
+      "message": "nlos.sabi.v1.GetSystemControlRequest",
+      "schema_major": 1,
+      "schema_minor": 7,
+      "byte_length": 73,
+      "sha256_wire": "fb1b2a923e60a6fa22444c853cd516eb8bad11ddd51c73b9256833794f9ca0ac",
+      "sha256_file": "61f0bad2e998db13f7615e6b24d99ca45370ca3e492d7e8935854a077f4b07f9"
+    },
+    {
+      "file": "nlos.sabi.TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex",
+      "channel": "nlos.sabi.TakeoverControl",
+      "message": "nlos.sabi.v1.SubmitBarrierObservationRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 274,
+      "sha256_wire": "988fa2aeab19e3d759a9bd27956da8772a8766a557bb8349efc28975489be892",
+      "sha256_file": "db0d7616f085bd2d2adde43bc7bf0e33cbcc4c3426672f8da85b12fb09914742"
+    },
+    {
+      "file": "nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex",
+      "channel": "nlos.sabi.WaitControl",
+      "message": "nlos.sabi.v1.InspectWaitRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 45,
+      "sha256_wire": "a90443d446e5e32c284babdae53428f3e078635d2d427bc10aa6611377b8ff10",
+      "sha256_file": "37c7304ada52053ddd1320d568b94ecba10a299ef24a9562dde78d87a31a63b5"
+    },
+    {
+      "file": "nlos.sabi.PrincipalHandshake.Challenge-v1.0.hex",
+      "channel": "nlos.sabi.PrincipalHandshake",
+      "message": "nlos.sabi.v1.PrincipalHandshakeChallenge",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 68,
+      "sha256_wire": "9bae5953652b07d507e1569222ae2b91a7d3a24aa7d120a0975234861f4bce0a",
+      "sha256_file": "e372ea1e0c0f8fc97ebce37b1e9893ac16ef28922d43adacaf0fa6b8cf9699e5"
+    },
+    {
+      "file": "nlos.sabi.PrincipalHandshake.Attestation-v1.0.hex",
+      "channel": "nlos.sabi.PrincipalHandshake",
+      "message": "nlos.sabi.v1.PrincipalHandshakeAttestation",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 193,
+      "sha256_wire": "06e4bc1042401e2dea8b554ec9172c1ba1a7e9c68d82e20090026c2df9111569",
+      "sha256_file": "568de3e68cd95541f6445d88ecb2f30cee7729bd32b8041167bc7b98c1acf69e"
+    },
+    {
+      "file": "nlos.sabi.DriverProvider.Request-v1.0.hex",
+      "channel": "nlos.sabi.DriverProvider",
+      "message": "nlos.sabi.v1.DriverProviderRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 92,
+      "sha256_wire": "ab8bebab35db75c4f14be3e8f6ba9dc8ca59f300457100b00a315c5ad81395ac",
+      "sha256_file": "27efa0d0d864eeec5fb4c711d7839472e145fcc377ebe0578ea515f4fddf2a83"
+    },
+    {
+      "file": "nlos.sabi.ChannelControl.CreateChannelRequestWire-v1.0.hex",
+      "channel": "nlos.sabi.ChannelControl",
+      "message": "nlos.sabi.v1.CreateChannelRequestWire",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 93,
+      "sha256_wire": "8723f39ba6eec4552a9511774f4b83305bcaa3f2b686d55d459aa138ee81303d",
+      "sha256_file": "6f80757f9d31a5dce0f60aca81abc1a3b6043fd251f3fe00f638921a7a39b1fb"
+    }
+  ]
+}

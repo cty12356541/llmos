@@ -12,6 +12,75 @@
 // b-sdk-go-001-golden-probe.md for the probe scope and known limitations.
 package sabi
 
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Sentinel errors returned by ValidateSchemaIdentity ([COMPAT-VER-002]).
+var (
+	ErrMissingSchemaIdentity        = errors.New("sabi: missing or empty schema identity")
+	ErrUnknownSchema                = errors.New("sabi: unknown or mismatched schema name")
+	ErrAbiVersion                   = errors.New("sabi: E_ABI_VERSION unsupported major version")
+	ErrUnsupportedCriticalExtension = errors.New("sabi: unsupported critical extension id")
+)
+
+// ChannelDescriptor describes one registered SABI v1.0 channel.
+type ChannelDescriptor struct {
+	Name                        string
+	Major                       uint32
+	Minor                       uint32
+	SupportedCriticalExtensions []uint32
+}
+
+// SabiV1Channels mirrors nlos-schema::REGISTRY (all 9 frozen SABI v1.0 channels).
+var SabiV1Channels = map[string]ChannelDescriptor{
+	"nlos.sabi.Envelope":           {Name: "nlos.sabi.Envelope", Major: 1, Minor: 1},
+	"nlos.sabi.ServiceDirectory":   {Name: "nlos.sabi.ServiceDirectory", Major: 1, Minor: 0},
+	"nlos.sabi.OperationControl":   {Name: "nlos.sabi.OperationControl", Major: 1, Minor: 0},
+	"nlos.sabi.SystemControl":      {Name: "nlos.sabi.SystemControl", Major: 1, Minor: 7},
+	"nlos.sabi.TakeoverControl":    {Name: "nlos.sabi.TakeoverControl", Major: 1, Minor: 0},
+	"nlos.sabi.WaitControl":        {Name: "nlos.sabi.WaitControl", Major: 1, Minor: 0},
+	"nlos.sabi.PrincipalHandshake": {Name: "nlos.sabi.PrincipalHandshake", Major: 1, Minor: 0},
+	"nlos.sabi.DriverProvider":     {Name: "nlos.sabi.DriverProvider", Major: 1, Minor: 0},
+	"nlos.sabi.ChannelControl":     {Name: "nlos.sabi.ChannelControl", Major: 1, Minor: 0},
+}
+
+// ValidateSchemaIdentity enforces [COMPAT-VER-002]: unknown major and unknown
+// critical_extension_ids fail closed; unknown non_critical_extension_ids and
+// higher minor versions are accepted.
+func ValidateSchemaIdentity(id *SchemaIdentity, expectedName string) error {
+	if id == nil || id.Name == "" || strings.ContainsRune(id.Name, '\x00') {
+		return ErrMissingSchemaIdentity
+	}
+	if expectedName != "" && id.Name != expectedName {
+		return fmt.Errorf("%w: got %q, want %q", ErrUnknownSchema, id.Name, expectedName)
+	}
+	desc, ok := SabiV1Channels[id.Name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownSchema, id.Name)
+	}
+	if id.Major != desc.Major {
+		return fmt.Errorf("%w: schema %q major=%d (want %d)", ErrAbiVersion, id.Name, id.Major, desc.Major)
+	}
+	for _, ext := range id.CriticalExtensionIDs {
+		if ext == 0 || !containsUint32(desc.SupportedCriticalExtensions, ext) {
+			return fmt.Errorf("%w: schema %q critical_extension_id=%d", ErrUnsupportedCriticalExtension, id.Name, ext)
+		}
+	}
+	return nil
+}
+
+func containsUint32(xs []uint32, target uint32) bool {
+	for _, x := range xs {
+		if x == target {
+			return true
+		}
+	}
+	return false
+}
+
 // SabiErrorCode mirrors the frozen nlos.sabi.v1.SabiErrorCode enum.
 type SabiErrorCode uint32
 
@@ -177,6 +246,143 @@ type PrincipalHandshakeAttestation struct {
 type ResolveServiceRequest struct {
 	Schema  *SchemaIdentity `wire:"1"`
 	Service string          `wire:"2"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// PrincipalHandshakeChallenge mirrors nlos.sabi.v1.PrincipalHandshakeChallenge
+// (schema name on the wire: "nlos.sabi.PrincipalHandshake", v1 minor 0).
+type PrincipalHandshakeChallenge struct {
+	Schema *SchemaIdentity `wire:"1"`
+	Nonce  []byte          `wire:"2"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// QueryOperationRequest mirrors nlos.sabi.v1.QueryOperationRequest
+// (schema name on the wire: "nlos.sabi.OperationControl", v1 minor 0).
+type QueryOperationRequest struct {
+	Schema    *SchemaIdentity     `wire:"1"`
+	Operation *OperationReference `wire:"2"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// SystemControlView mirrors selected frozen nlos.sabi.v1.SystemControlView values.
+type SystemControlView uint32
+
+// Selected wire values of nlos.sabi.v1.SystemControlView.
+const (
+	SystemControlViewUnspecified            SystemControlView = 0
+	SystemControlViewArtifactCommitRecovery SystemControlView = 1
+	SystemControlViewTaskNode               SystemControlView = 5
+	SystemControlViewTaskAttemptList        SystemControlView = 12
+)
+
+// GetSystemControlRequest mirrors nlos.sabi.v1.GetSystemControlRequest
+// (schema name on the wire: "nlos.sabi.SystemControl", v1 minor 7).
+type GetSystemControlRequest struct {
+	Schema           *SchemaIdentity   `wire:"1"`
+	View             SystemControlView `wire:"2"`
+	AlertLimit       uint32            `wire:"3"`
+	TargetID         []byte            `wire:"4"`
+	PlanID           []byte            `wire:"5"`
+	TargetGeneration uint64            `wire:"6"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// BarrierObservationTarget mirrors nlos.sabi.v1.BarrierObservationTarget.
+type BarrierObservationTarget struct {
+	TakeoverReceiptID     []byte `wire:"1"`
+	ParticipantType       uint32 `wire:"2"`
+	ParticipantID         []byte `wire:"3"`
+	ParticipantGeneration uint64 `wire:"4"`
+	AdmissionReceiptID    []byte `wire:"5"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// BarrierObservationEvidence mirrors nlos.sabi.v1.BarrierObservationEvidence.
+type BarrierObservationEvidence struct {
+	RemoteReceiptID []byte `wire:"1"`
+	BarrierDigest   []byte `wire:"2"`
+	ObservedAtMS    int64  `wire:"3"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// BarrierObservationSignature mirrors nlos.sabi.v1.BarrierObservationSignature.
+type BarrierObservationSignature struct {
+	SignerPrincipalID     []byte `wire:"1"`
+	SignerControlDomainID []byte `wire:"2"`
+	SignerKeyID           []byte `wire:"3"`
+	Signature             []byte `wire:"4"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// SubmitBarrierObservationRequest mirrors nlos.sabi.v1.SubmitBarrierObservationRequest
+// (schema name on the wire: "nlos.sabi.TakeoverControl", v1 minor 0).
+type SubmitBarrierObservationRequest struct {
+	Schema    *SchemaIdentity              `wire:"1"`
+	Target    *BarrierObservationTarget    `wire:"2"`
+	Evidence  *BarrierObservationEvidence  `wire:"3"`
+	Signature *BarrierObservationSignature `wire:"4"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// InspectWaitRequest mirrors nlos.sabi.v1.InspectWaitRequest
+// (schema name on the wire: "nlos.sabi.WaitControl", v1 minor 0).
+type InspectWaitRequest struct {
+	Schema *SchemaIdentity `wire:"1"`
+	WaitID []byte          `wire:"2"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// DriverProviderRegisterRequest mirrors nlos.sabi.v1.DriverProviderRegisterRequest.
+type DriverProviderRegisterRequest struct {
+	OperationID            []byte `wire:"1"`
+	OperationGeneration    uint64 `wire:"2"`
+	OwnerFiberID           []byte `wire:"3"`
+	OwnerFiberGeneration   uint64 `wire:"4"`
+	CancellationScopeID    []byte `wire:"5"`
+	CancellationGeneration uint64 `wire:"6"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// DriverProviderCompleteRequest mirrors nlos.sabi.v1.DriverProviderCompleteRequest.
+type DriverProviderCompleteRequest struct {
+	OperationID         []byte `wire:"1"`
+	OperationGeneration uint64 `wire:"2"`
+	CallbackID          []byte `wire:"3"`
+	Seed                []byte `wire:"4"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// DriverProviderRequest mirrors nlos.sabi.v1.DriverProviderRequest
+// (schema name on the wire: "nlos.sabi.DriverProvider", v1 minor 0).
+// At most one arm of the request oneof may be non-nil (guarded at Marshal).
+type DriverProviderRequest struct {
+	Schema   *SchemaIdentity                `wire:"1"`
+	Register *DriverProviderRegisterRequest `wire:"2"` // oneof arm
+	Complete *DriverProviderCompleteRequest `wire:"4"` // oneof arm
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// CreateChannelRequestWire mirrors nlos.sabi.v1.CreateChannelRequestWire
+// (schema name on the wire: "nlos.sabi.ChannelControl", v1 minor 0).
+type CreateChannelRequestWire struct {
+	Schema         *SchemaIdentity `wire:"1"`
+	CapacityBytes  uint64          `wire:"2"`
+	PolicyDigest   []byte          `wire:"3"`
+	IdempotencyKey []byte          `wire:"4"`
+	CreatedAtMS    uint64          `wire:"5"`
 
 	UnknownFields []byte `wire:"-"`
 }

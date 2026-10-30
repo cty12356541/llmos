@@ -2,10 +2,13 @@
 
 from .local_rpc import IpcError, LocalRpcClient, TransportConfig
 from .common import (
+    SABI_V1_CHANNELS,
     CommonSemanticsError,
     MethodSemantics,
+    SabiChannelSpec,
     validate_request_context,
     validate_response_context,
+    validate_schema_compatibility,
 )
 from .service_directory import (
     ConnectedService,
@@ -46,9 +49,12 @@ __all__ = [
     "QueueConsumptionRecord",
     "QueueEntryRecord",
     "QueueState",
+    "SABI_V1_CHANNELS",
+    "SabiChannelSpec",
     "ServiceDirectoryClient",
     "ServiceRequirement",
     "TransportConfig",
     "validate_request_context",
     "validate_response_context",
+    "validate_schema_compatibility",
 ]

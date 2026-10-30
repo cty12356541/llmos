@@ -76,6 +76,12 @@ public static class SabiCodec
         Wire.PutUvarint(b, v);
     }
 
+    private static void PutInt64(List<byte> b, int field, long v)
+    {
+        Wire.PutTag(b, field, WireType.Varint);
+        Wire.PutUvarint(b, unchecked((ulong)v));
+    }
+
     private static void PutPackedUint32(List<byte> b, int field, uint[] vs)
     {
         var body = new List<byte>();
@@ -1125,6 +1131,973 @@ public static class SabiCodec
     {
         m.Schema = null;
         m.Service = "";
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // PrincipalHandshakeChallenge
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(PrincipalHandshakeChallenge m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.Nonce.Length > 0)
+        {
+            PutBytesField(b, 2, m.Nonce);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(PrincipalHandshakeChallenge m, byte[] buf)
+    {
+        const string msg = "PrincipalHandshakeChallenge";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (m.Nonce, int n2) = Wire.Bytes(buf, i);
+                    i += n2;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(PrincipalHandshakeChallenge m)
+    {
+        m.Schema = null;
+        m.Nonce = Array.Empty<byte>();
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // QueryOperationRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(QueryOperationRequest m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.Operation != null)
+        {
+            PutMessage(b, 2, Marshal(m.Operation));
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(QueryOperationRequest m, byte[] buf)
+    {
+        const string msg = "QueryOperationRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (byte[] v2, int n2) = Wire.Bytes(buf, i);
+                    m.Operation = new OperationReference();
+                    Unmarshal(m.Operation, v2);
+                    i += n2;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(QueryOperationRequest m)
+    {
+        m.Schema = null;
+        m.Operation = null;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // GetSystemControlRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(GetSystemControlRequest m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.View != 0)
+        {
+            PutUint32(b, 2, (uint)m.View);
+        }
+        if (m.AlertLimit != 0)
+        {
+            PutUint32(b, 3, m.AlertLimit);
+        }
+        if (m.TargetID.Length > 0)
+        {
+            PutBytesField(b, 4, m.TargetID);
+        }
+        if (m.PlanID.Length > 0)
+        {
+            PutBytesField(b, 5, m.PlanID);
+        }
+        if (m.TargetGeneration != 0)
+        {
+            PutUint64(b, 6, m.TargetGeneration);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(GetSystemControlRequest m, byte[] buf)
+    {
+        const string msg = "GetSystemControlRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Varint:
+                    (ulong v2, int n2) = Wire.Uvarint(buf, i);
+                    m.View = (SystemControlView)ToU32(v2);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Varint:
+                    (ulong v3, int n3) = Wire.Uvarint(buf, i);
+                    m.AlertLimit = ToU32(v3);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (m.TargetID, int n4) = Wire.Bytes(buf, i);
+                    i += n4;
+                    break;
+                case 5 when wt == WireType.Len:
+                    (m.PlanID, int n5) = Wire.Bytes(buf, i);
+                    i += n5;
+                    break;
+                case 6 when wt == WireType.Varint:
+                    (m.TargetGeneration, int n6) = Wire.Uvarint(buf, i);
+                    i += n6;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(GetSystemControlRequest m)
+    {
+        m.Schema = null;
+        m.View = 0;
+        m.AlertLimit = 0;
+        m.TargetID = Array.Empty<byte>();
+        m.PlanID = Array.Empty<byte>();
+        m.TargetGeneration = 0;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // BarrierObservationTarget
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(BarrierObservationTarget m)
+    {
+        var b = new List<byte>();
+        if (m.TakeoverReceiptID.Length > 0)
+        {
+            PutBytesField(b, 1, m.TakeoverReceiptID);
+        }
+        if (m.ParticipantType != 0)
+        {
+            PutUint32(b, 2, m.ParticipantType);
+        }
+        if (m.ParticipantID.Length > 0)
+        {
+            PutBytesField(b, 3, m.ParticipantID);
+        }
+        if (m.ParticipantGeneration != 0)
+        {
+            PutUint64(b, 4, m.ParticipantGeneration);
+        }
+        if (m.AdmissionReceiptID.Length > 0)
+        {
+            PutBytesField(b, 5, m.AdmissionReceiptID);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(BarrierObservationTarget m, byte[] buf)
+    {
+        const string msg = "BarrierObservationTarget";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (m.TakeoverReceiptID, int n1) = Wire.Bytes(buf, i);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Varint:
+                    (ulong v2, int n2) = Wire.Uvarint(buf, i);
+                    m.ParticipantType = ToU32(v2);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (m.ParticipantID, int n3) = Wire.Bytes(buf, i);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Varint:
+                    (m.ParticipantGeneration, int n4) = Wire.Uvarint(buf, i);
+                    i += n4;
+                    break;
+                case 5 when wt == WireType.Len:
+                    (m.AdmissionReceiptID, int n5) = Wire.Bytes(buf, i);
+                    i += n5;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(BarrierObservationTarget m)
+    {
+        m.TakeoverReceiptID = Array.Empty<byte>();
+        m.ParticipantType = 0;
+        m.ParticipantID = Array.Empty<byte>();
+        m.ParticipantGeneration = 0;
+        m.AdmissionReceiptID = Array.Empty<byte>();
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // BarrierObservationEvidence
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(BarrierObservationEvidence m)
+    {
+        var b = new List<byte>();
+        if (m.RemoteReceiptID.Length > 0)
+        {
+            PutBytesField(b, 1, m.RemoteReceiptID);
+        }
+        if (m.BarrierDigest.Length > 0)
+        {
+            PutBytesField(b, 2, m.BarrierDigest);
+        }
+        if (m.ObservedAtMS != 0)
+        {
+            PutInt64(b, 3, m.ObservedAtMS);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(BarrierObservationEvidence m, byte[] buf)
+    {
+        const string msg = "BarrierObservationEvidence";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (m.RemoteReceiptID, int n1) = Wire.Bytes(buf, i);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (m.BarrierDigest, int n2) = Wire.Bytes(buf, i);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Varint:
+                    (ulong v3, int n3) = Wire.Uvarint(buf, i);
+                    m.ObservedAtMS = unchecked((long)v3);
+                    i += n3;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(BarrierObservationEvidence m)
+    {
+        m.RemoteReceiptID = Array.Empty<byte>();
+        m.BarrierDigest = Array.Empty<byte>();
+        m.ObservedAtMS = 0;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // BarrierObservationSignature
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(BarrierObservationSignature m)
+    {
+        var b = new List<byte>();
+        if (m.SignerPrincipalID.Length > 0)
+        {
+            PutBytesField(b, 1, m.SignerPrincipalID);
+        }
+        if (m.SignerControlDomainID.Length > 0)
+        {
+            PutBytesField(b, 2, m.SignerControlDomainID);
+        }
+        if (m.SignerKeyID.Length > 0)
+        {
+            PutBytesField(b, 3, m.SignerKeyID);
+        }
+        if (m.Signature.Length > 0)
+        {
+            PutBytesField(b, 4, m.Signature);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(BarrierObservationSignature m, byte[] buf)
+    {
+        const string msg = "BarrierObservationSignature";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (m.SignerPrincipalID, int n1) = Wire.Bytes(buf, i);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (m.SignerControlDomainID, int n2) = Wire.Bytes(buf, i);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (m.SignerKeyID, int n3) = Wire.Bytes(buf, i);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (m.Signature, int n4) = Wire.Bytes(buf, i);
+                    i += n4;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(BarrierObservationSignature m)
+    {
+        m.SignerPrincipalID = Array.Empty<byte>();
+        m.SignerControlDomainID = Array.Empty<byte>();
+        m.SignerKeyID = Array.Empty<byte>();
+        m.Signature = Array.Empty<byte>();
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // SubmitBarrierObservationRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(SubmitBarrierObservationRequest m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.Target != null)
+        {
+            PutMessage(b, 2, Marshal(m.Target));
+        }
+        if (m.Evidence != null)
+        {
+            PutMessage(b, 3, Marshal(m.Evidence));
+        }
+        if (m.Signature != null)
+        {
+            PutMessage(b, 4, Marshal(m.Signature));
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(SubmitBarrierObservationRequest m, byte[] buf)
+    {
+        const string msg = "SubmitBarrierObservationRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (byte[] v2, int n2) = Wire.Bytes(buf, i);
+                    m.Target = new BarrierObservationTarget();
+                    Unmarshal(m.Target, v2);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (byte[] v3, int n3) = Wire.Bytes(buf, i);
+                    m.Evidence = new BarrierObservationEvidence();
+                    Unmarshal(m.Evidence, v3);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (byte[] v4, int n4) = Wire.Bytes(buf, i);
+                    m.Signature = new BarrierObservationSignature();
+                    Unmarshal(m.Signature, v4);
+                    i += n4;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(SubmitBarrierObservationRequest m)
+    {
+        m.Schema = null;
+        m.Target = null;
+        m.Evidence = null;
+        m.Signature = null;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // InspectWaitRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(InspectWaitRequest m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.WaitID.Length > 0)
+        {
+            PutBytesField(b, 2, m.WaitID);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(InspectWaitRequest m, byte[] buf)
+    {
+        const string msg = "InspectWaitRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (m.WaitID, int n2) = Wire.Bytes(buf, i);
+                    i += n2;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(InspectWaitRequest m)
+    {
+        m.Schema = null;
+        m.WaitID = Array.Empty<byte>();
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // DriverProviderRegisterRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(DriverProviderRegisterRequest m)
+    {
+        var b = new List<byte>();
+        if (m.OperationID.Length > 0)
+        {
+            PutBytesField(b, 1, m.OperationID);
+        }
+        if (m.OperationGeneration != 0)
+        {
+            PutUint64(b, 2, m.OperationGeneration);
+        }
+        if (m.OwnerFiberID.Length > 0)
+        {
+            PutBytesField(b, 3, m.OwnerFiberID);
+        }
+        if (m.OwnerFiberGeneration != 0)
+        {
+            PutUint64(b, 4, m.OwnerFiberGeneration);
+        }
+        if (m.CancellationScopeID.Length > 0)
+        {
+            PutBytesField(b, 5, m.CancellationScopeID);
+        }
+        if (m.CancellationGeneration != 0)
+        {
+            PutUint64(b, 6, m.CancellationGeneration);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(DriverProviderRegisterRequest m, byte[] buf)
+    {
+        const string msg = "DriverProviderRegisterRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (m.OperationID, int n1) = Wire.Bytes(buf, i);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Varint:
+                    (m.OperationGeneration, int n2) = Wire.Uvarint(buf, i);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (m.OwnerFiberID, int n3) = Wire.Bytes(buf, i);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Varint:
+                    (m.OwnerFiberGeneration, int n4) = Wire.Uvarint(buf, i);
+                    i += n4;
+                    break;
+                case 5 when wt == WireType.Len:
+                    (m.CancellationScopeID, int n5) = Wire.Bytes(buf, i);
+                    i += n5;
+                    break;
+                case 6 when wt == WireType.Varint:
+                    (m.CancellationGeneration, int n6) = Wire.Uvarint(buf, i);
+                    i += n6;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(DriverProviderRegisterRequest m)
+    {
+        m.OperationID = Array.Empty<byte>();
+        m.OperationGeneration = 0;
+        m.OwnerFiberID = Array.Empty<byte>();
+        m.OwnerFiberGeneration = 0;
+        m.CancellationScopeID = Array.Empty<byte>();
+        m.CancellationGeneration = 0;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // DriverProviderCompleteRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(DriverProviderCompleteRequest m)
+    {
+        var b = new List<byte>();
+        if (m.OperationID.Length > 0)
+        {
+            PutBytesField(b, 1, m.OperationID);
+        }
+        if (m.OperationGeneration != 0)
+        {
+            PutUint64(b, 2, m.OperationGeneration);
+        }
+        if (m.CallbackID.Length > 0)
+        {
+            PutBytesField(b, 3, m.CallbackID);
+        }
+        if (m.Seed.Length > 0)
+        {
+            PutBytesField(b, 4, m.Seed);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(DriverProviderCompleteRequest m, byte[] buf)
+    {
+        const string msg = "DriverProviderCompleteRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (m.OperationID, int n1) = Wire.Bytes(buf, i);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Varint:
+                    (m.OperationGeneration, int n2) = Wire.Uvarint(buf, i);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (m.CallbackID, int n3) = Wire.Bytes(buf, i);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (m.Seed, int n4) = Wire.Bytes(buf, i);
+                    i += n4;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(DriverProviderCompleteRequest m)
+    {
+        m.OperationID = Array.Empty<byte>();
+        m.OperationGeneration = 0;
+        m.CallbackID = Array.Empty<byte>();
+        m.Seed = Array.Empty<byte>();
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // DriverProviderRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(DriverProviderRequest m)
+    {
+        if (m.Register != null && m.Complete != null)
+        {
+            throw new InvalidOperationException(
+                "sabi: DriverProviderRequest oneof request has multiple arms set");
+        }
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.Register != null)
+        {
+            PutMessage(b, 2, Marshal(m.Register));
+        }
+        if (m.Complete != null)
+        {
+            PutMessage(b, 4, Marshal(m.Complete));
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(DriverProviderRequest m, byte[] buf)
+    {
+        const string msg = "DriverProviderRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (byte[] v2, int n2) = Wire.Bytes(buf, i);
+                    m.Complete = null;
+                    m.Register = new DriverProviderRegisterRequest();
+                    Unmarshal(m.Register, v2);
+                    i += n2;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (byte[] v4, int n4) = Wire.Bytes(buf, i);
+                    m.Register = null;
+                    m.Complete = new DriverProviderCompleteRequest();
+                    Unmarshal(m.Complete, v4);
+                    i += n4;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(DriverProviderRequest m)
+    {
+        m.Schema = null;
+        m.Register = null;
+        m.Complete = null;
+        m.UnknownFields = Array.Empty<byte>();
+    }
+
+    // ------------------------------------------------------------------
+    // CreateChannelRequestWire
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(CreateChannelRequestWire m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.CapacityBytes != 0)
+        {
+            PutUint64(b, 2, m.CapacityBytes);
+        }
+        if (m.PolicyDigest.Length > 0)
+        {
+            PutBytesField(b, 3, m.PolicyDigest);
+        }
+        if (m.IdempotencyKey.Length > 0)
+        {
+            PutBytesField(b, 4, m.IdempotencyKey);
+        }
+        if (m.CreatedAtMS != 0)
+        {
+            PutUint64(b, 5, m.CreatedAtMS);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(CreateChannelRequestWire m, byte[] buf)
+    {
+        const string msg = "CreateChannelRequestWire";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Varint:
+                    (m.CapacityBytes, int n2) = Wire.Uvarint(buf, i);
+                    i += n2;
+                    break;
+                case 3 when wt == WireType.Len:
+                    (m.PolicyDigest, int n3) = Wire.Bytes(buf, i);
+                    i += n3;
+                    break;
+                case 4 when wt == WireType.Len:
+                    (m.IdempotencyKey, int n4) = Wire.Bytes(buf, i);
+                    i += n4;
+                    break;
+                case 5 when wt == WireType.Varint:
+                    (m.CreatedAtMS, int n5) = Wire.Uvarint(buf, i);
+                    i += n5;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(CreateChannelRequestWire m)
+    {
+        m.Schema = null;
+        m.CapacityBytes = 0;
+        m.PolicyDigest = Array.Empty<byte>();
+        m.IdempotencyKey = Array.Empty<byte>();
+        m.CreatedAtMS = 0;
         m.UnknownFields = Array.Empty<byte>();
     }
 }

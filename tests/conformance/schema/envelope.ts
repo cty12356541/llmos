@@ -1,29 +1,61 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { WireType } from "@bufbuild/protobuf/wire";
 
 import {
   CommonSemanticsError,
+  SABI_V1_CHANNELS,
   validateRequestContext,
   validateResponseContext,
+  validateSchemaCompatibility,
 } from "../../../sdk/typescript/src/common.ts";
 import {
+  CreateChannelRequestWireSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/channel_control_pb.ts";
+import {
+  DriverProviderRegisterRequestSchema,
+  DriverProviderRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/driver_provider_pb.ts";
+import {
+  CallerIdentitySchema,
+  CapabilityHandleSchema,
   EnvelopeSchema,
   ExchangeRequestSchema,
   ExchangeResponseSchema,
   LocalRpcService,
+  OperationReferenceSchema,
   ReceiptReferenceSchema,
   RetryDirective,
   SabiErrorCode,
+  SabiRequestContextSchema,
   SchemaIdentitySchema,
+  TaskExecutionBindingSchema,
   type Envelope,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
+import {
+  QueryOperationRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/operation_control_pb.ts";
+import {
+  PrincipalHandshakeAttestationSchema,
+  PrincipalHandshakeChallengeSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/principal_handshake_pb.ts";
 import {
   LocalTransportKind,
   ResolveServiceRequestSchema,
 } from "../../../gen/typescript/nlos/sabi/v1/service_directory_pb.ts";
+import {
+  BarrierObservationEvidenceSchema,
+  BarrierObservationSignatureSchema,
+  BarrierObservationTargetSchema,
+  SubmitBarrierObservationRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/takeover_control_pb.ts";
+import {
+  InspectWaitRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/wait_control_pb.ts";
 import {
   AcknowledgeResourceRecoveryAlertCommandSchema,
   AcknowledgeSemanticRecoveryAlertCommandSchema,
@@ -1204,3 +1236,530 @@ assert.deepEqual(
   toBinary(DurableOperationSnapshotSchema, decodedOperation),
   hexToBytes(layerSnapshotCases[4]!.goldenHex),
 );
+
+// ---------------------------------------------------------------------------
+// Stage E W77-E1B: Root PrincipalHandshake-v1.hex + schema/golden/epochs/v1.0/
+// 9/9 channel golden corpus bidirectional round-trip & COMPAT-VER-002 gates.
+// ---------------------------------------------------------------------------
+
+function seqBytes(off: number, n: number): Uint8Array {
+  return Uint8Array.from({ length: n }, (_, i) => (off + i) & 0xff);
+}
+
+function repBytes(b: number, n: number): Uint8Array {
+  return new Uint8Array(n).fill(b);
+}
+
+const rootHandshakeGoldenPath = fileURLToPath(
+  new URL(
+    "../../../schema/golden/nlos.sabi.PrincipalHandshake-v1.hex",
+    import.meta.url,
+  ),
+);
+const rootHandshakeGolden = hexToBytes(
+  readFileSync(rootHandshakeGoldenPath, "utf8").trim(),
+);
+const expectedRootHandshake = create(PrincipalHandshakeAttestationSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.PrincipalHandshake",
+    major: 1,
+    minor: 0,
+  }),
+  principalId: seqBytes(0x00, 16),
+  nonce: repBytes(0xa5, 32),
+  channelBinding: new TextEncoder().encode("unix:///tmp/nlos-handshake.sock"),
+  signature: repBytes(0xcd, 64),
+});
+assert.deepEqual(
+  toBinary(PrincipalHandshakeAttestationSchema, expectedRootHandshake),
+  rootHandshakeGolden,
+);
+const decodedRootHandshake = fromBinary(
+  PrincipalHandshakeAttestationSchema,
+  rootHandshakeGolden,
+);
+validateSchemaCompatibility(
+  decodedRootHandshake.schema,
+  "nlos.sabi.PrincipalHandshake",
+);
+assert.deepEqual(decodedRootHandshake.principalId, seqBytes(0x00, 16));
+assert.deepEqual(decodedRootHandshake.nonce, repBytes(0xa5, 32));
+assert.equal(
+  new TextDecoder().decode(decodedRootHandshake.channelBinding),
+  "unix:///tmp/nlos-handshake.sock",
+);
+assert.deepEqual(decodedRootHandshake.signature, repBytes(0xcd, 64));
+assert.deepEqual(
+  toBinary(PrincipalHandshakeAttestationSchema, decodedRootHandshake),
+  rootHandshakeGolden,
+);
+
+interface EpochVectorMeta {
+  file: string;
+  channel: string;
+  message: string;
+  schema_major: number;
+  schema_minor: number;
+  byte_length: number;
+  sha256_wire: string;
+  sha256_file: string;
+}
+
+interface EpochManifest {
+  schema: string;
+  epoch: string;
+  sabi_major: number;
+  immutable: boolean;
+  required_channels: string[];
+  vectors: EpochVectorMeta[];
+}
+
+const epochDirUrl = new URL(
+  "../../../schema/golden/epochs/v1.0/",
+  import.meta.url,
+);
+const epochManifest = JSON.parse(
+  readFileSync(fileURLToPath(new URL("manifest.json", epochDirUrl)), "utf8"),
+) as EpochManifest;
+assert.equal(epochManifest.schema, "nlos.golden.epoch_manifest.v1");
+assert.equal(epochManifest.epoch, "v1.0");
+assert.equal(epochManifest.sabi_major, 1);
+assert.equal(epochManifest.immutable, true);
+assert.deepEqual(
+  new Set(epochManifest.required_channels),
+  new Set(Object.keys(SABI_V1_CHANNELS)),
+);
+assert.equal(epochManifest.required_channels.length, 9);
+
+const manifestByFile = new Map<string, EpochVectorMeta>(
+  epochManifest.vectors.map((vec) => [vec.file, vec]),
+);
+assert.equal(manifestByFile.size, 11);
+assert.deepEqual(
+  new Set(epochManifest.vectors.map((vec) => vec.channel)),
+  new Set(Object.keys(SABI_V1_CHANNELS)),
+);
+
+function loadEpochVector(filename: string): Uint8Array {
+  const meta = manifestByFile.get(filename);
+  assert.ok(meta, `missing manifest entry for ${filename}`);
+  const filePath = fileURLToPath(new URL(filename, epochDirUrl));
+  const rawFile = readFileSync(filePath);
+  const shaFile = createHash("sha256").update(rawFile).digest("hex");
+  assert.equal(shaFile, meta.sha256_file, `${filename} sha256_file mismatch`);
+  const wire = hexToBytes(rawFile.toString("ascii").trim());
+  assert.equal(wire.byteLength, meta.byte_length, `${filename} byte_length`);
+  const shaWire = createHash("sha256").update(wire).digest("hex");
+  assert.equal(shaWire, meta.sha256_wire, `${filename} sha256_wire mismatch`);
+  return wire;
+}
+
+const unknownTail = new Uint8Array([0xa0, 0x06, 0x07]);
+
+// 1a. Envelope-v1.0.hex
+const gEnvV10 = loadEpochVector("nlos.sabi.Envelope-v1.0.hex");
+const builtEnvV10 = create(EnvelopeSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.Envelope",
+    major: 1,
+    minor: 1,
+    nonCriticalExtensionIds: [42],
+  }),
+  requestId: seqBytes(0x10, 16),
+  service: "system_control",
+  method: "get",
+  commonContext: {
+    case: "requestContext",
+    value: create(SabiRequestContextSchema, {
+      caller: create(CallerIdentitySchema, {
+        principalId: repBytes(0x01, 16),
+        applicationId: repBytes(0x02, 16),
+        processId: repBytes(0x03, 16),
+        processGeneration: 7n,
+      }),
+      activityContext: new TextEncoder().encode("w77-epoch-v1.0"),
+      taskExecutionBinding: create(TaskExecutionBindingSchema, {
+        taskAttemptId: repBytes(0x04, 16),
+        taskAuthorityTerm: 9n,
+        taskControlEpoch: 10n,
+        cancelEpoch: 11n,
+        permitEpoch: 12n,
+        isolationDomainGeneration: 13n,
+      }),
+      correlationId: repBytes(0x05, 16),
+      idempotencyKey: repBytes(0x06, 16),
+      deadlineMonotonicNs: 500_000n,
+      capabilityHandles: [
+        create(CapabilityHandleSchema, { slot: 11n, generation: 2n }),
+      ],
+      reservationHandle: create(CapabilityHandleSchema, {
+        slot: 12n,
+        generation: 3n,
+      }),
+      proposalOrInputDigestSha256: repBytes(0x07, 32),
+    }),
+  },
+  payload: new TextEncoder().encode("sabi-v1.0-payload"),
+});
+assert.deepEqual(toBinary(EnvelopeSchema, builtEnvV10), gEnvV10);
+const decEnvV10 = fromBinary(EnvelopeSchema, gEnvV10);
+validateSchemaCompatibility(decEnvV10.schema, "nlos.sabi.Envelope");
+validateRequestContext(
+  decEnvV10,
+  { sideEffecting: true, longRunning: true },
+  499_999n,
+);
+assert.equal(decEnvV10.schema?.minor, 1);
+assert.deepEqual(decEnvV10.schema?.nonCriticalExtensionIds, [42]);
+assert.equal(decEnvV10.service, "system_control");
+assert.equal(decEnvV10.method, "get");
+assert.equal(new TextDecoder().decode(decEnvV10.payload), "sabi-v1.0-payload");
+assert.deepEqual(toBinary(EnvelopeSchema, decEnvV10), gEnvV10);
+
+// 1b. Envelope-unknown-noncritical-v1.0.hex
+const gEnvUnk = loadEpochVector(
+  "nlos.sabi.Envelope-unknown-noncritical-v1.0.hex",
+);
+const builtEnvUnk = create(EnvelopeSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.Envelope",
+    major: 1,
+    minor: 1,
+    nonCriticalExtensionIds: [42, 7001, 9999],
+  }),
+  requestId: seqBytes(0x20, 16),
+  service: "operation",
+  method: "query",
+  payload: new TextEncoder().encode("ext-probe"),
+});
+builtEnvUnk.$unknown = [
+  { no: 100, wireType: WireType.Varint, data: new Uint8Array([0x07]) },
+];
+assert.deepEqual(toBinary(EnvelopeSchema, builtEnvUnk), gEnvUnk);
+const decEnvUnk = fromBinary(EnvelopeSchema, gEnvUnk);
+validateSchemaCompatibility(decEnvUnk.schema, "nlos.sabi.Envelope");
+assert.deepEqual(decEnvUnk.schema?.nonCriticalExtensionIds, [42, 7001, 9999]);
+assert.deepEqual(decEnvUnk.requestId, seqBytes(0x20, 16));
+assert.equal(decEnvUnk.service, "operation");
+assert.equal(decEnvUnk.method, "query");
+assert.equal(new TextDecoder().decode(decEnvUnk.payload), "ext-probe");
+assert.deepEqual(toBinary(EnvelopeSchema, decEnvUnk), gEnvUnk);
+
+// 2. ServiceDirectory.ResolveServiceRequest-v1.0.hex
+const gSvcDir = loadEpochVector(
+  "nlos.sabi.ServiceDirectory.ResolveServiceRequest-v1.0.hex",
+);
+const builtSvcDir = create(ResolveServiceRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.ServiceDirectory",
+    major: 1,
+    minor: 0,
+  }),
+  service: "system_control",
+});
+assert.deepEqual(toBinary(ResolveServiceRequestSchema, builtSvcDir), gSvcDir);
+const decSvcDir = fromBinary(ResolveServiceRequestSchema, gSvcDir);
+validateSchemaCompatibility(decSvcDir.schema, "nlos.sabi.ServiceDirectory");
+assert.equal(decSvcDir.service, "system_control");
+assert.deepEqual(toBinary(ResolveServiceRequestSchema, decSvcDir), gSvcDir);
+
+// 3. OperationControl.QueryOperationRequest-v1.0.hex
+const gOpCtrl = loadEpochVector(
+  "nlos.sabi.OperationControl.QueryOperationRequest-v1.0.hex",
+);
+const builtOpCtrl = create(QueryOperationRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.OperationControl",
+    major: 1,
+    minor: 0,
+  }),
+  operation: create(OperationReferenceSchema, {
+    operationId: seqBytes(0x30, 16),
+    generation: 5n,
+  }),
+});
+assert.deepEqual(toBinary(QueryOperationRequestSchema, builtOpCtrl), gOpCtrl);
+const decOpCtrl = fromBinary(QueryOperationRequestSchema, gOpCtrl);
+validateSchemaCompatibility(decOpCtrl.schema, "nlos.sabi.OperationControl");
+assert.deepEqual(decOpCtrl.operation?.operationId, seqBytes(0x30, 16));
+assert.equal(decOpCtrl.operation?.generation, 5n);
+assert.deepEqual(toBinary(QueryOperationRequestSchema, decOpCtrl), gOpCtrl);
+
+// 4. SystemControl.GetSystemControlRequest-v1.0.hex
+const gSysCtrl = loadEpochVector(
+  "nlos.sabi.SystemControl.GetSystemControlRequest-v1.0.hex",
+);
+const builtSysCtrl = create(GetSystemControlRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.SystemControl",
+    major: 1,
+    minor: 7,
+  }),
+  view: SystemControlView.TASK_ATTEMPT_LIST,
+  alertLimit: 16,
+  targetId: seqBytes(0x40, 16),
+  planId: seqBytes(0x50, 16),
+  targetGeneration: 4n,
+});
+assert.deepEqual(
+  toBinary(GetSystemControlRequestSchema, builtSysCtrl),
+  gSysCtrl,
+);
+const decSysCtrl = fromBinary(GetSystemControlRequestSchema, gSysCtrl);
+validateSchemaCompatibility(decSysCtrl.schema, "nlos.sabi.SystemControl");
+assert.equal(decSysCtrl.schema?.minor, 7);
+assert.equal(decSysCtrl.view, SystemControlView.TASK_ATTEMPT_LIST);
+assert.equal(decSysCtrl.alertLimit, 16);
+assert.deepEqual(decSysCtrl.targetId, seqBytes(0x40, 16));
+assert.deepEqual(decSysCtrl.planId, seqBytes(0x50, 16));
+assert.equal(decSysCtrl.targetGeneration, 4n);
+assert.deepEqual(
+  toBinary(GetSystemControlRequestSchema, decSysCtrl),
+  gSysCtrl,
+);
+
+// 5. TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex
+const gTakeover = loadEpochVector(
+  "nlos.sabi.TakeoverControl.SubmitBarrierObservationRequest-v1.0.hex",
+);
+const builtTakeover = create(SubmitBarrierObservationRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.TakeoverControl",
+    major: 1,
+    minor: 0,
+  }),
+  target: create(BarrierObservationTargetSchema, {
+    takeoverReceiptId: repBytes(0x61, 16),
+    participantType: 1,
+    participantId: repBytes(0x62, 16),
+    participantGeneration: 3n,
+    admissionReceiptId: repBytes(0x63, 16),
+  }),
+  evidence: create(BarrierObservationEvidenceSchema, {
+    remoteReceiptId: repBytes(0x64, 16),
+    barrierDigest: repBytes(0x65, 32),
+    observedAtMs: 1_730_000_000_000n,
+  }),
+  signature: create(BarrierObservationSignatureSchema, {
+    signerPrincipalId: repBytes(0x66, 16),
+    signerControlDomainId: repBytes(0x67, 16),
+    signerKeyId: repBytes(0x68, 16),
+    signature: repBytes(0x69, 64),
+  }),
+});
+assert.deepEqual(
+  toBinary(SubmitBarrierObservationRequestSchema, builtTakeover),
+  gTakeover,
+);
+const decTakeover = fromBinary(
+  SubmitBarrierObservationRequestSchema,
+  gTakeover,
+);
+validateSchemaCompatibility(decTakeover.schema, "nlos.sabi.TakeoverControl");
+assert.equal(decTakeover.target?.participantType, 1);
+assert.equal(decTakeover.target?.participantGeneration, 3n);
+assert.equal(decTakeover.evidence?.observedAtMs, 1_730_000_000_000n);
+assert.deepEqual(decTakeover.signature?.signature, repBytes(0x69, 64));
+assert.deepEqual(
+  toBinary(SubmitBarrierObservationRequestSchema, decTakeover),
+  gTakeover,
+);
+
+// 6. WaitControl.InspectWaitRequest-v1.0.hex
+const gWait = loadEpochVector(
+  "nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex",
+);
+const builtWait = create(InspectWaitRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.WaitControl",
+    major: 1,
+    minor: 0,
+  }),
+  waitId: seqBytes(0x70, 16),
+});
+assert.deepEqual(toBinary(InspectWaitRequestSchema, builtWait), gWait);
+const decWait = fromBinary(InspectWaitRequestSchema, gWait);
+validateSchemaCompatibility(decWait.schema, "nlos.sabi.WaitControl");
+assert.deepEqual(decWait.waitId, seqBytes(0x70, 16));
+assert.deepEqual(toBinary(InspectWaitRequestSchema, decWait), gWait);
+
+// 7a. PrincipalHandshake.Challenge-v1.0.hex
+const gHsChal = loadEpochVector(
+  "nlos.sabi.PrincipalHandshake.Challenge-v1.0.hex",
+);
+const builtHsChal = create(PrincipalHandshakeChallengeSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.PrincipalHandshake",
+    major: 1,
+    minor: 0,
+  }),
+  nonce: repBytes(0xa5, 32),
+});
+assert.deepEqual(
+  toBinary(PrincipalHandshakeChallengeSchema, builtHsChal),
+  gHsChal,
+);
+const decHsChal = fromBinary(PrincipalHandshakeChallengeSchema, gHsChal);
+validateSchemaCompatibility(
+  decHsChal.schema,
+  "nlos.sabi.PrincipalHandshake",
+);
+assert.deepEqual(decHsChal.nonce, repBytes(0xa5, 32));
+assert.deepEqual(
+  toBinary(PrincipalHandshakeChallengeSchema, decHsChal),
+  gHsChal,
+);
+
+// 7b. PrincipalHandshake.Attestation-v1.0.hex
+const gHsAtt = loadEpochVector(
+  "nlos.sabi.PrincipalHandshake.Attestation-v1.0.hex",
+);
+const builtHsAtt = create(PrincipalHandshakeAttestationSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.PrincipalHandshake",
+    major: 1,
+    minor: 0,
+    nonCriticalExtensionIds: [101],
+  }),
+  principalId: seqBytes(0x80, 16),
+  nonce: repBytes(0xa5, 32),
+  channelBinding: new TextEncoder().encode(
+    "unix:///tmp/nlos-handshake-v1.0.sock",
+  ),
+  signature: repBytes(0xcd, 64),
+});
+assert.deepEqual(
+  toBinary(PrincipalHandshakeAttestationSchema, builtHsAtt),
+  gHsAtt,
+);
+const decHsAtt = fromBinary(PrincipalHandshakeAttestationSchema, gHsAtt);
+validateSchemaCompatibility(decHsAtt.schema, "nlos.sabi.PrincipalHandshake");
+assert.deepEqual(decHsAtt.schema?.nonCriticalExtensionIds, [101]);
+assert.deepEqual(decHsAtt.principalId, seqBytes(0x80, 16));
+assert.deepEqual(decHsAtt.nonce, repBytes(0xa5, 32));
+assert.equal(
+  new TextDecoder().decode(decHsAtt.channelBinding),
+  "unix:///tmp/nlos-handshake-v1.0.sock",
+);
+assert.deepEqual(decHsAtt.signature, repBytes(0xcd, 64));
+assert.deepEqual(
+  toBinary(PrincipalHandshakeAttestationSchema, decHsAtt),
+  gHsAtt,
+);
+
+// 8. DriverProvider.Request-v1.0.hex
+const gDrv = loadEpochVector("nlos.sabi.DriverProvider.Request-v1.0.hex");
+const builtDrv = create(DriverProviderRequestSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.DriverProvider",
+    major: 1,
+    minor: 0,
+  }),
+  request: {
+    case: "register",
+    value: create(DriverProviderRegisterRequestSchema, {
+      operationId: repBytes(0x91, 16),
+      operationGeneration: 2n,
+      ownerFiberId: repBytes(0x92, 16),
+      ownerFiberGeneration: 3n,
+      cancellationScopeId: repBytes(0x93, 16),
+      cancellationGeneration: 4n,
+    }),
+  },
+});
+assert.deepEqual(toBinary(DriverProviderRequestSchema, builtDrv), gDrv);
+const decDrv = fromBinary(DriverProviderRequestSchema, gDrv);
+validateSchemaCompatibility(decDrv.schema, "nlos.sabi.DriverProvider");
+assert.equal(decDrv.request.case, "register");
+if (decDrv.request.case === "register") {
+  assert.deepEqual(decDrv.request.value.operationId, repBytes(0x91, 16));
+  assert.equal(decDrv.request.value.operationGeneration, 2n);
+  assert.equal(decDrv.request.value.ownerFiberGeneration, 3n);
+  assert.equal(decDrv.request.value.cancellationGeneration, 4n);
+}
+assert.deepEqual(toBinary(DriverProviderRequestSchema, decDrv), gDrv);
+
+// 9. ChannelControl.CreateChannelRequestWire-v1.0.hex
+const gChan = loadEpochVector(
+  "nlos.sabi.ChannelControl.CreateChannelRequestWire-v1.0.hex",
+);
+const builtChan = create(CreateChannelRequestWireSchema, {
+  schema: create(SchemaIdentitySchema, {
+    name: "nlos.sabi.ChannelControl",
+    major: 1,
+    minor: 0,
+  }),
+  capacityBytes: 65536n,
+  policyDigest: repBytes(0xb1, 32),
+  idempotencyKey: repBytes(0xb2, 16),
+  createdAtMs: 1_730_000_000_000n,
+});
+assert.deepEqual(toBinary(CreateChannelRequestWireSchema, builtChan), gChan);
+const decChan = fromBinary(CreateChannelRequestWireSchema, gChan);
+validateSchemaCompatibility(decChan.schema, "nlos.sabi.ChannelControl");
+assert.equal(decChan.capacityBytes, 65536n);
+assert.deepEqual(decChan.policyDigest, repBytes(0xb1, 32));
+assert.deepEqual(decChan.idempotencyKey, repBytes(0xb2, 16));
+assert.equal(decChan.createdAtMs, 1_730_000_000_000n);
+assert.deepEqual(toBinary(CreateChannelRequestWireSchema, decChan), gChan);
+
+// Unknown trailing field round-trip across all 9 channels:
+function assertUnknownFieldRoundtrip(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  schema: any,
+  baseWire: Uint8Array,
+): void {
+  const extended = new Uint8Array([...baseWire, ...unknownTail]);
+  const reencoded = toBinary(schema, fromBinary(schema, extended));
+  assert.deepEqual(reencoded, extended);
+}
+
+assertUnknownFieldRoundtrip(EnvelopeSchema, gEnvV10);
+assertUnknownFieldRoundtrip(ResolveServiceRequestSchema, gSvcDir);
+assertUnknownFieldRoundtrip(QueryOperationRequestSchema, gOpCtrl);
+assertUnknownFieldRoundtrip(GetSystemControlRequestSchema, gSysCtrl);
+assertUnknownFieldRoundtrip(SubmitBarrierObservationRequestSchema, gTakeover);
+assertUnknownFieldRoundtrip(InspectWaitRequestSchema, gWait);
+assertUnknownFieldRoundtrip(PrincipalHandshakeChallengeSchema, gHsChal);
+assertUnknownFieldRoundtrip(PrincipalHandshakeAttestationSchema, gHsAtt);
+assertUnknownFieldRoundtrip(DriverProviderRequestSchema, gDrv);
+assertUnknownFieldRoundtrip(CreateChannelRequestWireSchema, gChan);
+
+// [COMPAT-VER-002] negative & positive compatibility matrix across all 9 channels:
+for (const channelName of Object.keys(SABI_V1_CHANNELS)) {
+  for (const badMajor of [0, 2, 99]) {
+    const badId = create(SchemaIdentitySchema, {
+      name: channelName,
+      major: badMajor,
+      minor: 0,
+    });
+    assert.throws(
+      () => validateSchemaCompatibility(badId, channelName),
+      (err: unknown) =>
+        err instanceof CommonSemanticsError && err.code === "E_ABI_VERSION",
+    );
+  }
+  for (const badCrit of [[7001], [0], [42, 7001]]) {
+    const critId = create(SchemaIdentitySchema, {
+      name: channelName,
+      major: 1,
+      minor: 0,
+      criticalExtensionIds: badCrit,
+    });
+    assert.throws(
+      () => validateSchemaCompatibility(critId, channelName),
+      (err: unknown) =>
+        err instanceof CommonSemanticsError &&
+        err.code === "UNSUPPORTED_CRITICAL_EXTENSION",
+    );
+  }
+  const okExtId = create(SchemaIdentitySchema, {
+    name: channelName,
+    major: 1,
+    minor: 99,
+    nonCriticalExtensionIds: [42, 7001, 9999],
+  });
+  const validated = validateSchemaCompatibility(okExtId, channelName);
+  assert.equal(validated.major, 1);
+  assert.deepEqual(validated.nonCriticalExtensionIds, [42, 7001, 9999]);
+}

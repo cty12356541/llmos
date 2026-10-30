@@ -710,3 +710,582 @@ func (m *ResolveServiceRequest) Unmarshal(b []byte) error {
 		}
 	})
 }
+
+// Unmarshal decodes one PrincipalHandshakeChallenge value.
+func (m *PrincipalHandshakeChallenge) Unmarshal(b []byte) error {
+	const msg = "PrincipalHandshakeChallenge"
+	*m = PrincipalHandshakeChallenge{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Nonce = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one QueryOperationRequest value.
+func (m *QueryOperationRequest) Unmarshal(b []byte) error {
+	const msg = "QueryOperationRequest"
+	*m = QueryOperationRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Operation = &OperationReference{}
+			if err := m.Operation.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one GetSystemControlRequest value.
+func (m *GetSystemControlRequest) Unmarshal(b []byte) error {
+	const msg = "GetSystemControlRequest"
+	*m = GetSystemControlRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			u, err := u32(v)
+			if err != nil {
+				return 0, err
+			}
+			m.View = SystemControlView(u)
+			return n, nil
+		case field == 3 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			u, err := u32(v)
+			if err != nil {
+				return 0, err
+			}
+			m.AlertLimit = u
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.TargetID = v
+			return n, nil
+		case field == 5 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.PlanID = v
+			return n, nil
+		case field == 6 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.TargetGeneration = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one BarrierObservationTarget value.
+func (m *BarrierObservationTarget) Unmarshal(b []byte) error {
+	const msg = "BarrierObservationTarget"
+	*m = BarrierObservationTarget{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.TakeoverReceiptID = v
+			return n, nil
+		case field == 2 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			u, err := u32(v)
+			if err != nil {
+				return 0, err
+			}
+			m.ParticipantType = u
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.ParticipantID = v
+			return n, nil
+		case field == 4 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.ParticipantGeneration = v
+			return n, nil
+		case field == 5 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.AdmissionReceiptID = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one BarrierObservationEvidence value.
+func (m *BarrierObservationEvidence) Unmarshal(b []byte) error {
+	const msg = "BarrierObservationEvidence"
+	*m = BarrierObservationEvidence{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.RemoteReceiptID = v
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.BarrierDigest = v
+			return n, nil
+		case field == 3 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.ObservedAtMS = int64(v)
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one BarrierObservationSignature value.
+func (m *BarrierObservationSignature) Unmarshal(b []byte) error {
+	const msg = "BarrierObservationSignature"
+	*m = BarrierObservationSignature{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.SignerPrincipalID = v
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.SignerControlDomainID = v
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.SignerKeyID = v
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Signature = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one SubmitBarrierObservationRequest value.
+func (m *SubmitBarrierObservationRequest) Unmarshal(b []byte) error {
+	const msg = "SubmitBarrierObservationRequest"
+	*m = SubmitBarrierObservationRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Target = &BarrierObservationTarget{}
+			if err := m.Target.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Evidence = &BarrierObservationEvidence{}
+			if err := m.Evidence.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Signature = &BarrierObservationSignature{}
+			if err := m.Signature.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one InspectWaitRequest value.
+func (m *InspectWaitRequest) Unmarshal(b []byte) error {
+	const msg = "InspectWaitRequest"
+	*m = InspectWaitRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.WaitID = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one DriverProviderRegisterRequest value.
+func (m *DriverProviderRegisterRequest) Unmarshal(b []byte) error {
+	const msg = "DriverProviderRegisterRequest"
+	*m = DriverProviderRegisterRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OperationID = v
+			return n, nil
+		case field == 2 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OperationGeneration = v
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OwnerFiberID = v
+			return n, nil
+		case field == 4 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OwnerFiberGeneration = v
+			return n, nil
+		case field == 5 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.CancellationScopeID = v
+			return n, nil
+		case field == 6 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.CancellationGeneration = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one DriverProviderCompleteRequest value.
+func (m *DriverProviderCompleteRequest) Unmarshal(b []byte) error {
+	const msg = "DriverProviderCompleteRequest"
+	*m = DriverProviderCompleteRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OperationID = v
+			return n, nil
+		case field == 2 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.OperationGeneration = v
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.CallbackID = v
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Seed = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one DriverProviderRequest value.
+func (m *DriverProviderRequest) Unmarshal(b []byte) error {
+	const msg = "DriverProviderRequest"
+	*m = DriverProviderRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Complete = nil
+			m.Register = &DriverProviderRegisterRequest{}
+			if err := m.Register.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Register = nil
+			m.Complete = &DriverProviderCompleteRequest{}
+			if err := m.Complete.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}
+
+// Unmarshal decodes one CreateChannelRequestWire value.
+func (m *CreateChannelRequestWire) Unmarshal(b []byte) error {
+	const msg = "CreateChannelRequestWire"
+	*m = CreateChannelRequestWire{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.CapacityBytes = v
+			return n, nil
+		case field == 3 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.PolicyDigest = v
+			return n, nil
+		case field == 4 && wt == wire.TypeLen:
+			v, n, err := decodeBytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.IdempotencyKey = v
+			return n, nil
+		case field == 5 && wt == wire.TypeVarint:
+			v, n, err := decodeVarint(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.CreatedAtMS = v
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}

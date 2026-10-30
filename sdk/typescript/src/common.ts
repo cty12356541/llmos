@@ -7,6 +7,7 @@ import {
   type ReceiptReference,
   type SabiRequestContext,
   type SabiResponseContext,
+  type SchemaIdentity,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 
 const ID_BYTES = 16;
@@ -29,6 +30,116 @@ export class CommonSemanticsError extends Error {
     super(message);
     this.name = "CommonSemanticsError";
   }
+}
+
+export interface SabiChannelSpec {
+  readonly name: string;
+  readonly major: number;
+  readonly minor: number;
+  readonly supportedCriticalExtensionIds: readonly number[];
+}
+
+export const SABI_V1_CHANNELS: Readonly<Record<string, SabiChannelSpec>> = {
+  "nlos.sabi.Envelope": {
+    name: "nlos.sabi.Envelope",
+    major: 1,
+    minor: 1,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.ServiceDirectory": {
+    name: "nlos.sabi.ServiceDirectory",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.OperationControl": {
+    name: "nlos.sabi.OperationControl",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.SystemControl": {
+    name: "nlos.sabi.SystemControl",
+    major: 1,
+    minor: 7,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.TakeoverControl": {
+    name: "nlos.sabi.TakeoverControl",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.WaitControl": {
+    name: "nlos.sabi.WaitControl",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.PrincipalHandshake": {
+    name: "nlos.sabi.PrincipalHandshake",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.DriverProvider": {
+    name: "nlos.sabi.DriverProvider",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.ChannelControl": {
+    name: "nlos.sabi.ChannelControl",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+};
+
+export interface SchemaCompatibilityOptions {
+  readonly supportedMajor?: number;
+  readonly supportedCriticalExtensionIds?: readonly number[];
+}
+
+export function validateSchemaCompatibility(
+  identity: SchemaIdentity | undefined,
+  expectedName?: string,
+  options: SchemaCompatibilityOptions = {},
+): SchemaIdentity {
+  if (!identity || identity.name.length === 0 || identity.name.includes("\0")) {
+    fail("MISSING_SCHEMA_IDENTITY", "SABI schema identity is missing or empty");
+  }
+  if (expectedName !== undefined && identity.name !== expectedName) {
+    fail(
+      "UNKNOWN_SCHEMA",
+      `unexpected SABI schema ${JSON.stringify(identity.name)}, expected ${JSON.stringify(expectedName)}`,
+    );
+  }
+  const spec = SABI_V1_CHANNELS[identity.name];
+  if (spec === undefined && options.supportedMajor === undefined) {
+    fail("UNKNOWN_SCHEMA", `unregistered SABI schema ${JSON.stringify(identity.name)}`);
+  }
+  const requiredMajor = options.supportedMajor ?? spec!.major;
+  if (identity.major !== requiredMajor) {
+    fail(
+      "E_ABI_VERSION",
+      `unsupported SABI major version ${identity.major} for ${identity.name} (expected ${requiredMajor})`,
+    );
+  }
+  const allowedCritical = new Set(
+    options.supportedCriticalExtensionIds ??
+      spec?.supportedCriticalExtensionIds ??
+      [],
+  );
+  for (const extId of identity.criticalExtensionIds) {
+    if (extId === 0 || !allowedCritical.has(extId)) {
+      fail(
+        "UNSUPPORTED_CRITICAL_EXTENSION",
+        `unsupported critical extension id ${extId} on ${identity.name}`,
+      );
+    }
+  }
+  return identity;
 }
 
 export function validateRequestContext(

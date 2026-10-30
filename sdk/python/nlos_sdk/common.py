@@ -30,6 +30,73 @@ class CommonSemanticsError(Exception):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class SabiChannelSpec:
+    """Frozen SABI v1.0 channel descriptor for client-side compatibility gates."""
+
+    name: str
+    major: int
+    minor: int
+    supported_critical_extension_ids: tuple[int, ...] = ()
+
+
+SABI_V1_CHANNELS: dict[str, SabiChannelSpec] = {
+    "nlos.sabi.Envelope": SabiChannelSpec("nlos.sabi.Envelope", 1, 1),
+    "nlos.sabi.ServiceDirectory": SabiChannelSpec("nlos.sabi.ServiceDirectory", 1, 0),
+    "nlos.sabi.OperationControl": SabiChannelSpec("nlos.sabi.OperationControl", 1, 0),
+    "nlos.sabi.SystemControl": SabiChannelSpec("nlos.sabi.SystemControl", 1, 7),
+    "nlos.sabi.TakeoverControl": SabiChannelSpec("nlos.sabi.TakeoverControl", 1, 0),
+    "nlos.sabi.WaitControl": SabiChannelSpec("nlos.sabi.WaitControl", 1, 0),
+    "nlos.sabi.PrincipalHandshake": SabiChannelSpec(
+        "nlos.sabi.PrincipalHandshake", 1, 0
+    ),
+    "nlos.sabi.DriverProvider": SabiChannelSpec("nlos.sabi.DriverProvider", 1, 0),
+    "nlos.sabi.ChannelControl": SabiChannelSpec("nlos.sabi.ChannelControl", 1, 0),
+}
+
+
+def validate_schema_compatibility(
+    identity: _pb.SchemaIdentity | None,
+    expected_name: str | None = None,
+    *,
+    supported_major: int | None = None,
+    supported_critical_extension_ids: tuple[int, ...] | None = None,
+) -> _pb.SchemaIdentity:
+    """Enforce [COMPAT-VER-002] fail-closed major and critical-extension rules."""
+
+    if identity is None or not identity.name or "\0" in identity.name:
+        _fail("MISSING_SCHEMA_IDENTITY", "SABI schema identity is missing or empty")
+    if expected_name is not None and identity.name != expected_name:
+        _fail(
+            "UNKNOWN_SCHEMA",
+            f"unexpected SABI schema {identity.name!r}, expected {expected_name!r}",
+        )
+    spec = SABI_V1_CHANNELS.get(identity.name)
+    if spec is None and supported_major is None:
+        _fail("UNKNOWN_SCHEMA", f"unregistered SABI schema {identity.name!r}")
+
+    req_major = supported_major if supported_major is not None else spec.major  # type: ignore[union-attr]
+    if identity.major != req_major:
+        _fail(
+            "E_ABI_VERSION",
+            f"unsupported SABI major version {identity.major} for {identity.name} "
+            f"(expected {req_major})",
+        )
+
+    allowed_critical = set(
+        supported_critical_extension_ids
+        if supported_critical_extension_ids is not None
+        else (spec.supported_critical_extension_ids if spec is not None else ())
+    )
+    for ext_id in identity.critical_extension_ids:
+        if ext_id == 0 or ext_id not in allowed_critical:
+            _fail(
+                "UNSUPPORTED_CRITICAL_EXTENSION",
+                f"unsupported critical extension id {ext_id} on {identity.name}",
+            )
+    return identity
+
+
 def validate_request_context(
     envelope: _pb.Envelope,
     semantics: MethodSemantics,
