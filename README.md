@@ -4,192 +4,307 @@
 
 **English** | [中文](./README.zh-CN.md)
 
-llmos is a microkernel and application platform written in Rust that brings operating system-grade management to LLM Agents: capability-based security, resource budgets, crash recovery, signed artifacts, and distributed federation — none of which exist in today's Agent frameworks.
+llmos is a microkernel, distributed Cell fabric, and natural-language workstation platform written in Rust that brings operating system-grade management to LLM Agents: capability-based security, 6-dimensional resource budgets, crash recovery with durable authority stores, signed content-addressed artifacts, cross-host mTLS Cell federation, and a five-plane Trusted UI workstation desktop.
 
 ---
 
 ## Why does this exist?
 
-Every Agent framework today assumes a friendly world: a handful of trusted agents, unlimited resources, no need for isolation. That works for demos.
+Most Agent frameworks today assume a friendly environment: a handful of trusted agents, unconstrained budgets, and no hard isolation boundary. That works for prototypes.
 
-It doesn't work when you have **thousands of agents running in production**, each with different trust levels, resource constraints, and failure modes.
+It breaks down in multi-tenant, long-running environments where untrusted or semi-trusted agents operate under distinct privilege boundaries, strict token/compute budgets, and partial network or host failures.
 
-llmos asks the question nobody else is asking:
+llmos asks the foundational systems question:
 
-> *If agents are processes, what's the operating system?*
+> *If agents are processes, what is the operating system?*
 
-| What you need at scale | LangChain / AutoGen | Docker + K8s | **llmos** |
+| What multi-agent systems need | LangChain / AutoGen | Docker + K8s | **llmos** |
 |---|---|---|---|
-| Per-agent capability tokens | ✗ | ✗ | ✅ signed, attenuatable, revocable |
-| Token / API budget enforcement | ✗ | ✗ | ✅ 6-dimensional resource conservation |
-| Crash recovery with durable state | ✗ | container restart | ✅ authority-owned durable store + WAL |
-| Signed, content-addressed outputs | ✗ | ✗ | ✅ Artifact store with Ed25519 receipts |
-| Agent isolation | ✗ | process/namespace | ✅ Capability + Principal + Cell boundary |
-| Distributed federation | external infra | K8s cluster | ✅ Cell-based with process migration |
+| Per-agent capability tokens | No | No | Yes — Ed25519 signed, attenuatable, revocable |
+| Token / API budget enforcement | No | No | Yes — 6-dimensional resource conservation |
+| Crash recovery with durable state | No | Container restart | Yes — authority-owned SQLite WAL+FULL stores |
+| Signed, content-addressed outputs | No | No | Yes — Artifact store with Ed25519 receipts |
+| Agent & UI isolation | No | Process / namespace | Yes — Capability + Principal + Cell + Z4 Trusted UI |
+| Distributed federation | External infra | K8s cluster | Yes — single-host & cross-host mTLS Cells + 8-step migration |
 
 ---
 
 ## Architecture in one picture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  NL Desktop  (Stage D)               │
-├─────────────────────────────────────────────────────┤
-│              Applications & Agent SDKs               │
-├──────────────────────┬──────────────────────────────┤
-│   SABI (Service API) │  21 service families          │
-│   Task · Artifact    │  Semantic · Resource          │
-│   Package · Search   │  Notify · Channel · Topic     │
-├──────────────────────┴──────────────────────────────┤
-│   KABI (Kernel API)  │  27 entries                   │
-│   proc_spawn/exit    │  budget_query/transfer        │
-│   io_submit/poll     │  meter_reserve/consume        │
-├─────────────────────────────────────────────────────┤
-│             NLOS Microkernel                         │
-│   Identity · Capability · Clock · Cell               │
-│   (every authority backed by SQLite WAL+FULL)        │
-└─────────────────────────────────────────────────────┘
-          ↕ Host OS (Windows / macOS / Linux)
+```text
+┌───────────────────────────────────────────────────────────┐
+│   NL Workstation Desktop (Stage D: Z0-Z4 Tauri 2 Shell)   │
+│   L0-L3 Progressive Disclosure · 12-Domain Control Parity │
+├───────────────────────────────────────────────────────────┤
+│                 Applications & Agent SDKs                 │
+├─────────────────────────┬─────────────────────────────────┤
+│   SABI (Service API)    │  21 service families            │
+│   Task · Artifact       │  Semantic · Resource            │
+│   Package · Search      │  Notify · Channel · Topic       │
+├─────────────────────────┴─────────────────────────────────┤
+│   KABI (Kernel API)     │  27 entries                     │
+│   proc_spawn/exit       │  budget_query/transfer          │
+│   io_submit/poll        │  meter_reserve/consume          │
+├───────────────────────────────────────────────────────────┤
+│            NLOS Microkernel & Distributed Fabric          │
+│   Identity · Capability · Clock · Cell · Net · Consensus  │
+│   (every authority backed by SQLite WAL+FULL)             │
+└───────────────────────────────────────────────────────────┘
+             <-> Host OS (Windows / macOS / Linux)
 ```
 
 **Execution hierarchy:**
-```
+
+```text
 Application ⊇ Process ⊇ AgentInstance ⊇ ExecutionFiber
 ```
 
-Each level has its own durable authority store, generation fences, and lifecycle state machine.
+Each level has its own durable authority store, monotonic generation fences, and replay-safe lifecycle state machine.
 
 ---
 
 ## Key design decisions
 
 ### Capability-based security
-Every operation requires a signed, generation-checked Capability token — not an API key. Tokens can be attenuated (narrowed) and revoked at any level of the hierarchy. No agent can escalate its own permissions.
+Every privileged operation requires an Ed25519-signed, generation-checked Capability token rather than an ambient API key. Tokens can be attenuated (narrowed) and revoked across the hierarchy; no agent can escalate its own permissions. Cross-process and GUI control flows traverse the single authenticated control spine ([ADR-0011](docs/management/adrs/0011-ipc-principal-auth-signature-passthrough.md)).
 
 ### Durable authority stores
-Each subsystem (Identity, Task, Process, Artifact, Semantic…) is an independent SQLite database with WAL + fsync. State transitions are idempotent and replay-safe. A process crash does not corrupt authority state.
+Each subsystem (`Identity`, `Capability`, `Task`, `Process`, `Resource`, `Artifact`, `Semantic`, `Application`, `Plan`, `Cell`, `Lease`…) owns an independent SQLite database configured with `WAL + synchronous=FULL`. State transitions are idempotent and guarded by compare-and-swap generation fences so crashes do not corrupt authority state.
 
 ### Resource conservation
-Six resource demand types: `Fungible · CPU · Capacity · Rate · CumulativeMeter · Exclusive`. All follow the `Quote → Reserve → Consume → Finalize` lifecycle. Agents cannot exceed their budget; budgets are tracked with durable leases.
+Six resource demand families — `Fungible · CPU · Capacity · Rate · CumulativeMeter · Exclusive` — follow the `Quote → Reserve → Consume → Finalize` conservation lifecycle, extended across distributed Cells via durable `QuotaLease`, `CapacityLease`, and `ExclusiveDeviceLease` reconciliation.
 
 ### Signed evidence chain
-Every Package is signed by its developer. Every Artifact produced by an Agent is content-addressed and signed by the issuing authority. There is no "trust me" — there is only verifiable chain of custody.
+Packages are cryptographically signed by their publisher; Artifacts and cross-domain event sets are content-addressed and bound to authority-signed receipts. Claims in this repository are tracked against machine-checked evidence levels (`H0–H8`) in `docs/management/claims.yaml`.
 
-### Cell-based distribution
-One OS process = one Cell. Cells federate via signed event sets. Processes can migrate across Cells with an 8-step protocol. ADR-0019 defines cross-Cell commit semantics.
+### Cell-based distribution & cross-host consensus
+One OS process hosts one Cell. Cells federate both on a single machine ([ADR-0018](docs/management/adrs/0018-single-host-multiprocess-dual-cell-topology.md), [ADR-0019](docs/management/adrs/0019-cross-cell-commit-semantics-extension.md)) and across physical hosts via TLS 1.3 mTLS with 5-axis TLS Exporter `CellFence` handshakes, conservative clock-skew lease envelopes, 8-step process migration, and an embedded deterministic Raft control-plane quorum that keeps 0 Raft RPCs on the data plane and zero-config passthrough at `N = 1` ([ADR-0020](docs/management/adrs/0020-control-plane-single-writer-and-consensus-timing.md), [ADR-0026](docs/management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)).
+
+### Neutral industrial workstation & Trusted UI
+The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)) isolates five compositor planes (`Z0–Z4`), exposes `L0–L3` progressive disclosure and 12-domain inspect/control symmetry (`[UI-PARITY-001]`), and enforces an unoccludable `Z4` solid security consent screen for high-impact or irreversible actions.
 
 ---
 
 ## Current status
 
-| Stage | Description | Status |
+| Stage | Scope | Status |
 |---|---|---|
-| **Stage A** | Bootstrap microkernel | ✅ Done |
-| **Stage B** | Single-machine application platform | ✅ Done (2026-09-21) — 1,536 tests passed |
-| **Stage C** | Distributed modern system | ✅ Technically complete — 1,922+ tests, awaiting formal exit approval |
-| **Stage D** | Complete NL desktop | 📋 Planned (parallel with C) |
-| **Stage E** | Compatibility & ecosystem | 📋 Planned |
+| **Stage A** | Bootstrap microkernel | `EXITED` |
+| **Stage B** | Single-machine application platform ([`stage-b-progress.md`](docs/management/stage-b-progress.md)) | `EXITED` (2026-09-21) |
+| **Stage C** | Distributed modern system: single-host multi-process Cells + `C-XHOST` cross-physical-host mTLS, clock-skew lease envelope & embedded Raft ([`stage-c-progress.md`](docs/management/stage-c-progress.md)) | `EXITED` (2026-10-29 `W76`) |
+| **Stage D** | Complete NL desktop: five-plane `Z0–Z4` Tauri 2 industrial workstation, `L0–L3` progressive disclosure, 12-domain inspect/control symmetry & `Z4` security consent screen ([`stage-d-progress.md`](docs/management/stage-d-progress.md)) | `EXITED` (2026-10-29 `W76`) |
+| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (DESIGN)` (2026-10-29 `W76` chartered) |
 
-**Stage C work packages (all verified within [ADR-0018](docs/management/adrs/0018-single-host-multiprocess-dual-cell-topology.md) single-host multi-process topology):**
+> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. Stage E (`E1`–`E7` and `E0` onboarding) is currently in `DESIGN` planning with zero Stage E runtime packages claimed as implemented. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` freeze (`RISK-B-05`), and OS commercial installer notarization (`RISK-B-06`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
 
-| Package | Status | Highlights |
+### Stage C verified work packages (`C-core` + `C-XHOST`)
+
+| Package | Status | Verified scope summary |
 |---|---|---|
-| C-CELL — Cell authority & federation | ✅ Verified | 7-piece local assembly, partition autonomy gate |
-| C-LEASE — Quota / Capacity / Device leases | ✅ Verified | 3-family durable state machines, reconciliation receipts |
-| C-SYNC — Cross-library event & artifact sync | ✅ Verified | Signed event set merge, vector checkpoints, artifact transfer |
-| C-SHARD — TaskAuthority sharding | ✅ Verified | Phase 0+1 complete, schema v47, production takeover binding |
-| C-FANOUT — Hierarchical fanout & bulkhead | ✅ Verified | Merkle result root, 6-dim admission, 4-domain bulkhead |
-| C-MIGRATE — Process migration protocol | ✅ Verified | 8-step protocol, cross-CellHost dual-process e2e |
-| C-SCHED — Three-tier scheduler | ✅ Verified | Zero-global-lock hot path, DRR, work stealing |
-| C-PARTITION — Partition tolerance | ✅ Verified | Bounded-loss proof, 4-stage reconnection convergence |
-| C-BENCH — Distributed benchmarks | ✅ Verified | 4.44x scaling (1→8 cells), p50=84µs @100K, 5 fault categories |
+| `C-CELL` — Cell authority & federation | `Verified` | 7-piece local Cell assembly, federation directory/intent/checkpoint, `PartitionAutonomyGate` |
+| `C-LEASE` — Quota / Capacity / Device leases | `Verified` | 3-family durable `SQLite WAL+FULL` state machines, fencing & reconciliation receipts |
+| `C-SYNC` — Event & artifact sync | `Verified` | Signed event-set merge, vector checkpoints, content-addressed `ArtifactTransferPackage` |
+| `C-SHARD` — TaskAuthority sharding | `Verified` | Schema v47 3-record sharding, 6-endpoint takeover barrier, production takeover binding |
+| `C-FANOUT` — Hierarchical fanout & bulkhead | `Verified` | Bounded fanout tree, Merkle result root, 6-dim admission backpressure, 4-domain bulkhead |
+| `C-MIGRATE` — Process migration protocol | `Verified` | Ordered 8-step migration state machine, cross-`CellHost` dual-process conservation |
+| `C-SCHED` — Three-tier scheduler | `Verified` | Lock-free worker hot path, bounded DRR, lease-safe work stealing & reverse backpressure |
+| `C-PARTITION` — Partition tolerance | `Verified` | 4-stage reconnection convergence, `PartitionBoundedLossProof` conservation accounting |
+| `C-BENCH` — Single-host sharded benchmarks | `Verified` | 4.44x scaling (1 to 8 process Cells, `--release`), `10K/100K_LOGICAL` `WAL+FULL`, 5 fault classes |
+| `C-XHOST` (`001`–`005`) — Cross-physical-host fabric ([ADR-0026](docs/management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)) | `Verified` | `nlos-net` TLS 1.3 mTLS + 5-axis `CellFence`, conservative clock-skew lease envelope, `nlos-consensus` embedded Raft control plane (`N=1` passthrough), streaming cross-host migration, `ChaosTcpProxy` `H6` multi-machine gates |
+
+### Stage D verified work packages (`D-core` + `[ROAD-D-001]`)
+
+| Package | Status | Verified scope summary |
+|---|---|---|
+| `D-TOKENS-KIT` — Workstation tokens & SOTA UI kit | `Verified` | Solid `Graphite` / `Paper` themes (zero blur/glow/emoji), Nomad/Temporal/Headlamp/Terraform primitives |
+| `D-IPC-ENUM` — 12-domain enumeration & symmetry | `Verified` | `IPC-D1..D8` bounded cursor pagination (`limit <= 64`), typed `ControlScope`, blast-radius preview, statutory immutable locks |
+| `D-COMPOSITOR-WM` — Five-plane `Z0–Z4` compositor & WM | `Verified` | 5-mode tiling-first window manager, `36px` bottom taskbar, `L0–L3` disclosure store, generation-fenced input routing |
+| `D-OMNIBAR-MULTIMODAL` — On-demand intent palette | `Verified` | `Ctrl+Space` `Z3` command/intent palette, `TypedIntent` preview, `[NL-AMBIG-001]` clarification gate, voice & attachment tags |
+| `D-TRUSTED-UI` — `Z4` consent, chooser & clipboard gate | `Verified` | UAC/Polkit-grade `Z4` solid security screen (`350ms` anti-hijack, `IRREVERSIBLE` notice), `ChooserGrant`, taint-aware clipboard/drag-drop |
+| `D-TASK-SPACE-DAG` — `L1–L3` Task Space & DAG editor | `Verified` | `L1` 16-state commitment table, `L2` single-row attribution drawer, `L3` orthogonal `TaskPlan` DAG editor & `TaskAttempt` lanes |
+| `D-NOTIFY-SEARCH-OFFLINE` — Notifications, Spotlight & offline | `Verified` | One-time SHA-256 `ActionToken` notifications, `Ctrl+K` `0x1F` non-authoritative search, `[DUI-OFFLINE-001]` local offline autonomy |
+| `D-CONTROL-SETTINGS-A11Y` & `[ROAD-D-001]` — Control Center, settings, a11y & E2E gate | `Verified` | 12-domain `SystemControlCenter` (108 Tauri commands), 4-tier `SettingsDomain` CAS, `KeychainReference`, `WCAG 2.2 AA`, `zh-CN / en-US` packs, 1,000-round zero-leak campaign & non-developer multi-app E2E gate |
 
 ---
 
 ## Repository layout
 
-```
-crates/          35 Rust library/binary crates
-  nlos-types/      Nominal identity types (zero deps)
-  nlos-identity/   Principal & key authority (Ed25519)
-  nlos-capability/ Capability issue, attenuation, revocation
-  nlos-task/       Task authority (CommitPermit, EffectPermit, recovery)
-  nlos-process/    Process / AgentInstance lifecycle
-  nlos-artifact/   Content-addressed artifact store
-  nlos-semantic/   Semantic assertion admission authority
-  nlos-cell/       Cell authority & federation (Stage C)
-  nlos-lease/      Distributed lease authority (Stage C)
-  nlos-slice-k/    End-to-end integration slice (Package→Task→Fiber→Artifact)
-  nlos-package/    CLI: keygen · build · verify · install · run
-  ... (24 more)
+```text
+crates/              37 Rust workspace library/binary crates (root Cargo.toml)
+  nlos-types/          Nominal identity types (zero dependencies)
+  nlos-identity/       Principal & key authority (Ed25519)
+  nlos-capability/     Capability issuance, attenuation, revocation & KEK custody
+  nlos-task/           Task authority (CommitPermit, EffectPermit, sharded takeover)
+  nlos-process/        Process / AgentInstance lifecycle & 8-step migration
+  nlos-artifact/       Content-addressed artifact store & sync policy
+  nlos-semantic/       Semantic assertion admission & signed vector checkpoints
+  nlos-cell/           Cell authority, 7-piece local assembly & partition gate (Stage C)
+  nlos-lease/          Durable Quota / Capacity / ExclusiveDevice lease authority (Stage C)
+  nlos-net/            Cross-host TLS 1.3 mTLS transport & 5-axis CellFence (Stage C C-XHOST)
+  nlos-consensus/      Embedded deterministic Raft control-plane quorum (Stage C C-XHOST)
+  nlos-system-control/ Resident system-control-daemon & system-control-cli (12-domain spine)
+  nlos-slice-k/        End-to-end integration slice (Package → Task → Fiber → Artifact)
+  nlos-package/        CLI: keygen · build · conformance · verify · install · run · update · uninstall
+  ... (23 more workspace crates)
 
-desktop/         Tauri desktop application (TypeScript + Rust)
+desktop/             Five-plane Z0-Z4 Tauri 2 workstation desktop (TypeScript + independent Rust workspace)
+examples/sample-app/ Sample signed NLOS application payload & lifecycle fixture (independent package)
 docs/
-  design/          Architecture spec (v0.5, 278 KB, 200+ requirement IDs)
-  discussions/     36 design discussions (philosophy → distributed kernel)
+  design/            Canonical architecture specification (v0.5, 278 KB, 200+ requirement IDs)
+  discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
-    adrs/          24 Architecture Decision Records
-    evidence-index.yaml   169 evidence entries (H0–H8 levels)
-    claims.yaml    101 machine-readable claims (71 Stage B + 30 Stage C)
-sdk/             Python · TypeScript · Go · C# SDKs
-schema/          Protobuf + CDDL schemas + golden test vectors
-experiments/     8 Python/Rust design experiments
-fuzz/            3 fuzz targets with seed corpora
+    adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
+    evidence-index.yaml  188 evidence entries (H0-H8 assurance levels)
+    claims.yaml      116 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D)
+sdk/                 Python · TypeScript · Go · C# SABI SDKs
+schema/              Protobuf + CDDL schemas + golden wire test vectors
+experiments/         8 Python/Rust design experiments
+fuzz/                3 cargo-fuzz targets with seed corpora (excluded from root workspace)
 ```
 
 ---
 
-## Building
+## Building & Quick Trial
 
-**Prerequisites:** Rust (toolchain pinned via `rust-toolchain.toml`), Git.
+**Prerequisites:** Rust (pinned via `rust-toolchain.toml`, MSRV `1.97`), Git. Optional for desktop/SDK trials: Node.js `>= 20` (Tauri 2 desktop), Python `>= 3.11` (`nlos-sdk`).
+
+**Platform support:** Windows, macOS, and Linux (verified across all three in CI).
+
+### 1. Build, test, and run the package CLI
 
 ```bash
 git clone https://github.com/cty12356541/llmos
 cd llmos
 
-# Build the entire workspace
+# Build all 37 root workspace crates
 cargo build --workspace
 
-# Run all tests
+# Run the root workspace test suite
 cargo test --workspace
 
-# Run the package CLI
+# Explore the signed package lifecycle CLI
 cargo run -p nlos-package -- --help
 ```
 
-**Platform support:** Windows, macOS, Linux (CI runs all three).
+### 2. Start the cross-platform resident control plane (`system-control-daemon`)
+
+`system-control-daemon` assembles all local authorities under `--root` and binds two local IPC endpoints simultaneously — an ADR-0011 authenticated endpoint for the desktop shell and a plain endpoint for `system-control-cli` — using **Named Pipes on Windows** (`\\.\pipe\llmos-system-control-{auth|plain}-<digest>`) and **owner-only Unix domain sockets on macOS/Linux** (`<STATE_DIR>/system-control-{auth|plain}.sock`).
+
+Key files contain one line of 64 hex characters (32-byte Ed25519 seed; on Unix, files must carry `0600` permissions or startup fails closed):
+
+**Windows (PowerShell):**
+
+```powershell
+$StateDir = Join-Path $env:TEMP "llmos-trial-state"
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$KeyFile = Join-Path $StateDir "trial-ed25519.key"
+"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" | Set-Content -NoNewline -Encoding ascii $KeyFile
+
+cargo run -p nlos-system-control --features daemon --bin system-control-daemon -- `
+  --root $StateDir `
+  --identity-key-file $KeyFile `
+  --operator-key-file $KeyFile
+```
+
+**macOS / Linux (POSIX shell):**
+
+```bash
+STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/llmos-trial-state.XXXXXX")"
+KEY_FILE="$STATE_DIR/trial-ed25519.key"
+printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$KEY_FILE"
+chmod 600 "$KEY_FILE"
+
+cargo run -p nlos-system-control --features daemon --bin system-control-daemon -- \
+  --root "$STATE_DIR" \
+  --identity-key-file "$KEY_FILE" \
+  --operator-key-file "$KEY_FILE"
+```
+
+Once ready, the daemon prints one probe line:
+
+```text
+READY service=system_control root=... auth_socket=<AUTH_ENDPOINT> plain_socket=<PLAIN_ENDPOINT> principal=<PRINCIPAL_HEX32> operator_root_receipt=...
+```
+
+### 3. Inspect via `system-control-cli` or Python SDK
+
+Open a second terminal and pass `<PLAIN_ENDPOINT>` from the `READY` line:
+
+```bash
+# Check recovery worker & authority health
+cargo run -p nlos-system-control --bin system-control-cli -- "<PLAIN_ENDPOINT>" inspect-health
+
+# Enumerate tasks with bounded cursor pagination (limit <= 64)
+cargo run -p nlos-system-control --bin system-control-cli -- "<PLAIN_ENDPOINT>" list-tasks 16
+```
+
+To try the Python SABI client (`sdk/python`, see [`sdk/python/README.md`](sdk/python/README.md)):
+
+```bash
+pip install -e sdk/python
+```
+
+(`nlos_sdk` supports Unix domain sockets on macOS/Linux and Named Pipes via `asyncio.WindowsProactorEventLoopPolicy()` on Windows.)
+
+### 4. Launch the Stage D workstation desktop (`desktop/`)
+
+Point the Tauri 2 workstation shell at `<AUTH_ENDPOINT>`, `<PRINCIPAL_HEX32>`, and `<HEX64_KEY_FILE>` emitted by `system-control-daemon` (details in [`desktop/README.md`](desktop/README.md)):
+
+**Windows (PowerShell):**
+
+```powershell
+cd desktop
+$env:LLMOS_DESKTOP_SOCKET = "<AUTH_ENDPOINT>"      # e.g. \\.\pipe\llmos-system-control-auth-...
+$env:LLMOS_DESKTOP_PRINCIPAL = "<PRINCIPAL_HEX32>"
+$env:LLMOS_DESKTOP_KEY_FILE = "<HEX64_KEY_FILE>"
+npm install
+npm run tauri dev
+```
+
+**macOS / Linux:**
+
+```bash
+cd desktop
+export LLMOS_DESKTOP_SOCKET="<AUTH_ENDPOINT>"      # e.g. /tmp/.../system-control-auth.sock
+export LLMOS_DESKTOP_PRINCIPAL="<PRINCIPAL_HEX32>"
+export LLMOS_DESKTOP_KEY_FILE="<HEX64_KEY_FILE>"
+npm install
+npm run tauri dev
+```
+
+> **Platform note on `npm run dev:server`:** The standalone in-repo demo fixture `npm run dev:server` (`desktop/src-tauri/examples/dev_server.rs`) is gated to Unix (`#[cfg(unix)]`). On Windows, connect `npm run tauri dev` directly to the cross-platform `system-control-daemon` Named Pipe (`auth_socket`) as shown above.
 
 ---
 
 ## Engineering practices
 
-- **`unsafe_code = "forbid"`** workspace-wide (IPC FFI and fault-injection shim are the only opt-outs)
-- **Evidence-driven development**: every claim has a unique ID, evidence level (H0–H8), and machine-readable registry entry
-- **Wave-based progress tracking**: each development wave has explicit read-set, write-set, and acceptance criteria
-- **CI matrix**: Ubuntu · Windows · macOS × Rust + Node.js 24 + Python 3.13 + Go + .NET
-- **Specialised CI**: power-loss simulation, takeover-control external crash, takeover-control long soak, fuzz smoke
+- **`unsafe_code = "forbid"`** workspace-wide (OS IPC FFI and the fault-injection shim are the only narrowly scoped opt-outs)
+- **Evidence-driven claims (`ledger-schema v1.3`)**: every claim maps to a normative Requirement ID, assurance tier (`H0–H8`), explicit scope/limitations, and bidirectional evidence lint (`python scripts/lint_claims.py`)
+- **Dependency-aware wave orchestration**: multi-lane tasks execute in isolated worktrees with disjoint write-sets, CAS revision discipline, and single-integrator barrier merges
+- **Cross-platform CI matrix**: Ubuntu · Windows · macOS × Rust (pinned toolchain + MSRV `1.97`) + Node.js 24 + Python 3.13 + Go + .NET
+- **Specialised standing gates**: Layer-2 `dm-flakey` power-loss simulation, external crash takeover soak, cross-platform `--release` scale probes, and `cargo-fuzz` smoke suites
 
 ---
 
 ## Contributing
 
-The project is early in its open-contribution journey. The best starting points:
+The best starting points for contributors and coding agents:
 
 - Browse [GitHub Discussions](../../discussions) for architecture questions and RFCs
 - Look for issues labelled [`good first issue`](../../labels/good%20first%20issue) and [`help wanted`](../../labels/help%20wanted)
-- Read [`AGENTS.md`](AGENTS.md) for the mandatory agent work rules (applies to both human contributors and AI coding assistants)
-- Read the [progressive disclosure rules](docs/management/project-knowledge-progressive-disclosure.md) before touching design documents
+- Read [`AGENTS.md`](AGENTS.md) for the mandatory repository rules (applies equally to human contributors and AI agents)
+- Read the [progressive disclosure & CRUD rules](docs/management/project-knowledge-progressive-disclosure.md) before modifying design or governance documents
 
-**Good entry points by interest:**
+**Entry points by interest:**
 
 | Interest | Where to start |
 |---|---|
-| Rust / systems | `nlos-types`, `nlos-store`, `nlos-clock` (clean, well-tested foundations) |
-| Security / crypto | `nlos-identity`, `nlos-capability`, `nlos-canonical` |
-| Distributed systems | `nlos-cell`, `nlos-lease` (Stage C, active development) |
-| CLI / tooling | `nlos-package` (binary crate, user-facing) |
-| TypeScript / desktop | `desktop/` (Tauri app) |
-| Documentation | Any crate missing a `description` in `Cargo.toml`, or the SDK READMEs |
+| Rust / durable systems | `nlos-types`, `nlos-store`, `nlos-clock` (zero/minimal-dep foundations) |
+| Security / cryptography | `nlos-identity`, `nlos-capability`, `nlos-canonical` |
+| Distributed systems | `nlos-cell`, `nlos-lease`, `nlos-net`, `nlos-consensus` (Stage C `EXITED`) |
+| Control plane & CLI | `nlos-system-control`, `nlos-package` (`system-control-daemon`, `system-control-cli`, package tooling) |
+| TypeScript / Tauri 2 desktop | `desktop/` (Stage D `EXITED`, five-plane `Z0–Z4` workstation shell) |
+| Compatibility & SDKs | `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS (DESIGN)`, see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
 
 ---
 
@@ -197,11 +312,16 @@ The project is early in its open-contribution journey. The best starting points:
 
 | Document | Description |
 |---|---|
-| [`docs/design/06-架构设计总纲-v0.5.md`](docs/design/06-架构设计总纲-v0.5.md) | **Current canonical architecture spec** (278 KB) |
-| [`docs/discussions/00-讨论索引.md`](docs/discussions/00-讨论索引.md) | Index of all 36 design discussions |
-| [`docs/management/adrs/`](docs/management/adrs/) | 23 Architecture Decision Records |
-| [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C progress log |
-| [`AGENTS.md`](AGENTS.md) | Mandatory rules for all agents working in this repo |
+| [`docs/design/06-架构设计总纲-v0.5.md`](docs/design/06-架构设计总纲-v0.5.md) | **Current canonical architecture specification** (`v0.5`, 278 KB) |
+| [`docs/discussions/00-讨论索引.md`](docs/discussions/00-讨论索引.md) | Index of all 36 design discussion documents |
+| [`docs/management/README.md`](docs/management/README.md) | Project management mechanism & stage governance routing |
+| [`docs/management/adrs/`](docs/management/adrs/) | **27** Architecture Decision Records (`ADR-0001..0027`) |
+| [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B authoritative progress ledger (`EXITED`) |
+| [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C authoritative progress ledger (`EXITED`) |
+| [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D authoritative progress ledger (`EXITED`) |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS / DESIGN`) |
+| [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D exit unknown & residual risks ledger (`P0 = 0`) |
+| [`AGENTS.md`](AGENTS.md) | Mandatory work rules for all agents and contributors in this repo |
 
 ---
 
