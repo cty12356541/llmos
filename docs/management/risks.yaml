@@ -73,13 +73,13 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；W65 经 ADR-0024 正式冻结第 8 个 SABI 通道 nlos.sabi.DriverProvider v1.0（16 KiB 有界载荷 + TS/Python/Rust 黄金向量钉死，闭合 W34-A §3 driver payload codec 残余项，C-PROVIDER-001）；W66 Search/Notify 控制探查复用既有授权通道零 .proto 破坏性变更；W76 已立项 ADR-0027（CANDIDATE）与 stage-e-progress.md（E1/E2/E7 + 决策点 E2），在跨版本兼容回归门通过前维持 partial"
+  mitigation: "crates/nlos-schema REGISTRY 共 9 个 SABI 通道中已有 8 个为 frozen=true（Envelope、ServiceDirectory、OperationControl、SystemControl、TakeoverControl、WaitControl 依 ADR-0014 v1-beta additive 冻结，第 8 通道 DriverProvider v1.0 依 W65 ADR-0024 / C-PROVIDER-001 冻结并闭合 W34-A §3 driver payload codec 残余，第 9 通道 ChannelControl v1.0 依 W73 L-002 冻结），唯一仍为 frozen=false 的是第 7 通道 nlos.sabi.PrincipalHandshake（SABI_PRINCIPAL_HANDSHAKE_V1）；W76/W76.1 已立项并排定两步收口（ADR-0027 CANDIDATE + stage-e-progress.md）：(1) 排入 W77（W77-E1A-SABI-REGISTRY + W77-E1B-GOLDEN-SDKS）补齐 PrincipalHandshake 的 peer attestation 扩展槽审查与五语言黄金向量并翻转为 frozen=true（达成 9/9 SABI 通道全量入冻）；(2) 排入 W77->W78->W81（决策点 E2）依次经五语言跨纪元黄金语料与弃用清单（W77）、核外 nlos-compat-shim（W78）及 ROAD-E-001 N-1->N 零重编译升级门禁（W81）实证后正式从 ADR-0014 v1-beta 晋升为 SABI v1.0 长期冻结承诺；在此之前维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
     - docs/evidence/stage-b/b-plan-002-manifest-template.md
     - docs/evidence/stage-c/c-provider-001-real-process-provider-codec.md
-  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；W76 已立项 ADR-0027，阶段 E 决策点 E2 跨版本兼容回归通过并晋升长期 SABI v1.0 兼容承诺前必复审"
+  review_point: "driver codec 入通道残余已于 W65（ADR-0024）闭环；W76.1 已排入两步冻结收口——W77（W77-E1A/E1B）将唯一 frozen=false 的第 7 通道 nlos.sabi.PrincipalHandshake（SABI_PRINCIPAL_HANDSHAKE_V1）翻转为 frozen=true（9/9 通道入冻），经 W77->W78->W81（决策点 E2）零重编译升级回归实证并获维护者签字后晋升 SABI v1.0 长期冻结承诺并闭合本项"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
@@ -131,7 +131,7 @@
   description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
   mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）验证清空全部 6 个在途 Dependabot PR；自动化供应链与许可证门禁在阶段 E（E5/E7）落地前仍维持 open"
   evidence_refs: []
-  review_point: "W76 已完成 Rust + desktop npm 依赖树升级清空 6 个 Dependabot PR；阶段 E（E5/E7）落地自动化供应链/license 门禁及每四个周期依赖复审时复查"
+  review_point: "W76 已完成 Rust + desktop npm 依赖树升级清空 6 个 Dependabot PR；排入阶段 E（W79/W81 E5/E7）落地第三方依赖许可证与供应链自动化 CI 审计门及每四个周期依赖复审时复查"
 
 - id: RISK-B-10
   category: cancel-effect-unknown

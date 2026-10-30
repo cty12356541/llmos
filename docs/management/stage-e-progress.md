@@ -1,11 +1,11 @@
 # 阶段 E 权威进度单（兼容制度与生态规模化）
 
-> **状态：`IN_PROGRESS / NOT EXITED`（2026-10-29 `W76` 立项启动，当前处于 `DESIGN` 规划态；阶段 C 与阶段 D 已于 `W76` 经维护者正式批复 `EXITED` 并完成向阶段 E 的基线交接；至 [§E.5.5](#e55-阶段-e-退出门禁检查表) 全部六项硬性退出条件满足并获维护者显式批准前，严禁将本状态改为 `EXITED`）。** 本文件为阶段 E（兼容制度与生态规模化）的唯一权威进度、工作包拆解与依赖感知并行编排台账，依据 [06-架构设计总纲-v0.5.md](../design/06-架构设计总纲-v0.5.md) §28.5、§9、§15、§23、§29、§30，结合前序阶段 B/C/D 交接清单（[stage-b-progress.md](./stage-b-progress.md)、[stage-c-progress.md](./stage-c-progress.md)、[stage-d-progress.md](./stage-d-progress.md)）及未知与残余风险清单 [exit-unknown-risks.md](./exit-unknown-risks.md) 编制。立项快照基线 `HEAD = 626e46d`（含 `W75` 远端全绿基线 `481ae0f` 及 `W76` 前序提交 `6141dd1..626e46d`，2026-10-29）。
+> **状态：`IN_PROGRESS / NOT EXITED`（2026-10-29 `W76` 立项启动，2026-10-30 `W76.1` 按维护者指令增量纳管剩余协议契约冻结收口与 `E0` `W77-PRE` 本地开箱真实试用先行波，当前处于 `DESIGN` 规划态；阶段 C 与阶段 D 已于 `W76` 经维护者正式批复 `EXITED` 并完成向阶段 E 的基线交接；至 [§E.5.5](#e55-阶段-e-退出门禁检查表) 全部六项硬性退出条件满足并获维护者显式批准前，严禁将本状态改为 `EXITED`）。** 本文件为阶段 E（兼容制度与生态规模化）的唯一权威进度、工作包拆解与依赖感知并行编排台账，依据 [06-架构设计总纲-v0.5.md](../design/06-架构设计总纲-v0.5.md) §28.5、§9、§15、§23、§29、§30，结合前序阶段 B/C/D 交接清单（[stage-b-progress.md](./stage-b-progress.md)、[stage-c-progress.md](./stage-c-progress.md)、[stage-d-progress.md](./stage-d-progress.md)）及未知与残余风险清单 [exit-unknown-risks.md](./exit-unknown-risks.md) 编制。立项快照基线 `HEAD = 626e46d`（含 `W75` 远端全绿基线 `481ae0f` 及 `W76` 前序提交 `6141dd1..626e46d`，2026-10-29），`W76.1` 增量规划修订基线 `HEAD = 3507631`（2026-10-30）。
 >
-> **机器台账口径绑定**：绑定 [ledger-schema.md](./ledger-schema.md) **`v1.3`**（`ledger-schema.md` `v1.2 -> v1.3` 与 `scripts/lint_claims.py` / `scripts/test_lint_claims.py` 纯增量升级已于本波 `W76` `W76-SCHEMA-V13` 提交 `ed64ae3` 提前落地，`44/44` 单测通过：`claims.yaml` 的 `stage` 枚举新增 `"E"`、`source` 允许引用 `stage-e-progress.md`、`risks.yaml` 允许 `RISK-E-NN`、`evidence-index.yaml` 双向索引覆盖 `docs/evidence/stage-e/` 及 `docs/evidence/stage-e/reviews/`；严守 `Claim <= Evidence` 纪律，`W76` 立项波不提前录入任何 `stage: "E"` 空产声明，阶段 E 全量机器台账覆盖核验与回填排入 `W81` `E7` 收口波次 `W81-E7B-LEDGER-SYNC` + `W81-INT`）。
+> **机器台账口径绑定**：绑定 [ledger-schema.md](./ledger-schema.md) **`v1.3`**（`ledger-schema.md` `v1.2 -> v1.3` 与 `scripts/lint_claims.py` / `scripts/test_lint_claims.py` 纯增量升级已于 `W76` `W76-SCHEMA-V13` 提交 `ed64ae3` 提前落地，`44/44` 单测通过：`claims.yaml` 的 `stage` 枚举新增 `"E"`、`source` 允许引用 `stage-e-progress.md`、`risks.yaml` 允许 `RISK-E-NN`、`evidence-index.yaml` 双向索引覆盖 `docs/evidence/stage-e/` 及 `docs/evidence/stage-e/reviews/`；严守 `Claim <= Evidence` 纪律，`W76` / `W76.1` 规划期不提前录入任何 `stage: "E"` 空产声明，阶段 E 全量机器台账覆盖核验与回填排入 `W81` `E7` 收口波次 `W81-E7B-LEDGER-SYNC` + `W81-INT`）。
 >
 > **同波权威总体架构决策记录（交叉绑定）**：
-> - 阶段 E 总体架构决策记录：[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（状态：`CANDIDATE`，保障等级：`DESIGN`；确立 SABI v1.0 长期稳定契约与 `ACTIVE -> DEPRECATED -> SUNSET` 弃用制度、核外无特权兼容垫片 `nlos-compat-shim` 与迁移检查器 `nlos-migrate`、三级发布者信任域与 `nlos-store-registry` / `nlos-certify` 认证流水线、以及 `[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级不破坏门禁）。
+> - 阶段 E 总体架构决策记录：[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（状态：`CANDIDATE`，保障等级：`DESIGN`；确立第 7 通道 `nlos.sabi.PrincipalHandshake` 入冻补齐 9/9 通道冻结、`SABI v1-beta -> v1.0` 长期稳定契约与 `ACTIVE -> DEPRECATED -> SUNSET` 弃用制度、核外无特权兼容垫片 `nlos-compat-shim` 与迁移检查器 `nlos-migrate`、不破坏微内核边界的 `E0` 用户态真实 LLM 驱动与本机开箱引导、三级发布者信任域与 `nlos-store-registry` / `nlos-certify` 认证流水线、以及 `[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级不破坏门禁）。
 >
 > **前序阶段收官评审与风险基线（只读引用）**：阶段 B 收官评审 [W31-G](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[W33-H](../evidence/stage-b/reviews/w33h-road-b001-b002.md)、[W34-A](../evidence/stage-b/reviews/w34a-six-gate-matrix.md)；阶段 C 单机与跨物理主机收官终审 [W67](../evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、[W73](../evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)；阶段 D 完整自然语言桌面收官终审 [D-ROAD-001](../evidence/stage-d/d-road-001-non-developer-multi-app-e2e-gate.md)、[W74](../evidence/stage-d/reviews/w74-stage-d-exit-gates.md)；机器台账与风险基线 [claims.yaml](./claims.yaml)、[risks.yaml](./risks.yaml)、[evidence-index.yaml](./evidence-index.yaml)、[exit-unknown-risks.md](./exit-unknown-risks.md)。
 
@@ -34,14 +34,14 @@
 
 | 规范章节 | Requirement ID | 规范核心不变量摘要 | 承接工作包 |
 |---|---|---|---|
-| §28.5 | `ROAD-E-001` | 系统能力增长主要来自第三方生态，主系统升级无需第三方生态整体重写或重编译 | `E7`（总门禁终验），`E1`..`E6` 共同支撑 |
+| §28.5 | `ROAD-E-001` | 系统能力增长主要来自第三方生态，主系统升级无需第三方生态整体重写或重编译 | `E7`（总门禁终验），`E0`、`E1`..`E6` 共同支撑 |
 | §9 | `COMPAT-VER-001`、`COMPAT-VER-002` | 每个 envelope/schema 包含 `(name, major, minor)` 与扩展规则；未知 `major` 或未知 `critical` 字段/flag 强制拒绝，未知 `non-critical` 扩展安全忽略但完整保留 round-trip 语义 | `E1`、`E2`、`E7` |
 | §9 | `COMPAT-DEPRECATE-001` | 稳定契约明确定义弃用期（`ACTIVE -> DEPRECATED -> SUNSET`，最少双周期预告）、能力协商、迁移路径与 conformance 黄金向量 | `E1`、`E3`、`E7` |
-| §9.1–§9.2 | `KABI-IDEM-001`、`KABI-HANDLE-001`、`KABI-SVC-001`、`KABI-ERR-001`、`KABI-UNCERTAIN-001` | KABI 严守最小受控能力边界，禁止新增 provider-specific syscall；第三方生态统一经 SABI 与 generic I/O 编程；`E_UNCERTAIN` 严禁换新幂等键盲目重做 | `E1`、`E2`、`E5` |
-| §9.3 | `SABI-DISC-001`、`SABI-COMMON-001`、`SABI-RECEIPT-001`、`SABI-AUTH-001`、`SABI-TRANSPORT-001`、`SABI-CONFORM-001` | 第三方应用强制经 `ServiceDirectory` + 版本/特性协商获取服务；完整继承 capability、异步 `Operation`、取消、幂等、不可变 `Receipt` 与授权摘要绑定；`APPLICATION_PLATFORM` 与 `DESKTOP` 完整满足最小服务族一致性 | `E1`、`E2`、`E5`、`E7` |
-| §15.1 | `DRV-NEGO-001`、`DRV-BOUND-001`、`DRV-ACTIVE-001`、`DRV-CRED-001`、`DRV-PROTO-001`、`DRV-LIFE-001`、`DRV-SHIM-001`、`DRV-DISC-001` | 用户态 Driver 特性协商与 `EffectDescriptor` 声明；可信 `EnforcementShim`（托管凭据、校验权限/预留激活令牌/围栏）与不可信 `ProviderAdapter` 及核外协议转换垫片物理分离；驱动崩溃后未决操作默认置 `UNCERTAIN` 直至对账；MCP/A2A/OpenAI 兼容接口封装为版本化扩展 | `E2`、`E5`、`E6`、`E7` |
-| §23.1–§23.2 | `PKG-SEP-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`、`PKG-UNINSTALL-001`、`PKG-OCI-001`、`PKG-MULTI-001`、`PKG-APPID-001` | 内容寻址不可变签名包（零烘焙可变记忆/密钥）；`PackageId` / `ApplicationId` / `InstallationId` 严格分离与防抢注；更新强制支持迁移分类、健康检查与原子回滚（不可逆迁移须预备份并经 `Z4` 确认）；卸载彻底清理后台/权限/缓存并保护用户数据；OCI 仅作内容寻址层，商店治理独立承担发布者身份、审核、权限透明与恶意撤回；支持多组件复合包 | `E3`、`E4`、`E5`、`E6`、`E7` |
-| §6 / §7 / §24.2 | `TCB-BYPASS-001`、`TCB-EGRESS-001`、`TCB-DOWNGRADE-001`、`CAP-UNFORGE-001`、`CAP-ATTEN-001`、`CAP-REVOKE-001`、`TUI-CONSENT-001` | 第三方不可信负载默认拒绝网络外发且零原始凭据暴露；未完全中介路径强制降档并在回执与 `Z4` 可信 UI 显式提示；包吊销或卸载立即触发关联 Capability 撤销 | `E4`、`E5`、`E6` |
+| §9.1–§9.2 | `KABI-IDEM-001`、`KABI-HANDLE-001`、`KABI-SVC-001`、`KABI-ERR-001`、`KABI-UNCERTAIN-001` | KABI 严守最小受控能力边界，禁止新增 provider-specific syscall；第三方生态与外部模型驱动统一经 SABI 与 generic I/O 编程；`E_UNCERTAIN` 严禁换新幂等键盲目重做 | `E0`、`E1`、`E2`、`E5` |
+| §9.3 | `SABI-DISC-001`、`SABI-COMMON-001`、`SABI-RECEIPT-001`、`SABI-AUTH-001`、`SABI-TRANSPORT-001`、`SABI-CONFORM-001` | 第三方应用强制经 `ServiceDirectory` + 版本/特性协商获取服务；完整继承 capability、异步 `Operation`、取消、幂等、不可变 `Receipt` 与授权摘要绑定；`APPLICATION_PLATFORM` 与 `DESKTOP` 完整满足最小服务族一致性 | `E0`、`E1`、`E2`、`E5`、`E7` |
+| §15.1 | `DRV-NEGO-001`、`DRV-BOUND-001`、`DRV-ACTIVE-001`、`DRV-CRED-001`、`DRV-PROTO-001`、`DRV-LIFE-001`、`DRV-SHIM-001`、`DRV-DISC-001` | 用户态 Driver 特性协商与 `EffectDescriptor` 声明；可信 `EnforcementShim`（托管凭据、校验权限/预留激活令牌/围栏）与不可信 `ProviderAdapter` 及核外协议转换垫片物理分离；驱动崩溃后未决操作默认置 `UNCERTAIN` 直至对账；MCP/A2A/OpenAI 兼容接口封装为版本化扩展 | `E0`、`E2`、`E5`、`E6`、`E7` |
+| §23.1–§23.2 | `PKG-SEP-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`、`PKG-UNINSTALL-001`、`PKG-OCI-001`、`PKG-MULTI-001`、`PKG-APPID-001` | 内容寻址不可变签名包（零烘焙可变记忆/密钥）；`PackageId` / `ApplicationId` / `InstallationId` 严格分离与防抢注；更新强制支持迁移分类、健康检查与原子回滚（不可逆迁移须预备份并经 `Z4` 确认）；卸载彻底清理后台/权限/缓存并保护用户数据；OCI 仅作内容寻址层，商店治理独立承担发布者身份、审核、权限透明与恶意撤回；支持多组件复合包 | `E0`、`E3`、`E4`、`E5`、`E6`、`E7` |
+| §6 / §7 / §24.2 | `TCB-BYPASS-001`、`TCB-EGRESS-001`、`TCB-DOWNGRADE-001`、`CAP-UNFORGE-001`、`CAP-ATTEN-001`、`CAP-REVOKE-001`、`TUI-CONSENT-001` | 第三方不可信负载默认拒绝网络外发且零原始凭据暴露；未完全中介路径强制降档并在回执与 `Z4` 可信 UI 显式提示；包吊销或卸载立即触发关联 Capability 撤销 | `E0`、`E4`、`E5`、`E6` |
 | §29 / §30 | `NLOS-DEFER-001`、`EVID-SCOPE-001`、`EVID-NONLINEAR-001`、`EVID-NEG-001`、`EVID-REPRO-001`、`EVID-GEN-001` | 延后项不等于从接口删除；兼容、安全、性能证据按 `H0–H8` 分域独立登记，反例与适用限制同等持久化 | `E1`、`E7` |
 
 ### E.1.2 前序阶段（B / C / D）已验证基座接收盘点
@@ -60,11 +60,25 @@
 |---|---|---|---|
 | **`#16 C-POWER-LOSS` / `U-4`（`RISK-B-02` `durable-state-loss`）** | Layer-1（APFS 语义校准）与 Layer-2（`dm-flakey` 块层故障注入，CI 常设每日守护含自然 `schedule` Run `40798612701` 与 `workflow_dispatch` Run `40868450278` 双双 `success`）已验证通过 | **Layer-3+ 真实双机/真盘物理掉电台架与 M4/M6/M8 物理存储介质校准**尚未执行 | **保留为独立物理硬件台架专项（`E-deferred` 常设硬件门）**：在具备真实可编程电源/物理双机真盘台架后专项补齐；严禁以进程 `kill -9` 或虚拟块设备故障冒充真实物理断电证据 |
 | **`U-1` / `#5 C-SCALE-RELEASE`（`RISK-B-07` `scale-impersonation`）** | [B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md) §6.1 已于 `W76`（`e77c094`，Run `40868357139`）完成 Ubuntu / macOS / Windows 三平台 CI `--release` 五探针实测数字回填（闭合 `U-1` 多平台 CI `--release` 基线半边），且 [C-BENCH-001](../evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md) Windows `--release` 8-Cell `10K/100K_LOGICAL`（`SQLite WAL+FULL`）实盘基线已闭环 | **`1M_LOGICAL` 裸金属/真实跨机 WAN 大规模集群实测**、Linux/macOS 8-Cell 分片基准及单分片 `O(N/S)` 扫描二级索引化尚未完成 | **保留为硬件集群规模专项（`E-deferred` 规模实证门）**：继续严格维持无边界生产容量口号禁令，严禁以共享云端 CI runner 测试结果冒充百万级逻辑对象实证 |
-| **`RISK-B-05`（`premature-format-freeze`）** | 阶段 D 及之前维持 `v0` / `v1-beta` pre-freeze 受控演化窗口（[ADR-0014](./adrs/0014-schema-channel-freeze-v1-beta.md) 纯 additive 扩列 + [ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md) 冻结 `DriverProvider` v1.0） | `SABI v1.0` 全表面尚未经过跨版本历史语料回放、核外垫片桥接与第三方生态升级演练检验 | **由阶段 E 核心主线（`E1` + `E2` + `E7` + 决策点 `E2`）受控推进收口**：必须依次完成五语言黄金线协议语料库、核外兼容垫片、`N-1 -> N` 零重编译回归套件并获 `E2` 审定；**在未完成全部兼容回归前，严禁单方面将 `SABI v1.0` 改写为已冻结** |
+| **`RISK-B-05`（`premature-format-freeze`）** | [crates/nlos-schema](../../crates/nlos-schema) `REGISTRY` 共 9 个已注册 SABI 通道中已有 **8 个为 `frozen: true`**（`Envelope`、`ServiceDirectory`、`OperationControl`、`SystemControl`、`TakeoverControl`、`WaitControl` 依 [ADR-0014](./adrs/0014-schema-channel-freeze-v1-beta.md) `v1-beta` additive 冻结，第 8 通道 `DriverProvider` v1.0 依 [ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md) 冻结，第 9 通道 `ChannelControl` v1.0 依 `W73` `L-002` 冻结） | (1) **唯一仍为 `frozen: false` 的第 7 通道 `nlos.sabi.PrincipalHandshake`（`SABI_PRINCIPAL_HANDSHAKE_V1`）**尚未完成 peer attestation 扩展槽审查与五语言黄金向量钉死；(2) SABI 全表面尚未经跨纪元历史语料回放、核外垫片桥接与 `N-1 -> N` 零重编译升级演练检验，仍处于 `ADR-0014` `v1-beta` 预冻结窗口 | **两步受控收口排入阶段 E 主线**：(1) **`W77`（`W77-E1A-SABI-REGISTRY` + `W77-E1B-GOLDEN-SDKS`）**补齐 `nlos.sabi.PrincipalHandshake` 的 peer attestation 扩展槽审查与五语言黄金向量并翻转为 `frozen: true`，达成 **9/9 SABI 通道全量入冻**；(2) **`W77 -> W78 -> W81`（决策点 `E2`）**依次实证五语言黄金语料库 + 弃用清单（`W77`）、核外 `nlos-compat-shim`（`W78`）与 `[ROAD-E-001]` `N-1 -> N` 零重编译升级门禁（`W81`）后正式晋升 `SABI v1.0` 长期冻结承诺并闭合 `RISK-B-05`（在此之前严禁单方面改写为已永久冻结） |
 | **`U-7` / `U-8`（`#7 C-SELECTOR` 生态 Typed Selector 扩展与授权门）** | 阶段 B/C 已闭合 `Application` / `Artifact` typed selector 前片，阶段 D 已在桌面 `L2/L3` 展示已解析句柄摘要 | `Package / Skill / Tool / Model / Topic / 外部服务` 的版本化 Typed Selector -> `GenerationHandle` 权威解析（拦截 `latest` 浮动标签充当已授权依赖）及 `WAITING_AUTHORIZATION` 物化门负路径强制执行尚未落地 | **直接纳入阶段 E `E-core`（`E4` + `E5`）正式闭合**：与商店包依赖锁定、权限重授权及上架审计联动实现并补齐负路径测试 |
 | **`U-9`（`#2 C-APP-PAYLOAD` 第三方不可信负载强沙箱隔离）** | `examples/sample-app` CLI 全周期与确定性驱动回执已闭环；阶段 B `exp8` 完成 macOS 单平台 Wasmtime 对比初测 | 面向不可信第三方代码的 Windows / macOS / Linux 三平台「独立宿主 Process + Wasmtime 能力白名单」双层强沙箱生产接线与逃逸对抗回归尚未完成 | **直接纳入阶段 E `E-core`（`E6` `nlos-wasm-sandbox`）正式闭合**：作为 `COMMUNITY_SANDBOXED` 与未授信第三方组件的硬性运行时底座；未闭合前严禁宣称任意不可信原生二进制免 OS 沙箱裸跑 |
 | **`RISK-B-06` / `U-3` 发行残域 + `RISK-B-09`（供应链与桌面原生签名公证）** | 跨平台五阶段工业工作站交互战役、CJK IME 探针与 1,000 轮零泄漏浸泡已在阶段 D 闭合 `U-3` 主体；`W76`（`6141dd1` / `6dc79eb`，经三平台 CI Run `40868357139` 13/13 验证）已合入并清零全部 6 个存量 Dependabot PR（`#30/#31/#35/#36/#37/#38`） | 桌面宿主 OS 原生安装器商业代码签名/公证（Windows Authenticode / Apple Developer ID Notarization）、物理 macOS 触控板人工巡检、以及第三方依赖树周期自动化安全/许可证复审门仍开 | **分域治理**：内部 `llmos.package` 发布者证书链、吊销与供应链对抗纳入 `E4`/`E5`/`E6`；第三方依赖许可证/供应链自动化审计纳入 `E5`/`E7` CI 门（落地前 `RISK-B-09` 维持 `open`）；外部商业 CA 硬件令牌的宿主 OS 安装器公证列为 `E-deferred` 发行凭据边界（严禁将内部 Ed25519 包签名冒充 Apple/Microsoft 原生公证） |
 | **`RISK-B-11` / `U-5` 物理残域、`RISK-B-10` / `U-2` 残域、`RISK-B-08`** | 跨主机 mTLS/偏斜包络/Raft 共识、同权限 Windows 进程树实杀、全库知识外化均已验证 | 远端失联主机不可逆外部物理副作用擦除（需硬件 STONITH/设备重置）、Windows 跨权限/Job Object breakaway 回收、单人维护集中度（`RISK-B-08`） | **原样诚实保留于 [exit-unknown-risks.md](./exit-unknown-risks.md)**：第三方 Driver 认证在 `E5` 强制核查 `EffectDescriptor` 可逆性声明与 `QuarantineDisposition` 边界，绝不掩盖不可逆外部副作用 |
+
+#### 冻结与软件层挂起遗留项一站式收口映射表（`W76.1` 维护者指令排期）
+
+为确保全部软件层可闭合的协议契约冻结项、跨阶段挂起遗留项与本机开箱真实可试用缺口均具备唯一、机械可追踪的承接车道，同时与依赖外部物理硬件、商业资质或组织人力的 `E-deferred` 边界严格区分，汇总一站式收口映射如下：
+
+| 类别与序号 | 待收口契约冻结 / 软件挂起遗留项 | 代码与台账当前真实状态 | 绑定收口波次、工作包与专属车道 | 闭合机械验收判据 | 规划态当前状态 |
+|---|---|---|---|---|---|
+| **软件可闭合 (0)** | **本机连接真实外部/本地大模型的开箱可试用“最后一公里”（关联 `U-10` 用户态真实 LLM HTTP 适配面）** | 核心控制面与 `Z0–Z4` 桌面壳已完备，但 `dev_server` 仅 `#[cfg(unix)]`、缺乏一键状态根/密钥引导器 `nlos-up` 与真实用户态 LLM HTTP 驱动包 | **`W77-PRE`**（`E0`：`W77-PRE-A` / `W77-PRE-B` / `W77-PRE-C` + `W77-PRE-INT`） | 跨平台一键初始化 `~/.llmos` 并唤起桌面/CLI；`nlos-driver-llm-http` 经 `EnforcementShim` 托管 API Key 与 `nlos-resource` v8 Token 扣减连通 OpenAI-compatible / Gemini / Anthropic / Ollama；内置样板应用跑通多步 `TaskPlan` 与 `Artifact` 读写 | `NOT_STARTED`（`DESIGN`） |
+| **软件可闭合 (1)** | **`SABI_PRINCIPAL_HANDSHAKE_V1`（第 7 通道 `nlos.sabi.PrincipalHandshake`）`frozen: false -> true`** | `crates/nlos-schema` `REGISTRY` 9 通道中 8 个已为 `frozen: true`，仅第 7 通道 `PrincipalHandshake` 为 `frozen: false` | **`W77`**（`E1`：`W77-E1A-SABI-REGISTRY` + `W77-E1B-GOLDEN-SDKS`） | 完成 peer attestation 扩展槽审查与 Rust/TS/Python/Go/C# 五语言握手黄金向量钉死，翻转 `SABI_PRINCIPAL_HANDSHAKE_V1.frozen = true`，达成 **9/9 SABI 通道全量入冻** | `NOT_STARTED`（`DESIGN`） |
+| **软件可闭合 (2)** | **`SABI v1-beta -> v1.0` 正式长期冻结与 `RISK-B-05` 收口** | `ADR-0014` 为 `v1-beta` additive 预冻结窗口，`RISK-B-05` 当前 `partial` | **`W77 -> W78 -> W81`**（`E1` + `E2` + `E7` + **决策点 `E2`**） | 依次跑通五语言跨纪元黄金语料库与弃用清单（`W77`）、核外 `nlos-compat-shim`（`W78`）、`[ROAD-E-001]` `N-1 -> N` 零重编译升级门禁（`W81`）并获维护者签字，正式晋升 `SABI v1.0` 长期冻结承诺并闭合 `RISK-B-05` | `NOT_STARTED`（`DESIGN`） |
+| **软件可闭合 (3)** | **`U-7` / `U-8` 生态 Typed Selector 不可变句柄锁定与 `WAITING_AUTHORIZATION` 负路径门** | `Application` / `Artifact` 前片已证，跨生态 `Package/Skill/Tool/Model/Topic/外部服务` 选择器锁定与物化授权负路径未落 | **`W79`**（`E4` `W79-E4-PUBLISHER-TRUST` + `E5` `W79-E5A/E5B`） | 落地跨生态 Typed Selector -> `(PackageDigest, GenerationHandle)` 权威解析（拒绝 `latest` 浮动标签冒充已授权依赖）与 `WAITING_AUTHORIZATION` 物化门负路径强制拦截测试 | `NOT_STARTED`（`DESIGN`） |
+| **软件可闭合 (4)** | **`U-9` 三平台 `Process + Wasmtime` 双层 Wasm 强沙箱直跑** | `sample-app` CLI 载荷与 macOS 单机 `exp8` 对比初测已证，三平台双层强沙箱生产接线与逃逸对抗未落 | **`W80`**（`E6` `W80-E6A-WASM-SANDBOX`，`crates/nlos-wasm-sandbox`） | Windows / macOS / Linux 三平台落地「独立宿主 Process + Wasmtime WASI 白名单 + 内存页/CPU fuel 硬限 + 零宿主环境继承」并跑通路径/网络/配额逃逸对抗矩阵 | `NOT_STARTED`（`DESIGN`） |
+| **软件可闭合 (5)** | **`RISK-B-09` 第三方依赖许可证与供应链自动化 CI 审计门** | 锁文件在库且 `W76` 已清空全部 6 个存量 Dependabot PR，`RISK-B-09` 当前 `open` | **`W79 -> W81`**（`E5` `W79-E5B-CERTIFY-PIPELINE` + `E7` `W81-E7B-LEDGER-SYNC` / `W81-INT`） | 落地 Cargo / npm 第三方依赖树许可证、漏洞与锁文件一致性常设 CI 自动化审计门及上架包供应链纯净度扫描，同步复审收口 `RISK-B-09` | `NOT_STARTED`（`DESIGN`） |
+| **外部物理/资质/组织边界 (`E-deferred`)** | **(a) `C-POWER-LOSS`/`U-4` 真机断电台架；(b) `U-1` 多机裸金属 `1M_LOGICAL` WAN；(c) 商业 CA 硬件令牌安装包公证签名；(d) `RISK-B-08` 单人维护依赖** | Layer-2 `dm-flakey`、三平台 CI `--release` 五探针、内部 Ed25519 包签名与全库 188 份证据外化均已就位；上述 4 项分别受制于专用可编程断电硬件、多机裸金属 WAN 台架、外部商业 CA 付费 USB 硬件令牌及第二人类维护者接入 | **诚实挂入 `E-deferred` / [exit-unknown-risks.md](./exit-unknown-risks.md) 常设边界**（不伪造软件替代闭合） | 严禁以虚拟断电、共享云 runner、内部自签证书或本地试用未公证安装包冒充上述四项外部物理/商业/组织实证；待对应外部硬件台架、商业凭据或第二维护者到位后专项退役 | 诚实分域保留（`P0 = 0`） |
 
 ---
 
@@ -74,13 +88,14 @@
 
 完全沿用 [stage-b-progress.md](./stage-b-progress.md)、[stage-c-progress.md](./stage-c-progress.md) 与 [stage-d-progress.md](./stage-d-progress.md) 的工作项状态机（`DONE` / `PARTIAL_PASS` / `IN_PROGRESS` / `READY` / `BLOCKED` / `NOT_STARTED`）及 `v0.5 §30` `H0–H8` 证据阶梯（阶段 E 核心终验等级为 **`H7` 安全/兼容 conformance**）。
 
-**铁律（`AGENTS.md` 第 7 条）**：本波次 `W76` 仅完成阶段 E 立项与总体设计拆解，零业务代码落地；下表全部七大核心工作包（`E1`..`E7`）当前状态一律如实登记为 **`NOT_STARTED`**，当前保障等级一律为 **`DESIGN`**。
+**铁律（`AGENTS.md` 第 7 条）**：`W76` 与 `W76.1` 仅完成阶段 E 立项、冻结收口排期与总体设计拆解，零阶段 E 业务代码落地；下表全部八大核心工作包（先行开箱试用包 `E0` + 兼容与生态治理主线 `E1`..`E7`）当前状态一律如实登记为 **`NOT_STARTED`**，当前保障等级一律为 **`DESIGN`**。
 
-### E.2.2 `E-core` 七大核心工作包矩阵
+### E.2.2 `E-core` 八大核心工作包矩阵（`E0` + `E1`..`E7`）
 
 | 工作包 ID | 工作包名称 | 映射 `v0.5` Requirement ID | 目标产物 Crate / 目录范围 | 目标证据阶梯 | 计划波次 | 当前状态与保障等级 |
 |---|---|---|---|---|---|---|
-| **`E1`**（`E-SABI-POLICY-CORPUS`） | SABI v1.0 长期兼容规范、跨纪元五语言黄金线协议语料库与机器可读弃用清单机制 | `COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`KABI-SVC-001`、`SABI-DISC-001`、`SABI-COMMON-001`、`SABI-CONFORM-001`、`EVID-GEN-001` | `schema/nlos/sabi/v1/`（弃用元数据清单）、`schema/golden/epochs/`、`crates/nlos-schema/`、`sdk/{typescript,python,go,csharp}/`、`tests/conformance/`、`docs/evidence/stage-e/e-sabi-*.md` | `DESIGN -> H2 -> H4 -> H7` | `W77` | **`NOT_STARTED`**（保障等级：`DESIGN`） |
+| **`E0`**（`E-TRIAL-BOOTSTRAP`） | 本地开箱真实大模型试用闭环：一键本机初始化与跨平台联调启动器（`nlos-up` + Windows Named Pipe 开发夹具贯通）、真实外部/本地 LLM HTTP 用户态驱动适配器、开箱生产力样板应用与本地试用安装包构建配置 | `KABI-SVC-001`、`SABI-DISC-001`、`SABI-AUTH-001`、`SABI-RECEIPT-001`、`DRV-NEGO-001`、`DRV-CRED-001`、`DRV-PROTO-001`、`DRV-LIFE-001`、`DRV-SHIM-001`、`PKG-IMM-001`、`PKG-MULTI-001`、`TCB-EGRESS-001`、`TUI-CONSENT-001` | `crates/nlos-up/`、`desktop/src-tauri/examples/dev_server.rs`、`desktop/src-tauri/src/devfixture.rs`、`crates/nlos-driver-llm-http/`、`examples/starter-assistant-app/`、`desktop/scripts/build-trial-bundle.*`、`docs/developers/quickstart-trial.md`、`docs/evidence/stage-e/e-trial-001-llm-http-driver.md`、`docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md` | `DESIGN -> H3 -> H4` | `W77-PRE`（可先于 `W77` 或与 `W77` 正交推进） | **`NOT_STARTED`**（保障等级：`DESIGN`） |
+| **`E1`**（`E-SABI-POLICY-CORPUS`） | 第 7 通道 `PrincipalHandshake` 入冻补齐 9/9 通道冻结、SABI v1.0 长期兼容规范、跨纪元五语言黄金线协议语料库与机器可读弃用清单机制 | `COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`KABI-SVC-001`、`SABI-DISC-001`、`SABI-COMMON-001`、`SABI-CONFORM-001`、`EVID-GEN-001` | `schema/nlos/sabi/v1/`（弃用元数据清单）、`schema/golden/epochs/`、`crates/nlos-schema/`（含 `SABI_PRINCIPAL_HANDSHAKE_V1` `frozen: true`）、`sdk/{typescript,python,go,csharp}/`、`tests/conformance/`、`docs/evidence/stage-e/e-sabi-*.md` | `DESIGN -> H2 -> H4 -> H7` | `W77` | **`NOT_STARTED`**（保障等级：`DESIGN`） |
 | **`E2`**（`E-COMPAT-SHIM`） | 核外版本化兼容垫片（`nlos-compat-shim`：SABI Epoch Adapter Cell 与 `DRV-SHIM-001` 驱动协议转换层） | `DRV-NEGO-001`、`DRV-PROTO-001`、`DRV-SHIM-001`、`DRV-BOUND-001`、`DRV-CRED-001`、`SABI-DISC-001`、`SABI-TRANSPORT-001`、`COMPAT-VER-002` | `crates/nlos-compat-shim/`（新建核外无特权转换 crate）、`docs/evidence/stage-e/e-shim-*.md` | `DESIGN -> H3 -> H4 -> H7` | `W78` | **`NOT_STARTED`**（保障等级：`DESIGN`） |
 | **`E3`**（`E-MIGRATE-KIT`） | 声明式契约升级静态检查器、包清单审计与三态数据容器迁移演练工具链（`nlos-migrate`） | `COMPAT-DEPRECATE-001`、`PKG-UPDATE-001`、`PKG-SEED-001`、`PKG-MULTI-001`、`DRV-LIFE-001` | `crates/nlos-migrate/`（新建 CLI 与库 crate）、`tools/sabi-compat-diff/`、`docs/evidence/stage-e/e-migrate-*.md` | `DESIGN -> H3 -> H4` | `W78` | **`NOT_STARTED`**（保障等级：`DESIGN`） |
 | **`E4`**（`E-PUBLISHER-TRUST`） | 三级发布者信任域、Ed25519 分层证书链、单调吊销纪元（`RevocationEpoch`）与生态 Typed Selector 锁定（闭合 `U-7`/`U-8`） | `PKG-IMM-001`、`PKG-APPID-001`、`CAP-UNFORGE-001`、`CAP-ATTEN-001`、`CAP-REVOKE-001`、`TCB-DOWNGRADE-001` | `crates/nlos-publisher-trust/`（新建 crate，衔接 `nlos-capability::custody`）、`crates/nlos-plan/src/ecosystem_selector.rs`、`docs/evidence/stage-e/e-trust-*.md` | `DESIGN -> H4 -> H7` | `W79` | **`NOT_STARTED`**（保障等级：`DESIGN`） |
@@ -90,7 +105,13 @@
 
 #### 各工作包关键验收契约（摘要）
 
+0. **`E0`（`E-TRIAL-BOOTSTRAP`，先行波次 `W77-PRE`）**：
+   - 交付一键本机初始化与跨平台联调启动器 `crates/nlos-up`，并补齐 [desktop/src-tauri/examples/dev_server.rs](../../desktop/src-tauri/examples/dev_server.rs) 与 [desktop/src-tauri/src/devfixture.rs](../../desktop/src-tauri/src/devfixture.rs) 的 Windows Named Pipe 开发夹具支持（消除当前 `dev_server` 仅 `#[cfg(unix)]` 的平台断层）：自动初始化 `~/.llmos` 状态根、幂等生成 Ed25519 身份与 operator 密钥、拉起 `system-control-daemon` 并自动注入 `LLMOS_DESKTOP_*` 会话参数一键唤起桌面或 CLI；
+   - 交付真实外部/本地 LLM HTTP 用户态驱动适配器 `crates/nlos-driver-llm-http`：严格遵循 [ADR-0024](./adrs/0024-driver-provider-payload-codec-freeze.md) `DriverProvider` v1.0 与 `DRV-CRED-001` / `DRV-SHIM-001`（由可信 `EnforcementShim` 独占托管 API Key 并联动 `nlos-resource` v8 五维 LLM Token 预算扣减，**绝不把任何厂商模型 API 塞进微内核**，`KABI-SVC-001`），提供对接 OpenAI-compatible / Gemini / Anthropic / 本地 Ollama 的真实用户态模型驱动及桌面命令面板意图推理桥；
+   - 交付内置参考生产力样板应用包 `examples/starter-assistant-app`（真正调用用户态模型驱动读写 `Artifact` 并执行多步 `TaskPlan`）、显式可控的 Tauri 本地试用安装包构建脚本 `desktop/scripts/build-trial-bundle.*` 与开箱试用指南 `docs/developers/quickstart-trial.md`（诚实区分本地未公证试用安装包与 `E-deferred` 商业 CA 硬件令牌公证签名）。
+
 1. **`E1`（`E-SABI-POLICY-CORPUS`）**：
+   - 完成 `crates/nlos-schema` `REGISTRY` 中唯一仍为 `frozen: false` 的第 7 通道 `nlos.sabi.PrincipalHandshake`（`SABI_PRINCIPAL_HANDSHAKE_V1`）peer attestation 扩展槽审查与五语言握手黄金向量钉死，将其翻转为 `frozen: true`，达成 **9/9 SABI 通道全量入冻**；
    - 建立 `schema/nlos/sabi/v1/deprecation-manifest.yaml` 机器可读弃用登记表，实现 `ACTIVE -> DEPRECATED -> SUNSET`（强制 `earliest_sunset_epoch >= deprecated_in_epoch + 2`）状态校验与协商期 `DeprecationWarningReceipt` 遥测；
    - 建立 `schema/golden/epochs/v1.0/` 只读快照黄金向量库及防篡改 CI lint，覆盖 Rust、TypeScript、Python、Go、C# 五套编解码器对未知 `noncritical_extensions` 字节无损 round-trip 保留及未知 `major` / 未知 `critical_extensions` 的确定性 `E_ABI_VERSION` / fail-closed 拒绝（`COMPAT-VER-001`、`COMPAT-VER-002`）。
 
@@ -134,22 +155,28 @@
 
 ---
 
-## E.3 波次规划（`W77`–`W81`）与互斥写集编排
+## E.3 波次规划（`W77-PRE` 先行波 + `W77`–`W81`）与互斥写集编排
 
 ### E.3.1 阶段 E 依赖感知并行拓扑（Mermaid `flowchart LR`）
 
-遵循 [项目知识渐进式披露与自动 CRUD 规则 §6.1](./project-knowledge-progressive-disclosure.md#61-子-agent-编排与依赖感知并行)（`[PD-ORCH-001..006]`），阶段 E 自 `W76` 立项后划分为五个写集严格正交的实现与验证波次（`W77 -> W81`）：
+遵循 [项目知识渐进式披露与自动 CRUD 规则 §6.1](./project-knowledge-progressive-disclosure.md#61-子-agent-编排与依赖感知并行)（`[PD-ORCH-001..006]`），阶段 E 自 `W76` / `W76.1` 规划锁定后，设置一个可按维护者优先级先行实施（或与 `W77` 正交推进）的本地开箱试用先行波（`W77-PRE`）及五个写集严格正交的兼容与生态治理主线波次（`W77 -> W81`）：
 
 ```mermaid
 flowchart LR
   subgraph W76_CHARTER["W76: 阶段 C/D 退出收口与阶段 E 立项波"]
     ADR27["ADR-0027 (CANDIDATE): 长期兼容与商店治理总体架构"]
-    PLAN_E["stage-e-progress.md: E1..E7 拆解与 W77-W81 互斥排程"]
+    PLAN_E["stage-e-progress.md (W76/W76.1): E0..E7 拆解 + 冻结收口映射 + W77-PRE/W77-W81 排程"]
   end
 
-  subgraph W77_WAVE["W77: SABI 长期兼容政策与五语言黄金语料库"]
-    E1A["W77-E1A-SABI-REGISTRY: 兼容矩阵 + 弃用清单状态机 + 协商告警"]
-    E1B["W77-E1B-GOLDEN-SDKS: 跨纪元 Golden Wire Corpus + 五语言 SDK 对齐"]
+  subgraph W77_PRE_WAVE["W77-PRE: 本地开箱真实大模型试用先行波 (E0)"]
+    E0A["W77-PRE-A: nlos-up 一键引导与 Windows dev_server/devfixture 贯通"]
+    E0B["W77-PRE-B: nlos-driver-llm-http 用户态真实 LLM 驱动适配器"]
+    E0C["W77-PRE-C: starter-assistant-app 样板应用与本地试用安装包脚本"]
+  end
+
+  subgraph W77_WAVE["W77: SABI 9/9 入冻、长期兼容政策与五语言黄金语料库"]
+    E1A["W77-E1A-SABI-REGISTRY: PrincipalHandshake 第7通道入冻(9/9) + 兼容矩阵 + 弃用清单"]
+    E1B["W77-E1B-GOLDEN-SDKS: 9/9 通道跨纪元 Golden Wire Corpus + 五语言 SDK 对齐"]
   end
 
   subgraph W78_WAVE["W78: 核外兼容垫片与声明式迁移工具链"]
@@ -175,6 +202,12 @@ flowchart LR
     E7B_SYNC["W81-E7B-LEDGER-SYNC: 台账 v1.3 覆盖率核验与审计证据"]
     E7C_REV["W81-E7C-EXIT-REVIEW: 阶段 E 独立退出门综合证据终审"]
   end
+
+  PLAN_E --> E0A
+  PLAN_E --> E0B
+  PLAN_E --> E0C
+  ADR27 --> E0B
+  E0B -.-> E6B_SMP
 
   ADR27 --> E1A
   ADR27 --> E1B
@@ -206,15 +239,19 @@ flowchart LR
   E7B_SYNC --> E7C_REV
 ```
 
-### E.3.2 `W76`–`W81` 逐波并行排程与写集严格互斥表
+### E.3.2 `W76` / `W77-PRE` / `W77`–`W81` 逐波并行排程与写集严格互斥表
 
 > **多轨编排硬约束（`[PD-ORCH-003]` / `[PD-ORCH-004]`）**：同波并行子 Agent 均在独立 Git Worktree 中执行，其声明写集必须满足两两交集为空（`WriteSet_i ∩ WriteSet_j = empty`）。凡触及共享入口文件（根 `Cargo.toml` / `Cargo.lock`、`desktop/src/main.ts`、`desktop/src-tauri/src/lib.rs`、`docs/management/README.md`、`claims.yaml`、`risks.yaml`、`evidence-index.yaml`、`exit-unknown-risks.md` 及本进度单）的粘合更新，**一律严禁下放给并发功能车道**，统一由每波屏障处的单一集成器（`W*-INT` / `Z-integrator`）串行合并并执行全仓验证门。
 
 | 波次 | 并行车道 ID | 归属工作包 | 严格独占写集（Exclusive Write-Set） | 核心交付与定向验收门 | 同波写集互斥证明 |
 |---|---|---|---|---|---|
-| **`W76`**（当前立项波） | `W76-STAGE-E-PLAN` | Stage E 立项与总体设计 | `docs/management/stage-e-progress.md`、`docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md` | 新建阶段 E 权威进度单与 `ADR-0027`（`CANDIDATE` / `DESIGN`）；零 Emoji、100% 本地相对链接存在性自检与 `git diff --check` 零空白错误 | 仅新建 2 个阶段 E 专属文档，不触碰 `README.md`、`stage-c/d-progress.md`、`claims.yaml` 等共享文件（由 `Z-integrator` 统一合流） |
-| **`W77`**（兼容策略与黄金语料波） | `W77-E1A-SABI-REGISTRY` | `E1`（前半） | `schema/nlos/sabi/v1/deprecation-manifest.yaml`、`crates/nlos-schema/**`、`crates/nlos-service-directory/**`、`docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md` | 落地 `N / N-1 / N-2` 版本裁决器、`COMPAT-VER-002` 未知关键扩展拒绝、`ACTIVE -> DEPRECATED -> SUNSET` 双周期校验与协商期 `DeprecationWarningReceipt` | `crates/{nlos-schema,nlos-service-directory}` + `deprecation-manifest.yaml` vs `schema/golden/epochs` + `sdk/` + `tests/conformance`：两车道路径完全不相交；波末由 `W77-INT` 串行更新台账 |
-| **`W77`** | `W77-E1B-GOLDEN-SDKS` | `E1`（后半） | `schema/golden/epochs/**`、`sdk/{typescript,python,go,csharp}/**`、`tests/conformance/**`、`tools/check_golden_immutability.py`、`docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md` | 锁定 `v1.0` 黄金线协议语料库与历史快照防篡改 lint，完成 Rust/TS/Python/Go/C# 五语言双向编解码与未知非关键扩展 round-trip 验证 | 同上（独占 `schema/golden/epochs/`、`sdk/`、`tests/conformance/` 与防篡改脚本） |
+| **`W76`**（立项波） | `W76-STAGE-E-PLAN` | Stage E 立项与总体设计 | `docs/management/stage-e-progress.md`、`docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md` | 新建阶段 E 权威进度单与 `ADR-0027`（`CANDIDATE` / `DESIGN`）；零 Emoji、100% 本地相对链接存在性自检与 `git diff --check` 零空白错误 | 仅新建 2 个阶段 E 专属文档，不触碰 `README.md`、`stage-c/d-progress.md`、`claims.yaml` 等共享文件（由 `Z-integrator` 统一合流） |
+| **`W76.1`**（当前计划修订子波） | `W76R1-STAGE-E-PLAN` | 冻结收口映射与 `E0` 先行波排期纳管 | `docs/management/stage-e-progress.md`、`docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md`、`docs/management/README.md`、`docs/management/risks.yaml`、`docs/management/exit-unknown-risks.md` | 显式纳管 `PrincipalHandshake` 第 7 通道入冻（9/9）与 `SABI v1-beta -> v1.0`（`RISK-B-05`）收口排期、软件层挂起遗留项一站式映射表，以及 `E0`（`W77-PRE`）本地开箱真实大模型试用先行波（全量维持 `NOT_STARTED` / `DESIGN`） | 独占阶段 E 规划与管理/风险同步 5 文件，不触碰 `claims.yaml`、`evidence-index.yaml` 或任何代码目录 |
+| **`W77-PRE`**（本地开箱试用先行波：`NOT_STARTED` / `DESIGN`，可先于 `W77` 或与 `W77` 正交推进） | `W77-PRE-A` | `E0`（一键本机初始化与跨平台联调启动器） | `crates/nlos-up/**`、`desktop/src-tauri/examples/dev_server.rs`、`desktop/src-tauri/src/devfixture.rs` | 新建一键引导 CLI `nlos-up`（自动初始化 `~/.llmos` 状态根、幂等生成 Ed25519 身份与 operator 密钥、拉起 `system-control-daemon` 并自动注入 `LLMOS_DESKTOP_*` 会话参数一键唤起桌面或 CLI），补齐 Windows Named Pipe 开发夹具支持以消除当前 `dev_server` 仅 `#[cfg(unix)]` 的平台断层 | 三条并行车道分别独占 `crates/nlos-up` + `devfixture`/`dev_server`、`crates/nlos-driver-llm-http`、`examples/starter-assistant-app` + `desktop/scripts/build-trial-bundle.*` + `docs/developers/quickstart-trial.md`，路径交集严格为空；波末由 `W77-PRE-INT` 串行合入根 `Cargo.toml` / `desktop/src-tauri/tauri.conf.json` 可选配置与台账 |
+| **`W77-PRE`** | `W77-PRE-B` | `E0`（真实外部 LLM HTTP 用户态驱动适配器） | `crates/nlos-driver-llm-http/**`、`docs/evidence/stage-e/e-trial-001-llm-http-driver.md` | 严格遵循 `ADR-0024` `DriverProvider` v1.0 与 `DRV-CRED-001` / `DRV-SHIM-001`（由可信 `EnforcementShim` 托管 API Key 并联动 `nlos-resource` v8 五维 LLM Token 预算扣减，不把厂商 API 塞进内核），提供对接 OpenAI-compatible / Gemini / Anthropic / 本地 Ollama 的真实用户态模型驱动与桌面命令面板意图推理桥 | 同上（独占 `crates/nlos-driver-llm-http/**` 与 `e-trial-001-llm-http-driver.md`） |
+| **`W77-PRE`** | `W77-PRE-C` | `E0`（开箱生产力样板应用与本地试用安装包构建配置） | `examples/starter-assistant-app/**`、`desktop/scripts/build-trial-bundle.*`、`docs/developers/quickstart-trial.md`、`docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md` | 交付 1 个真正调用模型读写 `Artifact` 与执行多步 `TaskPlan` 的内置参考生产力应用包，以及显式可控的 Tauri 本地试用安装包构建脚本与快速试用文档（诚实区分本地未公证试用安装包与 `E-deferred` 商业 CA 公证签名） | 同上（独占 `examples/starter-assistant-app/**`、`desktop/scripts/build-trial-bundle.*`、`docs/developers/quickstart-trial.md` 与 `e-trial-002` 证据） |
+| **`W77`**（9/9 入冻、兼容策略与黄金语料波） | `W77-E1A-SABI-REGISTRY` | `E1`（前半） | `schema/nlos/sabi/v1/deprecation-manifest.yaml`、`crates/nlos-schema/**`、`crates/nlos-service-directory/**`、`docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md` | 完成唯一 `frozen: false` 的第 7 通道 `nlos.sabi.PrincipalHandshake`（`SABI_PRINCIPAL_HANDSHAKE_V1`）peer attestation 扩展槽审查并翻转为 `frozen: true`（达成 **9/9 SABI 通道全量入冻**）；落地 `N / N-1 / N-2` 版本裁决器、`COMPAT-VER-002` 未知关键扩展拒绝、`ACTIVE -> DEPRECATED -> SUNSET` 双周期校验与协商期 `DeprecationWarningReceipt` | `crates/{nlos-schema,nlos-service-directory}` + `deprecation-manifest.yaml` vs `schema/golden/epochs` + `sdk/` + `tests/conformance`：两车道路径完全不相交；波末由 `W77-INT` 串行更新台账 |
+| **`W77`** | `W77-E1B-GOLDEN-SDKS` | `E1`（后半） | `schema/golden/epochs/**`、`sdk/{typescript,python,go,csharp}/**`、`tests/conformance/**`、`tools/check_golden_immutability.py`、`docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md` | 补齐 `nlos.sabi.PrincipalHandshake` 五语言握手黄金向量以支撑 9/9 通道入冻，锁定 `v1.0` 全 9 通道黄金线协议语料库与历史快照防篡改 lint，完成 Rust/TS/Python/Go/C# 五语言双向编解码与未知非关键扩展 round-trip 验证 | 同上（独占 `schema/golden/epochs/`、`sdk/`、`tests/conformance/` 与防篡改脚本） |
 | **`W78`**（核外兼容垫片与迁移工具波） | `W78-E2-COMPAT-SHIM` | `E2` | `crates/nlos-compat-shim/**`、`docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md` | 新建核外无特权转换 crate `nlos-compat-shim`：支持按 `target_sabi_epoch` 动态桥接历史 SABI 与 `DriverProvider` 帧，实证零凭据持有与零 Capability/Reservation 旁路（`DRV-SHIM-001`） | 两个全新独立 crate 目录（`crates/nlos-compat-shim` vs `crates/nlos-migrate` + `tools/sabi-compat-diff`）及各自独立证据文件，交集严格为空；根 `Cargo.toml` 成员注册与 `ADR-0027` 晋升 `ACCEPTED` 审查由 `W78-INT` 串行完成 |
 | **`W78`** | `W78-E3-MIGRATE-KIT` | `E3` | `crates/nlos-migrate/**`、`tools/sabi-compat-diff/**`、`docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md` | 新建 `nlos-migrate` CLI 与库：实现第三方 Manifest / 弃用接口静态诊断、升级处方生成及 `PKG-UPDATE-001` 三态数据容器迁移回滚沙箱演练器 | 同上（独占 `crates/nlos-migrate` 与 `tools/sabi-compat-diff`） |
 | **`W79`**（发布者治理与商店认证波） | `W79-E4-PUBLISHER-TRUST` | `E4` | `crates/nlos-publisher-trust/**`、`crates/nlos-plan/src/ecosystem_selector.rs`、`crates/nlos-plan/tests/ecosystem_selector_gate.rs`、`docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md` | 落地三级发布者 Ed25519 证书链、单调 `RevocationEpoch` 防回滚吊销列表、`(PublisherId, ApplicationId)` 防抢注账本及生态 Typed Selector 不可变句柄解析（闭合 `U-7`/`U-8`） | 三条车道分别独占 `nlos-publisher-trust`（含 `nlos-plan` 独立新模块文件）、`nlos-store-registry`、`nlos-certify` 三个互不重叠目录；`nlos-plan/src/lib.rs` 单行导出与根 `Cargo.toml` 注册归 `W79-INT` |
@@ -226,7 +263,7 @@ flowchart LR
 | **`W80`** | `W80-E6D-SUPPLYCHAIN-H7` | `E6`（`H7` 对抗） | `crates/nlos-certify/tests/h7_supply_chain_adversarial.rs`、`docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md` | 执行 `H7` 供应链与兼容负向对抗矩阵：篡改 OCI blob、伪造证书链、重放旧 `RevocationEpoch`、跨发布者抢注 `ApplicationId`、恶意升级崩溃回滚与卸载权限残留攻击测试 | 同上（独占 `crates/nlos-certify/tests/h7_supply_chain_adversarial.rs` 与对应安全证据） |
 | **`W81`**（`[ROAD-E-001]` 终验与阶段收口波） | `W81-E7A-ROADE001-GATE` | `E7`（退出门实证） | `tests/stage_e_road_e001_upgrade_gate/**`、`scripts/run_road_e001_upgrade_matrix.py`、`docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md` | 落地并实跑 `[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级全链路门禁（安装 -> 建态 -> 原地升级主系统 -> 零重编译恢复/授权/IPC/垫片协商/热插拔/回滚/卸载） | 端到端升级测试树 vs `tools/verify_stage_e_ledger_coverage.py` + `e-ledger-001` 审计证据 vs 独立终审报告：三车道写集严格互斥；最终由 `W81-INT` 基于 `W76`（`ed64ae3`）已落地的 `ledger-schema v1.3` 串行回填 `claims.yaml`（`stage: "E"`）、`risks.yaml`（`RISK-E-01..05`）、`exit-unknown-risks.md`、`evidence-index.yaml` 与 `ADR-0027`（晋升 `VERIFIED`），呈请维护者批复 `EXITED` |
 | **`W81`** | `W81-E7B-LEDGER-SYNC` | `E7`（台账覆盖核验） | `tools/verify_stage_e_ledger_coverage.py`、`docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md` | 基于 `W76`（`W76-SCHEMA-V13`，`ed64ae3`，`44/44` 单测）已提前落地的 `ledger-schema v1.3` 与 `lint_claims.py`，构建阶段 E Requirement ID / `RISK-E-01..05` / `docs/evidence/stage-e/` 覆盖率核验器与合规审计证据（生成候选清单供 `W81-INT` 串行合入共享台账） | 同上（独占 `tools/verify_stage_e_ledger_coverage.py` 与 `e-ledger-001-v13-conformance-audit.md`，不触碰共享 `claims.yaml`/`risks.yaml`/`evidence-index.yaml`） |
-| **`W81`** | `W81-E7C-EXIT-REVIEW` | `E7`（独立终审） | `docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md` | 独立核查 `v0.5 §28.5` 四大交付物、`[ROAD-E-001]`、`E1`..`E7` 全部证据、零 Emoji 与全仓断链扫描、`P0 = 0` 及 [§E.5.5](#e55-阶段-e-退出门禁检查表) 六项退出门满足度 | 同上（独占阶段 E 独立终审报告文件） |
+| **`W81`** | `W81-E7C-EXIT-REVIEW` | `E7`（独立终审） | `docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md` | 独立核查 `v0.5 §28.5` 四大交付物、`[ROAD-E-001]`、`E0` + `E1`..`E7` 全部证据、零 Emoji 与全仓断链扫描、`P0 = 0` 及 [§E.5.5](#e55-阶段-e-退出门禁检查表) 六项退出门满足度 | 同上（独占阶段 E 独立终审报告文件） |
 
 ---
 
@@ -236,9 +273,9 @@ flowchart LR
 
 | 决策点 ID | 决策议题 | 触发时机与前置条件 | 候选路径 | 默认审慎护栏与当前状态 |
 |---|---|---|---|---|
-| **`E0`** | 阶段 E 立项治理、写集隔离与 `ADR-0027` 基线 | `W76` 阶段 C / 阶段 D 获批 `EXITED` 并启动阶段 E 时触发 | (a) 直接进入零散代码开发；(b) 先行落地 `stage-e-progress.md` 与 `ADR-0027`（`CANDIDATE` / `DESIGN`），锁定七工作包与 `W77–W81` 互斥车道后再进入 `W77` 编码 | **当前生效护栏（路径 b）**：`W76` 全部阶段 E 工作包严格标为 `NOT_STARTED` / `DESIGN`，严禁虚报实现；共享管理索引由波末单一集成器更新 |
+| **`E0`** | 阶段 E 立项治理、开箱试用先行波隔离与 `ADR-0027` 基线 | `W76` 阶段 C / 阶段 D 获批 `EXITED` 启动阶段 E 及 `W76.1` 维护者指令排入计划时触发 | (a) 直接进入零散代码开发或把厂商 LLM API 硬编码进内核；(b) 先行落地 `stage-e-progress.md` 与 `ADR-0027`（`CANDIDATE` / `DESIGN`），锁定 `E0` + `E1..E7` 八工作包与 `W77-PRE` / `W77–W81` 互斥车道后再进入编码，且 `E0` 真实 LLM 驱动严格运行于用户态 `DriverProvider` + `EnforcementShim` 边界之外 | **当前生效护栏（路径 b）**：`W76` / `W76.1` 全部阶段 E 工作包（`E0`..`E7`）严格标为 `NOT_STARTED` / `DESIGN`，严禁虚报实现；共享管理索引由波末单一集成器更新 |
 | **`E1`** | SABI 历史兼容滚动窗口深度与核外垫片驻留形态 | `W77` / `W78` 启动前触发 | (a) 仅支持 `N-1` 单版本窗口；(b) 支持 `N-1 / N-2` 最少双发布周期兼容窗口，协议转换统一运行于核外无特权 `nlos-compat-shim` 进程/Cell；(c) 将历史兼容解析写进 `nlos-cell` 核心权威 | **默认审慎护栏（路径 b，严禁路径 c）**：承诺不少于 `N-1 / N-2` 双周期向后兼容与弃用预告，**物理禁止把历史包兼容分支塞入 `nlos-cell` 等核心控制面**，且垫片置于 `EnforcementShim` 不可信外侧（`DRV-SHIM-001`） |
-| **`E2`** | `SABI v1.0` 正式长期冻结审定门（`RISK-B-05` 收口门） | `E1` 五语言黄金语料、`E2` 核外垫片与 `E7` `[ROAD-E-001]` 跨版本回归矩阵全部实测通过后触发 | (a) 在 `W77` 仅凭 `.proto` 文本审阅即宣布永久冻结；(b) 维持 `v1.0-rc` 候选锁直至 `W81` 完成第三方参考包 `N-1 -> N` 零重编译实证并经维护者签字后再正式冻结 `SABI v1.0` | **默认审慎护栏（路径 b）**：未完成全部跨版本兼容回归与维护者显式审定前，`RISK-B-05` 保持 `partial`，严禁任何车道单方面改写为“已永久冻结” |
+| **`E2`** | `PrincipalHandshake` 第 7 通道入冻与 `SABI v1-beta -> v1.0` 正式长期冻结审定门（`RISK-B-05` 收口门） | 第一步于 `W77` 完成 `nlos.sabi.PrincipalHandshake`（`SABI_PRINCIPAL_HANDSHAKE_V1`）扩展槽审查与五语言黄金向量；第二步于 `W77` 五语言跨纪元黄金语料、`W78` `nlos-compat-shim` 核外垫片与 `W81` `[ROAD-E-001]` `N-1 -> N` 零重编译回归矩阵全部实测通过后触发 | (a) 在 `W77` 将 `PrincipalHandshake` 翻转为 `frozen: true`（达成 9/9 通道入冻）时即单方面宣布 `SABI v1.0` 永久冻结；(b) `W77` 先达成 `REGISTRY` 9/9 通道级入冻但维持 `ADR-0014` `v1-beta` / `v1.0-rc` 候选锁，直至 `W78` 核外垫片与 `W81` 第三方参考包 `N-1 -> N` 零重编译实证全部通过并经维护者签字后，再正式晋升为 `SABI v1.0` 长期冻结承诺并闭合 `RISK-B-05` | **默认审慎护栏（路径 b）**：`W77` 达成 9/9 通道级入冻不等于 `RISK-B-05` 完结；在未完成 `W77 -> W78 -> W81` 全链路跨版本兼容回归与维护者显式审定前，`RISK-B-05` 保持 `partial`，严禁任何车道单方面改写为“已永久冻结” |
 | **`E3`** | 社区未认证包（`COMMUNITY_SANDBOXED`）执行沙箱准入门禁 | `W79` 商店策略与 `W80` `nlos-wasm-sandbox`（`U-9`）落地前触发 | (a) 允许未认证第三方包经弹窗警告后直接以宿主原生二进制裸跑；(b) 强制所有 `COMMUNITY_SANDBOXED` 与未授信组件仅允许在「独立宿主 Process + Wasmtime WASI 白名单」双层强沙箱内执行 | **默认审慎护栏（路径 b，Fail-Closed）**：在未证明宿主平台具备等价 OS 内核强沙箱与内存硬限前，拒绝未认证原生 ELF/PE/Mach-O 裸进程执行；任何受控原生驱动桥接若未完全中介，强制打标 `TCB-DOWNGRADE-001` |
 | **`E4`** | 发布者根信任轮换、吊销列表新鲜度与离线桌面自治平衡 | `W79` `E4` / `E5` 实施时触发 | (a) 每次启动应用强制联网查询中心化 OCSP，断网即拒绝启动本地应用；(b) 离线根 CA + 单调 `RevocationEpoch` 本地缓存签名吊销包（兼容 `[DUI-OFFLINE-001]` 离线自治），联网同步高危 `RecallAdvisory` 后立即本地隔离并撤销 Capability | **默认审慎护栏（路径 b）**：严禁因远端商店不可达而破坏 `[DUI-OFFLINE-001]` 本地已安装应用离线可用性；同时严防索引降级重放（任何 `revocation_epoch` 回退一律 fail-closed 告警拒绝） |
 
@@ -246,12 +283,13 @@ flowchart LR
 
 ## E.5 里程碑路线、预登记风险与退出门禁
 
-### E.5.1 阶段 E 里程碑路线（`M-E0`–`M-E5`）
+### E.5.1 阶段 E 里程碑路线（`M-E0` / `M-E0.5` / `M-E1`–`M-E5`）
 
 | 里程碑 | 对应波次 | 核心可验证标志 | 当前状态 |
 |---|---|---|---|
-| **`M-E0`** | `W76` | 阶段 E 权威进度单与 [ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（`CANDIDATE`）立项入库，完成 B/C/D 交接边界锁定 | **`IN_PROGRESS`（本波次交付，`DESIGN`）** |
-| **`M-E1`** | `W77` | `SABI` 版本兼容矩阵、`ACTIVE -> DEPRECATED -> SUNSET` 机器清单与 Rust/TS/Python/Go/C# 五语言跨纪元 Golden Wire Corpus 全绿 | `NOT_STARTED` |
+| **`M-E0`** | `W76` / `W76.1` | 阶段 E 权威进度单与 [ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（`CANDIDATE`）立项入库，完成 B/C/D 交接边界、契约冻结与挂起项一站式收口映射及 `E0`（`W77-PRE`）先行波排期锁定 | **`IN_PROGRESS`（`W76`/`W76.1` 规划基线交付，保障等级：`DESIGN`）** |
+| **`M-E0.5`** | `W77-PRE` | `E0` 本地开箱真实大模型试用闭环：`nlos-up` 一键本机初始化与 Windows/Unix 开发夹具贯通、`nlos-driver-llm-http` 用户态真实 LLM 驱动（`EnforcementShim` 托管 API Key + `nlos-resource` v8 Token 扣减）跑通、`starter-assistant-app` 多步 `TaskPlan`/`Artifact` 读写与本地未公证试用安装包脚本验收落盘 | `NOT_STARTED`（保障等级：`DESIGN`） |
+| **`M-E1`** | `W77` | `nlos.sabi.PrincipalHandshake` 第 7 通道翻转为 `frozen: true`（达成 **9/9 SABI 通道全量入冻**）、`SABI` 版本兼容矩阵、`ACTIVE -> DEPRECATED -> SUNSET` 机器清单与 Rust/TS/Python/Go/C# 五语言跨纪元 Golden Wire Corpus 全绿 | `NOT_STARTED` |
 | **`M-E2`** | `W78` | 核外无特权兼容垫片 `nlos-compat-shim` 与 `nlos-migrate` 静态检查/三态数据迁移回滚演练器验证通过，`ADR-0027` 晋升 `ACCEPTED` | `NOT_STARTED` |
 | **`M-E3`** | `W79` | 三级发布者证书链、单调 `RevocationEpoch`、生态 Typed Selector（闭合 `U-7`/`U-8`）、`nlos-store-registry` 与 `nlos-certify` 四门认证流水线闭环 | `NOT_STARTED` |
 | **`M-E4`** | `W80` | 三平台 `nlos-wasm-sandbox` 双层强沙箱（闭合 `U-9`）、解耦第三方参考 App/Driver 样板包、桌面商店权限透明视图与 `H7` 供应链对抗矩阵全绿 | `NOT_STARTED` |
@@ -279,7 +317,7 @@ flowchart LR
 |---|---|---|---|
 | **门禁 1** | **`[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级零破坏实证** | 针对 `N-1` 纪元编译并冻结签名的第三方多组件 Application（`>= 2`）与用户态 Driver（`>= 2`）`.nlos-pkg` 制品包，在**未重编译、未重打包、未重签**条件下，跨主系统原地升级至 `N` 后完整通过持久态与 `UserData` 恢复、`Z4` 授权、SABI IPC 调用、`nlos-compat-shim` 核外转换、`DRV-LIFE-001` 驱动崩溃 `UNCERTAIN` 对账与热插拔、事务更新回滚及零残留卸载端到端自动化验证（证据落盘 `docs/evidence/stage-e/e-road-001-*.md`） | `OPEN`（`NOT_STARTED`） |
 | **门禁 2** | **`H7` 供应链、沙箱隔离与兼容对抗回归全部通过** | 完整通过 `H7` 级安全与兼容负向测试：未知 `major` / 未知 `critical` 扩展 fail-closed 拒绝（`COMPAT-VER-002`）、五语言历史黄金向量零篡改、伪造发布者证书/篡改 OCI 层/重放旧 `RevocationEpoch`/抢注 `ApplicationId` 100% 拦截、`nlos-certify` 四门坏包拒绝、以及三平台双层 Wasm 沙箱逃逸拦截（闭合 `U-7`、`U-8`、`U-9`） | `OPEN`（`NOT_STARTED`） |
-| **门禁 3** | **基于 `ledger-schema v1.3` 完成阶段 E 机器台账全量回填并达成 `lint_claims.py` `0 ERROR`** | 在 `W76`（`W76-SCHEMA-V13`，`ed64ae3`，`44/44` 单测）已按 `FROZEN-additive` 规则落地 [ledger-schema.md](./ledger-schema.md) `v1.3` 与 `lint_claims.py` 扩域（支持 `stage: "E"`、`RISK-E-NN` 与 `docs/evidence/stage-e/` 双向索引）基础上，阶段 E 全部 Requirement ID、`E1`..`E7`、`ROAD-E-001`、`RISK-E-01`..`05` 与 `docs/evidence/stage-e/` 如实回填 [claims.yaml](./claims.yaml)、[risks.yaml](./risks.yaml) 与 [evidence-index.yaml](./evidence-index.yaml)，`python scripts/lint_claims.py` 与 `python -m unittest scripts.test_lint_claims` 双双 `0 ERROR`（`Claim <= Evidence`） | `OPEN`（`v1.3` 规范与校验器已于 `W76` `ed64ae3` 就绪，阶段 E 条目回填 `NOT_STARTED`） |
+| **门禁 3** | **基于 `ledger-schema v1.3` 完成阶段 E 机器台账全量回填并达成 `lint_claims.py` `0 ERROR`** | 在 `W76`（`W76-SCHEMA-V13`，`ed64ae3`，`44/44` 单测）已按 `FROZEN-additive` 规则落地 [ledger-schema.md](./ledger-schema.md) `v1.3` 与 `lint_claims.py` 扩域（支持 `stage: "E"`、`RISK-E-NN` 与 `docs/evidence/stage-e/` 双向索引）基础上，阶段 E 全部 Requirement ID、`E0` + `E1`..`E7`、`ROAD-E-001`、`RISK-E-01`..`05` 与 `docs/evidence/stage-e/` 如实回填 [claims.yaml](./claims.yaml)、[risks.yaml](./risks.yaml) 与 [evidence-index.yaml](./evidence-index.yaml)，`python scripts/lint_claims.py` 与 `python -m unittest scripts.test_lint_claims` 双双 `0 ERROR`（`Claim <= Evidence`） | `OPEN`（`v1.3` 规范与校验器已于 `W76` `ed64ae3` 就绪，阶段 E 条目回填 `NOT_STARTED`） |
 | **门禁 4** | **全仓开放 `P0` 风险为 `0` 且未知/残余风险清单同源同步** | 全仓范围内未决 `P0` 风险严格等于 `0`；[risks.yaml](./risks.yaml) 与 [exit-unknown-risks.md](./exit-unknown-risks.md) 同波完成 `RISK-B-05`、`RISK-B-09`、`U-7`、`U-8`、`U-9` 及 `RISK-E-01`..`RISK-E-05` 的退役或分域保留裁定，且对未具备物理台架的硬件专项（如 `U-1`、`U-4`）保持诚实边界声明，零夸大、零掩盖 | `OPEN`（当前 `P0 = 0`，阶段 E 风险待随实施验证更新） |
 | **门禁 5** | **远端三平台 CI 与常设门全绿** | Ubuntu / macOS / Windows 远端 GitHub Actions 全仓 Rust 工作区测试、`desktop`（`tsc` + `vite build` + `src-tauri` 测试）、五语言 SDK Golden Conformance 门禁与夜间 `scale-probe` 常设门保持全绿，并回填可核查的 CI run 记录 | `OPEN`（`NOT_STARTED`） |
 | **门禁 6** | **管理机制 §7 三件套齐备并获维护者显式批准退出** | 阶段 E 独立退出门综合证据终审报告（`docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md`）+ 同源更新后的未知风险清单 + **维护者显式退出批准（Maintainer Explicit Sign-Off）**全部齐备；任何 Agent 严禁自行将阶段状态翻转为 `EXITED` | `OPEN`（`NOT_STARTED`） |
@@ -309,11 +347,19 @@ flowchart LR
 - `E1`..`E7` 全部处于 `NOT_STARTED`（保障等级 `DESIGN`），`ADR-0027` 处于 `CANDIDATE`；
 - 共享管理路由与前序阶段进度单收口翻转（`docs/management/README.md`、`stage-c-progress.md`、`stage-d-progress.md`、`stage-b-progress.md`、`exit-unknown-risks.md`、`risks.yaml`、`claims.yaml`、`evidence-index.yaml`）已由 `W76-EXIT-CD-INT` 单一治理集成车道同提交合流闭环（严禁新增任何 `stage: "E"` 空产声明）。
 
+### E.6.1.1 `W76.1` 冻结收口与本地开箱试用先行波纳管记录（2026-10-30）
+
+于基线 `3507631` 上，维护者审阅剩余协议契约冻结项、软件层挂起遗留项与“本地开箱连接真实大模型试用最后一公里”缺口后，下达明确指令将其正式排入阶段 E 权威计划（先排入计划，严守诚实分级铁律）：
+
+| 车道 ID | 任务角色 | 严格独占写集 | 增量规划纳管摘要与诚实保障等级 |
+|---|---|---|---|
+| `W76R1-STAGE-E-PLAN` | 阶段 E 契约冻结收口映射与 `E0`（`W77-PRE`）先行波规划修订 | `docs/management/stage-e-progress.md`、`docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md`、`docs/management/README.md`、`docs/management/risks.yaml`、`docs/management/exit-unknown-risks.md` | (1) 显式核明 `crates/nlos-schema` `REGISTRY` 9 通道中 8 个已为 `frozen: true`，将唯一 `frozen: false` 的第 7 通道 `nlos.sabi.PrincipalHandshake`（`SABI_PRINCIPAL_HANDSHAKE_V1`）排入 `W77`（`W77-E1A/E1B`）达成 **9/9 SABI 通道全量入冻**，并将 `ADR-0014` `v1-beta -> SABI v1.0` 正式长期冻结（闭合 `RISK-B-05`）绑定至 `W77 -> W78 -> W81`（决策点 `E2`）；(2) 于 §E.1.3 建立冻结与软件层挂起遗留项一站式收口映射表（对比列明 4 项诚实挂在 `E-deferred` 的物理硬件/商业资质/组织边界）；(3) 新增工作包 `E0`（`E-TRIAL-BOOTSTRAP`）、先行波次 `W77-PRE`（`W77-PRE-A` / `W77-PRE-B` / `W77-PRE-C` 三条互斥写集车道）与里程碑 `M-E0.5`；全量新增与修订项均如实标为 **`NOT_STARTED`**（保障等级：**`DESIGN`**），`ADR-0027` 保持 `CANDIDATE`，零 `claims.yaml` / `evidence-index.yaml` 投机录入 |
+
 ### E.6.2 进度更新协议
 
 严格沿用 [stage-b-progress.md](./stage-b-progress.md) §7、[stage-c-progress.md](./stage-c-progress.md) §C.6 与 [stage-d-progress.md](./stage-d-progress.md) §D.6.2 更新纪律：
 
-1. 任一 `E1`..`E7` 工作包或 `W77–W81` 车道状态变化时，必须在同一波屏障集成提交（`W*-INT`）中同步更新本文件 §E.2.2 状态列、§E.3.2 波次执行结果、§E.5 里程碑/门禁表与 §E.6 增量日志，严禁将结论只留在聊天记录或临时文件中；
+1. 任一 `E0`..`E7` 工作包或 `W77-PRE` / `W77–W81` 车道状态变化时，必须在同一波屏障集成提交（`W*-INT`）中同步更新本文件 §E.2.2 状态列、§E.3.2 波次执行结果、§E.5 里程碑/门禁表与 §E.6 增量日志，严禁将结论只留在聊天记录或临时文件中；
 2. 凡触及阶段 B/C/D 延续边界项（`RISK-B-05`、`RISK-B-09`、`U-7`、`U-8`、`U-9` 等）的实质验证进展，必须同波同步 [exit-unknown-risks.md](./exit-unknown-risks.md) 与 [risks.yaml](./risks.yaml)；
 3. 一旦在跨版本升级回归、核外垫片转换、沙箱隔离或供应链对抗测试中发现反例，必须立即按 `[EVID-NEG-001]` 持久化记录反例 Evidence 并降级对应状态，严禁删除反例或带病晋升。
 
