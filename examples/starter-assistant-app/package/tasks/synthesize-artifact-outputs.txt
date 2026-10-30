@@ -1,0 +1,1 @@
+output-contract: content-type=text/markdown target-revision=2 provenance=node-id+llm-receipt-id+parent-digest

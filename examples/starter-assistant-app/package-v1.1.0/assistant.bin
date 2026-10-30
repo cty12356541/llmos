@@ -1,0 +1,3 @@
+starter-assistant-app payload entry v1.1.0
+workflow: draft-plan -> synthesize-artifact -> verify-brief
+authorities: ApplicationAuthority(SameMajor gen 2) + ResourceAuthority(LlmTokenBudget) + SqlitePlanAuthority(rev 2) + ArtifactStore(rev 3)

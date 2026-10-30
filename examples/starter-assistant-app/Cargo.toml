@@ -1,0 +1,34 @@
+[package]
+name = "starter-assistant-app"
+description = "W77-PRE-C Stage E E0 开箱参考生产力样板应用：仅经由公共权威 crate 驱动签名包校验安装、ResourceAuthority 五维 LLM Token 预算记账、SqlitePlanAuthority 多步 TaskPlan DAG、ArtifactStore 因果血缘产出物读写及 SameMajor 热升级与卸载。"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+# 独立 workspace 根（examples/sample-app 与 desktop/src-tauri 先例），不改动仓库根 Cargo.toml 与 Cargo.lock。
+[workspace]
+
+[[bin]]
+name = "starter-assistant-app"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+nlos-application = { path = "../../crates/nlos-application" }
+nlos-artifact = { path = "../../crates/nlos-artifact" }
+nlos-identity = { path = "../../crates/nlos-identity" }
+nlos-plan = { path = "../../crates/nlos-plan" }
+nlos-resource = { path = "../../crates/nlos-resource" }
+nlos-slice-k = { path = "../../crates/nlos-slice-k" }
+nlos-task = { path = "../../crates/nlos-task" }
+nlos-types = { path = "../../crates/nlos-types" }
+sha2 = { version = "0.11.0", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

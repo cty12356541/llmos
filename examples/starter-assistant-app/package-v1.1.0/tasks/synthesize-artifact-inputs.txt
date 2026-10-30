@@ -1,0 +1,1 @@
+input-selector: upstream-node=10a1c2d3e4f5061728394a5b6c7d8e01 expected-artifact-revision=1

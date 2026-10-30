@@ -1,0 +1,14 @@
+# starter-assistant-app v1.1.0 — SameMajor evolution of the out-of-the-box productivity starter
+# Preserves package-id and execution-frozen upstream nodes (draft-plan -> synthesize-artifact)
+# while updating assistant payload/profile and extending the TaskPlan DAG with verify-brief.
+
+package-id = 4e1077c1a5b24d8e9f0123456789abcd
+version = 1.1.0
+
+entry = assistant-driver executable assistant.bin
+entry = assistant-profile data assets/assistant-profile.txt
+
+# Three serial dependent nodes: draft-plan -> synthesize-artifact -> verify-brief
+task = 10a1c2d3e4f5061728394a5b6c7d8e01 agent-role tasks/draft-plan-binding.txt tasks/draft-plan-inputs.txt tasks/draft-plan-outputs.txt tasks/draft-plan-policy.txt tasks/draft-plan-ceiling.txt
+task = 20b2c3d4e5f60718293a4b5c6d7e8f02 executable tasks/synthesize-artifact-binding.txt tasks/synthesize-artifact-inputs.txt tasks/synthesize-artifact-outputs.txt tasks/synthesize-artifact-policy.txt tasks/synthesize-artifact-ceiling.txt deps=10a1c2d3e4f5061728394a5b6c7d8e01
+task = 30c3d4e5f60718293a4b5c6d7e8f0303 agent-role tasks/verify-brief-binding.txt tasks/verify-brief-inputs.txt tasks/verify-brief-outputs.txt tasks/verify-brief-policy.txt tasks/verify-brief-ceiling.txt deps=20b2c3d4e5f60718293a4b5c6d7e8f02

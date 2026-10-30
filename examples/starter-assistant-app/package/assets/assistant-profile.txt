@@ -1,0 +1,9 @@
+profile-version = 1.0.0
+assistant-role = research-brief-synthesizer
+provider-plane = user-space-driver-provider-v1
+credential-custody = trusted-enforcement-shim-only
+default-max-prompt-tokens = 8192
+default-max-completion-tokens = 4096
+default-max-total-tokens = 16384
+default-max-api-calls = 8
+default-max-cost-microcredits = 50000

@@ -1,0 +1,2 @@
+input-selector: entry=assistant-profile role=data
+input-contract: utf8-topic-brief

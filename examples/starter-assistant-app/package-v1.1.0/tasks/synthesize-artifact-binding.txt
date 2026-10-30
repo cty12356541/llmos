@@ -1,0 +1,2 @@
+executable binding: starter-assistant-app synthesize-artifact node v1.0.0
+purpose: consume draft-plan revision 1 and publish synthesized artifact revision 2 with provenance

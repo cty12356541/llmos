@@ -1,0 +1,2 @@
+agent-role binding: starter-assistant-app verify-brief node v1.1.0
+purpose: audit synthesized artifact revision 2 against provenance chain and publish verified brief revision 3

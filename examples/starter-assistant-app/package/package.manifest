@@ -1,0 +1,15 @@
+# starter-assistant-app v1.0.0 — Stage E E0 out-of-the-box productivity starter manifest
+# Line-based developer manifest consumed by `nlos-package build` / `conformance` / `install`.
+# See docs/developers/packaging.md and docs/developers/quickstart-trial.md.
+
+package-id = 4e1077c1a5b24d8e9f0123456789abcd
+version = 1.0.0
+
+# entries: entry = <name> <role> <path>
+entry = assistant-driver executable assistant.bin
+entry = assistant-profile data assets/assistant-profile.txt
+
+# tasks template segment (ADR-0016 decision 1 / W28-B):
+# Two serial dependent nodes: draft-plan -> synthesize-artifact
+task = 10a1c2d3e4f5061728394a5b6c7d8e01 agent-role tasks/draft-plan-binding.txt tasks/draft-plan-inputs.txt tasks/draft-plan-outputs.txt tasks/draft-plan-policy.txt tasks/draft-plan-ceiling.txt
+task = 20b2c3d4e5f60718293a4b5c6d7e8f02 executable tasks/synthesize-artifact-binding.txt tasks/synthesize-artifact-inputs.txt tasks/synthesize-artifact-outputs.txt tasks/synthesize-artifact-policy.txt tasks/synthesize-artifact-ceiling.txt deps=10a1c2d3e4f5061728394a5b6c7d8e01

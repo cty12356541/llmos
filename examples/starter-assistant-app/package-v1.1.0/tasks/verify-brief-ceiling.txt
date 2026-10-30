@@ -1,0 +1,1 @@
+resource-ceiling: prompt-tokens<=1536 completion-tokens<=768 api-calls<=1 memory-mib<=128

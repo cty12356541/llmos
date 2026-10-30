@@ -1,0 +1,2 @@
+agent-role binding: starter-assistant-app draft-plan node v1.0.0
+purpose: decompose user topic into structured outline milestones under bounded LLM token budget
