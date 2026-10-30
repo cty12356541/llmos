@@ -176,14 +176,14 @@ fuzz/                3 个 cargo-fuzz 目标与种子语料库（独立于根 wo
 
 ### 0. 一键开箱引导与直连本地模型 Key 池（`nlos-up`）
 
-若本机已运行 `~/glm-keypool` 号池网关（默认 `http://127.0.0.1:8317/api/coding/paas/v4`）或配置了任意 OpenAI-compatible / 本地 Ollama 端点（`LLMOS_LLM_BASE_URL`），可通过 `nlos-up` 一键完成试用状态根初始化、`ResourceAuthority` 五维 `LlmTokenBudget` 计量对话/意图拆解（全链路凭据脱敏）以及常驻控制面或工业工作站桌面拉起：
+若本机已运行 `~/glm-keypool` 号池网关（默认 `http://127.0.0.1:8317/api/coding/paas/v4`，`nlos-driver-llm-http` 会将 `default_model` 与 `fast_intent_model` 统一直接锁定为 **`glm-5.3`** 并默认跳过 `*-flash` 模型）或配置了任意 OpenAI-compatible / 本地 Ollama 端点（`LLMOS_LLM_BASE_URL`），可通过 `nlos-up` 一键完成试用状态根初始化、`ResourceAuthority` 五维 `LlmTokenBudget` 计量对话/意图拆解（全链路凭据脱敏）以及常驻控制面或工业工作站桌面拉起：
 
 ```powershell
 # 探测本地 ~/glm-keypool（或 OpenAI-compatible 端点）状态（全链路凭据脱敏）
 cargo run -p nlos-up -- pool-status
 
-# 一键初始化试用状态根并直连本地模型池对话（自动落库 ResourceAuthority 五维 Token 预算回执）
-cargo run -p nlos-up -- chat --model glm-5.3-flash --prompt "用一句话介绍 NLOS 微内核与能力令牌"
+# 一键初始化试用状态根并直连默认 glm-5.3 对话（自动落库 ResourceAuthority 五维 Token 预算回执）
+cargo run -p nlos-up -- chat --prompt "用一句话介绍 NLOS 微内核与能力令牌"
 
 # 自然语言意图结构化拆解（内置 [NL-AMBIG-001] 破坏性动作不可逆升级护栏）
 cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
@@ -192,6 +192,11 @@ cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任�
 cargo run -p nlos-up -- daemon --seed-sample-app
 cargo run -p nlos-up -- desktop --seed-sample-app
 ```
+
+**立即查看 `Z0–Z4` 工业工作站 GUI 的两种方式：**
+
+1. **原生 Tauri 桌面工作站窗口（连接真实常驻控制面 + 本机 `glm-keypool` `glm-5.3`）**：运行 `cargo run -p nlos-up -- desktop --seed-sample-app`（Windows GNU 环境若安装了 `C:\msys64\ucrt64` 会由 `nlos-up` 自动注入 `windres`/`gcc` 链接参数，免手工配置直接弹出 `1180x800` `llmos 任务管理器` 窗口；按 `Ctrl+Space` 或点击底部 `36px` 任务栏命令槽即可打开已直连 `glm-5.3` 的 `Z3` 命令面板并体验“模型辅助拆解”）。
+2. **浏览器即时前端预览（`[DUI-OFFLINE-001]` 免编译秒开 UI 布局）**：运行 `cd desktop && npm run dev`，在浏览器访问 `http://localhost:1420` 即可零 Rust 编译等待即时查看五平面 `Z0–Z4` `Graphite / Paper` 实心工业工作站布局、底部 `36px` 任务栏、`L0–L3` 渐进式披露切换、`Z1` 任务空间、`Ctrl+Space` `Z3` 命令面板（本地确定性回退态）与 `Z4` 实心安全确认屏。
 
 完整跨平台操作步骤与诚实公证边界见 [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md)，多步 `TaskPlan` + `Artifact` 因果血缘生产力样板见 [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md)。
 

@@ -176,14 +176,14 @@ fuzz/                3 cargo-fuzz targets with seed corpora (excluded from root 
 
 ### 0. One-Command Bootstrap & Local KeyPool Model Trial (`nlos-up`)
 
-If you run a local `~/glm-keypool` gateway (default `http://127.0.0.1:8317/api/coding/paas/v4`) or any OpenAI-compatible / Ollama endpoint (`LLMOS_LLM_BASE_URL`), `nlos-up` initializes a trial state root, meters every call against `ResourceAuthority` 5D `LlmTokenBudget` with full credential redaction, and launches the daemon or `Z0–Z4` desktop in one command:
+If you run a local `~/glm-keypool` gateway (default `http://127.0.0.1:8317/api/coding/paas/v4`, where `nlos-driver-llm-http` locks both `default_model` and `fast_intent_model` directly to **`glm-5.3`** and skips `*-flash` models by default) or any OpenAI-compatible / Ollama endpoint (`LLMOS_LLM_BASE_URL`), `nlos-up` initializes a trial state root, meters every call against `ResourceAuthority` 5D `LlmTokenBudget` with full credential redaction, and launches the daemon or `Z0–Z4` desktop in one command:
 
 ```powershell
 # Probe local ~/glm-keypool (or OpenAI-compatible endpoint) status with full credential redaction
 cargo run -p nlos-up -- pool-status
 
-# Bootstrap trial state root & run metered chat (commits durable ResourceAuthority 5D Token budget receipt)
-cargo run -p nlos-up -- chat --model glm-5.3-flash --prompt "用一句话介绍 NLOS 微内核与能力令牌"
+# Bootstrap trial state root & run metered chat directly against automatic glm-5.3 (commits durable ResourceAuthority 5D Token budget receipt)
+cargo run -p nlos-up -- chat --prompt "用一句话介绍 NLOS 微内核与能力令牌"
 
 # Compile plain-language intent into structured JSON (built-in [NL-AMBIG-001] destructive escalation guardrail)
 cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
@@ -192,6 +192,11 @@ cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任�
 cargo run -p nlos-up -- daemon --seed-sample-app
 cargo run -p nlos-up -- desktop --seed-sample-app
 ```
+
+**Two immediate ways to view the `Z0–Z4` workstation GUI:**
+
+1. **Full Native Tauri Workstation Window (live resident control plane + local `glm-keypool` `glm-5.3`):** run `cargo run -p nlos-up -- desktop --seed-sample-app` (on Windows GNU hosts with `C:\msys64\ucrt64` installed, `nlos-up` automatically injects `windres`/`gcc` linker flags and opens the `1180x800` `llmos 任务管理器` native window with zero manual setup; press `Ctrl+Space` or click the bottom `36px` taskbar command slot to open the `Z3` command palette pre-warmed against `glm-5.3` and try "Model Assist").
+2. **Instant Browser UI Preview (`[DUI-OFFLINE-001]` zero-compile UI layout preview):** run `cd desktop && npm run dev` and open `http://localhost:1420` in your browser to inspect the five-plane `Z0–Z4` `Graphite / Paper` solid industrial workstation layout, bottom `36px` taskbar, `L0–L3` progressive disclosure toggles, `Z1` Task Space, `Ctrl+Space` `Z3` command palette (deterministic local fallback mode), and `Z4` solid security consent screen with zero Rust compilation wait.
 
 See the full step-by-step walkthrough in [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md) and the multi-step `TaskPlan` + `Artifact` productivity bundle in [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md).
 

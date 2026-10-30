@@ -65,52 +65,64 @@
   cargo run -p nlos-up -- daemon --root "$TRIAL_ROOT" --seed-sample-app
   ```
 
-### 1.2 一键拉起守护进程与 `Z0–Z4` 工业工作站桌面（`desktop` 模式）
+### 1.2 查看 `Z0–Z4` 工业工作站桌面的两种即时方式（原生 Tauri 窗口 vs 浏览器秒开预览）
 
-自动完成状态根引导、后台控制面就绪探测与 Tauri 桌面壳会话绑定（同时支持 Windows Named Pipe 与 Unix Domain Socket；附加 `--dry-run` 可在不拉起 GUI 窗口的前提下核验全部注入环境变量与守护进程健康检查）：
+可根据当前场景任选以下两种方式立即查看与操作 LLMOS `Z0–Z4` 工业工作站 GUI：
 
-- **Windows PowerShell**：
-  ```powershell
-  cargo run -p nlos-up -- desktop --seed-sample-app
-  ```
+1. **原生 Tauri 桌面工作站窗口（连接真实常驻控制面 + 本机 `glm-keypool` `glm-5.3`）**：
+   自动完成状态根引导、后台控制面就绪探测（同时支持 Windows Named Pipe 与 Unix Domain Socket）以及 Tauri 桌面壳会话绑定。Windows `x86_64-pc-windows-gnu` 环境若安装了 `C:\msys64\ucrt64`，`nlos-up` 会自动注入 `windres`/`gcc` 链接参数，免手工配置直接弹出 `1180x800` `llmos 任务管理器` 窗口；按 `Ctrl+Space` 或点击底部 `36px` 任务栏命令槽即可打开已直连 `glm-5.3` 的 `Z3` 命令面板并体验“模型辅助拆解”（附加 `--dry-run` 可在不拉起 GUI 窗口的前提下核验全部注入环境变量与守护进程健康检查）：
 
-- **macOS / Linux POSIX Shell**：
-  ```sh
-  cargo run -p nlos-up -- desktop --seed-sample-app
-  ```
+   - **Windows PowerShell**：
+     ```powershell
+     cargo run -p nlos-up -- desktop --seed-sample-app
+     ```
 
-> 若仅需单独调试前端与桌面宿主开发夹具，也可参见 [desktop/README.md](../../desktop/README.md) 在 `desktop/` 目录运行 `npm run dev:server`（已在 `W77-PRE-A` 补齐 Windows Named Pipe 与 Unix Socket 双平台支持）与 `npm run tauri dev`。
+   - **macOS / Linux POSIX Shell**：
+     ```sh
+     cargo run -p nlos-up -- desktop --seed-sample-app
+     ```
+
+2. **浏览器即时前端预览（`[DUI-OFFLINE-001]` 免编译秒开 UI 布局）**：
+   若仅需立即检视前端视觉布局而不想等待首次 Rust / Tauri 编译，可在 `desktop/` 目录直接启动 Vite 开发服务器（首次运行若未安装前端依赖请先执行 `npm install`）：
+
+   ```sh
+   cd desktop && npm run dev
+   ```
+
+   随后在浏览器访问 `http://localhost:1420`，即可零 Rust 编译等待即时查看五平面 `Z0–Z4` `Graphite / Paper` 实心工业工作站布局、底部 `36px` 任务栏、`L0–L3` 渐进式披露切换、`Z1` 任务空间、`Ctrl+Space` `Z3` 命令面板（自动捕获缺失的 Tauri IPC 并平滑落入 `[DUI-OFFLINE-001]` 本地确定性回退态，零未捕获 Promise 异常）与 `Z4` 实心安全确认屏。
+
+> 若需单独使用桌面宿主内置开发夹具联调，也可参见 [desktop/README.md](../../desktop/README.md) 在 `desktop/` 目录运行 `npm run dev:server`（支持 Windows Named Pipe 与 Unix Socket 双平台）与 `npm run tauri dev`。
 
 ### 1.3 桌面 `Ctrl+Space` 命令面板“模型辅助拆解 / Model Assist”卡片
 
-通过 `nlos-up desktop` 进入工作站桌面后，按 **`Ctrl+Space`**（macOS 可用 `Cmd+Space`）或点击底部 `36px` 任务栏命令槽即可唤起 `Z3` 实心 `4px` 圆角命令与意图面板（[desktop/src/views/omnibar/palette-view.ts](../../desktop/src/views/omnibar/palette-view.ts) 与 [desktop/src-tauri/src/keypool_bridge.rs](../../desktop/src-tauri/src/keypool_bridge.rs)）：
+桌面主入口 [desktop/src/main.ts](../../desktop/src/main.ts) 已将 `inspectLlmKeyPoolStatus` 与 `assistIntentWithKeyPool` 实时接线至 `Z3` 实心 `4px` 圆角命令与意图面板（[desktop/src/views/omnibar/palette-view.ts](../../desktop/src/views/omnibar/palette-view.ts) 与 [desktop/src-tauri/src/keypool_bridge.rs](../../desktop/src-tauri/src/keypool_bridge.rs)）。进入工作站桌面后，按 **`Ctrl+Space`**（macOS 可用 `Cmd+Space`）或点击底部 `36px` 任务栏命令槽即可唤起面板：
 
-1. **顶部实心 `4px` 本地模型池状态条**：自动调用 `llm_keypool_inspect_status` 探测本机 `~/glm-keypool`（或 `LLMOS_LLM_BASE_URL`），在线时显示 `本地模型池 · 在线`（`Local Model Pool · Online`）、默认模型与活跃通道数；未配置或网关离线时按 `[DUI-OFFLINE-001]` 自动切换为 `本地模型池 · 离线回退`（`Local Model Pool · Local Fallback`），绝不阻塞或锁死面板。
-2. **非权威“模型辅助拆解 / Model Assist”卡片**：在输入框键入自然语言任务后点击 **`模型辅助拆解`**（英文界面为 **`Model Assist`**），后台线程经 `llm_keypool_assist_intent` 调用 `LlmEnforcementShim` 并自动扣减会话 `ResourceAuthority` 五维 `LlmTokenBudget`，在面板内渲染 `辅助拆解建议`（`Assisted Plan Breakdown`）卡片，展示建议步骤、可逆等级徽标与本次模型 Token 用量。
+1. **启动预热与顶部实心 `4px` 本地模型池状态条**：当 Tauri 后端在线时，主入口会在启动阶段自动预热 `refreshKeyPoolStatus()` 调用 `llm_keypool_inspect_status` 探测本机 `~/glm-keypool`（或 `LLMOS_LLM_BASE_URL`），在用户按下 `Ctrl+Space` 前即就绪显示 `本地模型池 · 在线`（`Local Model Pool · Online`）、默认锁定模型 `glm-5.3` 与活跃通道数；在纯浏览器预览（`http://localhost:1420`）或网关离线时，自动按 `[DUI-OFFLINE-001]` 切换为 `本地模型池 · 离线回退`（`Local Model Pool · Local Fallback`），绝不阻塞或锁死面板。
+2. **非权威“模型辅助拆解 / Model Assist”卡片**：在输入框键入自然语言任务后点击 **`模型辅助拆解`**（英文界面为 **`Model Assist`**），后台线程经 `llm_keypool_assist_intent` 直连 `glm-5.3` 调用 `LlmEnforcementShim` 并自动扣减会话 `ResourceAuthority` 五维 `LlmTokenBudget`，在面板内渲染 `辅助拆解建议`（`Assisted Plan Breakdown`）卡片，展示建议步骤、可逆等级徽标与本次模型 Token 用量。
 3. **高危歧义护栏与分层披露纪律**：凡输入包含破坏性关键词（如 `删除`、`卸载`、`清空`、`delete`、`wipe`、`uninstall`），无论模型原始输出为何或处于离线回退模式，均按 `[NL-AMBIG-001]` 强制升级为 `不可逆`（`Irreversible`）并开启候选澄清门，后续提交仍须经由 `ADR-0011` 控制脊柱与 `Z4` 实心安全确认屏审批；`L1/L2` 视图保持零内部架构行话，切换至 `L3` 诊断级别后可检视 `PROVIDER_ISOLATION_UNVERIFIED` 隔离标记与 16 位十六进制 `SHA-256` 脱敏槽位指纹。
 
 ---
 
 ## 2. 本机 `~/glm-keypool` 自动发现、`nlos-up` 一站式模型命令与 `nlos-llm-pool-cli` 直连测试
 
-用户态模型驱动 [crates/nlos-driver-llm-http](../../crates/nlos-driver-llm-http/Cargo.toml) 与一键引导器 [crates/nlos-up](../../crates/nlos-up/Cargo.toml) 共享 4 层本地端点自动发现机制（显式 `--keypool-config` / `--pool-config` -> `LLMOS_KEYPOOL_CONFIG` -> `LLMOS_LLM_BASE_URL` -> `$USERPROFILE\glm-keypool\config.json` 或 `$HOME/glm-keypool/config.json`）。当检测到 `upstreamBase` 指向 `bigmodel.cn` 时，自动派生 OpenAI-compatible 编码网关路径 `http://127.0.0.1:8317/api/coding/paas/v4` 并选取 `glm-5.3` / `glm-5.3-flash`；同时也支持对接本地 Ollama（如 `http://127.0.0.1:11434/v1`）及其他兼容端点。
+用户态模型驱动 [crates/nlos-driver-llm-http](../../crates/nlos-driver-llm-http/Cargo.toml) 与一键引导器 [crates/nlos-up](../../crates/nlos-up/Cargo.toml) 共享 4 层本地端点自动发现机制（显式 `--keypool-config` / `--pool-config` -> `LLMOS_KEYPOOL_CONFIG` -> `LLMOS_LLM_BASE_URL` -> `$USERPROFILE\glm-keypool\config.json` 或 `$HOME/glm-keypool/config.json`）。当发现 `~/glm-keypool/config.json`（`upstreamBase` 指向 `bigmodel.cn` Coding Plan `/api/coding/paas/v4`）时，`nlos-driver-llm-http` 会自动派生 OpenAI-compatible 编码网关路径 `http://127.0.0.1:8317/api/coding/paas/v4`，将 `default_model`（`chat` 对话）与 `fast_intent_model`（桌面 Omnibar / `intent` 意图拆解）统一直接锁定为 **`glm-5.3`**，并在默认选型阶段自动跳过 `*-flash` 模型（除非通过 `--model` 或 `LLMOS_LLM_MODEL` 显式覆盖）；同时也支持对接本地 Ollama（如 `http://127.0.0.1:11434/v1`）及其他兼容端点。
 
 ### 2.1 配置出站凭据占位（零明文落库）
 
-若本机已运行 `~/glm-keypool` 代理服务，驱动会直接只读发现 `~/glm-keypool/config.json`（密钥仅封装于 `SecretCredential` 内存托管区，`Debug`/`Display` 恒输出 `<redacted-credential>`，且 `/__pool__/status` 槽位掩码与持有人标签 100% 剥离）。若未部署 `glm-keypool`，也可在当前终端会话中通过 `LLMOS_LLM_*` 环境变量直连任意兼容端点：
+若本机已运行 `~/glm-keypool` 代理服务，驱动会直接只读发现 `~/glm-keypool/config.json` 并自动锁定 `glm-5.3`（密钥仅封装于 `SecretCredential` 内存托管区，`Debug`/`Display` 恒输出 `<redacted-credential>`，且 `/__pool__/status` 槽位掩码与持有人标签 100% 剥离）。若未部署 `glm-keypool`，也可在当前终端会话中通过 `LLMOS_LLM_*` 环境变量直连任意兼容端点：
 
 - **Windows PowerShell**：
   ```powershell
   $env:LLMOS_LLM_BASE_URL = "http://127.0.0.1:8317/api/coding/paas/v4"
   $env:LLMOS_LLM_API_KEY = "<YOUR_EGRESS_KEY>"
-  $env:LLMOS_LLM_MODEL = "glm-5.3-flash"
+  $env:LLMOS_LLM_MODEL = "glm-5.3"
   ```
 
 - **macOS / Linux POSIX Shell**：
   ```sh
   export LLMOS_LLM_BASE_URL="http://127.0.0.1:8317/api/coding/paas/v4"
   export LLMOS_LLM_API_KEY="<YOUR_EGRESS_KEY>"
-  export LLMOS_LLM_MODEL="glm-5.3-flash"
+  export LLMOS_LLM_MODEL="glm-5.3"
   ```
 
 ### 2.2 推荐方式：使用 `nlos-up pool-status | chat | intent` 一站式快捷命令（自动落库五维预算回执）
@@ -123,11 +135,11 @@
   cargo run -p nlos-up -- pool-status
   cargo run -p nlos-up -- pool-status --require-live
 
-  # 2. 直连本地模型池执行计量对话（自动归一化包含式 reasoning_tokens 并落盘 LlmTokenConsumptionReceipt）
-  cargo run -p nlos-up -- chat --model glm-5.3-flash --max-tokens 1024 `
+  # 2. 直连本地模型池默认 glm-5.3 执行计量对话（自动归一化包含式 reasoning_tokens 并落盘 LlmTokenConsumptionReceipt）
+  cargo run -p nlos-up -- chat --max-tokens 1024 `
     --prompt "用一句话介绍 NLOS 微内核与能力令牌的核心价值"
 
-  # 3. 自然语言意图结构化拆解（内置 [NL-AMBIG-001] 破坏性动作 IRREVERSIBLE 强制升级护栏）
+  # 3. 自然语言意图结构化拆解（直连默认 glm-5.3，内置 [NL-AMBIG-001] 破坏性动作 IRREVERSIBLE 强制升级护栏）
   cargo run -p nlos-up -- intent --query "查看当前工作区正在运行的任务与剩余模型额度"
   cargo run -p nlos-up -- intent --query "卸载全部第三方应用并清空缓存"
   ```
@@ -138,8 +150,8 @@
   cargo run -p nlos-up -- pool-status
   cargo run -p nlos-up -- pool-status --require-live
 
-  # 2. 直连本地模型池执行计量对话
-  cargo run -p nlos-up -- chat --model glm-5.3-flash --max-tokens 1024 \
+  # 2. 直连本地模型池默认 glm-5.3 执行计量对话
+  cargo run -p nlos-up -- chat --max-tokens 1024 \
     --prompt "用一句话介绍 NLOS 微内核与能力令牌的核心价值"
 
   # 3. 自然语言意图结构化拆解
@@ -157,17 +169,17 @@
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- status
      ```
 
-2. **执行单轮对话推理（`chat`）**：
+2. **执行单轮对话推理（`chat`，默认直连 `glm-5.3`）**：
    - **Windows PowerShell**：
      ```powershell
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- chat `
-       --model glm-5.3-flash --max-tokens 1024 `
+       --max-tokens 1024 `
        --prompt "Summarize the three core invariants of NLOS ArtifactStore provenance."
      ```
    - **macOS / Linux POSIX Shell**：
      ```sh
      cargo run -p nlos-driver-llm-http --bin nlos-llm-pool-cli -- chat \
-       --model glm-5.3-flash --max-tokens 1024 \
+       --max-tokens 1024 \
        --prompt "Summarize the three core invariants of NLOS ArtifactStore provenance."
      ```
 
@@ -308,7 +320,7 @@
   sh desktop/scripts/build-trial-bundle.sh
   ```
 
-脚本通过系统临时目录中的一次性 JSON 覆盖配置临时开启 `bundle.active = true` 并绑定 `icons/icon.png` 与 `icons/icon.ico`，退出时自动删除临时覆盖文件，保证工作区跟踪文件零污染。构建产物默认位于 `desktop/src-tauri/target/release/bundle/`。
+脚本通过系统临时目录中的一次性 JSON 覆盖配置临时开启 `bundle.active = true` 并绑定 `icons/icon.png` 与 `icons/icon.ico`，退出时自动删除临时覆盖文件，保证工作区跟踪文件零污染（在安装了 `C:\msys64\ucrt64\bin\gcc.exe` 的 Windows `x86_64-pc-windows-gnu` 宿主上，`build-trial-bundle.ps1` 还会自动将 `C:\msys64\ucrt64\bin` 注入 `PATH` 以解析 `windres.exe`，并在 `RUSTFLAGS` 未显式设置时自动注入 UCRT64 `gcc` 链接参数以完成 `tauri-build` 编译）。构建产物默认位于 `desktop/src-tauri/target/release/bundle/`。
 
 ### 4.2 商业代码签名与公证的诚实边界（`E-deferred` / `RISK-B-06`）
 

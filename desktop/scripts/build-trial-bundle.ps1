@@ -149,6 +149,17 @@ try {
         throw "[build-trial-bundle] 'npm run build' failed with exit code $LASTEXITCODE."
     }
 
+    if (((& rustc -vV) -match 'host:\s*x86_64-pc-windows-gnu') -and (Test-Path -LiteralPath "C:\msys64\ucrt64\bin\gcc.exe" -PathType Leaf)) {
+        if ([string]$env:PATH -notmatch 'msys64[\\/]ucrt64[\\/]bin') {
+            $env:PATH = "C:\msys64\ucrt64\bin;" + [string]$env:PATH
+            Write-Output "[build-trial-bundle] Windows GNU host detected: prepended C:\msys64\ucrt64\bin to PATH for windres.exe."
+        }
+        if ([string]::IsNullOrWhiteSpace($env:RUSTFLAGS)) {
+            $env:RUSTFLAGS = "-C linker=C:/msys64/ucrt64/bin/gcc.exe -C link-self-contained=no"
+            Write-Output "[build-trial-bundle] Windows GNU host detected: injected RUSTFLAGS for UCRT64 gcc host build-script linking."
+        }
+    }
+
     Write-Output "[build-trial-bundle] Building local unsigned trial desktop bundle (npx tauri build --no-sign)..."
     & npx tauri build --no-sign --config $TempOverrideConfig
     if ($LASTEXITCODE -ne 0) {

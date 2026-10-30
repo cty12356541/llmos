@@ -1079,9 +1079,9 @@ async function main(): Promise<void> {
         discoverySource: "explicit_config",
         gatewayOrigin: "http://127.0.0.1:18317",
         openaiBasePath: "/v1",
-        defaultModel: "glm-5.1",
-        fastIntentModel: "glm-4.5-air",
-        allowedModels: ["glm-5.1", "glm-4.5-air"],
+        defaultModel: "glm-5.3",
+        fastIntentModel: "glm-5.3",
+        allowedModels: ["glm-5.3", "glm-5.1"],
         activeKeys: 3,
         totalKeys: 4,
         strategy: "round-robin",
@@ -1125,7 +1125,7 @@ async function main(): Promise<void> {
                     "完成后登记 receipt_hex 并生成可回退摘要",
                   ],
             safetyEscalated: false,
-            model: "glm-4.5-air",
+            model: "glm-5.3",
             servedSlotFingerprint: "slot-a91f003c",
             isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
             budgetReceipt: {
@@ -1151,6 +1151,13 @@ async function main(): Promise<void> {
       await Promise.resolve();
       assert(probeCount >= 1, "Opening palette probes Local KeyPool status automatically");
       assert(ctrl.getSnapshot().keyPoolStatus?.reachable === true, "KeyPool status online");
+      const refreshedStatus = await ctrl.refreshKeyPoolStatus();
+      assert(
+        refreshedStatus !== null &&
+          refreshedStatus.defaultModel === "glm-5.3" &&
+          refreshedStatus.fastIntentModel === "glm-5.3",
+        "refreshKeyPoolStatus reflects direct glm-5.3 for both defaultModel and fastIntentModel",
+      );
 
       ctrl.setDraftUtterance("整理文档工作台会议纪要");
       const assistButtons = host.findAll(
@@ -1161,7 +1168,11 @@ async function main(): Promise<void> {
       await Promise.resolve();
       await Promise.resolve();
       assert(assistCallCount === 1, "Clicking keypool-assist button invokes requestKeyPoolAssist");
-      assert(ctrl.getSnapshot().keyPoolAssist?.source === "KEYPOOL", "Online KeyPool assist stored");
+      assert(
+        ctrl.getSnapshot().keyPoolAssist?.source === "KEYPOOL" &&
+          ctrl.getSnapshot().keyPoolAssist?.model === "glm-5.3",
+        "Online KeyPool assist stored with glm-5.3 model",
+      );
 
       // Audit L1 and L2 across zh-CN & en-US: zero internal jargon + L3 isolation/receipt strictly hidden
       for (const locale of ["zh-CN", "en-US"] as const) {
@@ -1205,8 +1216,8 @@ async function main(): Promise<void> {
           if (tier === "L2") {
             const expectedSlots =
               locale === "en-US"
-                ? "Model: glm-5.1 · Active Slots: 3/4"
-                : "默认模型: glm-5.1 · 可用通道: 3/4";
+                ? "Model: glm-5.3 · Active Slots: 3/4"
+                : "默认模型: glm-5.3 · 可用通道: 3/4";
             const expectedTokens =
               locale === "en-US" ? "Model Token Usage: 80 tokens" : "本次模型用量: 80 tokens";
             assert(
@@ -1228,11 +1239,12 @@ async function main(): Promise<void> {
         "L3 discloses PROVIDER_ISOLATION_UNVERIFIED tag",
       );
       assert(
-        l3Visible.includes("slotFingerprint=slot-a91f003c") &&
+        l3Visible.includes("model=glm-5.3") &&
+          l3Visible.includes("slotFingerprint=slot-a91f003c") &&
           l3Visible.includes(`LlmTokenReceipt: id=${"cc".repeat(16)}`) &&
           l3Visible.includes("origin=http://127.0.0.1:18317") &&
           l3Visible.includes("basePath=/v1"),
-        "L3 discloses redacted slot fingerprint, 5D LlmTokenReceipt, and gateway endpoint",
+        "L3 discloses glm-5.3 model, redacted slot fingerprint, 5D LlmTokenReceipt, and gateway endpoint",
       );
 
       // [DUI-OFFLINE-001] Offline / rejected KeyPool degrades cleanly to deterministic local fallback
@@ -1303,7 +1315,7 @@ async function main(): Promise<void> {
           clarificationReason: "",
           steps: ["Permissive model suggestion"],
           safetyEscalated: false,
-          model: "glm-4.5-air",
+          model: "glm-5.3",
           servedSlotFingerprint: "slot-00001111",
           isolationTag: KEYPOOL_ISOLATION_UNVERIFIED_TAG,
           budgetReceipt: null,

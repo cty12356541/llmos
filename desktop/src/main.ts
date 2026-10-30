@@ -6,6 +6,7 @@ import {
 } from "./compositor";
 import { formatTaskbarClock, type InstalledApplicationEntry } from "./dock";
 import {
+  assistIntentWithKeyPool,
   compositorGetSnapshot,
   compositorSessionTransition,
   compositorSetLayout,
@@ -16,6 +17,7 @@ import {
   exportSemanticMetrics,
   getConfig,
   inspectHealth,
+  inspectLlmKeyPoolStatus,
   inspectProcess,
   inspectResource,
   inspectResourceCost,
@@ -1882,6 +1884,9 @@ async function bootstrap(): Promise<void> {
     initialZ4ModalActive: initialCompSnap.z4Active,
     workspaceIdHex: initialCompSnap.activeWorkspaceIdHex,
     principalIdHex: initialCompSnap.activePrincipal.principalIdHex,
+    probeKeyPoolStatus: () => inspectLlmKeyPoolStatus(),
+    requestKeyPoolAssist: (utterance, locale) =>
+      assistIntentWithKeyPool({ utterance, locale }),
     routeVoiceInput: (voiceCheck) => {
       const res = compositor.routeInput({
         source: "voice",
@@ -2083,6 +2088,7 @@ async function bootstrap(): Promise<void> {
       })
       .catch(() => undefined);
 
+    void omnibarController.refreshKeyPoolStatus();
     void pollDesktopWatermarkEvents(0).catch(() => undefined);
   }
 }
