@@ -1,0 +1,25 @@
+[package]
+name = "nlos-driver-llm-http"
+description = "Bounded local HTTP/1.1 LLM provider driver plane over durable Operation prepare/activate and ResourceAuthority budgets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-clock = { path = "../nlos-clock" }
+nlos-driver-mock = { path = "../nlos-driver-mock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-ipc = { path = "../nlos-ipc" }
+nlos-operation = { path = "../nlos-operation" }
+nlos-resource = { path = "../nlos-resource" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-store = { path = "../nlos-store" }
+nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

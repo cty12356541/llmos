@@ -511,6 +511,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-driver-llm-http"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-clock",
+ "nlos-driver-mock",
+ "nlos-identity",
+ "nlos-ipc",
+ "nlos-operation",
+ "nlos-resource",
+ "nlos-schema",
+ "nlos-store",
+ "nlos-types",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "nlos-driver-mock"
 version = "0.1.0"
 dependencies = [
@@ -897,6 +915,26 @@ dependencies = [
 [[package]]
 name = "nlos-types"
 version = "0.1.0"
+
+[[package]]
+name = "nlos-up"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-capability",
+ "nlos-clock",
+ "nlos-identity",
+ "nlos-ipc",
+ "nlos-resource",
+ "nlos-schema",
+ "nlos-slice-k",
+ "nlos-system-control",
+ "nlos-types",
+ "sha2",
+ "tokio",
+]
 
 [[package]]
 name = "nlos-wait"

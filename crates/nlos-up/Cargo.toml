@@ -1,0 +1,27 @@
+[package]
+name = "nlos-up"
+description = "Single-node developer bootstrap orchestrator and smoke runner for the NLOS authority plane."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
+nlos-clock = { path = "../nlos-clock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-ipc = { path = "../nlos-ipc" }
+nlos-resource = { path = "../nlos-resource" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-slice-k = { path = "../nlos-slice-k" }
+nlos-system-control = { path = "../nlos-system-control", features = ["daemon"] }
+nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
+tokio = { workspace = true, features = ["process", "signal"] }
+
+[lints]
+workspace = true

@@ -37,6 +37,8 @@ members = [
     "crates/nlos-search",
     "crates/nlos-net",
     "crates/nlos-consensus",
+    "crates/nlos-driver-llm-http",
+    "crates/nlos-up",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -60,7 +62,9 @@ ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 minicbor = { version = "2.3.1", default-features = false, features = ["std"] }
 nlos-consensus = { path = "crates/nlos-consensus" }
+nlos-driver-llm-http = { path = "crates/nlos-driver-llm-http" }
 nlos-net = { path = "crates/nlos-net" }
+nlos-up = { path = "crates/nlos-up" }
 prost = "0.14.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
