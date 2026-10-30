@@ -9,12 +9,27 @@ use std::fmt;
 
 use prost::Message;
 
+pub mod deprecation;
 pub mod sabi {
     pub mod v1 {
         #![allow(clippy::doc_markdown, clippy::must_use_candidate)]
         include!(concat!(env!("OUT_DIR"), "/nlos.sabi.v1.rs"));
     }
 }
+pub mod version_matrix;
+
+pub use deprecation::{
+    CANONICAL_DEPRECATION_MANIFEST_YAML, ChannelDeprecationRecord, ContractElementKind,
+    DeprecationEntry, DeprecationManifest, DeprecationManifestError, DeprecationState,
+    MAX_DEPRECATION_MANIFEST_BYTES, SymbolAuditVerdict, canonical_deprecation_manifest,
+    parse_deprecation_manifest,
+};
+pub use version_matrix::{
+    MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS, VersionCompatibilityPolicy, VersionNegotiationOutcome,
+    VersionRoute, compatibility_error_to_sabi_failure, decode_negotiate_service_request_frame,
+    decode_resolve_service_request_frame, encode_negotiate_service_request_frame,
+    encode_resolve_service_request_frame,
+};
 
 pub const SABI_ENVELOPE_SCHEMA: &str = "nlos.sabi.Envelope";
 pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
@@ -23,7 +38,8 @@ pub const SABI_SYSTEM_CONTROL_SCHEMA: &str = "nlos.sabi.SystemControl";
 pub const SABI_TAKEOVER_CONTROL_SCHEMA: &str = "nlos.sabi.TakeoverControl";
 pub const SABI_WAIT_CONTROL_SCHEMA: &str = "nlos.sabi.WaitControl";
 /// ADR-0011 connection-level principal handshake channel; the seventh
-/// registry entry, added additively under the ADR-0014 v1-beta freeze.
+/// canonical registry entry, promoted to frozen status in W77 under ADR-0027
+/// (`M-E1` 9/9 channel freeze).
 pub const SABI_PRINCIPAL_HANDSHAKE_SCHEMA: &str = "nlos.sabi.PrincipalHandshake";
 /// ADR-0024 driver provider channel; the eighth canonical registry entry,
 /// promoted to frozen status under ADR-0014 (`#9 C-PROVIDER-REAL`).
@@ -75,6 +91,9 @@ pub const MAX_ACTIVITY_CONTEXT_BYTES: usize = 4 * 1024;
 pub const MAX_CAPABILITY_HANDLES: usize = 64;
 pub const MAX_RECEIPT_REFERENCES: usize = 64;
 pub const MAX_SAFE_ERROR_MESSAGE_BYTES: usize = 512;
+/// Bounded maximum number of `critical_extension_ids` or `non_critical_extension_ids`
+/// permitted on any [`sabi::v1::SchemaIdentity`] (`[COMPAT-VER-002]`, `ADR-0027`).
+pub const MAX_EXTENSION_IDS: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaDescriptor {
@@ -157,12 +176,25 @@ const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     frozen: true,
 };
 
+// W77 (`M-E1`, ADR-0027 section 3.1): Peer attestation audit complete; promoted
+// from `frozen: false` to `frozen: true`, completing the 9/9 canonical SABI v1
+// channel freeze:
+// - `PrincipalHandshakeChallenge` locks `schema = 1`, `nonce = 2` (field slots
+//   >= 3 remain open for additive peer attestation challenge metadata).
+// - `PrincipalHandshakeAttestation` locks `schema = 1`, `principal_id = 2`,
+//   `nonce = 3`, `channel_binding = 4`, `signature = 5` (field slots >= 6
+//   remain open for additive peer/cell attestation evidence).
+// - `SchemaIdentity` carries `critical_extension_ids = 4` and
+//   `non_critical_extension_ids = 5` bounded by `MAX_EXTENSION_IDS = 32`.
+// - `schema/golden/nlos.sabi.PrincipalHandshake-v1.hex` uses 185 bytes out of
+//   `MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES = 4096` (3,911 bytes of additive
+//   headroom).
 const SABI_PRINCIPAL_HANDSHAKE_V1: SchemaDescriptor = SchemaDescriptor {
     name: SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
-    frozen: false,
+    frozen: true,
 };
 
 const SABI_DRIVER_PROVIDER_V1: SchemaDescriptor = SchemaDescriptor {
@@ -250,14 +282,32 @@ pub enum CompatibilityError {
     MissingTakeoverControlSigner,
     UnsignedTakeoverControlRecord,
     UnknownSchema(String),
+    ZeroMajorVersion {
+        schema: String,
+    },
     UnsupportedMajor {
         schema: String,
         got: u32,
         supported: u32,
     },
+    SunsetEpoch {
+        schema: String,
+        client_epoch: u32,
+        host_epoch: u32,
+        max_backward_epochs: u32,
+    },
     UnsupportedCriticalExtension {
         schema: String,
         extension_id: u32,
+    },
+    TooManyExtensionIds {
+        schema: String,
+        actual: usize,
+        maximum: usize,
+    },
+    InvalidCompatibilityWindow {
+        got: u32,
+        minimum: u32,
     },
     InvalidRequestIdLength {
         actual: usize,
@@ -382,6 +432,12 @@ impl fmt::Display for CompatibilityError {
                 formatter.write_str("TakeoverControl record must be signed on this path")
             }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
+            Self::ZeroMajorVersion { schema } => {
+                write!(
+                    formatter,
+                    "schema {schema:?} declares invalid major version 0"
+                )
+            }
             Self::UnsupportedMajor {
                 schema,
                 got,
@@ -390,12 +446,33 @@ impl fmt::Display for CompatibilityError {
                 formatter,
                 "schema {schema:?} major {got} is unsupported; this build supports {supported}"
             ),
+            Self::SunsetEpoch {
+                schema,
+                client_epoch,
+                host_epoch,
+                max_backward_epochs,
+            } => write!(
+                formatter,
+                "schema {schema:?} major {client_epoch} has sunset at host epoch {host_epoch} (max backward window is {max_backward_epochs} epochs)"
+            ),
             Self::UnsupportedCriticalExtension {
                 schema,
                 extension_id,
             } => write!(
                 formatter,
                 "schema {schema:?} requires unsupported critical extension {extension_id}"
+            ),
+            Self::TooManyExtensionIds {
+                schema,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "schema {schema:?} carries {actual} extension IDs; maximum is {maximum}"
+            ),
+            Self::InvalidCompatibilityWindow { got, minimum } => write!(
+                formatter,
+                "compatibility window of {got} epochs is below statutory minimum {minimum}"
             ),
             Self::InvalidRequestIdLength { actual } => write!(
                 formatter,
@@ -438,6 +515,34 @@ impl fmt::Display for CompatibilityError {
 }
 
 impl Error for CompatibilityError {}
+
+impl CompatibilityError {
+    /// Converts this schema compatibility rejection into a bounded, wire-safe
+    /// [`sabi::v1::SabiFailure`] (`E_ABI_VERSION` + `DO_NOT_RETRY` for all
+    /// version-window, unknown-channel, extension-bound, and `[COMPAT-VER-002]`
+    /// critical-extension violations).
+    #[must_use]
+    pub fn to_sabi_failure(&self) -> sabi::v1::SabiFailure {
+        compatibility_error_to_sabi_failure(self)
+    }
+
+    /// Returns `true` when this error represents an ABI version, epoch-window,
+    /// unknown-channel, or critical-extension negotiation failure (`E_ABI_VERSION`).
+    #[must_use]
+    pub const fn is_abi_version_error(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingSchemaIdentity
+                | Self::UnknownSchema(_)
+                | Self::ZeroMajorVersion { .. }
+                | Self::UnsupportedMajor { .. }
+                | Self::SunsetEpoch { .. }
+                | Self::UnsupportedCriticalExtension { .. }
+                | Self::TooManyExtensionIds { .. }
+                | Self::InvalidCompatibilityWindow { .. }
+        )
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MethodSemantics {
@@ -640,6 +745,11 @@ impl ValidatedExchangeResponse {
 }
 
 impl ValidatedFrame {
+    #[must_use]
+    pub(crate) const fn from_parts(envelope: sabi::v1::Envelope, wire: Vec<u8>) -> Self {
+        Self { envelope, wire }
+    }
+
     #[must_use]
     pub const fn envelope(&self) -> &sabi::v1::Envelope {
         &self.envelope
@@ -3685,6 +3795,21 @@ fn validate_schema_identity(identity: &sabi::v1::SchemaIdentity) -> Result<(), C
         .find(|descriptor| descriptor.name == identity.name)
         .ok_or_else(|| CompatibilityError::UnknownSchema(identity.name.clone()))?;
 
+    if identity.critical_extension_ids.len() > MAX_EXTENSION_IDS {
+        return Err(CompatibilityError::TooManyExtensionIds {
+            schema: identity.name.clone(),
+            actual: identity.critical_extension_ids.len(),
+            maximum: MAX_EXTENSION_IDS,
+        });
+    }
+    if identity.non_critical_extension_ids.len() > MAX_EXTENSION_IDS {
+        return Err(CompatibilityError::TooManyExtensionIds {
+            schema: identity.name.clone(),
+            actual: identity.non_critical_extension_ids.len(),
+            maximum: MAX_EXTENSION_IDS,
+        });
+    }
+
     if identity.major != descriptor.major {
         return Err(CompatibilityError::UnsupportedMajor {
             schema: identity.name.clone(),
@@ -3694,9 +3819,10 @@ fn validate_schema_identity(identity: &sabi::v1::SchemaIdentity) -> Result<(), C
     }
 
     if let Some(extension_id) = identity.critical_extension_ids.iter().find(|extension_id| {
-        !descriptor
-            .supported_critical_extensions
-            .contains(extension_id)
+        **extension_id == 0
+            || !descriptor
+                .supported_critical_extensions
+                .contains(extension_id)
     }) {
         return Err(CompatibilityError::UnsupportedCriticalExtension {
             schema: identity.name.clone(),

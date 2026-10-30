@@ -259,6 +259,9 @@ fn registry_exposes_the_supported_contract() {
 
 #[test]
 fn registry_freeze_markers_match_adr_0014() {
+    // W77 (`M-E1`, ADR-0027): PrincipalHandshake completed its peer attestation
+    // slot audit and promoted to frozen, locking all 9/9 canonical SABI v1
+    // channels.
     let frozen_names = [
         SABI_ENVELOPE_SCHEMA,
         SABI_SERVICE_DIRECTORY_SCHEMA,
@@ -266,17 +269,13 @@ fn registry_freeze_markers_match_adr_0014() {
         SABI_SYSTEM_CONTROL_SCHEMA,
         SABI_TAKEOVER_CONTROL_SCHEMA,
         SABI_WAIT_CONTROL_SCHEMA,
+        SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
         SABI_DRIVER_PROVIDER_SCHEMA,
         SABI_CHANNEL_CONTROL_SCHEMA,
     ];
     for name in frozen_names {
         assert_eq!(registry_frozen(name), Some(true), "{name} must be frozen");
     }
-    assert_eq!(
-        registry_frozen(SABI_PRINCIPAL_HANDSHAKE_SCHEMA),
-        Some(false),
-        "the additive PrincipalHandshake entry stays open under the freeze"
-    );
     assert_eq!(registry_frozen("nlos.sabi.Unknown"), None);
 
     // The descriptor metadata and the query API must agree on every entry.
@@ -288,6 +287,78 @@ fn registry_freeze_markers_match_adr_0014() {
             descriptor.name
         );
     }
+}
+
+#[test]
+fn w77_all_nine_sabi_channels_frozen_and_principal_handshake_headroom_verified() {
+    use nlos_schema::MAX_EXTENSION_IDS;
+
+    let registry = schema_registry();
+    assert_eq!(registry.len(), 9, "expected all 9 canonical SABI channels");
+    for descriptor in registry {
+        assert!(
+            descriptor.frozen,
+            "W77 M-E1 requires {} to have frozen == true",
+            descriptor.name
+        );
+        assert_eq!(
+            registry_frozen(descriptor.name),
+            Some(true),
+            "W77 M-E1 requires registry_frozen({}) == Some(true)",
+            descriptor.name
+        );
+    }
+
+    // Peer attestation audit evidence: PrincipalHandshake v1 golden frame uses
+    // 185 bytes out of MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES (4096), leaving
+    // 3,911 bytes of additive headroom for future peer/cell attestation fields
+    // on Challenge (slots >= 3) and Attestation (slots >= 6).
+    let golden = decode_hex(include_str!(
+        "../../../schema/golden/nlos.sabi.PrincipalHandshake-v1.hex"
+    ));
+    assert_eq!(golden.len(), 185);
+    assert_eq!(MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES - golden.len(), 3_911);
+
+    // Non-critical extension IDs up to MAX_EXTENSION_IDS pass additive
+    // PrincipalHandshake challenge/attestation validation; exceeding
+    // MAX_EXTENSION_IDS fails closed.
+    let mut challenge_with_non_critical = PrincipalHandshakeChallenge {
+        schema: Some(principal_handshake_schema_identity()),
+        nonce: vec![0xA5; HANDSHAKE_NONCE_BYTES],
+    };
+    challenge_with_non_critical
+        .schema
+        .as_mut()
+        .unwrap()
+        .non_critical_extension_ids = (1..=u32::try_from(MAX_EXTENSION_IDS).unwrap()).collect();
+    let challenge_wire =
+        encode_principal_handshake_challenge(&challenge_with_non_critical).unwrap();
+    let decoded_challenge = decode_principal_handshake_challenge(&challenge_wire).unwrap();
+    assert_eq!(
+        decoded_challenge
+            .schema
+            .as_ref()
+            .unwrap()
+            .non_critical_extension_ids
+            .len(),
+        MAX_EXTENSION_IDS
+    );
+
+    let mut challenge_over_bound = challenge_with_non_critical;
+    challenge_over_bound
+        .schema
+        .as_mut()
+        .unwrap()
+        .non_critical_extension_ids
+        .push(999);
+    assert_eq!(
+        encode_principal_handshake_challenge(&challenge_over_bound),
+        Err(CompatibilityError::TooManyExtensionIds {
+            schema: SABI_PRINCIPAL_HANDSHAKE_SCHEMA.to_owned(),
+            actual: MAX_EXTENSION_IDS + 1,
+            maximum: MAX_EXTENSION_IDS,
+        })
+    );
 }
 
 #[test]
