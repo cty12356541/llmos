@@ -1,7 +1,7 @@
 //! Integration smoke tests for `nlos-up` trial bootstrap, daemon assembly, and CLI modes.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -400,7 +400,7 @@ fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
 
     loop {
         match stream.read(&mut chunk) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
                 if header_end.is_none()
@@ -424,7 +424,6 @@ fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
                     break;
                 }
             }
-            Err(_) => break,
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
@@ -456,7 +455,7 @@ fn write_http_json_response(
     let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
-fn write_synthetic_keypool_config(path: &std::path::Path, port: u16) {
+fn write_synthetic_keypool_config(path: &Path, port: u16) {
     let config_json = format!(
         r#"{{
   "listen": {{ "host": "127.0.0.1", "port": {port} }},
@@ -587,18 +586,10 @@ fn cli_pool_status_online_and_offline_redacts_secrets_and_slot_names() {
     assert!(!strict_out.status.success());
 }
 
-#[test]
-fn cli_chat_and_intent_charge_trial_5d_budget_with_monotonic_receipts_and_safety_escalation() {
-    let temp = TempTrialDir::new("cli-chat-intent");
-    let root_dir = temp.0.join("trial-root");
-    fs::create_dir_all(&temp.0).expect("create temp dir");
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock keypool");
-    let port = listener.local_addr().expect("mock keypool addr").port();
-    let config_path = temp.0.join("config.json");
-    write_synthetic_keypool_config(&config_path, port);
-
-    let server_thread = std::thread::spawn(move || {
+fn spawn_mock_chat_and_intent_server(
+    listener: std::net::TcpListener,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
         // Turn 1: `nlos-up chat`
         let (mut chat_stream, _) = listener.accept().expect("accept chat request");
         let chat_req = read_full_http_request(&mut chat_stream);
@@ -670,7 +661,88 @@ fn cli_chat_and_intent_charge_trial_5d_budget_with_monotonic_receipts_and_safety
             ],
             intent_resp,
         );
-    });
+    })
+}
+
+fn assert_compiled_intent_and_durable_budget(intent_stdout: &str, root_dir: &Path) {
+    let parsed_intent =
+        nlos_driver_llm_http::JsonValue::parse(intent_stdout).expect("valid intent JSON output");
+    assert_eq!(
+        parsed_intent
+            .get("undo_class")
+            .and_then(nlos_driver_llm_http::JsonValue::as_str),
+        Some("IRREVERSIBLE")
+    );
+    assert_eq!(
+        parsed_intent
+            .get("needs_clarification")
+            .and_then(nlos_driver_llm_http::JsonValue::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        parsed_intent
+            .get("safety_escalated")
+            .and_then(nlos_driver_llm_http::JsonValue::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        parsed_intent
+            .get("isolation_tag")
+            .and_then(nlos_driver_llm_http::JsonValue::as_str),
+        Some("PROVIDER_ISOLATION_UNVERIFIED")
+    );
+    let receipt_obj = parsed_intent.get("receipt").expect("intent receipt object");
+    assert_eq!(
+        receipt_obj
+            .get("sequence")
+            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        receipt_obj
+            .get("cumulative_total_tokens")
+            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
+        Some(100)
+    );
+    assert_eq!(
+        receipt_obj
+            .get("cumulative_api_calls")
+            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
+        Some(2)
+    );
+
+    // Re-open `<root>/resource` directly and confirm durable 5D accounting against `<root>/trial-account.txt`.
+    let marker_hex = fs::read_to_string(root_dir.join(TRIAL_ACCOUNT_FILE))
+        .expect("read trial-account.txt")
+        .trim()
+        .to_owned();
+    let mut acct_bytes = [0_u8; 16];
+    for (idx, slot) in acct_bytes.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&marker_hex[2 * idx..2 * idx + 2], 16).expect("account hex");
+    }
+    let account_id = nlos_types::ResourceAccountId::from_bytes(acct_bytes);
+    let resource =
+        ResourceAuthority::open(root_dir.join("resource")).expect("open trial resource authority");
+    let durable_budget = resource
+        .inspect_llm_token_budget(account_id)
+        .expect("inspect durable 5D budget");
+    assert_eq!(durable_budget.consumed_api_calls, 2);
+    assert_eq!(durable_budget.consumed_prompt_tokens, 48);
+    assert_eq!(durable_budget.consumed_total_tokens, 100);
+}
+
+#[test]
+fn cli_chat_and_intent_charge_trial_5d_budget_with_monotonic_receipts_and_safety_escalation() {
+    let temp = TempTrialDir::new("cli-chat-intent");
+    let root_dir = temp.0.join("trial-root");
+    fs::create_dir_all(&temp.0).expect("create temp dir");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock keypool");
+    let port = listener.local_addr().expect("mock keypool addr").port();
+    let config_path = temp.0.join("config.json");
+    write_synthetic_keypool_config(&config_path, port);
+
+    let server_thread = spawn_mock_chat_and_intent_server(listener);
 
     let bin = env!("CARGO_BIN_EXE_nlos-up");
     let expected_slot_fp = nlos_driver_llm_http::sha256_hex16("mock-sensitive-owner-name");
@@ -735,68 +807,5 @@ fn cli_chat_and_intent_charge_trial_5d_budget_with_monotonic_receipts_and_safety
     assert!(!intent_stdout.contains("mock-sensitive-owner-name"));
     assert!(!intent_stdout.contains("SYNTHETIC_EGRESS_TOKEN_DO_NOT_LEAK"));
 
-    let parsed_intent =
-        nlos_driver_llm_http::JsonValue::parse(&intent_stdout).expect("valid intent JSON output");
-    assert_eq!(
-        parsed_intent
-            .get("undo_class")
-            .and_then(nlos_driver_llm_http::JsonValue::as_str),
-        Some("IRREVERSIBLE")
-    );
-    assert_eq!(
-        parsed_intent
-            .get("needs_clarification")
-            .and_then(nlos_driver_llm_http::JsonValue::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        parsed_intent
-            .get("safety_escalated")
-            .and_then(nlos_driver_llm_http::JsonValue::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        parsed_intent
-            .get("isolation_tag")
-            .and_then(nlos_driver_llm_http::JsonValue::as_str),
-        Some("PROVIDER_ISOLATION_UNVERIFIED")
-    );
-    let receipt_obj = parsed_intent.get("receipt").expect("intent receipt object");
-    assert_eq!(
-        receipt_obj
-            .get("sequence")
-            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
-        Some(2)
-    );
-    assert_eq!(
-        receipt_obj
-            .get("cumulative_total_tokens")
-            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
-        Some(100)
-    );
-    assert_eq!(
-        receipt_obj
-            .get("cumulative_api_calls")
-            .and_then(nlos_driver_llm_http::JsonValue::as_u64),
-        Some(2)
-    );
-
-    // Re-open `<root>/resource` directly and confirm durable 5D accounting against `<root>/trial-account.txt`.
-    let marker_hex = fs::read_to_string(root_dir.join(TRIAL_ACCOUNT_FILE))
-        .expect("read trial-account.txt")
-        .trim()
-        .to_owned();
-    let mut acct_bytes = [0_u8; 16];
-    for (idx, slot) in acct_bytes.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&marker_hex[2 * idx..2 * idx + 2], 16).expect("account hex");
-    }
-    let account_id = nlos_types::ResourceAccountId::from_bytes(acct_bytes);
-    let resource =
-        ResourceAuthority::open(root_dir.join("resource")).expect("open trial resource authority");
-    let durable_budget = resource
-        .inspect_llm_token_budget(account_id)
-        .expect("inspect durable 5D budget");
-    assert_eq!(durable_budget.consumed_api_calls, 2);
-    assert_eq!(durable_budget.consumed_prompt_tokens, 48);
-    assert_eq!(durable_budget.consumed_total_tokens, 100);
+    assert_compiled_intent_and_durable_budget(&intent_stdout, &root_dir);
 }
