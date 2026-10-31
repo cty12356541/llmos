@@ -1,0 +1,26 @@
+[package]
+name = "nlos-store-registry"
+description = "OCI content-addressed multi-component store governance index, channel release tracks, permission transparency catalog, and RecallAdvisory registry (Stage E E5 / ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-migrate.workspace = true
+nlos-publisher-trust.workspace = true
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
+
+[lints]
+workspace = true
