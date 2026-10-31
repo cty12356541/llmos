@@ -1,0 +1,29 @@
+[package]
+name = "nlos-migrate"
+description = "Declarative SABI contract static checker, package manifest auditor, and PKG-UPDATE-001 three-mode container migration rollback runner (Stage E E3 / ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nlos_migrate"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nlos-migrate"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-service-directory = { path = "../nlos-service-directory" }
+nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
+
+[lints]
+workspace = true

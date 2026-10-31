@@ -1,0 +1,25 @@
+[package]
+name = "nlos-compat-shim"
+description = "Out-of-core unprivileged SABI epoch adapter and DRV-SHIM-001 driver protocol translation shim (Stage E E2 / ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+minicbor.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-driver-mock = { path = "../nlos-driver-mock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-operation = { path = "../nlos-operation" }
+nlos-resource = { path = "../nlos-resource" }
+nlos-runtime = { path = "../nlos-runtime" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-service-directory = { path = "../nlos-service-directory" }
+nlos-types = { path = "../nlos-types" }
+prost.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
