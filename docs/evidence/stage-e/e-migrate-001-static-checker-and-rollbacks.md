@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W78 / W78-E3-MIGRATE-KIT`（里程碑 `M-E2` 右车道，工作包 `E3`）
 - **日期**: `2026-10-31`
 - **Assurance Level**: `H4`（纯确定性本地宿主单元测试、真实权威 SQLite 存储集成验证与 CLI 端到端沙箱演练；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE`（本车道门禁全部通过，待 `W78-INT` 与左车道 `W78-E2-COMPAT-SHIM` 合流复验后晋升 canonical `DONE`）
+- **状态**: `VERIFIED`（经 `W78-INT` 与左车道 `W78-E2-COMPAT-SHIM` 合流复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`）、§15.1（`DRV-ABI-001`、`DRV-LIFE-001`、`DRV-CRED-001`、`DRV-HEALTH-001`）、§23.1–§23.2（`PKG-MULTI-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`）
   - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2–§4
@@ -97,5 +97,5 @@
 ## 5. 诚实非声明边界（Honest Non-Claims）
 
 1. **保证等级边界（`H4 != H7`）**：本文档所有证据均来自单机确定性宿主测试与临时目录真实 SQLite 权威沙箱（`H4`），不构成跨物理主机崩溃掉电或大规模在线应用商店分发的 `H7` 生产环境证明。
-2. **核外兼容垫片边界（左车道 `W78-E2` 独立交付）**：本车道（`W78-E3`）负责应用与驱动包升级前的静态契约审计、弃用处方生成、跨纪元契约差异拦截与 `[PKG-UPDATE-001]` 数据容器迁移回滚沙箱；运行期执行 `N-1 / N-2` 旧版线帧转换的核外垫片 `crates/nlos-compat-shim` 由并行左车道 `W78-E2-COMPAT-SHIM` 交付，须经 `W78-INT` 合流复验后共同闭合里程碑 `M-E2`。
+2. **核外兼容垫片边界（左车道 `W78-E2` 独立交付）**：本车道（`W78-E3`）负责应用与驱动包升级前的静态契约审计、弃用处方生成、跨纪元契约差异拦截与 `[PKG-UPDATE-001]` 数据容器迁移回滚沙箱；运行期执行 `N-1 / N-2` 旧版线帧转换的核外垫片 `crates/nlos-compat-shim` 由并行左车道 `W78-E2-COMPAT-SHIM` 独立交付并落盘证据 [E-SHIM-001](./e-shim-001-out-of-core-epoch-adapter.md)，两车道已在 `W78-INT` 合流复验并共同闭合里程碑 `M-E2`（`H4`）。
 3. **Trusted UI 图形交互壳层边界**：`Irreversible` 模式在沙箱与库层已强制接入 `IdentityAuthority` Ed25519 真实签名校验绑定 `Z4TrustedUiConsentReceipt`（闭合 `RISK-E-05` 自动化迁移无备份/无确认安全门禁），但面向终端用户的窗口级图形化确认弹窗交互与商店前端编排归属后续工作包 `E4`–`E5`。

@@ -1156,3 +1156,15 @@
   scope: "schema/golden/epochs/v1.0/ 全部 9/9 SABI 通道 11 条确定性黄金向量与双哈希清单 manifest.json（同时锁定全部 7 个根级历史黄金文件零漂移）+ Rust（nlos-schema epoch_v1_0_golden_corpus）、TypeScript、Python、Go 1.27.0（30/30）、C# .NET 8.0.424（30/30）五语言正向确定性编码、解码字段断言、重编码往返、跨九通道未知字段 a00607 保持与 COMPAT-VER-002 对抗矩阵 + tools/check_golden_immutability.py 黄金不可变 CI 门禁及 7/7 正反向篡改拦截单测"
   assurance: H4
   date: "2026-10-30"
+- id: e-shim-001-out-of-core-epoch-adapter
+  path: docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+  title: "E-SHIM-001：核外无特权兼容垫片（nlos-compat-shim）、N-1 / N-2 <-> N 线协议转换与 [DRV-SHIM-001] 四层零特权隔离验证证据（W78-E2 / W78-INT）"
+  scope: "crates/nlos-compat-shim 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖，8 个核心 TCB crate Cargo.toml 零反向依赖）核外无特权兼容垫片（N 零跳直通 / N-1..N-2 动态挂载、128-bit request_id 与 IdempotencyKey 透传、COMPAT-VER-002 未知非关键扩展与原始 Protobuf wire tag 无损往返、256-FIFO 弃用告警、Stage B minicbor <-> nlos.sabi.DriverProvider 四方法 1:1 双向桥接与 TASK-PROVIDER-001 PROVIDER_ISOLATION_UNVERIFIED 防提权）+ ADR-0027 §2.2.2 四层特权隔离（真实 SQLite 多权威 + TrustedEnforcementGate + SecretCredential 零秘密线泄漏 + SignedMeteredUsageProof + 崩溃转 EffectUnknown/Quarantined 与原 128-bit 幂等键对账，40/40 测试全部通过）"
+  assurance: H4
+  date: "2026-10-31"
+- id: e-migrate-001-static-checker-and-rollbacks
+  path: docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+  title: "E-MIGRATE-001：声明式契约静态检查器、跨纪元 SABI 差异工具与 PKG-UPDATE-001 三态迁移回滚沙箱证据（W78-E3 / W78-INT）"
+  scope: "crates/nlos-migrate 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖）声明式契约静态检查器与三态迁移回滚沙箱（nlos-migrate check | drill：100% 兼容 starter-assistant-app v1.0.0/v1.1.0 清单、PKG-MULTI-001 多组件声明、DRV-LIFE-001 EffectDescriptor 与 reconcile 审计、PKG-SEED-001/PKG-IMM-001 SQLite/WAL 魔数与脱敏明文密钥扫描、COMPAT-DEPRECATE-001 UpgradePrescription 与 DeprecationWarningReceipt，以及 PKG-UPDATE-001 BackwardCompatibleWindow / SnapshotAssistedRollback 100% SHA-256 字节全等恢复 / Irreversible PreUpgradeBackupReceipt + IdentityAuthority Ed25519 Z4TrustedUiConsentReceipt 双门禁，18/18 Rust 测试）+ tools/sabi-compat-diff 纯 Python 3 标准库跨纪元差异检查器（8/8 Python 单测）"
+  assurance: H4
+  date: "2026-10-31"

@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W78 / W78-E2-COMPAT-SHIM`（里程碑 `M-E2` / 工作包 `E2` 左半片核外兼容垫片实现）
 - **日期**: `2026-10-31`
 - **Assurance Level**: `H4`（纯确定性本地宿主单元测试、真实 SQLite 多权威端到端集成与对抗性旁路隔离验证；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE_VERIFIED`（车道内全部静态与动态门禁通过，待 `W78` 屏障合流晋升 canonical `DONE`）
+- **状态**: `VERIFIED`（经 `W78-INT` 与右车道 `W78-E3-MIGRATE-KIT` 合流复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`SABI-DISC-001`、`SABI-TRANSPORT-001`、`KABI-IDEM-001`、`KABI-UNCERTAIN-001`）、§21（`DRV-SHIM-001`、`DRV-CRED-001`、`DRV-BOUND-001`、`DRV-ACTIVE-001`、`DRV-LIFE-001`、`DRV-NEGO-001`、`DRV-PROTO-001`）、§28（阶段 E 路线图 `E2` / `M-E2`）
   - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.2（支柱二：核外兼容垫片与 `[DRV-SHIM-001]` 四层双边界切分）
@@ -94,5 +94,5 @@ cargo test --offline -p nlos-compat-shim
 ## 4. 诚实非声明边界（Honest Non-Claims，`Claim <= Evidence`）
 
 1. **保证等级边界（`H4 != H7`）**：本证据包所有结论均建立在单机确定性宿主进程内多权威 SQLite 集成与故障注入测试（`H4`）之上，不声称已完成跨物理节点生产集群或真实操作系统独立沙箱容器（如 Linux `seccomp`/`namespaces`、Windows AppContainer、macOS Seatbelt）下的长稳压测（`H6` / `H7`）。
-2. **工作包 `E2` 右半片边界（`nlos-migrate` 独立车道）**：声明式契约扫描、弃用升级建议与 `PKG-UPDATE-001` 数据容器迁移分类校验 CLI（`crates/nlos-migrate`）归属 `W78` 并行车道实现，不在本证据包声称范围内；里程碑 `M-E2` 须待 `W78` 全部并行车道经合流复验后方可整体闭合。
-3. **`SABI v1.0` 正式长期冻结门禁边界**：尽管 `9/9` SABI 通道已在 `W77` 完成线级入冻且本车道落地了核外 `N-1 / N-2 <-> N` 垫片转换，SABI 全表面仍维持 `ADR-0014` / `ADR-0027` §2.1.5 规定的候选护栏态，须待 `E3` 一致性认证套件、`E4` 五语言 SDK 与 `W81` 决策点 `E2`（`[ROAD-E-001]` 跨主系统零重编译升级门禁与维护者签字）验收通过后，方可正式宣告 `SABI v1.0` 长期冻结并闭合 `RISK-B-05`。
+2. **里程碑 `M-E2` 右车道边界（工作包 `E3` `nlos-migrate` 独立车道）**：声明式契约静态扫描、弃用升级处方、跨纪元差异检查与 `PKG-UPDATE-001` 三态迁移回滚沙箱（`crates/nlos-migrate` 与 `tools/sabi-compat-diff`）由同波右车道 `W78-E3-MIGRATE-KIT` 独立交付并落盘证据 [E-MIGRATE-001](./e-migrate-001-static-checker-and-rollbacks.md)，经 `W78-INT` 合流共同闭合里程碑 `M-E2`。
+3. **`SABI v1.0` 正式长期冻结门禁边界**：尽管 `9/9` SABI 通道已在 `W77` 完成线级入冻且本车道落地了核外 `N-1 / N-2 <-> N` 垫片转换，SABI 全表面仍维持 `ADR-0014` / `ADR-0027` §2.1.5 规定的候选护栏态，须待 `E4` 三级发布者信任与生态 Typed Selector、`E5` 商店治理索引与 `nlos-certify` 四门自动化认证、`E6` 三平台双层 Wasm 强沙箱与供应链 `H7` 对抗回归、以及 `W81`（工作包 `E7`）决策点 `E2`（`[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级门禁与维护者显式签字）验收通过后，方可正式宣告 `SABI v1.0` 长期冻结并闭合 `RISK-B-05`。
