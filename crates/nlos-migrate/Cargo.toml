@@ -1,30 +1,29 @@
 [package]
 name = "nlos-migrate"
-description = "Declarative SABI contract static checker, package manifest auditor, and three-mode data migration rollback drill toolkit (Stage E W78 / E3)."
+description = "Declarative SABI contract static checker, package manifest auditor, and PKG-UPDATE-001 three-mode container migration rollback runner (Stage E E3 / ADR-0027)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "nlos_migrate"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nlos-migrate"
 path = "src/main.rs"
 
 [dependencies]
+ed25519-dalek.workspace = true
 nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-identity = { path = "../nlos-identity" }
-nlos-plan = { path = "../nlos-plan" }
 nlos-schema = { path = "../nlos-schema" }
-nlos-task = { path = "../nlos-task" }
+nlos-service-directory = { path = "../nlos-service-directory" }
 nlos-types = { path = "../nlos-types" }
-rusqlite.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
-ed25519-dalek.workspace = true
-nlos-store-fault = { path = "../nlos-store-fault" }
 
 [lints]
 workspace = true

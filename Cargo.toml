@@ -41,6 +41,9 @@ members = [
     "crates/nlos-up",
     "crates/nlos-compat-shim",
     "crates/nlos-migrate",
+    "crates/nlos-publisher-trust",
+    "crates/nlos-store-registry",
+    "crates/nlos-certify",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -63,11 +66,14 @@ pedantic = "warn"
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 minicbor = { version = "2.3.1", default-features = false, features = ["std"] }
+nlos-certify = { path = "crates/nlos-certify" }
 nlos-compat-shim = { path = "crates/nlos-compat-shim" }
 nlos-consensus = { path = "crates/nlos-consensus" }
 nlos-driver-llm-http = { path = "crates/nlos-driver-llm-http" }
 nlos-migrate = { path = "crates/nlos-migrate" }
 nlos-net = { path = "crates/nlos-net" }
+nlos-publisher-trust = { path = "crates/nlos-publisher-trust" }
+nlos-store-registry = { path = "crates/nlos-store-registry" }
 nlos-up = { path = "crates/nlos-up" }
 prost = "0.14.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }

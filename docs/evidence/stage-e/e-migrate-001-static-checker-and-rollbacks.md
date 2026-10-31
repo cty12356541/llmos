@@ -1,124 +1,101 @@
-# E-MIGRATE-001：`nlos-migrate` 声明式契约静态检查、`sabi-compat-diff` 门禁与 `PKG-UPDATE-001` 三态迁移回滚演练证据（`W78-E3`）
+# E-MIGRATE-001：声明式契约静态检查器、跨纪元 SABI 差异工具与 `PKG-UPDATE-001` 三态迁移回滚沙箱证据（`W78-E3`）
 
-- **Evidence ID**: `e-migrate-001`
-- **Wave / Lane**: `W78 / W78-E3-MIGRATE-KIT`（工作包 `E3` `E-MIGRATE-KIT`，里程碑 `M-E2` 候选右半片）
+- **Evidence ID**: `e-migrate-001-static-checker-and-rollbacks`
+- **Wave / Lane**: `W78 / W78-E3-MIGRATE-KIT`（里程碑 `M-E2` 右车道，工作包 `E3`）
 - **日期**: `2026-10-31`
-- **Assurance Level**: `H4`（单机确定性宿主单元测试、真实 SQLite 状态根与 `nlos-store-fault` VFS I/O 故障注入演练及 CLI 子进程集成验证；不声称 `H7` 跨版本供应链对抗或多节点生产集群证明）
-- **状态**: `CANDIDATE`（待 `W78-INT` 与并行左半片 `W78-E2-COMPAT-SHIM` 屏障合流复验通过后晋升 canonical `DONE`）
+- **Assurance Level**: `H4`（纯确定性本地宿主单元测试、真实权威 SQLite 存储集成验证与 CLI 端到端沙箱演练；不声称 `H7` 生产环境证明）
+- **状态**: `VERIFIED`（经 `W78-INT` 与左车道 `W78-E2-COMPAT-SHIM` 合流复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
-  - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`）、§14（`PLAN-DEPENDENCY-001`）、§15.1（`DRV-LIFE-001`、`DRV-HEALTH-001`）、§23.1–§23.2（`PKG-UPDATE-001`、`PKG-SEED-001`、`PKG-MULTI-001`）、§28.5（阶段 E 路线图 `E3` / `M-E2`）
-  - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.1、§2.2（第 3 款 `crates/nlos-migrate`）、§5.2（`RISK-E-05`）、§6.1
-  - [ADR-0014 SABI Schema 通道 v1-beta 冻结规则](../../management/adrs/0014-schema-channel-freeze-v1-beta.md)
-  - [ADR-0013 跨权威 verify-then-commit 与有界收敛契约](../../management/adrs/0013-cross-authority-verify-then-commit-contract.md)
-  - [stage-e-progress.md](../../management/stage-e-progress.md) §E.2.2（工作包 `E3`）、§E.3.2（`W78-E3-MIGRATE-KIT` 独占写集）、§E.5.1（`M-E2`）、§E.5.2（`RISK-E-05`）
-  - 前置基线证据：[E-SABI-001](./e-sabi-001-version-matrix-and-deprecation.md)、[E-SABI-002](./e-sabi-002-five-lang-golden-corpus.md)
+  - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`）、§15.1（`DRV-ABI-001`、`DRV-LIFE-001`、`DRV-CRED-001`、`DRV-HEALTH-001`）、§23.1–§23.2（`PKG-MULTI-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`）
+  - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2–§4
+  - [stage-e-progress.md](../../management/stage-e-progress.md)（工作包 `E3`、里程碑 `M-E2`、风险项 `RISK-E-05`）
+  - [e-sabi-001-version-matrix-and-deprecation.md](e-sabi-001-version-matrix-and-deprecation.md)（`W77` 冻结基线与弃用清单契约）
 
 ---
 
-## 1. 声明式契约静态检查器与 `UpgradePrescription` 确定性升级处方编译器（`crates/nlos-migrate`）
+## 1. 声明式 SABI / Driver / Package 契约静态检查器与弃用升级处方（`nlos-migrate check`）
 
-在 [lib.rs](../../../crates/nlos-migrate/src/lib.rs) 下交付纯安全 Rust（`#![forbid(unsafe_code)]`，零新增第三方依赖，`Cargo.toml` 与根 `Cargo.lock` 零改动）的离线静态检查与处方编译流水线，包含清单加载器 [manifest.rs](../../../crates/nlos-migrate/src/manifest.rs)、契约审计器 [scanner.rs](../../../crates/nlos-migrate/src/scanner.rs)、升级处方编译器 [prescription.rs](../../../crates/nlos-migrate/src/prescription.rs)、确定性 JSON 编码器 [json.rs](../../../crates/nlos-migrate/src/json.rs) 及命令行入口 [main.rs](../../../crates/nlos-migrate/src/main.rs)：
+在 [crates/nlos-migrate](../../../crates/nlos-migrate/src/lib.rs) 中以 100% 安全 Rust（`#![forbid(unsafe_code)]`、零新增外部第三方依赖）实现完整静态审计管线（[manifest_audit.rs](../../../crates/nlos-migrate/src/manifest_audit.rs)、[scanner.rs](../../../crates/nlos-migrate/src/scanner.rs)、[prescription.rs](../../../crates/nlos-migrate/src/prescription.rs)、[report.rs](../../../crates/nlos-migrate/src/report.rs) 与 [main.rs](../../../crates/nlos-migrate/src/main.rs)）：
 
-### 1.1 双形态包目标检查（源码目录与已构建 `.nlospkg` 归档）
+1. **多组件包清单无损兼容与阶段 E 声明式扩展（`[PKG-MULTI-001]`）**：
+   - 100% 兼容既有行格式 `package.manifest`（`package-id`、`version`、`entry`、`task`），对开箱即用示范包 [package/package.manifest](../../../examples/starter-assistant-app/package/package.manifest)（`v1.0.0`）与 [package-v1.1.0/package.manifest](../../../examples/starter-assistant-app/package-v1.1.0/package.manifest)（`v1.1.0`）实测均为零告警 `PASS`（退出码 `0`）。
+   - 支持阶段 E 多角色声明：`component = <name> <executable|driver|ui-surface|background-service|seed-template|data> <path>`、`target-sabi-epoch = <u32>[.<u32>]`、`driver-abi-epoch = <u32>`、`effect = <component_or_op> <READ_ONLY|REVERSIBLE|COMPENSATABLE|IRREVERSIBLE> [reconcile=<same-idempotency-key|none>]`、`sabi-use = <channel> <symbol> [field=<u32>]`、`sabi-ext = <channel> <critical|noncritical> <id>` 及 `migration-mode = <BACKWARD_COMPATIBLE_WINDOW|SNAPSHOT_ASSISTED_ROLLBACK|IRREVERSIBLE>`。
+2. **驱动副作用与 `UNCERTAIN` 崩溃对账门禁（`[DRV-LIFE-001]`）**：
+   - 任何声明为 `driver` 的组件若缺失 `EffectDescriptor`（`effect = ...`），或对变更型副作用（`REVERSIBLE` / `COMPENSATABLE` / `IRREVERSIBLE`）省略对账策略、声明 `reconcile=none`，或声明禁止的换新键盲目重试（如 `reconcile=fresh-key-blind-retry`），一律输出 `BLOCKER` 级 `DRV-LIFE-001` 违规（退出码 `2`）。
+3. **只读种子与不可变包树扫描器（`[PKG-SEED-001]`、`[PKG-IMM-001]`、`[DRV-CRED-001]`）**：
+   - 对全部 `seed-template` / `data` 载荷及包树执行越界路径拦截、可变数据库后缀（`.sqlite`、`.db`、`.sqlite-wal`、`.db-wal`、`.db-shm`、`-journal`）以及二进制 `SQLite format 3\0` / WAL 魔数头扫描，拦截把可变运行库混入不可变包的违规打包。
+   - 对全包树载荷逐行扫描硬编码明文凭证（`sk-` 词法边界前缀、`Bearer ` 令牌、PEM 私钥头 `-----BEGIN ... PRIVATE KEY-----` 及 `api_key=` / `secret_key=` 字面量赋值），输出 `PKG-IMM-001` `BLOCKER` 诊断并在纯文本与 RFC 8259 JSON 报告中强制脱敏（零原始密钥字节回显）。
+4. **`[COMPAT-DEPRECATE-001]` 生命周期裁决与 `UpgradePrescription` 升级处方**：
+   - 针对内置权威清单 [deprecation-manifest.yaml](../../../schema/nlos/sabi/v1/deprecation-manifest.yaml) 或 `--manifest-yaml` 外部演化清单及 `--host-epoch`：
+     - `ACTIVE` 且处于 `[N-2..=N]` 窗口：输出 `PASS`（`N` 标记 `NATIVE_CURRENT_EPOCH`，`N-1` / `N-2` 标记 `OUT_OF_CORE_COMPAT_SHIM`）。
+     - `DEPRECATED`：不阻断构建（`PASS_WITH_WARNINGS`，退出码 `0`），精确计算剩余宽限纪元 `earliest_sunset_epoch - host_epoch`，生成包含 `replacement_symbol`、`migration_rule_id` 与替换补丁摘要的 `UpgradePrescription`，并可无损桥接为 `nlos_service_directory::DeprecationWarningReceipt`。
+     - `SUNSET`、`RESERVED` 墓碑槽位、未注册通道、超出 `N / N-1 / N-2`（如 `<= N-3` 或 `> N`）或未知 `critical` 扩展（`[COMPAT-VER-002]`）：输出 `BLOCKER`（`BLOCKED`，退出码 `2`）并附带迁移规则处方。
 
-`inspect_package_target` 支持对两类生态交付物执行无副作用离线检查：
+---
 
-1. **第三方包源码目录（`TargetSourceKind::SourceDirectory`）**：解析 `package.manifest`（标准 `llmos.package` 键值段：基础身份、`target_sabi_epoch` / `target_sabi_minor` / `driver_abi_epoch`、多组件声明 `executable_component` / `driver_component` / `ui_surface_component` / `background_service_component` / 只读 `seed_template`）及可选的 `migration.manifest`（显式声明 SABI 通道与字段/符号引用、`critical_extensions` / `non_critical_extensions`、`EffectDescriptor` 四分类、依赖选择器及 `migration.mode` / `migration.step` SQL 序列）。
-2. **已签名二进制归档包（`TargetSourceKind::PackageArchive`，`.nlospkg` / `.nlos-pkg`）**：复用 `nlos_artifact::{decode_package_file, check_package_file}` 执行 `PKG-CONF-001..005` 格式、载荷 SHA-256 摘要、禁止可变记忆/私钥烘焙与 Ed25519 签名一致性核验，并提取归档内嵌 `migration.manifest`（若携带）进入统一契约审计管线；任何篡改字节或损坏归档均在入口处 fail-closed 返回退出码 `2`（`E_CORRUPT_PACKAGE_OR_MANIFEST`）。
+## 2. 跨纪元 SABI 契约差异检查工具（`tools/sabi-compat-diff`）
 
-### 1.2 SABI 纪元矩阵、弃用窗口、扩展协商与依赖锁定静态裁决
+新增纯 Python 3 标准库工具 [sabi_compat_diff.py](../../../tools/sabi-compat-diff/sabi_compat_diff.py) 与完整测试套件 [test_sabi_compat_diff.py](../../../tools/sabi-compat-diff/test_sabi_compat_diff.py)：
 
-`scan_path` 与 `scan_inspected_target` 联合 `nlos_schema::VersionCompatibilityPolicy` 与 `DeprecationManifest`（默认嵌入权威 [deprecation-manifest.yaml](../../../schema/nlos/sabi/v1/deprecation-manifest.yaml)，亦支持 `--manifest-yaml` 注入未来演进纪元清单做前瞻预检）执行六维静态检查：
-
-| 审计维度 | 规范条款 | 确定性诊断码与阻断策略 |
+| 变更分类 | 触发条件 | CLI 退出码影响 |
 | :--- | :--- | :--- |
-| SABI 与 Driver 纪元窗口 | `COMPAT-VER-001`、`DRV-NEGO-001` | `target_sabi_epoch == host_epoch` 判为 `NativeCurrentEpoch`；落在 `[host_epoch - 2, host_epoch - 1]` 判为 `OutOfCoreCompatShim` 并发出非阻断 `W_EPOCH_REQUIRES_COMPAT_SHIM`；`> host_epoch` 或 `< host_epoch - 2` 分别以 `E_UNSUPPORTED_SABI_EPOCH` / `E_SUNSET_EPOCH`（以及驱动侧 `E_DRIVER_ABI_EPOCH_OUT_OF_WINDOW`）阻断准入 |
-| 扩展槽协商 | `COMPAT-VER-002` | 未知 `non_critical_extensions` 产生 `I_UNKNOWN_NON_CRITICAL_EXTENSION`（保留原字节语义放行）；`0` 号或宿主未知的 `critical_extensions` 以 `E_UNKNOWN_CRITICAL_EXTENSION` fail-closed 阻断；列表长度 `> 32` 报 `E_TOO_MANY_EXTENSIONS` |
-| 弃用与墓碑符号扫描 | `COMPAT-DEPRECATE-001` | 命中 `DEPRECATED` 缓冲期内字段/符号产生结构化 `DeprecationDiagnostic` 与 `W_DEPRECATED_SYMBOL`（精确携带 `deprecated_in_epoch`、`earliest_sunset_epoch`、`remaining_epochs_until_sunset`、`replacement`）；命中 `SUNSET` 或通道级 `reserved_field_numbers` / `reserved_symbols` 以 `E_SYMBOL_SUNSET_OR_RESERVED` 硬阻断 |
-| 驱动效应四分类完整性 | `DRV-LIFE-001` | 核验 `READ_ONLY`、`REVERSIBLE`、`COMPENSATABLE`、`IRREVERSIBLE` 声明；凡声明 `COMPENSATABLE` 但缺失非空补偿处理器符号者以 `E_COMPENSATABLE_MISSING_HANDLER` 阻断 |
-| 依赖选择器不可变锁定 | `PLAN-DEPENDENCY-001`、`RISK-E-05` | 扫描 `dependency` 选择器引用，拦截 `latest`、`head`、`main`、`canary`、`*`、`^`、`~` 等浮动标签或缺失 `sha256:` / `gen:` 不可变摘要锁定的依赖项（`E_FLOATING_DEPENDENCY_SELECTOR`） |
-| 静态迁移模式与 SQL 危害匹配 | `PKG-UPDATE-001`、`RISK-E-05` | `classify_migration_step_hazard` 静态识别破坏性 DDL/DML（`DROP TABLE/COLUMN`、`TRUNCATE`、`ALTER TABLE ... RENAME`、无条件 `DELETE` 等）：若声明为 `BACKWARD_COMPATIBLE_WINDOW` 或 `SNAPSHOT_ASSISTED_ROLLBACK` 却夹带破坏性语句，立即以 `E_DISGUISED_IRREVERSIBLE_MIGRATION` 阻断；`BACKWARD_COMPATIBLE_WINDOW` 夹带非双读兼容变更报 `E_WINDOW_SCHEMA_INCOMPATIBLE` |
-
-### 1.3 `UpgradePrescription` 确定性升级处方编译
-
-[prescription.rs](../../../crates/nlos-migrate/src/prescription.rs) 将 `ScanReport` 编译为零墙钟时间戳、键序严格固定的 `UpgradePrescription`（支持人类可读文本与 `--json` 规范化输出），将目标包归类为三态 `ExecutionPosture` 之一并生成按 `(priority, code, target)` 确定性排序的 `RemediationAction` 列表：
-
-1. `NativeCurrentReady`：零阻断项且目标纪元等于宿主当前纪元，可直接原生直通运行。
-2. `TransientCompatShimEligible`：零阻断项，处于 `N-1` / `N-2` 滚动兼容窗口或引用 `DEPRECATED` 缓冲期符号，当前可经核外 `nlos-compat-shim` 零重编译兼容运行，同时附带按日落剩余周期排序的替换指引。
-3. `SourceMigrationRequired`：存在至少一项 `ERROR` 阻断诊断（如引用 `SUNSET`/`RESERVED` 符号、未知关键扩展、浮动依赖标签或伪装不可逆迁移），必须在重发包前按处方逐条修复。
+| `UNCHANGED` | 冻结通道版本、墓碑集合、条目状态及 `.proto` 消息/枚举线布局完全一致 | 允许（`0`） |
+| `ADDITIVE_SAFE` | 新增 `frozen: true` 通道、通道版本前向递增、新增未占用墓碑槽位的 `ACTIVE` 元素或 `.proto` 可选字段 | 允许（`0`） |
+| `DEPRECATION_NOTICE` | `ACTIVE -> DEPRECATED` 合法跃迁且满足 `earliest_sunset_epoch >= deprecated_in_epoch + 2` 及非空 `replacement` / `migration_rule_id` | 允许（`0`） |
+| `SUNSET_RETIREMENT` | 完成至少 2 纪元缓冲期后的 `DEPRECATED -> SUNSET` 日落，或已 `SUNSET` 条目归档入永久 `reserved_*` 墓碑（含 `.proto` `reserved`） | 允许（`0`） |
+| `BREAKING_VIOLATION` | 未经 `SUNSET` 物理删除历史通道/条目、`frozen: true -> false` 回退、主/次版本倒退、缩短缓冲期、提前日落、删除或重用 `reserved_field_numbers` / `reserved_symbols` 墓碑、篡改既有 `.proto` 字段类型或编号 | 阻断（`1`） |
 
 ---
 
-## 2. SABI `.proto` 与弃用清单演进静态门禁（`tools/sabi-compat-diff`）
+## 3. `[PKG-UPDATE-001]` 三态数据容器迁移与原子回滚沙箱（`nlos-migrate drill`）
 
-在 [sabi_compat_diff.py](../../../tools/sabi-compat-diff/sabi_compat_diff.py) 与配套说明 [README.md](../../../tools/sabi-compat-diff/README.md) 中实现零第三方 Python 依赖（纯 Python 3 标准库）的跨版本 `.proto` AST 与 `deprecation-manifest.yaml` 双向一致性校验器：
+在 [sandbox.rs](../../../crates/nlos-migrate/src/sandbox.rs) 与 [migration_sandbox.rs](../../../crates/nlos-migrate/tests/migration_sandbox.rs) 中直接驱动真实 `IdentityAuthority`、`ArtifactStore`、`ApplicationAuthority` 与真实 `UserDataContainer` 目录，闭合三种法定迁移模式的端到端契约：
 
-1. **受控演进正向放行规则**：
-   - 允许纯增量新增可选字段、新增 `message`、新增 `enum` 枚举值、新增 `service` / `rpc`；
-   - 允许契约元素由 `ACTIVE -> DEPRECATED` 跃迁（强制校验 `deprecated_in_epoch`、`earliest_sunset_epoch >= deprecated_in_epoch + min_compatibility_window_epochs`、`min_compatibility_window_epochs >= 2`、非空 `replacement` 与 `reason`）；
-   - 允许已完整跨越双纪元弃用缓冲窗口的 `DEPRECATED` 条目在 `current_epoch >= earliest_sunset_epoch` 时跃迁至 `SUNSET`，前提是在对应 `.proto` 父消息中同时写入数值 `reserved <N>;` 与名称 `reserved "<field_name>";` 永久墓碑。
-2. **破坏性演进 Fail-Closed 拦截规则**：
-   - 直接物理删除现有 `message`、`enum`、`service`、`rpc` 或未同步登记 `SUNSET` + 双重 `reserved` 墓碑即删除字段/枚举值（`E_PROTO_FIELD_REMOVED_WITHOUT_SUNSET` / `E_PROTO_FIELD_MISSING_NUMERIC_RESERVED` / `E_PROTO_FIELD_MISSING_NAME_RESERVED`）；
-   - 原号篡改既有字段类型、基数或字段名（`E_PROTO_FIELD_TYPE_CHANGED` / `E_PROTO_FIELD_NAME_CHANGED`），或修改 `rpc` 请求/响应类型与流模式；
-   - 删除既有 `.proto` `reserved` 范围/名称，或将已入墓碑的字段号/符号重新分配给新 `ACTIVE` / `DEPRECATED` 定义（`E_PROTO_RESERVED_RANGE_REMOVED` / `E_MANIFEST_RESERVED_REUSE`）；
-   - 非法跳过弃用期直接 `ACTIVE -> SUNSET`（`E_ILLEGAL_STATE_SKIP_ACTIVE_TO_SUNSET`）、弃用窗口不足 2 个纪元（`E_INSUFFICIENT_DEPRECATION_WINDOW`）或未到期提前日落（`E_PREMATURE_SUNSET`）。
-3. **当前仓库自检闭环**：`python3 tools/sabi-compat-diff/sabi_compat_diff.py --self-check` 对 `schema/nlos/sabi/v1/` 全部 `9` 个 `.proto` 文件（共解析 `167` 个 `message`、`9` 个冻结通道，`current_epoch = 1`）与 `deprecation-manifest.yaml` 完成基线自检，零错误通过（退出码 `0`）。
-
----
-
-## 3. `[PKG-UPDATE-001]` 三态数据容器迁移与故障回滚沙箱演练器
-
-在 [drill.rs](../../../crates/nlos-migrate/src/drill.rs) 与确定性测试包夹具 [drill_fixtures.rs](../../../crates/nlos-migrate/src/drill_fixtures.rs) 中，直接驱动真实 SQLite 状态根上的 `IdentityAuthority`、`ArtifactStore`、`ApplicationAuthority`（复用 `begin_package_update`、`record_migration_step`、`complete_package_update`、`abort_package_update_and_rollback`）及应用私有 `UserData` SQLite 容器（`userdata/app.sqlite` + `userdata/preferences.kv`），完整覆盖 `[PKG-UPDATE-001]` 三种数据迁移模式与 `RISK-E-05` 硬护栏：
-
-| 迁移模式 (`DataMigrationMode`) | 正向收敛演练验证 | 故障注入、原子回滚与安全阻断验证 |
+| 迁移模式 (`MigrationMode`) | 正常升级路径 | 注入故障 / 安全门禁拒绝验证 |
 | :--- | :--- | :--- |
-| 1. `BackwardCompatibleWindow`（双读双写兼容窗口） | `v1`（`Generation(1)`）写入基线用户记录后，纯增量 DDL（如带默认值的 `ALTER TABLE ... ADD COLUMN` 或 `CREATE INDEX`）平滑完成升级，新旧读取器双端可读并晋升至 `Generation(2)`（`ActivatedNewGeneration`） | 注入破坏双读窗口的非兼容或破坏性 SQL 时，在触碰 `UserData` 与权威更新事务前即被静态/准入栅栏拦截 |
-| 2. `SnapshotAssistedRollback`（内容寻址快照辅助回滚） | 升级启动前由 `create_userdata_snapshot` 对 `UserData` 目录生成逐文件 SHA-256 清单与完整字节快照；支持中途进程崩溃重启（`--inject-crash-after-step K`），重启后先前已持久化步骤幂等返回 `RecordMigrationStepDecision::Replayed`，剩余步骤续跑收敛至 `Generation(2)` | (a) 注入升级后 `DRV-HEALTH-001` 健康检查失败（`--inject-health-failure`）：自动调用 `abort_package_update_and_rollback` + `restore_userdata_snapshot`，断言活跃代际回退为 `Generation(1)`、回滚计数递增且 `UserData` 全树 SHA-256 与升级前快照 **100% 字节级一致**（`RolledBackToPreviousGeneration`）；<br>(b) 挂载 `nlos-store-fault` 自定义 SQLite VFS，在多步迁移中途精确触发底层 `SQLITE_IOERR` 写入故障：捕获存储层 I/O 异常后自动回滚控制面事务并从内容寻址快照无损恢复 `UserData` SHA-256，消除半迁移脏态 |
-| 3. `Irreversible`（不可逆迁移硬门禁，`RISK-E-05`） | 仅在同时具备经 SHA-256 摘要校验通过的 `PreUpgradeBackupReceipt`（升级前独立预备份已完成且匹配当前 `UserData` 根哈希）与密码学绑定的 `Z4IrreversibleConsentReceipt`（覆盖 `application_id`、`from_package_digest`、`to_package_digest`、`backup_sha256` 与 `migration_plan_sha256`）时，放行不可逆表重构并晋升至 `Generation(2)` | (a) **物理禁止伪装**：将 `DROP COLUMN` / `DROP TABLE` / `TRUNCATE` / `RENAME` 等破坏性 SQL 伪报为 `BackwardCompatibleWindow` 或 `SnapshotAssistedRollback` 时，一律返回 `DrillError::DisguisedIrreversibleMigration`（CLI 退出码 `4`）；<br>(b) **缺省拒绝**：缺失 `PreUpgradeBackupReceipt`、预备份哈希失配、缺失 `Z4IrreversibleConsentReceipt` 或伪造 `Z4` 确认令牌时，一律在执行任何 SQL 之前以退出码 `4` fail-closed 拦截，`UserData` 保持零改动 |
-
-### 3.1 `nlos-migrate` CLI 子命令与确定性退出码契约
-
-在 [main.rs](../../../crates/nlos-migrate/src/main.rs) 中提供 `scan`、`prescribe`、`drill` 三个子命令（全部支持 `--json` 无墙钟确定性输出），退出码严格钉死为 `0..=5`：
-
-| 退出码 | 常量标识 | 触发条件 |
-| :--- | :--- | :--- |
-| `0` | `EXIT_PASS` | `scan` / `prescribe` 零阻断错误通过（含纯 `ACTIVE` 或 `N-1`/`N-2` 兼容窗口告警态）、正向迁移演练成功、崩溃重放收敛成功，或显式带 `--expect-rollback` 的回滚演练完成 `Generation(1)` 与 `UserData` SHA-256 完整恢复 |
-| `1` | `EXIT_USAGE` | 未知子命令、缺失必填标志或非法命令行参数 |
-| `2` | `EXIT_CORRUPT_INPUT` | `package.manifest`、`migration.manifest`、`deprecation-manifest.yaml` 语法/契约损坏，或 `.nlospkg` 归档签名/摘要校验失败（`PKG-CONF-*`） |
-| `3` | `EXIT_CONTRACT_BLOCK` | 目标纪元越界或已日落（`E_SUNSET_EPOCH` / `E_UNSUPPORTED_SABI_EPOCH`）、引用 `SUNSET`/`RESERVED` 符号、携带未知 `critical_extensions`、缺失 `COMPENSATABLE` 补偿器、存在浮动依赖标签（`latest` 等）或双读窗口 Schema 不兼容 |
-| `4` | `EXIT_IRREVERSIBLE_BLOCK` | 将破坏性迁移伪报为可自动回滚模式（`E_DISGUISED_IRREVERSIBLE_MIGRATION`），或 `IRREVERSIBLE` 迁移缺失/伪造预备份回执 `PreUpgradeBackupReceipt` 与 `Z4IrreversibleConsentReceipt`（`RISK-E-05`） |
-| `5` | `EXIT_DRILL_FAILURE` | 未声明 `--expect-rollback` 时遭遇 `DRV-HEALTH-001` 升级后健康检查失败、窗口双读校验失败或回滚快照恢复异常 |
+| `BackwardCompatibleWindow` | 验证 `CompatibilityWindow::SameMajor` 读写兼容窗口，健康探针通过后单事务 CAS 推进至 `from_generation + 1` 并持久化 `InstallationReceipt` | 注入启动后健康检查失败（`--inject-health-fail` / `DRV-HEALTH-001`）：执行 `ApplicationAuthority::rollback_package_migration` 生成 `MigrationRollbackReceipt`，`from_generation` 保持激活，`UserDataContainer` 树摘要与升级前一致（零容器污染） |
+| `SnapshotAssistedRollback` | Step 1 前捕获内容寻址快照 `ContainerSnapshotReceipt`（记录全树 SHA-256 摘要与不可变副本）；全部步骤及健康探针通过后原子激活至 `Generation = 2` | 注入步骤中途崩溃（`--inject-step-crash`，写入半截 `.tmp` 与损坏 v2 状态）或步骤后健康检查失败：协同提交 `MigrationRollbackReceipt` 与快照字节级恢复，机械校验恢复后全目录 SHA-256 树摘要与升级前 100% 字节级全等，且残留 `.tmp` / `.partial` 文件数为 `0` |
+| `Irreversible` (`RISK-E-05`) | 升级前落盘并校验 `PreUpgradeBackupReceipt` SHA-256 归档摘要 + 通过 `IdentityAuthority` Ed25519 验签绑定 `(package_id, from_manifest_digest, target_manifest_digest, backup_digest, "IRREVERSIBLE")` 的 `Z4TrustedUiConsentReceipt` 后推进至 `Generation = 2` | 伪装为可逆模式的破坏性重写（`DisguisedIrreversibleMigration`）、缺失或篡改磁盘备份、缺失 `Z4` 确认收据、跨包/跨版本重放 `Z4` 签名、伪造签名或 `IdentityAuthority` 已吊销操作员密钥：全部在触碰 `ApplicationAuthority` 与 `UserDataContainer` 之前 fail-closed 拦截（退出码 `3`，`0` 条持久化迁移行） |
 
 ---
 
-## 4. 验证门禁结果与诚实非声明边界（Honest Non-Claims）
+## 4. 验证门禁结果与复现命令
 
-### 4.1 本车道严格独占写集清单
+### 4.1 本车道独占写集清单
 
-1. `crates/nlos-migrate/src/{lib.rs,json.rs,manifest.rs,scanner.rs,prescription.rs,drill_fixtures.rs,drill.rs,main.rs}` 及集成测试 `crates/nlos-migrate/tests/{static_scanner_and_prescription.rs,three_mode_drills_and_rollbacks.rs,cli_subprocess.rs}`（注：`crates/nlos-migrate/Cargo.toml` 与根 `Cargo.toml` / `Cargo.lock` 保持零修改）
-2. `tools/sabi-compat-diff/{sabi_compat_diff.py,test_sabi_compat_diff.py,README.md}`
-3. `docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md`（本文档）
+1. [crates/nlos-migrate/src/lib.rs](../../../crates/nlos-migrate/src/lib.rs)、[main.rs](../../../crates/nlos-migrate/src/main.rs)、[json.rs](../../../crates/nlos-migrate/src/json.rs)、[manifest_audit.rs](../../../crates/nlos-migrate/src/manifest_audit.rs)、[scanner.rs](../../../crates/nlos-migrate/src/scanner.rs)、[prescription.rs](../../../crates/nlos-migrate/src/prescription.rs)、[report.rs](../../../crates/nlos-migrate/src/report.rs)、[sandbox.rs](../../../crates/nlos-migrate/src/sandbox.rs)
+2. [crates/nlos-migrate/tests/static_checker.rs](../../../crates/nlos-migrate/tests/static_checker.rs)、[crates/nlos-migrate/tests/migration_sandbox.rs](../../../crates/nlos-migrate/tests/migration_sandbox.rs)
+3. [tools/sabi-compat-diff/sabi_compat_diff.py](../../../tools/sabi-compat-diff/sabi_compat_diff.py)、[tools/sabi-compat-diff/test_sabi_compat_diff.py](../../../tools/sabi-compat-diff/test_sabi_compat_diff.py)、[tools/sabi-compat-diff/README.md](../../../tools/sabi-compat-diff/README.md)
+4. `docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md`（本文件）
 
-### 4.2 五道强制验证门禁执行记录
+> 注：根 `Cargo.toml`、`Cargo.lock` 与 `crates/nlos-migrate/Cargo.toml` 在本车道保持零改动。
 
-1. **全仓 Rust 格式门禁**：
-   `cargo fmt --all -- --check` -> 退出码 `0`（零差异）。
-2. **`nlos-migrate` 严格 Clippy 门禁**：
-   `cargo clippy --locked -p nlos-migrate --all-targets --all-features -- -D warnings` -> 退出码 `0`（在 `#![forbid(unsafe_code)]`、`clippy::all`、`clippy::pedantic` 下零警告通过）。
-3. **`nlos-migrate` 单元、VFS 故障注入与 CLI 子进程测试门禁**：
-   `cargo test --locked -p nlos-migrate` -> 退出码 `0`，共 **`18/18` 项测试全部通过**（`0` 失败）：
-   - 库内单测（`drill_fixtures::tests::canonical_fixture_ed25519_signatures_match_seed`）：`1` 项通过，钉死种子 `[0x57; 32]` 派生的确定性 Ed25519 公钥与 `v1`/`v2` 包签名；
-   - [static_scanner_and_prescription.rs](../../../crates/nlos-migrate/tests/static_scanner_and_prescription.rs)：`6` 项通过（覆盖 `examples/sample-app` 原生就绪扫描、`N-1` 兼容垫片与 `DEPRECATED` 缓冲期升级处方生成、`SUNSET`/`RESERVED`/浮动依赖阻断、未知 `critical_extensions` 拦截与宿主显式支持放行、伪装不可逆 SQL 静态检出、以及 `.nlospkg` 二进制归档正负向验签扫描）；
-   - [three_mode_drills_and_rollbacks.rs](../../../crates/nlos-migrate/tests/three_mode_drills_and_rollbacks.rs)：`6` 项通过（覆盖模式 1 双读窗口升级与破坏性 DDL 阻断、模式 2 中途崩溃幂等续跑收敛、模式 2 `DRV-HEALTH-001` 失败回滚与 `UserData` SHA-256 字节级一致校验、模式 2 `nlos-store-fault` SQLite VFS `SQLITE_IOERR` 写入故障注入回滚恢复、模式 3 伪装不可逆 SQL 物理拦截、以及模式 3 `PreUpgradeBackupReceipt` + `Z4IrreversibleConsentReceipt` 双门禁放行/拒绝矩阵）；
-   - [cli_subprocess.rs](../../../crates/nlos-migrate/tests/cli_subprocess.rs)：`5` 项通过（真实子进程拉起编译后 `nlos-migrate` 二进制，逐一核验退出码 `0`、`1`、`2`、`3`、`4`、`5` 与 `--json` 双次运行字节完全一致）。
-4. **`sabi-compat-diff` 权威 Schema 基线自检门禁**：
-   `python3 tools/sabi-compat-diff/sabi_compat_diff.py --self-check` -> 退出码 `0`（`proto_files=9->9 messages=167->167 channels=9->9 epoch=1->1 errors=0 infos=0`）。
-5. **`sabi-compat-diff` 正负向单元测试门禁**：
-   `python3 -m unittest discover -s tools/sabi-compat-diff -p "test_*.py" -v` -> 退出码 `0`（[test_sabi_compat_diff.py](../../../tools/sabi-compat-diff/test_sabi_compat_diff.py) 共 **`14/14` 项测试全部通过**，覆盖增量演进、`ACTIVE -> DEPRECATED -> SUNSET` 合法流转、缺失数值/名称 `reserved` 拦截、字段改型/改名拦截、跳过弃用期与窗口不足拦截、墓碑重用拦截及 CLI 子进程退出码/JSON 确定性）。
+### 4.2 门禁执行结果
 
-### 4.3 诚实非声明边界（Honest Non-Claims，`Claim <= Evidence`）
+1. **格式检查门禁**：
+   `cargo fmt -p nlos-migrate -- --check` -> 退出码 `0`。
+2. **Clippy 严格门禁**：
+   `cargo clippy --offline -p nlos-migrate --all-targets -- -D warnings` -> 退出码 `0`（`#![forbid(unsafe_code)]`、`clippy::all`、`clippy::pedantic` 零警告）。
+3. **Rust 单元与集成测试门禁**：
+   `cargo test --offline -p nlos-migrate` -> 退出码 `0`：
+   - 库内单元测试（`json` + `manifest_audit`）：`5` 项通过，`0` 失败；
+   - `tests/static_checker.rs`：`7` 项通过，`0` 失败；
+   - `tests/migration_sandbox.rs`：`6` 项通过，`0` 失败；
+   - 合计 `18` 项 Rust 测试全部通过。
+4. **示范包端到端静态检查门禁**：
+   - `cargo run --offline -p nlos-migrate -- check examples/starter-assistant-app/package --json` -> `verdict: "PASS"`, `exit_code: 0`；
+   - `cargo run --offline -p nlos-migrate -- check examples/starter-assistant-app/package-v1.1.0 --json` -> `verdict: "PASS"`, `exit_code: 0`。
+5. **沙箱演练 CLI 门禁**：
+   - `cargo run --offline -p nlos-migrate -- drill --mode snapshot --inject-step-crash --json` -> `status: "PASS"`, `outcome: "ROLLED_BACK_ATOMICALLY"`, `byte_identical_on_rollback: true`, `residual_temp_files: 0`, 退出码 `0`；
+   - `cargo run --offline -p nlos-migrate -- drill --mode irreversible --omit-z4-consent --json` -> `status: "BLOCKED"`, `error_code: "MISSING_Z4_TRUSTED_UI_CONSENT"`, 退出码 `3`。
+6. **跨纪元 SABI 差异检查器门禁**：
+   - `python -m unittest tools/sabi-compat-diff/test_sabi_compat_diff.py` -> `8` 项测试全部通过（退出码 `0`）；
+   - `python tools/sabi-compat-diff/sabi_compat_diff.py schema/nlos/sabi/v1/deprecation-manifest.yaml schema/nlos/sabi/v1/deprecation-manifest.yaml --baseline-proto-dir schema/nlos/sabi/v1 --candidate-proto-dir schema/nlos/sabi/v1 --json` -> `compatible: true`, `BREAKING_VIOLATION: 0`, 退出码 `0`。
 
-1. **保障等级上限声明（`H4 != H7`）**：本文档记录的全部静态检查与迁移回滚演练均在单机确定性宿主环境与 `nlos-store-fault` VFS 故障注入层（`H4`）完成，不冒充真实物理断电台架（`U-4` / `Layer-3+`）或多节点跨版本生产集群浸泡证据，也不提前声称阶段 E `H7` 退出终验已达成。
-2. **并行车道与里程碑 `M-E2` 合流边界**：运行期执行 `N-1` / `N-2` 历史 SABI 与 `DriverProvider` 线帧转换的核外无特权垫片 `crates/nlos-compat-shim` 归属同波并行左半片车道 `W78-E2-COMPAT-SHIM`；本文档在单车道内保持 `CANDIDATE` 状态，里程碑 `M-E2` 闭合、`ADR-0027` 晋升 `ACCEPTED` 以及共享治理索引（`stage-e-progress.md`、`evidence-index.yaml`）同步统一由波末集成器 `W78-INT` 在双车道屏障合流复验后串行执行。
-3. **`Z4IrreversibleConsentReceipt` 验证范围边界**：`nlos-migrate` 沙箱演练器在控制面与数据迁移栅栏层验证了 `Z4IrreversibleConsentReceipt` 对 `(application_id, from_package_digest, to_package_digest, backup_sha256, migration_plan_sha256)` 的绑定摘要校验与缺省拒绝语义（`H4`），未在本 CLI 工具包中声称驱动真实桌面合成器 GUI 窗口渲染；桌面商店与升级确认视图联调归属后续波次 `W80`（`W80-E6C-DESKTOP-STORE-UI`）。
-4. **后续商店认证与升级总门禁边界**：将 `nlos-migrate` 三态迁移回滚门接入四门自动化上架认证流水线并签发 `StoreCertificationReceipt` 归属 `W79`（`E5` `crates/nlos-certify`）；跨主系统 `N-1 -> N` 零重编译全链路升级门禁 `[ROAD-E-001]` 与 `RISK-E-05` 台账正式退役归属 `W81`（`E7`）。
+---
+
+## 5. 诚实非声明边界（Honest Non-Claims）
+
+1. **保证等级边界（`H4 != H7`）**：本文档所有证据均来自单机确定性宿主测试与临时目录真实 SQLite 权威沙箱（`H4`），不构成跨物理主机崩溃掉电或大规模在线应用商店分发的 `H7` 生产环境证明。
+2. **核外兼容垫片边界（左车道 `W78-E2` 独立交付）**：本车道（`W78-E3`）负责应用与驱动包升级前的静态契约审计、弃用处方生成、跨纪元契约差异拦截与 `[PKG-UPDATE-001]` 数据容器迁移回滚沙箱；运行期执行 `N-1 / N-2` 旧版线帧转换的核外垫片 `crates/nlos-compat-shim` 由并行左车道 `W78-E2-COMPAT-SHIM` 独立交付并落盘证据 [E-SHIM-001](./e-shim-001-out-of-core-epoch-adapter.md)，两车道已在 `W78-INT` 合流复验并共同闭合里程碑 `M-E2`（`H4`）。
+3. **Trusted UI 图形交互壳层边界**：`Irreversible` 模式在沙箱与库层已强制接入 `IdentityAuthority` Ed25519 真实签名校验绑定 `Z4TrustedUiConsentReceipt`（闭合 `RISK-E-05` 自动化迁移无备份/无确认安全门禁），但面向终端用户的窗口级图形化确认弹窗交互与商店前端编排归属后续工作包 `E4`–`E5`。

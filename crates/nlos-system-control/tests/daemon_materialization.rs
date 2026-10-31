@@ -99,12 +99,20 @@ fn fixed_clock(root: &TempRoot, wall_ms: u64) -> Arc<AuthorityClock> {
 }
 
 /// Endpoint path in the host OS form (Unix socket file on Unix, local
-/// pipe name on Windows), mirroring the daemon-assembly harness.
+/// pipe name on Windows), mirroring the daemon-assembly harness. Prefers
+/// `/tmp` on Unix when present so macOS's long per-user `TMPDIR` never
+/// pushes socket paths near the 104-byte `SUN_LEN` ceiling.
 fn endpoint_path(label: &str, role: &str) -> PathBuf {
     let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
     if cfg!(unix) {
-        std::env::temp_dir().join(format!(
-            "nlos-matdrive-{label}-{role}-{}-{sequence}.sock",
+        let short_tmp = PathBuf::from("/tmp");
+        let dir = if short_tmp.is_dir() {
+            short_tmp
+        } else {
+            std::env::temp_dir()
+        };
+        dir.join(format!(
+            "nlos-md-{label}-{role}-{}-{sequence}.sock",
             std::process::id(),
         ))
     } else {
@@ -192,10 +200,12 @@ fn wait_until(description: &str, mut predicate: impl FnMut() -> bool) {
 async fn daemon_driver_materializes_declared_nodes_through_the_task_consult() {
     let root = TempRoot::new("progression");
     let plan_id = seed_plan(&root);
+    let auth_socket = endpoint_path("progression", "auth");
+    let plain_socket = endpoint_path("progression", "plain");
     let (daemon, endpoints) = assemble(
         DaemonOptions::new(&root.0)
-            .with_auth_socket(endpoint_path("progression", "auth"))
-            .with_plain_socket(endpoint_path("progression", "plain"))
+            .with_auth_socket(&auth_socket)
+            .with_plain_socket(&plain_socket)
             .with_driver_config(MaterializationDriverConfig {
                 poll_interval: Duration::from_millis(20),
                 ..MaterializationDriverConfig::default()
@@ -289,6 +299,10 @@ async fn daemon_driver_materializes_declared_nodes_through_the_task_consult() {
     daemon.stop_worker();
     drop(endpoints);
     drop(daemon);
+    if cfg!(unix) {
+        let _ = fs::remove_file(&auth_socket);
+        let _ = fs::remove_file(&plain_socket);
+    }
 }
 
 /// Capacity pressure denies without mischief: under a Task tier whose
@@ -529,4 +543,63 @@ fn gate_rounds_stamp_the_authority_clock_wall_reading() {
     );
     assert!(second.resolved_at_ms.is_some_and(|ms| ms >= 50_000));
     restarted.stop();
+}
+
+/// W77-1-B regression: `MaterializationDriverHealth::seats_in_use` promises
+/// the window seats held *after* the last cycle. When the first cycle
+/// approves an independent node into `MATERIALIZING` under a multi-second
+/// `poll_interval` (so no second cycle can mask a pre-drive reading), the
+/// first cycle's health snapshot immediately reports `completed_cycles == 1`
+/// and `seats_in_use == 1`.
+#[test]
+fn first_productive_cycle_snapshot_immediately_reflects_held_seats() {
+    let root = TempRoot::new("first-cycle-seats");
+    let plans = Arc::new(
+        SqlitePlanAuthority::open(root.0.join("plans.sqlite3")).expect("open plan authority"),
+    );
+    let plan_id = plans
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
+            plan_id: None,
+            nodes: vec![node(0x0a, 0x01, None)],
+            idempotency_key: IdempotencyKey::from_bytes([0x11; 16]),
+            applied_at_ms: 1_000,
+        })
+        .expect("apply revision")
+        .receipt()
+        .plan_id;
+    let tasks = Arc::new(
+        SqliteTaskAuthority::open(root.0.join("tasks.sqlite3")).expect("open task authority"),
+    );
+    let mut driver = MaterializationDriver::start(
+        Arc::clone(&plans),
+        Arc::clone(&tasks),
+        fixed_clock(&root, 50_000),
+        MaterializationDriverConfig {
+            window: 4,
+            poll_interval: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(5),
+            failure_threshold: 8,
+        },
+    )
+    .expect("start driver");
+
+    wait_until("first cycle approves node a", || {
+        driver.health().total_approved == 1
+    });
+    let health = driver.health();
+    assert_eq!(
+        health.completed_cycles, 1,
+        "poll_interval keeps the observation strictly on cycle 1"
+    );
+    assert_eq!(
+        node_state(&plans, plan_id, 0x0a),
+        PlanNodeState::Materializing
+    );
+    assert_eq!(
+        health.seats_in_use, 1,
+        "the materialized node holds its seat"
+    );
+
+    driver.stop();
+    assert_eq!(driver.health().state, MaterializationDriverState::Stopped);
 }

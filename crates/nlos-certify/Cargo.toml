@@ -1,0 +1,37 @@
+[package]
+name = "nlos-certify"
+description = "Four-gate automated offline certification pipeline and signed StoreCertificationReceipt issuer for third-party Application and Driver packages (Stage E E5 / ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nlos_certify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nlos-certify"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-migrate.workspace = true
+nlos-publisher-trust.workspace = true
+nlos-schema = { path = "../nlos-schema" }
+nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+nlos-plan = { path = "../nlos-plan" }
+nlos-store-registry.workspace = true
+
+[lints]
+workspace = true

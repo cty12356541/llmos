@@ -31,6 +31,7 @@
 
 #[cfg(feature = "artifact-source")]
 mod artifact_source;
+pub mod ecosystem_selector;
 mod materialization;
 mod model;
 mod pin;

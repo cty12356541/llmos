@@ -1,0 +1,22 @@
+[package]
+name = "nlos-publisher-trust"
+description = "Ed25519 hierarchical publisher certificate chain, monotonic RevocationEpoch ledger, and PKG-APPID-001 anti-hijack ownership authority (Stage E E4 / ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
+
+[lints]
+workspace = true

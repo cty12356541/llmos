@@ -1,449 +1,743 @@
-//! Per-package compatibility shim mount evaluator (`CompatShimMountDecision`)
-//! implementing `ADR-0027` section 2.2 dynamic out-of-core mounting and
-//! fail-closed `nlos-migrate` rejection guidance.
+//! Per-package dynamic epoch compatibility mount planner (`[SABI-DISC-001]`,
+//! `[DRV-NEGO-001]`, `ADR-0027` section 2.2, Stage E Decision Point `E1`).
+//!
+//! Inspects a package's declared [`PackageCompatibilitySpec`] against the host's
+//! [`VersionCompatibilityPolicy`], [`DeprecationManifest`], and optional
+//! [`SnapshotDirectory`]:
+//! - native `N` packages without legacy driver protocol needs receive
+//!   [`CompatMountDecision::NativePassthrough`] (`0` shim hops);
+//! - historical `N-1` / `N-2` packages or Stage B `minicbor` / historical
+//!   `DriverProvider` adapters dynamically mount an unprivileged out-of-core
+//!   [`SabiEpochAdapterCell`] and/or [`DriverProtocolShim`] while collecting
+//!   structured [`DeprecationWarningReceipt`] telemetry;
+//! - epoch `0`, future unknown `> N`, sunset `<= N-3`, unsupported
+//!   `critical_extensions` (`[COMPAT-VER-002]`), or any reference to a `SUNSET`
+//!   or permanently `RESERVED` symbol/field slot in [`DeprecationManifest`]
+//!   fails closed and maps deterministically to `SabiErrorCode::AbiVersion` +
+//!   `RetryDirective::DoNotRetry`.
 
 use std::error::Error;
 use std::fmt;
 
+use nlos_schema::sabi::v1::{
+    NegotiateServiceRequest, RetryDirective, SabiErrorCode, SabiFailure, SchemaIdentity,
+    ServiceBinding, negotiate_service_response,
+};
 use nlos_schema::{
-    DeprecationManifest, DeprecationManifestError, MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS,
-    SABI_ENVELOPE_SCHEMA, SymbolAuditVerdict, canonical_deprecation_manifest, sabi,
+    CompatibilityError, DeprecationManifest, MAX_EXTENSION_IDS, SABI_DRIVER_PROVIDER_SCHEMA,
+    SABI_ENVELOPE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SymbolAuditVerdict,
+    VersionCompatibilityPolicy, VersionNegotiationOutcome, VersionRoute,
+    canonical_deprecation_manifest, schema_registry,
+};
+use nlos_service_directory::{
+    DeprecationWarningReceipt, MAX_NAME_BYTES, PolicyNegotiationError, SnapshotDirectory,
 };
 
-use crate::driver_shim::{DriverProtocolCompatShim, LegacyDriverWireFormat};
-use crate::manifest::{ManifestCompatibilityError, PackageCompatibilitySpec};
-use crate::sabi_adapter::SabiEpochAdapterCell;
+use crate::MAX_SHIM_DEPRECATION_WARNINGS;
+use crate::driver_shim::{DriverProtocolShim, DriverShimError, ProviderTrustCeiling};
+use crate::sabi_adapter::{
+    EpochTranslationRules, SabiAdapterError, SabiEpochAdapterCell, entry_to_warning_receipt,
+};
 
-/// Host-side compatibility mounting policy applied when installing or launching
-/// a `llmos.package` artifact.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompatShimMountPolicy {
-    /// Current canonical SABI major epoch served natively by core authorities (`N`).
-    pub host_epoch: u32,
-    /// Rolling backward-compatibility window (`>= 2`, default `2` for `N-1`/`N-2`).
-    pub max_backward_epochs: u32,
-    /// Current canonical `DriverProvider` ABI major epoch (`N`).
-    pub host_driver_abi_epoch: u32,
-    /// Critical extension IDs supported by this host (`[COMPAT-VER-002]`).
-    pub known_critical_extensions: Vec<u32>,
-    /// Optional feature allowlist; when non-empty, `required_features` must be a subset.
-    pub supported_features: Vec<String>,
-    /// Default wire format assumed when mounting a legacy `DriverProtocolCompatShim`.
-    pub legacy_driver_wire_format: LegacyDriverWireFormat,
+/// Declared user-mode driver wire ABI epoch in `llmos.package` compatibility metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DriverWireEpoch {
+    /// Stage B pre-freeze deterministic `minicbor` payload (`nlos.driver-mock.payload` v1).
+    LegacyStageBMinicborV1,
+    /// Frozen `ADR-0024` 8th channel `nlos.sabi.DriverProvider` Protobuf at major epoch.
+    FrozenDriverProviderEpoch(u32),
 }
 
-impl Default for CompatShimMountPolicy {
-    fn default() -> Self {
-        Self::new(1)
+/// Package-level SABI and driver wire compatibility declaration (`llmos.package`
+/// `package.compatibility` block, `ADR-0027` section 2.2.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageCompatibilitySpec {
+    /// Logical package identifier (`1..=255` UTF-8 bytes, no NUL).
+    pub package_name: String,
+    /// Target SABI major epoch (`N`, `N-1`, or `N-2`).
+    pub target_sabi_epoch: u32,
+    /// Target SABI minor version within `target_sabi_epoch`.
+    pub target_sabi_minor: u32,
+    /// Optional user-mode driver wire ABI epoch if the package hosts or binds a driver.
+    pub driver_abi_epoch: Option<DriverWireEpoch>,
+    /// Required critical SABI extensions (`[COMPAT-VER-002]`).
+    pub critical_extensions: Vec<u32>,
+    /// Optional non-critical SABI extensions (`[COMPAT-VER-002]`).
+    pub noncritical_extensions: Vec<u32>,
+    /// Declared `(channel_schema_name, symbol_or_field_slot)` references audited
+    /// against `deprecation-manifest.yaml`. Field-slot references may be written
+    /// either by symbol name or as `"field:<u32>"` / `"<ParentType>.field:<u32>"`.
+    pub referenced_symbols: Vec<(String, String)>,
+}
+
+impl PackageCompatibilitySpec {
+    /// Creates a baseline SABI package compatibility specification with no driver
+    /// wire bridge and no extensions.
+    #[must_use]
+    pub fn new(
+        package_name: impl Into<String>,
+        target_sabi_epoch: u32,
+        target_sabi_minor: u32,
+    ) -> Self {
+        Self {
+            package_name: package_name.into(),
+            target_sabi_epoch,
+            target_sabi_minor,
+            driver_abi_epoch: None,
+            critical_extensions: Vec::new(),
+            noncritical_extensions: Vec::new(),
+            referenced_symbols: Vec::new(),
+        }
     }
 }
 
-impl CompatShimMountPolicy {
-    /// Constructs a default policy for `host_epoch` with statutory `N / N-1 / N-2` window (`2`).
+/// Service negotiation specification passed when planning mounts jointly with
+/// [`SnapshotDirectory`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageServiceDemand {
+    pub service: String,
+    pub schema_name: String,
+    pub minimum_minor: u32,
+    pub required_feature_ids: Vec<u32>,
+    pub supported_transport_kinds: Vec<i32>,
+}
+
+/// Mounted out-of-core unprivileged compatibility components for a historical
+/// package or legacy driver (`ADR-0027` section 2.2).
+#[derive(Clone, Debug)]
+pub struct MountedCompatStack {
+    pub package_name: String,
+    pub sabi_negotiation: VersionNegotiationOutcome,
+    pub sabi_adapter: Option<SabiEpochAdapterCell>,
+    pub driver_shim: Option<DriverProtocolShim>,
+    pub warnings: Vec<DeprecationWarningReceipt>,
+    pub negotiated_bindings: Vec<ServiceBinding>,
+}
+
+impl MountedCompatStack {
+    /// Number of out-of-core translation hops mounted on the package's path (`1` or `2`).
     #[must_use]
-    pub const fn new(host_epoch: u32) -> Self {
-        Self {
-            host_epoch,
-            max_backward_epochs: MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS,
-            host_driver_abi_epoch: host_epoch,
-            known_critical_extensions: Vec::new(),
-            supported_features: Vec::new(),
-            legacy_driver_wire_format: LegacyDriverWireFormat::HistoricalDriverProviderProto,
+    pub const fn shim_hop_count(&self) -> usize {
+        (self.sabi_adapter.is_some() as usize) + (self.driver_shim.is_some() as usize)
+    }
+}
+
+/// Dynamic mount decision produced by [`CompatMountPlanner`].
+#[derive(Clone, Debug)]
+pub enum CompatMountDecision {
+    /// Package targets current host epoch `N` (`VersionRoute::NativeCurrentEpoch`)
+    /// and requires zero driver wire translation (`shim_hop_count() == 0`).
+    NativePassthrough {
+        package_name: String,
+        sabi_negotiation: VersionNegotiationOutcome,
+        warnings: Vec<DeprecationWarningReceipt>,
+        negotiated_bindings: Vec<ServiceBinding>,
+    },
+    /// Package targets `N-1` / `N-2` (`VersionRoute::OutOfCoreCompatShim`) and/or
+    /// requires a [`DriverProtocolShim`] (`LegacyStageBMinicborV1` or `N-1..=N-2`).
+    MountOutOfCoreShim(Box<MountedCompatStack>),
+}
+
+impl CompatMountDecision {
+    /// Returns `0` for [`Self::NativePassthrough`], or the mounted shim hop count
+    /// (`>= 1`) for [`Self::MountOutOfCoreShim`].
+    #[must_use]
+    pub fn shim_hop_count(&self) -> usize {
+        match self {
+            Self::NativePassthrough { .. } => 0,
+            Self::MountOutOfCoreShim(stack) => stack.shim_hop_count(),
         }
     }
 
-    /// Attaches receiver-supported `critical_extension_ids`.
+    /// Returns all [`DeprecationWarningReceipt`]s emitted during mount planning.
     #[must_use]
-    pub fn with_known_critical_extensions(mut self, extensions: Vec<u32>) -> Self {
-        self.known_critical_extensions = extensions;
-        self
+    pub fn warnings(&self) -> &[DeprecationWarningReceipt] {
+        match self {
+            Self::NativePassthrough { warnings, .. } => warnings,
+            Self::MountOutOfCoreShim(stack) => &stack.warnings,
+        }
     }
 
-    /// Attaches host-supported `required_features` tokens.
+    /// Returns negotiated `ServiceDirectory` bindings when directory negotiation was run.
     #[must_use]
-    pub fn with_supported_features(mut self, features: Vec<String>) -> Self {
-        self.supported_features = features;
-        self
-    }
-
-    /// Overrides the legacy driver wire format (`StageBMinicbor` vs `HistoricalDriverProviderProto`).
-    #[must_use]
-    pub const fn with_legacy_driver_wire_format(mut self, format: LegacyDriverWireFormat) -> Self {
-        self.legacy_driver_wire_format = format;
-        self
+    pub fn negotiated_bindings(&self) -> &[ServiceBinding] {
+        match self {
+            Self::NativePassthrough {
+                negotiated_bindings,
+                ..
+            } => negotiated_bindings,
+            Self::MountOutOfCoreShim(stack) => &stack.negotiated_bindings,
+        }
     }
 }
 
-/// Out-of-core unprivileged compatibility cell bundle dynamically mounted for an
-/// `N-1` or `N-2` package (`ADR-0027` section 2.2).
-#[derive(Clone, Debug)]
-pub struct MountedCompatShim {
-    /// Mounted `SabiEpochAdapterCell` when `1 <= host_epoch - target_sabi_epoch <= max_backward_epochs`.
-    pub sabi_adapter: Option<SabiEpochAdapterCell>,
-    /// Mounted `DriverProtocolCompatShim` when `driver_abi_epoch` requires protocol adaptation.
-    pub driver_shim: Option<DriverProtocolCompatShim>,
-    /// Retained `non_critical_extensions` forwarded verbatim (`[COMPAT-VER-002]`).
-    pub retained_non_critical_extensions: Vec<u32>,
-}
-
-/// Deterministic mounting verdict produced for a [`PackageCompatibilitySpec`].
-#[derive(Clone, Debug)]
-pub enum CompatShimMountDecision {
-    /// `target_sabi_epoch == host_epoch` (and no legacy driver shim needed):
-    /// direct pass-through to core authorities with zero shim allocation or hot-path overhead.
-    NativeDirect {
-        /// Active host SABI epoch (`N`).
-        host_epoch: u32,
-        /// Package's declared SABI minor version.
-        target_sabi_minor: u32,
-        /// Non-critical extensions preserved verbatim (`[COMPAT-VER-002]`).
-        retained_non_critical_extensions: Vec<u32>,
-    },
-    /// `1 <= host_epoch - target_sabi_epoch <= max_backward_epochs` (`N-1` / `N-2`):
-    /// dynamically mounts an out-of-core [`MountedCompatShim`].
-    MountOutOfCore(MountedCompatShim),
-}
-
-/// Fail-closed typed mount rejection mapped deterministically to
-/// `SabiErrorCode::AbiVersion` + `RetryDirective::DoNotRetry` + `nlos-migrate` guidance.
+/// Fail-closed mount rejections produced by [`CompatMountPlanner`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CompatMountRejection {
-    /// Structural `PackageCompatibilitySpec` bounds failed validation.
-    InvalidManifestSpec(ManifestCompatibilityError),
-    /// Host policy had `host_epoch == 0` or `max_backward_epochs < 2`.
-    InvalidHostPolicy {
-        host_epoch: u32,
-        max_backward_epochs: u32,
-    },
-    /// `target_sabi_epoch == 0` is invalid.
-    ZeroTargetSabiEpoch,
-    /// `target_sabi_epoch > host_epoch` requires a newer NLOS host.
-    FutureTargetSabiEpoch { target_epoch: u32, host_epoch: u32 },
-    /// `target_sabi_epoch <= host_epoch - 3` has completed its grace window and sunset.
-    SunsetTargetSabiEpoch {
-        target_epoch: u32,
-        host_epoch: u32,
-        max_backward_epochs: u32,
-    },
-    /// `driver_abi_epoch` was `0`, `> host_driver_abi_epoch`, or sunset beyond `max_backward_epochs`.
-    IncompatibleDriverAbiEpoch {
-        driver_epoch: u32,
-        host_driver_epoch: u32,
-        max_backward_epochs: u32,
-    },
-    /// Package required an unknown or zero `critical_extension` ID (`[COMPAT-VER-002]`).
-    UnsupportedCriticalExtension { extension_id: u32 },
-    /// Package required a feature unsupported by the host or retired as `SUNSET`/`RESERVED`.
-    UnsupportedOrSunsetFeature {
-        feature: String,
+pub enum CompatMountError {
+    /// `package_name` was empty, contained NUL, or exceeded `MAX_NAME_BYTES`.
+    InvalidPackageName(String),
+    /// SABI or `DriverProvider` version window (`0`, `> N`, `<= N-3`) or
+    /// `[COMPAT-VER-002]` critical-extension adjudication failed.
+    Compatibility(CompatibilityError),
+    /// Referenced symbol or field slot in `DeprecationManifest` is `SUNSET` or
+    /// permanently `RESERVED`.
+    SunsetOrReservedContract {
+        channel: String,
+        symbol: String,
+        field_number: Option<u32>,
         reason: &'static str,
     },
-    /// Embedded or supplied `DeprecationManifest` failed validation.
-    InvalidDeprecationManifest(DeprecationManifestError),
+    /// Policy-governed `SnapshotDirectory` negotiation failed closed.
+    DirectoryNegotiation(PolicyNegotiationError),
+    /// Directory negotiation returned a domain `DirectoryError` instead of a binding.
+    ServiceBindingUnavailable { service: String, error_code: i32 },
+    /// Out-of-core adapter construction failed validation.
+    AdapterInit(SabiAdapterError),
 }
 
-impl CompatMountRejection {
-    /// Deterministic wire failure (`SabiErrorCode::AbiVersion` + `RetryDirective::DoNotRetry`).
-    #[must_use]
-    pub fn to_sabi_failure(&self) -> sabi::v1::SabiFailure {
-        let safe_message = match self {
-            Self::InvalidManifestSpec(_) => {
-                "package compatibility manifest exceeded bounded schema limits"
-            }
-            Self::InvalidHostPolicy { .. } | Self::InvalidDeprecationManifest(_) => {
-                "host SABI compatibility policy window is below statutory minimum"
-            }
-            Self::ZeroTargetSabiEpoch => {
-                "package target_sabi_epoch zero is invalid; run nlos-migrate"
-            }
-            Self::FutureTargetSabiEpoch { .. } => {
-                "package target_sabi_epoch exceeds host SABI epoch; upgrade host or re-target via nlos-migrate"
-            }
-            Self::SunsetTargetSabiEpoch { .. } => {
-                "package target_sabi_epoch is outside the N-2 compatibility window and has sunset; run nlos-migrate"
-            }
-            Self::IncompatibleDriverAbiEpoch { .. } => {
-                "package driver_abi_epoch is incompatible or sunset; run nlos-migrate"
-            }
-            Self::UnsupportedCriticalExtension { .. } => {
-                "package requires an unsupported critical SABI extension; run nlos-migrate"
-            }
-            Self::UnsupportedOrSunsetFeature { .. } => {
-                "package requires an unsupported or sunset SABI feature; run nlos-migrate"
-            }
-        };
-        sabi::v1::SabiFailure {
-            code: sabi::v1::SabiErrorCode::AbiVersion.into(),
-            retry: sabi::v1::RetryDirective::DoNotRetry.into(),
-            safe_message: safe_message.to_owned(),
-        }
-    }
-
-    /// Actionable developer upgrade guidance referencing `nlos-migrate`.
-    #[must_use]
-    pub fn migration_guidance(&self) -> String {
+impl fmt::Display for CompatMountError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroTargetSabiEpoch => {
-                "invalid `target_sabi_epoch = 0`; run `nlos-migrate check --manifest package.manifest` and set `compatibility.target-sabi-epoch >= 1`".to_owned()
-            }
-            Self::FutureTargetSabiEpoch {
-                target_epoch,
-                host_epoch,
-            } => format!(
-                "package targets future SABI epoch v{target_epoch} on host epoch v{host_epoch}; upgrade NLOS host to v{target_epoch}+ or run `nlos-migrate rewrite --to-epoch {host_epoch} --manifest package.manifest`"
-            ),
-            Self::SunsetTargetSabiEpoch {
-                target_epoch,
-                host_epoch,
-                max_backward_epochs,
-            } => {
-                let min_supported = host_epoch.saturating_sub(*max_backward_epochs);
-                format!(
-                    "package SABI epoch v{target_epoch} has sunset on host v{host_epoch} (supported rolling window: v{min_supported}..=v{host_epoch}); run `nlos-migrate rewrite --from-epoch {target_epoch} --to-epoch {host_epoch} --manifest package.manifest`"
+            Self::InvalidPackageName(name) => {
+                write!(
+                    formatter,
+                    "invalid package_name {name:?} in compatibility spec"
                 )
             }
-            Self::IncompatibleDriverAbiEpoch {
-                driver_epoch,
-                host_driver_epoch,
-                ..
-            } => format!(
-                "driver_abi_epoch v{driver_epoch} is incompatible with host DriverProvider v{host_driver_epoch}; run `nlos-migrate rewrite --driver-to-epoch {host_driver_epoch} --manifest package.manifest`"
-            ),
-            Self::UnsupportedCriticalExtension { extension_id } => format!(
-                "critical extension ID {extension_id} is unsupported by host; run `nlos-migrate audit-extensions --manifest package.manifest` to drop or downgrade non-essential critical extensions"
-            ),
-            Self::UnsupportedOrSunsetFeature { feature, reason } => format!(
-                "required feature {feature:?} rejected ({reason}); run `nlos-migrate check --manifest package.manifest` to apply canonical replacement"
-            ),
-            Self::InvalidManifestSpec(err) => format!(
-                "invalid compatibility manifest ({err}); run `nlos-migrate check --manifest package.manifest`"
-            ),
-            Self::InvalidHostPolicy {
-                host_epoch,
-                max_backward_epochs,
-            } => format!(
-                "host compatibility policy (host_epoch={host_epoch}, max_backward_epochs={max_backward_epochs}) violates statutory minimum window; verify host configuration with `nlos-migrate doctor`"
-            ),
-            Self::InvalidDeprecationManifest(err) => format!(
-                "deprecation manifest validation failed ({err}); run `nlos-migrate doctor`"
-            ),
-        }
-    }
-}
-
-impl fmt::Display for CompatMountRejection {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.migration_guidance())
-    }
-}
-
-impl Error for CompatMountRejection {}
-
-/// Evaluates [`PackageCompatibilitySpec`] against `policy` and the embedded
-/// [`canonical_deprecation_manifest`].
-///
-/// # Errors
-///
-/// Fails closed with [`CompatMountRejection`] on `target_sabi_epoch == 0`,
-/// `> host_epoch`, `<= host_epoch - 3` (sunset), unknown `critical_extensions`,
-/// or incompatible `driver_abi_epoch` / `required_features`.
-pub fn evaluate_compat_shim_mount(
-    spec: &PackageCompatibilitySpec,
-    policy: &CompatShimMountPolicy,
-) -> Result<CompatShimMountDecision, CompatMountRejection> {
-    let manifest = canonical_deprecation_manifest()
-        .map_err(CompatMountRejection::InvalidDeprecationManifest)?;
-    evaluate_compat_shim_mount_with_manifest(spec, policy, &manifest)
-}
-
-/// Evaluates [`PackageCompatibilitySpec`] against `policy` and an explicit [`DeprecationManifest`].
-///
-/// # Errors
-///
-/// Fails closed with [`CompatMountRejection`] when any compatibility bound,
-/// critical extension, feature gate, or rolling epoch window check fails.
-pub fn evaluate_compat_shim_mount_with_manifest(
-    spec: &PackageCompatibilitySpec,
-    policy: &CompatShimMountPolicy,
-    deprecation_manifest: &DeprecationManifest,
-) -> Result<CompatShimMountDecision, CompatMountRejection> {
-    spec.validate_bounds()
-        .map_err(CompatMountRejection::InvalidManifestSpec)?;
-
-    if policy.host_epoch == 0
-        || policy.host_driver_abi_epoch == 0
-        || policy.max_backward_epochs < MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS
-    {
-        return Err(CompatMountRejection::InvalidHostPolicy {
-            host_epoch: policy.host_epoch,
-            max_backward_epochs: policy.max_backward_epochs,
-        });
-    }
-
-    if spec.target_sabi_epoch == 0 {
-        return Err(CompatMountRejection::ZeroTargetSabiEpoch);
-    }
-    if spec.target_sabi_epoch > policy.host_epoch {
-        return Err(CompatMountRejection::FutureTargetSabiEpoch {
-            target_epoch: spec.target_sabi_epoch,
-            host_epoch: policy.host_epoch,
-        });
-    }
-    let sabi_distance = policy.host_epoch - spec.target_sabi_epoch;
-    if sabi_distance > policy.max_backward_epochs {
-        return Err(CompatMountRejection::SunsetTargetSabiEpoch {
-            target_epoch: spec.target_sabi_epoch,
-            host_epoch: policy.host_epoch,
-            max_backward_epochs: policy.max_backward_epochs,
-        });
-    }
-
-    for &ext_id in &spec.critical_extensions {
-        if ext_id == 0 || !policy.known_critical_extensions.contains(&ext_id) {
-            return Err(CompatMountRejection::UnsupportedCriticalExtension {
-                extension_id: ext_id,
-            });
-        }
-    }
-
-    validate_required_features(spec, policy, deprecation_manifest)?;
-    let driver_shim = evaluate_driver_shim(spec, policy)?;
-
-    if sabi_distance == 0 && driver_shim.is_none() {
-        return Ok(CompatShimMountDecision::NativeDirect {
-            host_epoch: policy.host_epoch,
-            target_sabi_minor: spec.target_sabi_minor,
-            retained_non_critical_extensions: spec.non_critical_extensions.clone(),
-        });
-    }
-
-    let sabi_adapter = if sabi_distance == 0 {
-        None
-    } else {
-        let cell = SabiEpochAdapterCell::with_manifest(
-            spec.target_sabi_epoch,
-            policy.host_epoch,
-            policy.max_backward_epochs,
-            policy.known_critical_extensions.clone(),
-            deprecation_manifest.clone(),
-        )
-        .map_err(|_| CompatMountRejection::SunsetTargetSabiEpoch {
-            target_epoch: spec.target_sabi_epoch,
-            host_epoch: policy.host_epoch,
-            max_backward_epochs: policy.max_backward_epochs,
-        })?;
-        Some(cell)
-    };
-
-    Ok(CompatShimMountDecision::MountOutOfCore(MountedCompatShim {
-        sabi_adapter,
-        driver_shim,
-        retained_non_critical_extensions: spec.non_critical_extensions.clone(),
-    }))
-}
-
-fn validate_required_features(
-    spec: &PackageCompatibilitySpec,
-    policy: &CompatShimMountPolicy,
-    deprecation_manifest: &DeprecationManifest,
-) -> Result<(), CompatMountRejection> {
-    for feature in &spec.required_features {
-        if let SymbolAuditVerdict::SunsetOrReserved { reason, .. } =
-            deprecation_manifest.audit_symbol(SABI_ENVELOPE_SCHEMA, feature)
-        {
-            return Err(CompatMountRejection::UnsupportedOrSunsetFeature {
-                feature: feature.clone(),
+            Self::Compatibility(err) => write!(formatter, "compatibility policy rejection: {err}"),
+            Self::SunsetOrReservedContract {
+                channel,
+                symbol,
+                field_number: Some(field),
                 reason,
-            });
+            } => write!(
+                formatter,
+                "package references retired contract {symbol:?} (field {field}) in {channel:?}: {reason}"
+            ),
+            Self::SunsetOrReservedContract {
+                channel,
+                symbol,
+                field_number: None,
+                reason,
+            } => write!(
+                formatter,
+                "package references retired contract {symbol:?} in {channel:?}: {reason}"
+            ),
+            Self::DirectoryNegotiation(err) => {
+                write!(
+                    formatter,
+                    "ServiceDirectory policy negotiation failed: {err}"
+                )
+            }
+            Self::ServiceBindingUnavailable {
+                service,
+                error_code,
+            } => write!(
+                formatter,
+                "ServiceDirectory could not bind service {service:?} (code={error_code})"
+            ),
+            Self::AdapterInit(err) => write!(formatter, "failed to initialize compat shim: {err}"),
         }
-        if !policy.supported_features.is_empty() && !policy.supported_features.contains(feature) {
-            return Err(CompatMountRejection::UnsupportedOrSunsetFeature {
-                feature: feature.clone(),
-                reason: "feature is not advertised by host policy",
-            });
+    }
+}
+
+impl Error for CompatMountError {}
+
+impl CompatMountError {
+    /// Deterministically maps mount-time compatibility rejections to a wire-safe
+    /// [`SabiFailure`].
+    ///
+    /// All version-window (`0`, `> N`, `<= N-3`), unknown-channel,
+    /// `[COMPAT-VER-002]` critical-extension, and `SUNSET`/`RESERVED` rejections
+    /// map to [`SabiErrorCode::AbiVersion`] (`E_ABI_VERSION`) with
+    /// [`RetryDirective::DoNotRetry`].
+    #[must_use]
+    pub fn to_sabi_failure(&self) -> SabiFailure {
+        match self {
+            Self::Compatibility(err) => err.to_sabi_failure(),
+            Self::SunsetOrReservedContract { .. } => SabiFailure {
+                code: SabiErrorCode::AbiVersion.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message:
+                    "package references a SUNSET or permanently RESERVED SABI contract element"
+                        .to_owned(),
+            },
+            Self::DirectoryNegotiation(err) => err.to_sabi_failure(),
+            Self::AdapterInit(err) => err.to_sabi_failure(),
+            Self::InvalidPackageName(_) => SabiFailure {
+                code: SabiErrorCode::InvalidArgument.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "package compatibility declaration has an invalid package_name"
+                    .to_owned(),
+            },
+            Self::ServiceBindingUnavailable { .. } => SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested SABI service binding is unavailable in ServiceDirectory"
+                    .to_owned(),
+            },
         }
+    }
+}
+
+/// Dynamic per-package out-of-core compatibility shim mount planner.
+#[derive(Clone, Debug)]
+pub struct CompatMountPlanner {
+    manifest: DeprecationManifest,
+    translation_rules: EpochTranslationRules,
+    driver_trust_ceiling: ProviderTrustCeiling,
+}
+
+impl CompatMountPlanner {
+    /// Creates a planner governed by an explicit [`DeprecationManifest`] (for
+    /// example a multi-epoch evolution manifest in conformance/upgrade tests).
+    #[must_use]
+    pub fn new(manifest: DeprecationManifest) -> Self {
+        Self {
+            manifest,
+            translation_rules: EpochTranslationRules::default(),
+            driver_trust_ceiling: ProviderTrustCeiling::PreserveHonestAttestation,
+        }
+    }
+
+    /// Creates a planner governed by the embedded canonical
+    /// `CANONICAL_DEPRECATION_MANIFEST_YAML`.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the compile-time embedded canonical deprecation manifest is corrupted.
+    #[must_use]
+    pub fn with_canonical_manifest() -> Self {
+        let manifest = canonical_deprecation_manifest().expect("canonical manifest is valid");
+        Self::new(manifest)
+    }
+
+    /// Overrides the declarative [`EpochTranslationRules`] seeded into mounted
+    /// [`SabiEpochAdapterCell`] instances.
+    #[must_use]
+    pub fn with_translation_rules(mut self, rules: EpochTranslationRules) -> Self {
+        self.translation_rules = rules;
+        self
+    }
+
+    /// Overrides the `[TASK-PROVIDER-001]` trust ceiling seeded into mounted
+    /// historical frozen [`DriverProtocolShim`] instances (`LegacyStageBMinicborV1`
+    /// is unconditionally `ForceUnverified`).
+    #[must_use]
+    pub const fn with_driver_trust_ceiling(mut self, ceiling: ProviderTrustCeiling) -> Self {
+        self.driver_trust_ceiling = ceiling;
+        self
+    }
+
+    /// Borrows the active [`DeprecationManifest`].
+    #[must_use]
+    pub const fn manifest(&self) -> &DeprecationManifest {
+        &self.manifest
+    }
+
+    /// Adjudicates `spec` against `policy` and `self.manifest`, returning either
+    /// [`CompatMountDecision::NativePassthrough`] (`0` shim hops) or
+    /// [`CompatMountDecision::MountOutOfCoreShim`].
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`CompatMountError`] on invalid package names, invalid
+    /// SABI or driver epochs (`0`, `> N`, `<= N-3`), unknown `critical_extensions`,
+    /// or `SUNSET`/`RESERVED` symbols and field slots.
+    pub fn plan_mount(
+        &self,
+        spec: &PackageCompatibilitySpec,
+        policy: &VersionCompatibilityPolicy<'_>,
+    ) -> Result<CompatMountDecision, CompatMountError> {
+        self.plan_mount_internal(spec, policy, None, &[])
+    }
+
+    /// Adjudicates `spec` against `policy` and `self.manifest`, AND negotiates
+    /// all `service_demands` against `directory` using policy-governed
+    /// `SnapshotDirectory::negotiate_with_policy`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`CompatMountError`] on any compatibility, deprecation,
+    /// or directory negotiation failure.
+    pub fn plan_mount_with_directory(
+        &self,
+        spec: &PackageCompatibilitySpec,
+        policy: &VersionCompatibilityPolicy<'_>,
+        directory: &mut SnapshotDirectory,
+        service_demands: &[PackageServiceDemand],
+    ) -> Result<CompatMountDecision, CompatMountError> {
+        self.plan_mount_internal(spec, policy, Some(directory), service_demands)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn plan_mount_internal(
+        &self,
+        spec: &PackageCompatibilitySpec,
+        policy: &VersionCompatibilityPolicy<'_>,
+        directory: Option<&mut SnapshotDirectory>,
+        service_demands: &[PackageServiceDemand],
+    ) -> Result<CompatMountDecision, CompatMountError> {
+        validate_package_name(&spec.package_name)?;
+
+        let envelope_identity = SchemaIdentity {
+            name: SABI_ENVELOPE_SCHEMA.to_owned(),
+            major: spec.target_sabi_epoch,
+            minor: spec.target_sabi_minor,
+            critical_extension_ids: spec.critical_extensions.clone(),
+            non_critical_extension_ids: spec.noncritical_extensions.clone(),
+        };
+        let sabi_negotiation = policy
+            .adjudicate_schema_identity(&envelope_identity)
+            .map_err(CompatMountError::Compatibility)?;
+
+        let mut warnings = Vec::new();
+
+        // Adjudicate optional driver wire ABI epoch.
+        let driver_shim = match spec.driver_abi_epoch {
+            None => None,
+            Some(DriverWireEpoch::LegacyStageBMinicborV1) => {
+                self.audit_single_symbol(
+                    SABI_DRIVER_PROVIDER_SCHEMA,
+                    "LegacyStageBMinicborV1",
+                    spec.target_sabi_epoch,
+                    spec.target_sabi_minor,
+                    &spec.package_name,
+                    &mut warnings,
+                )?;
+                let shim =
+                    DriverProtocolShim::new_legacy_minicbor(policy.host_epoch).map_err(|err| {
+                        match err {
+                            DriverShimError::InvalidDriverEpoch { .. } => {
+                                CompatMountError::Compatibility(
+                                    CompatibilityError::ZeroMajorVersion {
+                                        schema: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+                                    },
+                                )
+                            }
+                            _ => CompatMountError::Compatibility(
+                                CompatibilityError::MalformedProtobuf(err.to_string()),
+                            ),
+                        }
+                    })?;
+                Some(shim)
+            }
+            Some(DriverWireEpoch::FrozenDriverProviderEpoch(driver_major)) => {
+                let driver_identity = SchemaIdentity {
+                    name: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+                    major: driver_major,
+                    minor: 0,
+                    critical_extension_ids: spec.critical_extensions.clone(),
+                    non_critical_extension_ids: spec.noncritical_extensions.clone(),
+                };
+                let driver_outcome = policy
+                    .adjudicate_schema_identity(&driver_identity)
+                    .map_err(CompatMountError::Compatibility)?;
+                match driver_outcome.route {
+                    VersionRoute::NativeCurrentEpoch => None,
+                    VersionRoute::OutOfCoreCompatShim {
+                        client_epoch,
+                        host_epoch,
+                        ..
+                    } => {
+                        let shim = DriverProtocolShim::new_historical_frozen_epoch(
+                            client_epoch,
+                            host_epoch,
+                            self.driver_trust_ceiling,
+                        )
+                        .map_err(|_| {
+                            CompatMountError::Compatibility(CompatibilityError::UnsupportedMajor {
+                                schema: SABI_DRIVER_PROVIDER_SCHEMA.to_owned(),
+                                got: client_epoch,
+                                supported: host_epoch,
+                            })
+                        })?;
+                        Some(shim)
+                    }
+                }
+            }
+        };
+
+        // Audit all declared `(channel, symbol_or_field)` references against `self.manifest`.
+        for (channel, symbol) in &spec.referenced_symbols {
+            self.audit_channel_and_symbol_or_field(
+                channel,
+                symbol,
+                spec.target_sabi_epoch,
+                spec.target_sabi_minor,
+                &spec.package_name,
+                &mut warnings,
+            )?;
+        }
+
+        // Run policy-governed ServiceDirectory negotiations when requested.
+        let mut negotiated_bindings = Vec::new();
+        if let Some(dir) = directory {
+            for demand in service_demands {
+                let request = NegotiateServiceRequest {
+                    schema: Some(SchemaIdentity {
+                        name: SABI_SERVICE_DIRECTORY_SCHEMA.to_owned(),
+                        major: spec.target_sabi_epoch,
+                        minor: spec.target_sabi_minor,
+                        critical_extension_ids: spec.critical_extensions.clone(),
+                        non_critical_extension_ids: spec.noncritical_extensions.clone(),
+                    }),
+                    service: demand.service.clone(),
+                    schema_name: demand.schema_name.clone(),
+                    // Directory bindings themselves are registered at the host's
+                    // active schema major (normally 1 in v1.x) or caller target;
+                    // negotiate_with_policy adjudicates both caller & target epochs.
+                    major: resolve_registered_channel_major(
+                        &demand.schema_name,
+                        spec.target_sabi_epoch,
+                        policy.host_epoch,
+                        dir,
+                        &demand.service,
+                    ),
+                    minimum_minor: demand.minimum_minor,
+                    required_feature_ids: demand.required_feature_ids.clone(),
+                    supported_transport_kinds: demand.supported_transport_kinds.clone(),
+                };
+                let outcome = dir
+                    .negotiate_with_policy(&request, policy, &self.manifest)
+                    .map_err(CompatMountError::DirectoryNegotiation)?;
+                append_bounded_warnings(&mut warnings, &outcome.emitted_warnings);
+                match outcome.response.result {
+                    Some(negotiate_service_response::Result::Binding(binding)) => {
+                        negotiated_bindings.push(binding);
+                    }
+                    Some(negotiate_service_response::Result::Error(dir_err)) => {
+                        return Err(CompatMountError::ServiceBindingUnavailable {
+                            service: demand.service.clone(),
+                            error_code: dir_err.code,
+                        });
+                    }
+                    None => {
+                        return Err(CompatMountError::ServiceBindingUnavailable {
+                            service: demand.service.clone(),
+                            error_code: 0,
+                        });
+                    }
+                }
+            }
+        }
+
+        match (sabi_negotiation.route, driver_shim) {
+            (VersionRoute::NativeCurrentEpoch, None) => {
+                Ok(CompatMountDecision::NativePassthrough {
+                    package_name: spec.package_name.clone(),
+                    sabi_negotiation,
+                    warnings,
+                    negotiated_bindings,
+                })
+            }
+            (route, maybe_driver_shim) => {
+                let sabi_adapter = match route {
+                    VersionRoute::NativeCurrentEpoch => None,
+                    VersionRoute::OutOfCoreCompatShim {
+                        client_epoch,
+                        host_epoch,
+                        ..
+                    } => {
+                        if policy.known_critical_extensions.len() > MAX_EXTENSION_IDS {
+                            return Err(CompatMountError::Compatibility(
+                                CompatibilityError::TooManyExtensionIds {
+                                    schema: SABI_ENVELOPE_SCHEMA.to_owned(),
+                                    actual: policy.known_critical_extensions.len(),
+                                    maximum: MAX_EXTENSION_IDS,
+                                },
+                            ));
+                        }
+                        let mut cell = SabiEpochAdapterCell::new(
+                            client_epoch,
+                            host_epoch,
+                            policy.max_backward_epochs,
+                            policy.known_critical_extensions.to_vec(),
+                            self.manifest.clone(),
+                            self.translation_rules.clone(),
+                        )
+                        .map_err(CompatMountError::AdapterInit)?;
+                        cell.push_warnings(&warnings);
+                        Some(cell)
+                    }
+                };
+                Ok(CompatMountDecision::MountOutOfCoreShim(Box::new(
+                    MountedCompatStack {
+                        package_name: spec.package_name.clone(),
+                        sabi_negotiation,
+                        sabi_adapter,
+                        driver_shim: maybe_driver_shim,
+                        warnings,
+                        negotiated_bindings,
+                    },
+                )))
+            }
+        }
+    }
+
+    fn audit_channel_and_symbol_or_field(
+        &self,
+        channel: &str,
+        symbol: &str,
+        caller_major: u32,
+        caller_minor: u32,
+        service_label: &str,
+        warnings: &mut Vec<DeprecationWarningReceipt>,
+    ) -> Result<(), CompatMountError> {
+        let channel_known = self.manifest.channel(channel).is_some()
+            || schema_registry().iter().any(|desc| desc.name == channel);
+        if !channel_known {
+            return Err(CompatMountError::Compatibility(
+                CompatibilityError::UnknownSchema(channel.to_owned()),
+            ));
+        }
+
+        if let Some((parent_type, field_number)) = parse_field_slot_reference(symbol) {
+            let verdict = self
+                .manifest
+                .audit_field_number(channel, parent_type, field_number);
+            return apply_mount_verdict(
+                verdict,
+                channel,
+                symbol,
+                Some(field_number),
+                caller_major,
+                caller_minor,
+                service_label,
+                warnings,
+            );
+        }
+
+        self.audit_single_symbol(
+            channel,
+            symbol,
+            caller_major,
+            caller_minor,
+            service_label,
+            warnings,
+        )
+    }
+
+    fn audit_single_symbol(
+        &self,
+        channel: &str,
+        symbol: &str,
+        caller_major: u32,
+        caller_minor: u32,
+        service_label: &str,
+        warnings: &mut Vec<DeprecationWarningReceipt>,
+    ) -> Result<(), CompatMountError> {
+        let verdict = self.manifest.audit_symbol(channel, symbol);
+        apply_mount_verdict(
+            verdict,
+            channel,
+            symbol,
+            None,
+            caller_major,
+            caller_minor,
+            service_label,
+            warnings,
+        )
+    }
+}
+
+fn validate_package_name(name: &str) -> Result<(), CompatMountError> {
+    if name.is_empty() || name.len() > MAX_NAME_BYTES || name.contains('\0') {
+        return Err(CompatMountError::InvalidPackageName(name.to_owned()));
     }
     Ok(())
 }
 
-fn evaluate_driver_shim(
-    spec: &PackageCompatibilitySpec,
-    policy: &CompatShimMountPolicy,
-) -> Result<Option<DriverProtocolCompatShim>, CompatMountRejection> {
-    let Some(driver_epoch) = spec.driver_abi_epoch else {
-        return Ok(None);
-    };
-    if driver_epoch == 0
-        || driver_epoch > policy.host_driver_abi_epoch
-        || policy.host_driver_abi_epoch - driver_epoch > policy.max_backward_epochs
-    {
-        return Err(CompatMountRejection::IncompatibleDriverAbiEpoch {
-            driver_epoch,
-            host_driver_epoch: policy.host_driver_abi_epoch,
-            max_backward_epochs: policy.max_backward_epochs,
-        });
+fn parse_field_slot_reference(symbol: &str) -> Option<(Option<&str>, u32)> {
+    if let Some(num_str) = symbol.strip_prefix("field:") {
+        let field_num = num_str.parse::<u32>().ok()?;
+        return Some((None, field_num));
     }
-    if driver_epoch == policy.host_driver_abi_epoch
-        && policy.legacy_driver_wire_format != LegacyDriverWireFormat::StageBMinicbor
-    {
-        return Ok(None);
+    let (parent, num_str) = symbol.rsplit_once(".field:")?;
+    if parent.is_empty() {
+        return None;
     }
-    let shim = DriverProtocolCompatShim::new(
-        driver_epoch,
-        policy.host_driver_abi_epoch,
-        policy.max_backward_epochs,
-        policy.legacy_driver_wire_format,
-    )
-    .map_err(|_| CompatMountRejection::IncompatibleDriverAbiEpoch {
-        driver_epoch,
-        host_driver_epoch: policy.host_driver_abi_epoch,
-        max_backward_epochs: policy.max_backward_epochs,
-    })?;
-    Ok(Some(shim))
+    let field_num = num_str.parse::<u32>().ok()?;
+    Some((Some(parent), field_num))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode};
-
-    #[test]
-    fn native_epoch_routes_direct_and_legacy_epochs_mount_out_of_core_cell() {
-        let policy = CompatShimMountPolicy::new(3);
-
-        let current_spec = PackageCompatibilitySpec::new(3, 0);
-        let direct = evaluate_compat_shim_mount(&current_spec, &policy).expect("native direct");
-        assert!(matches!(
-            direct,
-            CompatShimMountDecision::NativeDirect { host_epoch: 3, .. }
-        ));
-
-        let legacy_spec = PackageCompatibilitySpec::new(1, 0).with_driver_abi_epoch(1);
-        let mounted = evaluate_compat_shim_mount(&legacy_spec, &policy).expect("mount N-2");
-        match mounted {
-            CompatShimMountDecision::MountOutOfCore(cell) => {
-                assert_eq!(
-                    cell.sabi_adapter
-                        .as_ref()
-                        .expect("sabi adapter")
-                        .epoch_distance(),
-                    2
-                );
-                assert!(cell.driver_shim.is_some());
-            }
-            CompatShimMountDecision::NativeDirect { .. } => panic!("expected MountOutOfCore"),
+#[allow(clippy::too_many_arguments)]
+fn apply_mount_verdict(
+    verdict: SymbolAuditVerdict<'_>,
+    channel: &str,
+    fallback_symbol: &str,
+    fallback_field_number: Option<u32>,
+    caller_major: u32,
+    caller_minor: u32,
+    service_label: &str,
+    warnings: &mut Vec<DeprecationWarningReceipt>,
+) -> Result<(), CompatMountError> {
+    match verdict {
+        SymbolAuditVerdict::Active(_) => Ok(()),
+        SymbolAuditVerdict::Deprecated(entry) => {
+            let receipt =
+                entry_to_warning_receipt(entry, caller_major, caller_minor, service_label);
+            append_bounded_warnings(warnings, &[receipt]);
+            Ok(())
+        }
+        SymbolAuditVerdict::SunsetOrReserved { entry, reason } => {
+            let (symbol, field_number) = entry.map_or_else(
+                || (fallback_symbol.to_owned(), fallback_field_number),
+                |item| {
+                    (
+                        item.symbol.clone(),
+                        item.field_number.or(fallback_field_number),
+                    )
+                },
+            );
+            Err(CompatMountError::SunsetOrReservedContract {
+                channel: channel.to_owned(),
+                symbol,
+                field_number,
+                reason,
+            })
         }
     }
+}
 
-    #[test]
-    fn incompatible_driver_abi_epoch_fails_closed_with_migrate_guidance() {
-        let policy = CompatShimMountPolicy::new(4);
-        let bad_driver_spec = PackageCompatibilitySpec::new(3, 0).with_driver_abi_epoch(1);
-        let err = evaluate_compat_shim_mount(&bad_driver_spec, &policy)
-            .expect_err("driver_abi_epoch=1 at host_epoch=4 must fail closed");
-        let failure = err.to_sabi_failure();
-        assert_eq!(failure.code, i32::from(SabiErrorCode::AbiVersion));
-        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
-        assert!(err.migration_guidance().contains("nlos-migrate"));
+fn append_bounded_warnings(
+    target: &mut Vec<DeprecationWarningReceipt>,
+    incoming: &[DeprecationWarningReceipt],
+) {
+    for warning in incoming {
+        if target.len() >= MAX_SHIM_DEPRECATION_WARNINGS {
+            target.remove(0);
+        }
+        target.push(warning.clone());
     }
+}
+
+fn resolve_registered_channel_major(
+    schema_name: &str,
+    target_sabi_epoch: u32,
+    host_epoch: u32,
+    directory: &SnapshotDirectory,
+    service: &str,
+) -> u32 {
+    let probe = directory.resolve(&nlos_schema::sabi::v1::ResolveServiceRequest {
+        schema: Some(nlos_schema::service_directory_schema_identity()),
+        service: service.to_owned(),
+    });
+    if let Some(nlos_schema::sabi::v1::resolve_service_response::Result::Candidates(set)) =
+        probe.result
+    {
+        if let Some(found) = set.candidates.iter().find_map(|cand| {
+            let ver = cand.version.as_ref()?;
+            (ver.schema_name == schema_name && ver.major == target_sabi_epoch).then_some(ver.major)
+        }) {
+            return found;
+        }
+        if let Some(found) = set.candidates.iter().find_map(|cand| {
+            let ver = cand.version.as_ref()?;
+            (ver.schema_name == schema_name && ver.major == host_epoch).then_some(ver.major)
+        }) {
+            return found;
+        }
+    }
+    target_sabi_epoch
 }

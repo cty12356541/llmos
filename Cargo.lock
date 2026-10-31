@@ -460,6 +460,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-certify"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-migrate",
+ "nlos-plan",
+ "nlos-publisher-trust",
+ "nlos-schema",
+ "nlos-store-registry",
+ "nlos-task",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-channel"
 version = "0.1.0"
 dependencies = [
@@ -496,14 +516,13 @@ dependencies = [
 name = "nlos-compat-shim"
 version = "0.1.0"
 dependencies = [
- "ed25519-dalek",
  "minicbor",
- "nlos-artifact",
  "nlos-capability",
  "nlos-driver-mock",
  "nlos-identity",
  "nlos-operation",
  "nlos-resource",
+ "nlos-runtime",
  "nlos-schema",
  "nlos-service-directory",
  "nlos-types",
@@ -620,12 +639,9 @@ dependencies = [
  "nlos-application",
  "nlos-artifact",
  "nlos-identity",
- "nlos-plan",
  "nlos-schema",
- "nlos-store-fault",
- "nlos-task",
+ "nlos-service-directory",
  "nlos-types",
- "rusqlite",
  "sha2",
 ]
 
@@ -693,6 +709,8 @@ name = "nlos-plan"
 version = "0.1.0"
 dependencies = [
  "nlos-artifact",
+ "nlos-capability",
+ "nlos-identity",
  "nlos-store-fault",
  "nlos-task",
  "nlos-types",
@@ -705,6 +723,19 @@ name = "nlos-process"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
+name = "nlos-publisher-trust"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
  "sha2",
@@ -861,6 +892,23 @@ name = "nlos-store-fault"
 version = "0.1.0"
 dependencies = [
  "libsqlite3-sys",
+]
+
+[[package]]
+name = "nlos-store-registry"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-migrate",
+ "nlos-publisher-trust",
+ "nlos-store-fault",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
 ]
 
 [[package]]

@@ -57,7 +57,9 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
             )
             original = target.read_text(encoding="ascii").strip()
             flipped_first_byte = ("ff" if original[:2] != "ff" else "fe") + original[2:]
-            target.write_text(flipped_first_byte + "\n", encoding="ascii")
+            target.write_text(
+                flipped_first_byte + "\n", encoding="ascii", newline="\n"
+            )
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
             self.assertFalse(ok)
@@ -72,7 +74,7 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
             )
             original = root_target.read_text(encoding="ascii").strip()
             flipped = ("ff" if original[:2] != "ff" else "fe") + original[2:]
-            root_target.write_text(flipped + "\n", encoding="ascii")
+            root_target.write_text(flipped + "\n", encoding="ascii", newline="\n")
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
             self.assertFalse(ok)
@@ -91,7 +93,7 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
                 / "nlos.sabi.WaitControl.InspectWaitRequest-v1.0.hex"
             )
             original = target.read_text(encoding="ascii")
-            target.write_text(original.upper(), encoding="ascii")
+            target.write_text(original.upper(), encoding="ascii", newline="\n")
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
             self.assertFalse(ok)
@@ -139,7 +141,7 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
                 / "v1.0"
                 / "nlos.sabi.Unregistered-v1.0.hex"
             )
-            stray_epoch.write_text("0a00\n", encoding="ascii")
+            stray_epoch.write_text("0a00\n", encoding="ascii", newline="\n")
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
             self.assertFalse(ok)
@@ -150,7 +152,7 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
             stray_root = (
                 temp_root / "schema" / "golden" / "nlos.sabi.StrayRoot-v1.hex"
             )
-            stray_root.write_text("0a00\n", encoding="ascii")
+            stray_root.write_text("0a00\n", encoding="ascii", newline="\n")
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
             self.assertFalse(ok)
@@ -176,7 +178,9 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
                     kept_vectors.append(vec)
             manifest["vectors"] = kept_vectors
             manifest_path.write_text(
-                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+                json.dumps(manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
             )
 
             ok, errors, _ = gate.check_golden_corpus(temp_root)
@@ -254,7 +258,9 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
                 ],
             }
             (v2_dir / "manifest.json").write_text(
-                json.dumps(v2_manifest, indent=2) + "\n", encoding="utf-8"
+                json.dumps(v2_manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
             )
             subprocess.run(
                 ["git", "add", "schema/golden/epochs/v2.0"],
@@ -290,7 +296,9 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
             tampered_vec["sha256_wire"] = hashlib.sha256(new_wire_bytes).hexdigest()
             tampered_vec["sha256_file"] = hashlib.sha256(new_file_bytes).hexdigest()
             v1_manifest_path.write_text(
-                json.dumps(v1_manifest, indent=2) + "\n", encoding="utf-8"
+                json.dumps(v1_manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
             )
 
             ok_mut, errors_mut, _ = gate.check_golden_corpus(
@@ -298,6 +306,24 @@ class GoldenImmutabilityGateTests(unittest.TestCase):
             )
             self.assertFalse(ok_mut)
             self.assertIn("E_GIT_DIFF_IMMUTABLE_VIOLATION", "\n".join(errors_mut))
+
+    def test_repo_gitattributes_pins_lf_for_schema_golden_and_manifests(self) -> None:
+        targets = [
+            "schema/golden/epochs/v1.0/nlos.sabi.Envelope-v1.0.hex",
+            "schema/golden/epochs/v1.0/manifest.json",
+            "schema/golden/nlos.sabi.Envelope-v1.hex",
+            "schema/nlos/sabi/v1/deprecation-manifest.yaml",
+        ]
+        proc = subprocess.run(
+            ["git", "check-attr", "eol", "--", *targets],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        expected = [f"{path}: eol: lf" for path in targets]
+        self.assertEqual(lines, expected)
 
 
 if __name__ == "__main__":

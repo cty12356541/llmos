@@ -13,6 +13,8 @@ rusqlite.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+nlos-capability = { path = "../nlos-capability" }
+nlos-identity = { path = "../nlos-identity" }
 nlos-store-fault = { path = "../nlos-store-fault" }
 nlos-task = { path = "../nlos-task" }
 rusqlite.workspace = true
