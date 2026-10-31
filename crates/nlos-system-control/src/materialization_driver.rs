@@ -65,8 +65,7 @@ use std::time::Duration;
 use nlos_clock::{AuthorityClock, AuthorityClockError, NowRequest};
 use nlos_plan::{
     AdmissionConsult, AdmissionConsultOutcome, MaterializationAdmission, MaterializationRejection,
-    MaterializationScheduler, PlanStoreError, SchedulerPassSummary, SelectionReport,
-    SqlitePlanAuthority,
+    MaterializationScheduler, PlanStoreError, SchedulerPassSummary, SqlitePlanAuthority,
 };
 use nlos_task::{MaterializationAdmissionFacts, SqliteTaskAuthority, TaskStoreError};
 use nlos_types::IdempotencyKey;
@@ -429,18 +428,33 @@ fn run_cycle(
         let summary = scheduler
             .drive(plans, &report, &consult, at_ms)
             .map_err(CycleError::Plan)?;
-        fold_pass(&mut outcome, &report, &summary);
+        // `MaterializationDriverHealth::seats_in_use` reports the seats
+        // held *after* the cycle: an empty selection list drives no durable
+        // transition so the pre-drive count still holds without a second
+        // query; a pass that drove selections re-reads the plan's
+        // post-drive seat count (capturing newly materialized window-band
+        // nodes, consult-failed pending rounds, and rejected adopted
+        // rounds).
+        let seats_after = if report.selections.is_empty() {
+            report.seats_in_use
+        } else {
+            scheduler
+                .select(plans, plan_id)
+                .map_err(CycleError::Plan)?
+                .seats_in_use
+        };
+        fold_pass(&mut outcome, seats_after, &summary);
     }
     Ok(outcome)
 }
 
-fn fold_pass(outcome: &mut CycleOutcome, report: &SelectionReport, summary: &SchedulerPassSummary) {
+fn fold_pass(outcome: &mut CycleOutcome, seats_after: u64, summary: &SchedulerPassSummary) {
     outcome.passes = outcome.passes.saturating_add(1);
     outcome.selected = outcome.selected.saturating_add(summary.selected);
     outcome.approved = outcome.approved.saturating_add(summary.approved);
     outcome.rejected = outcome.rejected.saturating_add(summary.rejected);
     outcome.window = summary.window_after;
-    outcome.seats_in_use = outcome.seats_in_use.saturating_add(report.seats_in_use);
+    outcome.seats_in_use = outcome.seats_in_use.saturating_add(seats_after);
 }
 
 /// The production-shaped Worker-tier consult boundary: the Task
