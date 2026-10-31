@@ -1,6 +1,9 @@
 # Schema sources and generated baselines must be byte-identical on all hosts.
 schema/**/*.proto text eol=lf
 schema/**/*.cddl text eol=lf
+schema/**/*.hex text eol=lf
+schema/**/*.json text eol=lf
+schema/**/*.yaml text eol=lf
 fuzz/seeds/**/*.hex text eol=lf
 gen/**/*.py text eol=lf
 gen/**/*.ts text eol=lf
