@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W79 / W79-E5A-STORE-REGISTRY`（里程碑 `M-E3` 中车道，工作包 `E5` 左半部分）
 - **日期**: `2026-10-31`
 - **Assurance Level**: `H4`（纯确定性本地宿主单元测试、真实多权威 `SQLite` `WAL + FULL` 跨库集成验证、重启持久性恢复测试与 DDL 触发器防篡改验证；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE`（由子车道 `W79-E5A-STORE-REGISTRY` 独立实现并通过全部本地验证门禁，待 `W79` 集成器合流复验后晋升）
+- **状态**: `VERIFIED`（经 `W79-INT` 三车道合流与跨 crate 端到端集成门禁 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) 联合复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §11（`CAP-REVOKE-001`）、§16 / §22（`TUI-CONSENT-001`、`DUI-OFFLINE-001`、`TCB-EGRESS-001`）、§23.1–§23.3（`PKG-MULTI-001`、`PKG-IMM-001`、`PKG-SEED-001`、`PKG-APPID-001`、`PKG-OCI-001`）、§29.1（`NLOS-DEFER-001`）
   - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.3、§3、§4

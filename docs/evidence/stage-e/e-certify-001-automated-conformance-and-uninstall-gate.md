@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W79 / W79-E5B-CERTIFY-PIPELINE`（里程碑 `M-E3` 右车道，工作包 `E5` 右半）
 - **日期**: `2026-10-31`
 - **Assurance Level**: `H4`（纯确定性本地宿主集成测试、真实权威 SQLite 存储沙箱演练、真实工作区 `Cargo.lock` + `package-lock.json` 供应链审计与 CLI 端到端闭环验证；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE`（待 `W79-INT` 与左车道 `W79-E4-PUBLISHER-TRUST`、中车道 `W79-E5A-STORE-REGISTRY` 合流复验后晋升 canonical `VERIFIED` / `DONE`）
+- **状态**: `VERIFIED`（经 `W79-INT` 三车道合流与跨 crate 端到端集成门禁 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) 联合复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §2.6（`TCB-EGRESS-001`）、§5（`SABI-CONFORM-001`）、§9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`）、§11.4（`KABI-UNCERTAIN-001`）、§13（`CAP-REVOKE-001`）、§15.1–§15.2（`DRV-LIFE-001`、`DRV-HEALTH-001`、`DRV-NEGO-001`）、§21.2（`DUI-CHOOSER-001`、`DUI-ASSOC-001`）、§23.1–§23.3（`PKG-IMM-001`、`PKG-SEED-001`、`PKG-UPDATE-001`、`PKG-UNINSTALL-001`）
   - [ADR-0027 Stage E SABI 长期向后兼容与商店治理](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §3–§4（四门自动化认证门禁与零残留卸载审计）
@@ -93,6 +93,9 @@
    - `cargo run --offline -p nlos-certify -- certify --package-dir examples/starter-assistant-app/package --upgrade-dir examples/starter-assistant-app/package-v1.1.0 --profile application-platform --format json` -> `verdict: "CERTIFIED"`, 四门全部 `PASS` 并输出签名 `StoreCertificationReceipt`，退出码 `0`；
    - `cargo run --offline -p nlos-certify -- supply-chain --root . --format text` -> `PASS`（`audited_cargo_packages: 166`, `audited_npm_packages: 119`, `blockers: 0, warnings: 0`），退出码 `0`；
    - `cargo run --offline -p nlos-certify -- supply-chain --root desktop --format text` -> `PASS`（`audited_npm_packages: 78`, `blockers: 0, warnings: 0`），退出码 `0`。
+5. **`W79-INT` 跨 crate 端到端全链路集成与常设 Python 锁文件供应链门禁**：
+   - `cargo test --offline -p nlos-certify --test e2e_trust_store_certify_pipeline` -> 退出码 `0`（[e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) `1/1` 通过，连同 `certify_pipeline_gate.rs` 合计 `nlos-certify` `11/11` 通过：串联 `nlos-publisher-trust` 三级 PKI / 密钥轮换 / 单调 `RevocationEpoch` / `ApplicationId` 防劫持、`nlos-certify` 四门认证收据签发、`nlos-store-registry` OCI CAS 5 槽位复合包上架 / `Candidate -> Stable` 晋升 / 跨版本权限提权 `requires_tui_reconsent` / `EntitlementToken` 幂等核销、以及 `nlos-plan::ecosystem_selector` 7 类跨生态选择器句柄解析 + G3 `WaitingAuthorization -> Materializing` 条件物化门与 Level 3 `QuarantineInstallation` 级联能力吊销及应用隔离）；
+   - `python -m unittest discover -s tests/conformance/schema -p "test_*.py"` -> 退出码 `0`（新增纯标准库常设门禁 [test_lockfile_supply_chain_gate.py](../../../tests/conformance/schema/test_lockfile_supply_chain_gate.py) `3/3` 通过，全套 schema conformance `20/20` 通过，无需修改 `.github/workflows/**` 即被跨平台 CI 自动发现执行）。
 
 ---
 
@@ -102,5 +105,5 @@
 2. **并行车道职责与 `W79-INT` 合流边界**：
    - 发布者根/中继/叶证书链管理、开发者门户注册流、CRL/纪元吊销状态机及完整 `PublisherTrustVerifier` 生产实现归属并行左车道 `W79-E4-PUBLISHER-TRUST`（[crates/nlos-publisher-trust](../../../crates/nlos-publisher-trust/src/lib.rs)）；
    - 应用商店索引目录存储、包版本上架/下架查询与客户端安装前收据强制核验归属并行中车道 `W79-E5A-STORE-REGISTRY`（[crates/nlos-store-registry](../../../crates/nlos-store-registry/src/lib.rs)）；
-   - 本车道（`W79-E5B-CERTIFY-PIPELINE`）通过稳定的 `&dyn PublisherTrustVerifier` trait 与自包含域分离签名的 `StoreCertificationReceipt` 提供上游认证裁决与收据签发能力，待 `W79-INT` 合流节点与左、中两车道联合复验后共同闭合里程碑 `M-E3`。
+   - 本车道（`W79-E5B-CERTIFY-PIPELINE`）通过稳定的 `&dyn PublisherTrustVerifier` trait 与自包含域分离签名的 `StoreCertificationReceipt` 提供上游认证裁决与收据签发能力，并已在 `W79-INT` 合流节点经 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) 与左、中两车道联合复验通过，共同闭合里程碑 `M-E3`。
 3. **离线 SPDX 元数据解析范围**：`supply_chain_audit.rs` 基于仓库内确定性清单（`Cargo.toml`、`Cargo.lock`、`package.json`、`package-lock.json` 与内置生态已核验 SPDX 映射）执行离线零网络审计，不依赖外部联网查询 crates.io 或 npm Registry API；新增第三方依赖若未在锁文件或离线许可证目录中携带已核验 SPDX 表达式，将按 fail-closed 原则输出 `SUPPLY-SPDX-001` `BLOCKER`，要求显式补充许可证审计条目后方可放行。

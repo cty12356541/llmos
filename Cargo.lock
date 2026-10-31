@@ -469,6 +469,7 @@ dependencies = [
  "nlos-capability",
  "nlos-identity",
  "nlos-migrate",
+ "nlos-plan",
  "nlos-publisher-trust",
  "nlos-schema",
  "nlos-store-registry",

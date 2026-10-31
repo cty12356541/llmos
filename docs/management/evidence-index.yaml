@@ -1168,3 +1168,21 @@
   scope: "crates/nlos-migrate 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖）声明式契约静态检查器与三态迁移回滚沙箱（nlos-migrate check | drill：100% 兼容 starter-assistant-app v1.0.0/v1.1.0 清单、PKG-MULTI-001 多组件声明、DRV-LIFE-001 EffectDescriptor 与 reconcile 审计、PKG-SEED-001/PKG-IMM-001 SQLite/WAL 魔数与脱敏明文密钥扫描、COMPAT-DEPRECATE-001 UpgradePrescription 与 DeprecationWarningReceipt，以及 PKG-UPDATE-001 BackwardCompatibleWindow / SnapshotAssistedRollback 100% SHA-256 字节全等恢复 / Irreversible PreUpgradeBackupReceipt + IdentityAuthority Ed25519 Z4TrustedUiConsentReceipt 双门禁，18/18 Rust 测试）+ tools/sabi-compat-diff 纯 Python 3 标准库跨纪元差异检查器（8/8 Python 单测）"
   assurance: H4
   date: "2026-10-31"
+- id: e-trust-001-publisher-pki-revocation-and-selectors
+  path: docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+  title: "E-TRUST-001：三级发布者 PKI 信任链、单调 RevocationEpoch 吊销账本、ApplicationId 防抢注归属与跨生态 7 类选择器及 G3 条件授权物化门控证据（W79-E4 / W79-INT）"
+  scope: "crates/nlos-publisher-trust 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖）三级发布者信任域（PlatformCore / CertifiedPublisher / CommunitySandboxed 防提权）、SigningKeyCustodyVault KEK 托管中继 CA 与叶证书双态代际轮换、单调递增 RevocationEpoch 签名吊销列表（防回滚/防冻结与 [DUI-OFFLINE-001] 脱机启动分流）、[PKG-APPID-001]/[PKG-SEP-001] ApplicationId 首次注册防抢注与三方联合签名归属转移（11/11 测试）+ crates/nlos-plan/src/ecosystem_selector.rs 全部 7 类跨生态 Typed Selector 不可变句柄解析（阻断 latest/* 浮动版本与未锁定搜索结果，闭合 U-8）及 G3 WaitingAuthorization 四门条件物化门控（闭合 U-7，nlos-plan 120/120 测试）"
+  assurance: H4
+  date: "2026-10-31"
+- id: e-store-001-oci-index-and-entitlement-ledger
+  path: docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+  title: "E-STORE-001：内容寻址 OCI 工件校验层、持久化应用商店治理目录、不透明许可令牌验证缝与三级恶意包撤回联动账本证据（W79-E5A / W79-INT）"
+  scope: "crates/nlos-store-registry 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖）[PKG-OCI-001] LocalOciCasStore 双重 SHA-256/字节长度验证与商店治理层物理解耦、[PKG-MULTI-001] 五类组件复合包 SQLite WAL+FULL 目录、[PKG-APPID-001] 跨发布者防劫持与 CommunityTrack/Stable 双轨隔离（四门禁 0b1111 签名证明门控）、[TUI-CONSENT-001]/[TCB-EGRESS-001] 跨版本权限提权 requires_tui_reconsent 差异引擎、[NLOS-DEFER-001] SignedEntitlementToken 本地离线验签与精确一次幂等席位核销（零法币计费越界）、以及三级 SignedRecallAdvisory 驱动真实 CapabilityAuthority::revoke_signed 与 ApplicationAuthority::disable_application 级联吊销隔离（10/10 测试）"
+  assurance: H4
+  date: "2026-10-31"
+- id: e-certify-001-automated-conformance-and-uninstall-gate
+  path: docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  title: "E-CERTIFY-001：应用商店四门自动化一致性认证流水线、纯 Rust 依赖许可证供应链审计与签名认证收据签发器证据（W79-E5B / W79-INT）"
+  scope: "crates/nlos-certify 纯安全 Rust（#![forbid(unsafe_code)]，零新增第三方依赖）应用商店四门自动化认证流水线与 CLI（Gate 1 SABI/Driver 协议与副作用完备性、Gate 2 最小权限/包纯度与纯 Rust 锁文件哈希及递归下降 SPDX 许可证供应链审计器——实测根工作区 166 Cargo + 119 npm 及 desktop 78 npm 包 0 BLOCKER 推进 RISK-B-09 open->partial、Gate 3 PKG-UPDATE-001 健康探针失败与中途崩溃 SHA-256 字节全等原子回滚沙箱、Gate 4 PKG-UNINSTALL-001 活跃任务门控与零残留卸载/即时能力吊销沙箱）+ SigningKeyCustodyVault 域分离签名 StoreCertificationReceipt + e2e_trust_store_certify_pipeline.rs 跨四 crate 端到端全链路集成（11/11 Rust 测试）+ tests/conformance/schema/test_lockfile_supply_chain_gate.py 常设 CI 门禁（20/20 Python 测试）"
+  assurance: H4
+  date: "2026-10-31"

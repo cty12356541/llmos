@@ -124,18 +124,19 @@
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——188 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 188 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——197 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 197 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 
 - id: RISK-B-09
   category: third-party-supply-chain
   severity: P2
-  status: open
+  status: partial
   description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
-  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）验证清空全部 6 个在途 Dependabot PR；自动化供应链与许可证门禁在阶段 E（E5/E7）落地前仍维持 open"
-  evidence_refs: []
-  review_point: "W76 已完成 Rust + desktop npm 依赖树升级清空 6 个 Dependabot PR；排入阶段 E（W79/W81 E5/E7）落地第三方依赖许可证与供应链自动化 CI 审计门及每四个周期依赖复审时复查"
+  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / package-lock.json / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）清空全部 6 个在途 Dependabot PR；W79（E-CERTIFY-001，H4）已落地纯 Rust 依赖许可证与锁文件供应链审计器 crates/nlos-certify/src/supply_chain_audit.rs（递归下降 SPDX 求值器拦截 GPL/AGPL/SSPL/EUPL 强传染性许可证、阻断 */latest 浮动版本与未钉死 Git 依赖、强制核验 SHA-256 checksum 与 SRI integrity：实测根工作区 166 个 Cargo 包 + 119 个 npm 包及 desktop 78 个 npm 包 0 BLOCKER）与常设 CI 自动发现门禁 tests/conformance/schema/test_lockfile_supply_chain_gate.py；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审运行前维持 partial"
+  evidence_refs:
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  review_point: "分域降级（W79-INT，2026-10-31）：open->partial（W76 已清空 6 个 Dependabot PR，W79 E-CERTIFY-001 已落地纯 Rust 锁文件哈希/SPDX 许可证供应链审计器与常设 CI 自动发现门禁 test_lockfile_supply_chain_gate.py）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审时复查"
 
 - id: RISK-B-10
   category: cancel-effect-unknown

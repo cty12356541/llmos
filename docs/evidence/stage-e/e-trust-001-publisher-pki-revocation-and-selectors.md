@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W79 / W79-E4-PUBLISHER-TRUST`（里程碑 `M-E3` 左车道，工作包 `E4`）
 - **日期**: `2026-10-31`
 - **Assurance Level**: `H4`（确定性单机宿主单元测试与真实 `SQLite WAL+FULL` 多权威跨组件集成及对抗证伪测试；不声称 `H7` 生产环境证明）
-- **状态**: `CANDIDATE`（Batch 1 独立车道落盘状态，待下游 `W79-INT` 与 `W79-E5A` / `W79-E5B` 合流复验后晋升为 `VERIFIED`）
+- **状态**: `VERIFIED`（经 `W79-INT` 三车道合流与跨 crate 端到端集成门禁 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) 联合复验通过，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §6 / §7（`TCB-DOWNGRADE-001`、`CAP-UNFORGE-001`、`CAP-ATTEN-001`、`CAP-REVOKE-001`）、§23.1–§23.2（`PKG-IMM-001`、`PKG-SEP-001`、`PKG-APPID-001`）、§24.4（`DUI-OFFLINE-001`）、§25.1–§25.2（`PLAN-DEPENDENCY-001`、`PLAN-LAZY-001`）
   - [ADR-0027 阶段 E SABI v1.0 长期兼容制度、核外兼容垫片与生态商店治理架构](../../management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) §2.3、§5.2（`RISK-B-09`、`RISK-E-03`、`RISK-E-05`、`U-7`、`U-8`）
@@ -79,6 +79,6 @@
 
 ## 4. 诚实非声明边界（Honest Non-Claims）
 
-1. **保证等级与合流状态边界（`H4 != H7`，`CANDIDATE`）**：本文档所有证据均来自单机确定性宿主测试与真实本地 `SQLite WAL+FULL` 多权威沙箱（`H4`），当前处于 Batch 1 车道 `CANDIDATE` 状态，待 `W79-INT` 与并行车道合流复验后晋升 `VERIFIED`，不声称跨物理集群或大规模在线商店运营的 `H7` 生产环境证明。
+1. **保证等级与合流状态边界（`H4 != H7`，`VERIFIED`）**：本文档所有证据均来自单机确定性宿主测试与真实本地 `SQLite WAL+FULL` 多权威沙箱（`H4`），并已由 `W79-INT` 跨车道端到端集成门禁 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs) 联合复验晋升 `VERIFIED`，不声称跨物理集群或大规模在线商店运营的 `H7` 生产环境证明。
 2. **OCI 商店目录与四门上架认证流水线边界（并行车道 `W79-E5A` / `W79-E5B` 交付）**：本车道（`W79-E4`）提供底层 `PublisherTrustVerifier` 证书链、单调 `RevocationEpoch`、`ApplicationId` 归属账本及 `nlos-plan` 7 类生态选择器与 G3 条件授权物化门；在此之上运行的 OCI 内容寻址商店目录 `crates/nlos-store-registry` 与四门自动化认证流水线 `crates/nlos-certify` 分别由同波并行车道 `W79-E5A-STORE-REGISTRY` 与 `W79-E5B-CERTIFY-PIPELINE` 独立交付并在 `W79-INT` 合流。
 3. **宿主 OS 商业安装器公证与双层 Wasm 强沙箱边界**：内部 `Ed25519` 三级发布者 PKI 用于验证 `llmos.package` 生态包身份与信任等级，不冒充外部商业 CA 硬件令牌签发的 Windows Authenticode 或 Apple Developer ID 宿主安装器公证（`E-deferred`）；针对 `CommunitySandboxed` 不可信负载的三平台 `Process + Wasmtime` 双层强沙箱运行时执行底座归属后续波次 `W80`（工作包 `E6`，`U-9`）。
