@@ -1,0 +1,1 @@
+binding: sync node (survey task binding, deterministic profile)

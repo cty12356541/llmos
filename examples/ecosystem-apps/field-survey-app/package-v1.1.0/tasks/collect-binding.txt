@@ -1,0 +1,1 @@
+binding: collect node (survey task binding, deterministic profile)

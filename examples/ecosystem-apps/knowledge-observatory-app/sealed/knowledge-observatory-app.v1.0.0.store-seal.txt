@@ -1,0 +1,19 @@
+# W80-E6B N-1 baseline store seal (frozen; regenerate with examples/ecosystem-apps/seal-n1-baseline.sh)
+label = knowledge-observatory-app
+publisher = nlos.market.observatory-works tier=CertifiedPublisher leaf_serial=70707070707070707070707070707070
+publisher_id = f6e1cba9cf92d8568e5b985079627b7b
+package_id = 6b6e6f776c65646f6273763130303031
+application_ids = 88d9d6afae6b0384e2809ff93d3d36dc runtime=7793a1ae3c703b41a5ef30d300e947e6
+package_version = 1.0.0
+target_sabi_epoch = 1 host_sabi_epoch = 3
+certify_manifest_digest = fef6c394806016fc9f874589956762846c03617e97529eac662a855f1865f6c3
+oci_manifest_digest = 0178612d915d6ff36ce3ec4bdf32acc3ede116c745288f172bd87e3316135a22
+gates = g1=PASS g2=PASS g3=PASS g4=PASS mask=0b1111
+certification_receipt_id = f0deac49301d3b004a841b5b2241fa6c
+certification_receipt_signature = 55052d7cfc51d5a5a9542aa5b69c6a8f5617239ae4c6dd62b7200816837f94fc2dc796200c9d45a14afdd4b48ab27726f0d7790bbd3b284136ae964e45cb0c01
+release_submission_digest = 9f1635b486187e009b5185d5ca57947317c4305abc4f0e45760d6a06020bea10
+attestation_signature = 2d7c38c6ea30529977c7f3026001da0f2f929a881538946fd79cef2be6f7ad2bfc2437293953898d5c303efc953ef4736bd23b6cae10700dd76fc17ca3f3b00d
+promotion = Candidate->Stable epoch=1
+components = curator-exec:Executable,observatory-bridge:Driver,observatory-card:UiSurface,index-sync:BackgroundService,observatory-profile-seed:ReadOnlySeedTemplate,source-seeds:ReadOnlySeedTemplate
+artifact = examples/ecosystem-apps/knowledge-observatory-app/sealed/knowledge-observatory-app.v1.0.0.nlos-pkg tree=package package=6b6e6f776c65646f6273763130303031 version=4294967296 entries=6 tasks=3 sha256=690c4e296bf3b0bedd56b17592064c04e3eac8defcf14d4d1e988e0daf4602d5 bytes=2538
+# artifact = examples/ecosystem-apps/knowledge-observatory-app/sealed/knowledge-observatory-app.v1.1.0.nlos-pkg tree=package-v1.1.0 package=6b6e6f776c65646f6273763130303031 version=4295032832 entries=6 tasks=4 sha256=0bc978a23cc62571503bdd939aef6be76f692b5f2d61e26bb227cb0398191985 bytes=2828

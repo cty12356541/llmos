@@ -1,0 +1,23 @@
+# W80-E6B 第三方用户态 Driver 参考样板工作区(独立 workspace 根,starter-assistant-app 先例)。
+# 只 path 依赖仓库内公共 crate 与 ecosystem-driver-kit;零新增第三方依赖。
+[workspace]
+members = [
+    "ecosystem-driver-kit",
+    "mcp-bridge-driver",
+    "openai-compat-driver",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

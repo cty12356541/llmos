@@ -1,0 +1,6 @@
+field-survey-app payload entry v1.1.0
+workflow: plan-route -> collect-notes -> sync-notes -> review-notes
+provider-plane: user-space-driver-provider-v1
+credential-custody: trusted-enforcement-shim-only
+seed-policy: read-only seed templates, zero baked mutable memory
+upgrade-note: appends the review-notes node under SameMajor

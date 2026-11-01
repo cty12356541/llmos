@@ -1,0 +1,1 @@
+ceiling: max-prompt-tokens=12288 max-completion-tokens=6144 max-total-tokens=24576 max-api-calls=12 max-cost-microcredits=90000

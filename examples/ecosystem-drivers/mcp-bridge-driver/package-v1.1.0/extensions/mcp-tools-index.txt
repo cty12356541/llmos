@@ -1,0 +1,5 @@
+# Offline tool catalog warm-up index shipped with v1.1.0.
+tool = search-knowledge-base effect-class=READ_ONLY
+tool = append-field-note effect-class=REVERSIBLE
+tool = stage-batch-sync effect-class=COMPENSATABLE compensation=rollback-batch-sync
+tool = purge-note-cache effect-class=IRREVERSIBLE

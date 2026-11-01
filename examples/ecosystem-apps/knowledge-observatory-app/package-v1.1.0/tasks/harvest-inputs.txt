@@ -1,0 +1,1 @@
+inputs: pinned source selectors for harvest (typed selectors only, no latest)

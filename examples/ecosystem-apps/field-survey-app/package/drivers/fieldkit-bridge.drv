@@ -1,0 +1,3 @@
+fieldkit-notes-bridge driver payload v1.0.0
+plane: user-space DriverProvider under EnforcementShim
+protocol: llmos.ext.driver.openai-compat note summarization bridge

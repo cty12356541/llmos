@@ -1,0 +1,5 @@
+checklist-version = 1.0.0
+survey-role = field-note-collector
+item = hinge-condition (photo + free-text)
+item = gauge-reading (numeric + unit)
+item = anomaly-flag (boolean + note)

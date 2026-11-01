@@ -1,0 +1,3 @@
+index-sync background-service v1.0.0
+role: incremental source indexing between harvest passes
+idempotency: 128-bit idempotency-key passthrough on every sync tick

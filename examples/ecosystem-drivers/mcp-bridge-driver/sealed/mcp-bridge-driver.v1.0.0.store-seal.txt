@@ -1,0 +1,19 @@
+# W80-E6B N-1 baseline store seal (frozen; regenerate with examples/ecosystem-apps/seal-n1-baseline.sh)
+label = mcp-bridge-driver
+publisher = nlos.market.mcp-bridge-works tier=CertifiedPublisher leaf_serial=72727272727272727272727272727272
+publisher_id = bbd890f29646da529432af5d1f849079
+package_id = 6d637062726964676531313131313131
+application_ids = 9d5a3294aa6ec510e3c83707a24b9a94 runtime=04e17b39b309b4830e20c7570cd8a097
+package_version = 1.0.0
+target_sabi_epoch = 1 host_sabi_epoch = 3
+certify_manifest_digest = e44d993023255155ce151dd26b08ef80a295ffc2b1ce3f299b9cf88745f4ca2a
+oci_manifest_digest = 243e68861441543889d308232848024a86266dc0b800abe4ddaa4aa2ea4cdc74
+gates = g1=PASS g2=PASS g3=PASS g4=PASS mask=0b1111
+certification_receipt_id = 92ddb0b144f002c2f5ee18f6ec16a96b
+certification_receipt_signature = 3f0b058333444530c68823c267bcd2482bb09fbc4da14d9c9779c8ecd3b9a4d4362ac8823de3c23bf8da6dfc9bb1d3138721b5c458554a37f0c52fa00e14f90c
+release_submission_digest = 6367db97f7af78f97afe63982899aaa69d27da12e3c7f073400fd4b6704e9192
+attestation_signature = a623f88a9ff558f9f25d5aa3a6df71472040c1d32eb03626891db9f4fddef58befe0be540c5dd3ee4559ed9eb5e1a192a8f16ac403923d737ddbb8caa97d390c
+promotion = Candidate->Stable epoch=1
+components = mcp-bridge-adapter:Driver,mcp-extension-manifest:ReadOnlySeedTemplate,mcp-effect-declarations:ReadOnlySeedTemplate,mcp-negotiation-profile:ReadOnlySeedTemplate
+artifact = examples/ecosystem-drivers/mcp-bridge-driver/sealed/mcp-bridge-driver.v1.0.0.nlos-pkg tree=package package=6d637062726964676531313131313131 version=4294967296 entries=4 tasks=0 sha256=6bff8ec8aeaff6d478eabbb6dbca97e062660fb711b719ff13ec9c67ec1fe83d bytes=2327
+# artifact = examples/ecosystem-drivers/mcp-bridge-driver/sealed/mcp-bridge-driver.v1.1.0.nlos-pkg tree=package-v1.1.0 package=6d637062726964676531313131313131 version=4295032832 entries=5 tasks=0 sha256=9a6ec0ebb328a5064b8781a7996f87cffb64dd35b1e6acf2fab8c52881fa525b bytes=2778

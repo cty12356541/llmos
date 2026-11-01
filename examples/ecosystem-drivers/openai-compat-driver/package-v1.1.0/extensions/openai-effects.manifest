@@ -1,0 +1,4 @@
+# DRV-LIFE-001 EffectDescriptor declarations for openai-compat-driver v1.0.0.
+# Inference calls are read-only externally; cost is metered, not mutating.
+effect = chat-completion class=READ_ONLY reconcile=same-idempotency-key summary="One metered non-streaming chat completion"
+effect = stream-chat-completion class=READ_ONLY reconcile=same-idempotency-key summary="One metered streamed chat completion"

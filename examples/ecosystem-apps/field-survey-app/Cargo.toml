@@ -1,0 +1,27 @@
+[package]
+name = "field-survey-app"
+description = "W80-E6B 第三方多组件参考 Application:野外巡检记录站——多角色任务 DAG(plan-route→collect-notes→sync-notes,升级追加 review-notes)、五维 LLM 预算、Artifact 血缘与 SameMajor 热升级/干净卸载,仅经公共权威 crate 驱动。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "field-survey-app"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+nlos-application = { path = "../../../crates/nlos-application" }
+nlos-artifact = { path = "../../../crates/nlos-artifact" }
+nlos-identity = { path = "../../../crates/nlos-identity" }
+nlos-plan = { path = "../../../crates/nlos-plan" }
+nlos-resource = { path = "../../../crates/nlos-resource" }
+nlos-slice-k = { path = "../../../crates/nlos-slice-k" }
+nlos-task = { path = "../../../crates/nlos-task" }
+nlos-types = { path = "../../../crates/nlos-types" }
+sha2 = { version = "0.11.0", default-features = false }
+
+[lints]
+workspace = true

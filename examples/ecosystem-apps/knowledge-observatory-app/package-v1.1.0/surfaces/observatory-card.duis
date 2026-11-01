@@ -1,0 +1,3 @@
+declarative observatory digest card v1.0.0
+view: digest-summary-card
+binding: content-addressed digest revisions

@@ -1,0 +1,1 @@
+inputs: pinned source selectors for publish (typed selectors only, no latest)

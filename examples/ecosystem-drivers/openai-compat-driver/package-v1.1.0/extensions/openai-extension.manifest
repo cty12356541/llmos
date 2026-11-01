@@ -1,0 +1,6 @@
+# Versioned extension manifest parsed by openai-compat-driver at load time.
+extension-id = llmos.ext.driver.openai-compat
+extension-version = 1.0
+protocol-id = openai-chat-completions
+protocol-versions = v1
+codec-freeze-tag = nlos.sabi.DriverProvider/v1.0

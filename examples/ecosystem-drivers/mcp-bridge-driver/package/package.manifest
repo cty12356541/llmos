@@ -1,0 +1,11 @@
+# mcp-bridge-driver v1.0.0 — W80-E6B third-party userland MCP-compatible
+# driver adapter sample manifest. Built/verified by the `nlos-package` CLI;
+# the certify sidecar directives live in certify.manifest.
+package-id = 6d637062726964676531313131313131
+version = 1.0.0
+
+# entries: entry = <name> <role> <path>
+entry = mcp-bridge-adapter executable adapters/mcp-bridge-adapter.bin
+entry = mcp-extension-manifest data extensions/mcp-extension.manifest
+entry = mcp-effect-declarations data extensions/mcp-effects.manifest
+entry = mcp-negotiation-profile data extensions/mcp-negotiation.profile

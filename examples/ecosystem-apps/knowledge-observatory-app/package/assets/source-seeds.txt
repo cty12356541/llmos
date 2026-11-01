@@ -1,0 +1,4 @@
+source-seeds = read-only v1.0.0
+seed = rss://internal-research-feeds pin=v2
+seed = artifact://team-digests pin=content-addressed
+seed = topic://observatory-watchlist pin=generation-locked

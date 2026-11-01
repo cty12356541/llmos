@@ -1,0 +1,10 @@
+# nlos-certify sidecar directives for mcp-bridge-driver v1.0.0 (W80-E6B).
+# Read by nlos-certify alongside package.manifest; ignored by nlos-package build.
+publisher-id = nlos.market.mcp-bridge-works
+application-id = nlos.market.mcp-bridge-works.mcp-bridge-driver
+surface-profile = application-platform
+network-policy = none
+sabi-service = import SERVICE_DIRECTORY feature=provider-register,health-watch
+sabi-service = import OBSERVABILITY feature=health-probe
+sabi-service = import APPLICATION feature=lifecycle-query
+idempotency-passthrough = * 128-bit
