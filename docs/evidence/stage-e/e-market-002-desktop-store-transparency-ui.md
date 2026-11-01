@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W80 / W80-E6C-DESKTOP-STORE-UI`（工作包 `E6` 桌面商店面，里程碑 `M-E4` 前置车道）
 - **日期**: `2026-11-01`
 - **Assurance Level**: `H4`（确定性本机单元 / 集成 / 组件级前端状态机与静态审计测试；不声称 `H7` 生产环境或物理对抗实证）
-- **状态**: `READY`（车道内验证门全绿；`invoke_handler` 挂接、`main.ts` 路由与 `style.css` 中央 `@import` 归 `W80-INT` 集成器，集成前不宣称端到端可用）
+- **状态**: `VERIFIED`（车道内 Rust 与前端门禁全绿，且 `W80-INT` 已完成 `desktop/src-tauri/src/lib.rs` `invoke_handler`、`desktop/src/main.ts` 路由装配与 `desktop/src/style.css` 中央样式引入三处壳层接线，`desktop/src-tauri` 单元/集成测试、前端测试套件与 `tsc && vite build` 全绿，晋升 canonical `DONE`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §16 / §22（`[TUI-CONSENT-001]`、`[DUI-OFFLINE-001]`、`[TCB-EGRESS-001]`）、§23.1–§23.2（`[PKG-OCI-001]`、`[PKG-MULTI-001]`、`[PKG-APPID-001]`）、§6 / §7（`[TCB-DOWNGRADE-001]`、`[CAP-REVOKE-001]`）
   - [ADR-0025 阶段 D 混合桌面合成层与可信 UI 分层](../../management/adrs/0025-stage-d-hybrid-desktop-compositor-and-trusted-ui-layering.md)（修订 1 `Graphite / Paper` 实心工业工作站规范、`L0–L3` 渐进披露、`[UI-PARITY-001]`）
@@ -97,18 +97,18 @@ $ npm run build    (tsc && vite build)
 
 **写集偏离（唯一一处，如实登记）**：任务要求桥接读取 `nlos-store-registry` / `nlos-publisher-trust` 数据面，但 `W80-0-SCAFFOLD` 未向 `desktop/src-tauri/Cargo.toml` 预挂这两个一方 path 依赖，且该文件不在任何 `W80` 车道独占清单内（`W80-INT` 独占为 `main.ts` / `lib.rs` / `package.json` / `package-lock.json` / `docs/management/**`）。本车道据此向 [desktop/src-tauri/Cargo.toml](../../../desktop/src-tauri/Cargo.toml) 追加两行一方 crate path 依赖（`nlos-store-registry`、`nlos-publisher-trust`，均已在根 workspace 内、零新增第三方供应链，`RISK-E-04` 供应链锁定不受影响），并同步更新 `desktop/src-tauri/Cargo.lock`（desktop 独立 workspace 自有锁文件，非根 `Cargo.lock`）。若维护者裁定该文件归 `W80-INT`，此两行可原样由集成器确认保留。
 
-## 5. 需要 `W80-INT` 挂接的接点清单
+## 5. `W80-INT` 壳层接线收口记录
 
-| 接点 | 文件 | 动作 |
+| 接点 | 文件 | `W80-INT` 集成状态 |
 |---|---|---|
-| 命令注册 | `desktop/src-tauri/src/lib.rs` `generate_handler![]` | 追加 `store_catalog::store_catalog_snapshot`、`store_catalog::store_release_transparency`、`store_catalog::store_permission_diff`、`store_catalog::store_prepare_sensitive_action` |
-| 前端路由 | `desktop/src/main.ts` | 按既有 `register("task-space", ...)` 模式注册 `store-catalog` 视图，用 `createTauriStoreCatalogClient()` + `createStoreCatalogController({ client, openZ4Challenge: (spec) => trustedUi.z4Dialog.openChallenge(...) })` 装配 |
-| 样式引入 | `desktop/src/style.css` | 追加 `@import "./views/store-catalog/store-catalog.css";`（沿用 omnibar 中央引入惯例） |
+| 命令注册 | `desktop/src-tauri/src/lib.rs` `generate_handler![]` | 已由 `W80-INT` 挂接 `store_catalog::store_catalog_snapshot`、`store_catalog::store_release_transparency`、`store_catalog::store_permission_diff`、`store_catalog::store_prepare_sensitive_action` |
+| 前端路由 | `desktop/src/main.ts` | 已由 `W80-INT` 按既有 `register("task-space", ...)` 模式注册 `store-catalog` 视图，并用 `createTauriStoreCatalogClient()` + `createStoreCatalogController({ client, openZ4Challenge: (spec) => trustedUi.z4Dialog.openChallenge(...) })` 装配 |
+| 样式引入 | `desktop/src/style.css` | 已由 `W80-INT` 追加 `@import "./views/store-catalog/store-catalog.css";`（沿用 omnibar 中央引入惯例） |
 | 生产路径配置 | 桌面运行环境 | 设置 `LLMOS_DESKTOP_STORE_ROOT`（`store-registry.db` 所在目录）与 `LLMOS_DESKTOP_PUBLISHER_TRUST_DB`（`publisher-trust.db` 路径），或经命令入参 `storeRootOverride` / `trustDbOverride` 显式传入 |
 
 ## 6. 未运行项与诚实边界
 
-- **端到端桌面壳运行验证未执行**：`invoke_handler` 挂接与 `main.ts` 路由归 `W80-INT`，本车道以组件级前端状态机测试 + `tsc`/`vite build` + Tauri 命令接线契约测试覆盖验证，不声称实机点击流；
+- **实机物理窗口点击流未声称**：`W80-INT` 已完成 `desktop/src-tauri/src/lib.rs` `invoke_handler`、`desktop/src/main.ts` 路由与 `desktop/src/style.css` 样式引入三处壳层接线，并通过 `desktop/src-tauri` 单元/集成测试、前端全部组件状态机套件与 `tsc && vite build` 构建门禁，但本证据属确定性 `H4` 测试验证，不声称人工 GUI 物理点击流实证；
 - **三平台 CI 未运行**：本车道仅 Windows 11 本机验证；macOS / Linux 侧模块无平台分支代码（桥接全平台纯 Rust + 既有 `spawn_blocking` 形态），三平台回归归 `W80-INT` 推送后 CI；
-- **`H7` 对抗实证不在本车道**：供应链 / 吊销 / 防抢注全矩阵归 `W80-E6D`（`crates/nlos-certify/tests/h7_supply_chain_adversarial.rs`）；本证据仅覆盖桌面桥接面的确定性复验与 fail-closed 路径；
-- **全仓既有测试套件未重跑**：本车道写集与既有模块零交集（除 `Cargo.toml` 两行依赖追加），`cargo test --lib`（23 项，含既有 20 项）在本车道内通过；全 workspace 回归归 `W80-INT`。
+- **`H7` 供应链对抗实证见同波次伴生证据**：供应链 / 吊销 / 防抢注六类攻击矩阵由 `W80-E6D`（[e-security-001](e-security-001-h7-supply-chain-and-revocation-adversarial.md)）专项覆盖；本证据仅覆盖桌面桥接面的确定性复验与 fail-closed 路径；
+- **根工作区与桌面工作区合流复验**：本车道内通过 `cargo test --lib`（23 项，含既有 20 项）与 `store_catalog_trust_side`（5 项），跨车道合流复验已由 `W80-INT` 完成。

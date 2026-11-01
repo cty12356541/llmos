@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W80 / W80-E6D-SUPPLYCHAIN-H7`（工作包 `E6` 第 4 条：`H7` 供应链与沙箱对抗回归套件中的供应链/吊销/防抢注/回滚/卸载残留半边）
 - **日期**: `2026-11-01`
 - **Assurance Level**: `H7`（安全/兼容 conformance 阶梯下的**确定性本地宿主对抗性负向集成测试**：六类攻击输入 100% 拦截、每条负路径断言具体错误变体；不声称生产环境渗透测试、外部红队实证或物理硬件台架）
-- **状态**: `VERIFIED`（本车道独占写集内三道验证门全绿；三平台 CI 与 `W80-INT` 合流待波次集成后统一回执）
+- **状态**: `VERIFIED`（车道独占写集三道验证门全绿，并经 `W80-INT` 四车道工作区合流复验 `nlos-certify` `17/17` 通过，晋升 canonical `DONE`；远端三平台 CI 矩阵于推送后守护）
 - **验证平台**: Windows 11 Pro（10.0.28000）、Rust stable（msvc）、仓库独立 git worktree 基线 `0436b789`
 - **权威规范与治理依据**:
   - [stage-e-progress.md](../../management/stage-e-progress.md) §E.2.2 `E6` 第 4 条（"执行 `H7` 供应链与沙箱对抗回归套件（覆盖篡改包层、伪造叶证书、重放过期 `RevocationEpoch`、抢注 `ApplicationId`、恶意升级崩溃、卸载权限残留与 Wasm 路径/网络逃逸）"——其中 Wasm 路径/网络逃逸归 `W80-E6A` 车道，本证据只覆盖前六类）与 §E.5.5 退出门禁 2（"伪造发布者证书/篡改 OCI 层/重放旧 `RevocationEpoch`/抢注 `ApplicationId` 100% 拦截"）
@@ -52,7 +52,7 @@
 
 ## 4. 未覆盖项与诚实边界（`Claim <= Evidence`）
 
-1. **Wasm 路径/网络/配额逃逸对抗矩阵不在本车道**：§E.2.2 `E6` 第 4 条中"Wasm 路径/网络逃逸"归 `W80-E6A-WASM-SANDBOX` 车道（`crates/nlos-wasm-sandbox`，闭合 `U-9`），其写集与本车道正交，本文件不声称任何沙箱逃逸拦截证据。
+1. **Wasm 路径/网络/配额逃逸对抗矩阵见同波次伴生证据**：§E.2.2 `E6` 第 4 条中"Wasm 路径/网络逃逸"由 `W80-E6A-WASM-SANDBOX` 车道（`crates/nlos-wasm-sandbox`，[E-SANDBOX-001](e-sandbox-001-cross-platform-wasm-process-isolation.md)，闭合 `U-9`）专项覆盖，其写集与本车道正交，本文件仅覆盖供应链/吊销/防抢注/回滚/卸载残留六类攻击矩阵。
 2. **本车道验证平台仅为 Windows 本机**：三平台（Windows/macOS/Linux）CI 全绿是合并前置门（CLAUDE.md §5），须待本分支推送后由 "Rust cross-platform verification" CI 与 `W80-INT` 合流统一回执；裸 `rusqlite` 触发器攻击子项（攻击 3c/3d）为平台无关的 SQLite DDL 行为，但 macOS/Linux 实跑数字尚无。
 3. **整库文件级替换攻击不在本测试范围**：攻击 3c 证明的是**同库内**直写 `UPDATE`/`DELETE` 被 `trust_revocation_state_no_rollback` 等 `RAISE(ABORT)` 触发器拒绝；对持有文件系统级写权限、直接整体替换 trust DB 文件为旧副本的攻击者，防御依赖发布同步对账与更高层 `store_revocation_epoch` 水位（`EntitlementStoreEpochTooStale`）而非该触发器，本文件不声称覆盖。
 4. **认证收据劫持子项走 `issue_store_certification_receipt` 直连而非整条四门流水线重跑**：四门全流程 + 收据拒发的端到端劫持路径已由既有 [e2e_trust_store_certify_pipeline.rs](../../../crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs)（`11/11` 基线内）覆盖，本车道攻击 2f/4c 在同一信任检查点上以更小半径复验，不重复 heavyweight 全流水线；两处断言点等价（`run_certification_pipeline` 尾部即调用 `issue_store_certification_receipt`）。

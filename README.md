@@ -93,9 +93,9 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 | **Stage B** | Single-machine application platform ([`stage-b-progress.md`](docs/management/stage-b-progress.md)) | `EXITED` (2026-09-21) |
 | **Stage C** | Distributed modern system: single-host multi-process Cells + `C-XHOST` cross-physical-host mTLS, clock-skew lease envelope & embedded Raft ([`stage-c-progress.md`](docs/management/stage-c-progress.md)) | `EXITED` (2026-10-29 `W76`) |
 | **Stage D** | Complete NL desktop: five-plane `Z0–Z4` Tauri 2 industrial workstation, `L0–L3` progressive disclosure, 12-domain inspect/control symmetry & `Z4` security consent screen ([`stage-d-progress.md`](docs/management/stage-d-progress.md)) | `EXITED` (2026-10-29 `W76`) |
-| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (E0–E5 Verified H4; ADR-0027 ACCEPTED; E6–E7 DESIGN)` (2026-10-31 `W79`) |
+| **Stage E** | Compatibility & ecosystem: `SABI v1.0` long-term compatibility policy, out-of-core compatibility shim, store governance & `E0` out-of-the-box onboarding ([`stage-e-progress.md`](docs/management/stage-e-progress.md), [`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)) | `IN_PROGRESS (E0–E6 Verified H4/H7; ADR-0027 ACCEPTED; E7 DESIGN)` (2026-11-01 `W80`) |
 
-> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. In Stage E, work packages `E0` (`W77-PRE` / `M-E0.5`: `nlos-up`, user-space `nlos-driver-llm-http` stamped `PROVIDER_ISOLATION_UNVERIFIED`, `starter-assistant-app`, and desktop KeyPool bridge; [E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md), [E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)), `E1` (`W77` / `M-E1`: `9/9` SABI channels `frozen = true`, `N / N-1 / N-2` compatibility matrix, `deprecation-manifest.yaml` warning telemetry, and 5-language `v1.0` immutable golden wire corpus; [E-SABI-001](docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md), [E-SABI-002](docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)), `E2` (`W78` / `M-E2`: out-of-core unprivileged `nlos-compat-shim` for `N-1 / N-2 <-> N` SABI & legacy `minicbor <-> DriverProvider` translation with `[DRV-SHIM-001]` 4-layer zero-secret isolation; [E-SHIM-001](docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md)), `E3` (`W78` / `M-E2`: `nlos-migrate` static manifest/deprecation checker, `tools/sabi-compat-diff`, and `[PKG-UPDATE-001]` 3-mode container migration & atomic rollback sandbox; [E-MIGRATE-001](docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md)), `E4` (`W79` / `M-E3`: `nlos-publisher-trust` 3-tier Ed25519 PKI, monotonic `RevocationEpoch` CRL, `ApplicationId` anti-hijack ownership ledger, and `nlos-plan` 7-class ecosystem Typed Selector pinning + G3 `WaitingAuthorization` conditioned materialization gate closing `U-7` / `U-8`; [E-TRUST-001](docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md)), and `E5` (`W79` / `M-E3`: `nlos-store-registry` OCI CAS governance catalog, opaque `EntitlementToken` redemption & 3-tier `RecallAdvisory` revocation cascade, plus `nlos-certify` 4-gate automated certification pipeline & pure-Rust SPDX/lockfile supply-chain auditor advancing `RISK-B-09` `open -> partial`; [E-STORE-001](docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md), [E-CERTIFY-001](docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md)) are verified at `H4` with [ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) in `ACCEPTED`; downstream dual-layer Wasm sandbox, reference marketplace bundles, and `[ROAD-E-001]` upgrade gate work packages `E6`–`E7` remain in `DESIGN` planning with zero runtime claims. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), third-party Wasm sandbox production wiring (`U-9`), `SABI v1.0` permanent freeze sign-off (`RISK-B-05`), OS commercial installer notarization (`RISK-B-06`), and periodic upstream supply-chain review (`RISK-B-09`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
+> **Evidence & boundary discipline:** Stages B, C, and D exited under explicit `SATISFIED-WITH-BOUNDARIES` reviews ([W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md), [W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md), [W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)) with `P0 = 0`. In Stage E, work packages `E0` (`W77-PRE` / `M-E0.5`: `nlos-up`, user-space `nlos-driver-llm-http` stamped `PROVIDER_ISOLATION_UNVERIFIED`, `starter-assistant-app`, and desktop KeyPool bridge; [E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md), [E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)), `E1` (`W77` / `M-E1`: `9/9` SABI channels `frozen = true`, `N / N-1 / N-2` compatibility matrix, `deprecation-manifest.yaml` warning telemetry, and 5-language `v1.0` immutable golden wire corpus; [E-SABI-001](docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md), [E-SABI-002](docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)), `E2` (`W78` / `M-E2`: out-of-core unprivileged `nlos-compat-shim` for `N-1 / N-2 <-> N` SABI & legacy `minicbor <-> DriverProvider` translation with `[DRV-SHIM-001]` 4-layer zero-secret isolation; [E-SHIM-001](docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md)), `E3` (`W78` / `M-E2`: `nlos-migrate` static manifest/deprecation checker, `tools/sabi-compat-diff`, and `[PKG-UPDATE-001]` 3-mode container migration & atomic rollback sandbox; [E-MIGRATE-001](docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md)), `E4` (`W79` / `M-E3`: `nlos-publisher-trust` 3-tier Ed25519 PKI, monotonic `RevocationEpoch` CRL, `ApplicationId` anti-hijack ownership ledger, and `nlos-plan` 7-class ecosystem Typed Selector pinning + G3 `WaitingAuthorization` conditioned materialization gate closing `U-7` / `U-8`; [E-TRUST-001](docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md)), `E5` (`W79` / `M-E3`: `nlos-store-registry` OCI CAS governance catalog, opaque `EntitlementToken` redemption & 3-tier `RecallAdvisory` revocation cascade, plus `nlos-certify` 4-gate automated certification pipeline & pure-Rust SPDX/lockfile supply-chain auditor advancing `RISK-B-09` `open -> partial`; [E-STORE-001](docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md), [E-CERTIFY-001](docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md)), and `E6` (`W80` / `M-E4`: `nlos-wasm-sandbox` dual-layer `Process + Wasmtime` strong sandbox `54/54` escape matrix closing `U-9`, decoupled reference marketplace Apps/Drivers with 16 byte-deterministic sealed `N-1` `.nlos-pkg` baseline artifacts, desktop Store Catalog transparency UI wired to `Z4` at `H4`, and 6-class `H7` supply-chain/revocation adversarial suite `17/17`; [E-SANDBOX-001](docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md), [E-MARKET-001](docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md), [E-MARKET-002](docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md), [E-SECURITY-001](docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md)) are verified (`H4` / `H7`) with [ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) in `ACCEPTED`; only the final `[ROAD-E-001]` `N-1 -> N` zero-recompile host upgrade gate & ledger backfill work package `E7` remains in `DESIGN` planning with zero runtime claims. Hardware power-loss bench (`U-4`), `1M_LOGICAL` bare-metal WAN cluster (`U-1`), remote physical side-effect erasure (`U-5`), Linux/macOS remote CI guard for Wasm sandbox `#[cfg(unix)]` branches & ban on unsandboxed native third-party binaries (`U-9` / Decision `E3`), `SABI v1.0` permanent freeze sign-off (`RISK-B-05`), OS commercial installer notarization (`RISK-B-06`), and periodic upstream supply-chain review (`RISK-B-09`) remain explicitly bounded in [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md).
 
 ### Stage C verified work packages (`C-core` + `C-XHOST`)
 
@@ -130,7 +130,7 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 ## Repository layout
 
 ```text
-crates/              44 Rust workspace library/binary crates (root Cargo.toml)
+crates/              45 Rust workspace library/binary crates (root Cargo.toml)
   nlos-types/           Nominal identity types (zero dependencies)
   nlos-identity/        Principal & key authority (Ed25519)
   nlos-capability/      Capability issuance, attenuation, revocation & KEK custody
@@ -152,18 +152,21 @@ crates/              44 Rust workspace library/binary crates (root Cargo.toml)
   nlos-publisher-trust/ 3-tier Ed25519 publisher PKI, RevocationEpoch CRL & AppId ownership (Stage E E4)
   nlos-store-registry/  OCI CAS store catalog, entitlement redemption & 3-tier recall ledger (Stage E E5)
   nlos-certify/         4-gate store certification pipeline & pure-Rust SPDX/lockfile auditor (Stage E E5)
+  nlos-wasm-sandbox/    Dual-layer Process + Wasmtime WASI allowlist strong sandbox (Stage E E6)
   ... (23 more workspace crates)
 
 desktop/             Five-plane Z0-Z4 Tauri 2 workstation desktop (TypeScript + independent Rust workspace)
 examples/
   sample-app/            Sample signed NLOS application payload & lifecycle fixture (independent package)
   starter-assistant-app/ Reference productivity bundle (v1.0.0/v1.1.0 TaskPlan + 5D LlmTokenBudget + Artifact lineage)
+  ecosystem-apps/        Decoupled reference marketplace Apps & N-1 baseline sealer (independent workspace)
+  ecosystem-drivers/     Decoupled reference MCP & OpenAI-compat user-space Drivers (independent workspace)
 docs/
   design/            Canonical architecture specification (v0.5, 278 KB, 200+ requirement IDs)
   discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
     adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
-    evidence-index.yaml  197 evidence entries (H0-H8 assurance levels)
+    evidence-index.yaml  201 evidence entries (H0-H8 assurance levels)
     claims.yaml      116 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D)
 sdk/                 Python · TypeScript · Go · C# SABI SDKs
 schema/              Protobuf + CDDL schemas + golden wire test vectors
@@ -211,7 +214,7 @@ See the full step-by-step walkthrough in [`docs/developers/quickstart-trial.md`]
 git clone https://github.com/cty12356541/llmos
 cd llmos
 
-# Build all 44 root workspace crates
+# Build all 45 root workspace crates
 cargo build --workspace
 
 # Run the root workspace test suite
@@ -339,7 +342,7 @@ The best starting points for contributors and coding agents:
 | Distributed systems | `nlos-cell`, `nlos-lease`, `nlos-net`, `nlos-consensus` (Stage C `EXITED`) |
 | Control plane & CLI | `nlos-system-control`, `nlos-package` (`system-control-daemon`, `system-control-cli`, package tooling) |
 | TypeScript / Tauri 2 desktop | `desktop/` (Stage D `EXITED`, five-plane `Z0–Z4` workstation shell) |
-| Compatibility, store governance & SDKs | `nlos-up`, `nlos-driver-llm-http`, `nlos-compat-shim`, `nlos-migrate`, `nlos-publisher-trust`, `nlos-store-registry`, `nlos-certify`, `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS`: `E0`–`E5` Verified `H4`, `ADR-0027` `ACCEPTED`, `E6`–`E7` `DESIGN`; see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
+| Compatibility, store governance & SDKs | `nlos-up`, `nlos-driver-llm-http`, `nlos-compat-shim`, `nlos-migrate`, `nlos-publisher-trust`, `nlos-store-registry`, `nlos-certify`, `nlos-wasm-sandbox`, `nlos-schema`, `sdk/` (Stage E `IN_PROGRESS`: `E0`–`E6` Verified `H4`/`H7`, `ADR-0027` `ACCEPTED`, `E7` `DESIGN`; see [`stage-e-progress.md`](docs/management/stage-e-progress.md)) |
 
 ---
 
@@ -354,7 +357,7 @@ The best starting points for contributors and coding agents:
 | [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C authoritative progress ledger (`EXITED`) |
 | [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D authoritative progress ledger (`EXITED`) |
-| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS`: `E0`–`E5` Verified `H4`; `ADR-0027` `ACCEPTED`; `E6`–`E7` `DESIGN`) |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E authoritative progress ledger (`IN_PROGRESS`: `E0`–`E6` Verified `H4`/`H7`; `ADR-0027` `ACCEPTED`; `E7` `DESIGN`) |
 | [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D exit unknown & residual risks ledger (`P0 = 0`) |
 | [`AGENTS.md`](AGENTS.md) | Mandatory work rules for all agents and contributors in this repo |
 
