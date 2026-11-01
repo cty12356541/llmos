@@ -60,7 +60,7 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 |---|---|---|---|---|---|
 | P0 | Rust | `SDK-2 PARTIAL` | 核心实现 + 首个 SDK | 内核、系统服务、CLI、可信 adapter | 不能让 Rust type/layout 泄漏成公共 ABI |
 | P0 | TypeScript | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | Tauri/Node 控制工具、桌面 UI 配套生态 | WebView 与 Node 权限边界；discovery/common semantics 尚未完成 |
-| P0 | Python | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界（已在 `W73` 补齐显式 `UNSUPPORTED_EVENT_LOOP` fail-fast 检测）、`sdk/python/pyproject.toml` 打包入口与 `ChannelClient` SABI 通道（[W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md)）已就位；跨平台发布流水线待 `SDK-4` |
+| P0 | Python | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界（已在 `W73` 补齐显式 `UNSUPPORTED_EVENT_LOOP` fail-fast 检测）、`sdk/python/pyproject.toml` 打包入口与 `ChannelClient` SABI 通道（[W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md)）已就位；`qq-agent` Dogfood 二期登记的独立 wheel 打包 `gen/python`（`L-012`）、单连接多轮复用 `--auth-socket` `PrincipalHandshake`（`L-008`/`L-011`）、`WaitClient`/`OperationClient`（`L-009`/`L-011`）及受控 LLM 预算/沙箱工具薄客户端（`L-010`/`L-013`/`L-014`）已排入 `W82`（`PLANNED / DESIGN`，见 [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8`）；跨平台发布流水线待 `SDK-4` |
 | P1 | C#/.NET | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | Windows 桌面、企业、Unity/.NET；原生 `System.IO.Pipes` | macOS/Linux profile、peer identity、版本最低线和 NuGet 发布 |
 | P1 | Go | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | CLI、系统代理、基础设施和后续远程节点；部署简单 | Windows named pipe 通常需额外 adapter；context cancel 与 uncertain retry 映射 |
 | P2 | Java/Kotlin | `UNASSESSED` | 需求驱动评估 | 企业服务、JVM 工具、Android/Kotlin 生态 | Windows named pipe 缺少同等直接标准路径；JVM/runtime 体量 |
@@ -122,6 +122,7 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
 | Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012/013 均已通过三平台，最新 run 30743421174 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
+| Python/TS SABI 最小完备窄腰（`L-008` ~ `L-014`：单连接多轮复用、`WaitClient`/`OperationClient`/`--auth-socket`、`nlos-sdk` 独立 wheel 打包 `gen/python`、受控 LLM 五维预算网关与沙箱工具薄通道） | `PLANNED / DESIGN`（2026-11-02 立项排入 `W82`，承接 `qq-agent` `W1 -> W4` Dogfood 二期审计，不阻塞 `W81` `SABI v1.0` 冻结） | [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` |
 | Go generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `DEFERRED` | 新 Evidence，不提前编号 |

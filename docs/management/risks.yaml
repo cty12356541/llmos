@@ -86,7 +86,7 @@
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
     - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
-  review_point: "W77-W81 已完成 9/9 SABI 通道 frozen=true、五语言 v1.0 黄金语料库、nlos-compat-shim 核外垫片、nlos-migrate 迁移工具链与 [ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证（H7，ADR-0027 晋升 VERIFIED），全部技术前提已闭环；按决策点 E2 呈请维护者审阅 W81 终审报告并显式签字批准 SABI v1.0 长期冻结承诺后正式闭合本项"
+  review_point: "W77-W81 已完成 9/9 SABI 通道 frozen=true、五语言 v1.0 黄金语料库、nlos-compat-shim 核外垫片、nlos-migrate 迁移工具链与 [ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证（H7，ADR-0027 晋升 VERIFIED），全部技术前提已闭环；外部 qq-agent Dogfood 二期登记的 L-008..L-014 最小完备窄腰补面（BOUND-E-06，0 改动接线 + 2 个 SABI v1.1 纯增量薄通道）不破坏亦不阻塞 SABI v1.0 基线冻结，已排入 W82（DESIGN）；按决策点 E2 呈请维护者审阅 W81 终审报告并显式签字批准 SABI v1.0 长期冻结承诺后正式闭合本项"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
