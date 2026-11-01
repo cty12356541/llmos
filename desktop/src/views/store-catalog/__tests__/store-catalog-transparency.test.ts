@@ -23,6 +23,8 @@ import {
   type StoreReleaseTransparencyDto,
   type StoreSensitiveActionEntryDto,
 } from "../index";
+import { createWorkstationCompositor } from "../../../compositor";
+import { Z4_ARMING_WINDOW_MS, createTrustedUiSuite } from "../../../trusted-ui";
 
 /* ==========================================================================
    Node Builtin Loader (Zero @types/node Dependency for Strict DOM tsconfig)
@@ -808,6 +810,184 @@ async function main(): Promise<void> {
       "sensitive input nested under input",
     );
   });
+
+  await runSuite(
+    "9. W80-INT-UI shell wiring audit & live Z4/Compositor handoff integration",
+    async () => {
+      const fs = await importBuiltin<NodeFsLike>("node:fs");
+      const path = await importBuiltin<NodePathLike>("node:path");
+      const urlMod = await importBuiltin<NodeUrlLike>("node:url");
+
+      const currentFile = urlMod.fileURLToPath(import.meta.url);
+      const desktopRoot = path.resolve(path.dirname(currentFile), "../../../..");
+
+      // 1. Static audit: desktop/src-tauri/src/lib.rs generate_handler![] registration.
+      const libRsPath = path.join(desktopRoot, "src-tauri", "src", "lib.rs");
+      const libRs = fs.readFileSync(libRsPath, "utf-8");
+      const handlerMatch = /tauri::generate_handler!\[([\s\S]*?)\]/.exec(libRs);
+      assert(handlerMatch !== null, "lib.rs must contain tauri::generate_handler![...]");
+      const handlerBody = handlerMatch ? handlerMatch[1]! : "";
+      for (const cmd of [
+        "store_catalog::store_catalog_snapshot",
+        "store_catalog::store_release_transparency",
+        "store_catalog::store_permission_diff",
+        "store_catalog::store_prepare_sensitive_action",
+      ]) {
+        assert(
+          handlerBody.includes(cmd),
+          `lib.rs generate_handler![] must register ${cmd}`,
+        );
+      }
+
+      // 2. Static audit: desktop/src/style.css central stylesheet import.
+      const styleCssPath = path.join(desktopRoot, "src", "style.css");
+      const styleCss = fs.readFileSync(styleCssPath, "utf-8");
+      assert(
+        styleCss.includes('@import "./views/store-catalog/store-catalog.css";'),
+        "style.css must centrally import ./views/store-catalog/store-catalog.css",
+      );
+
+      // 3. Static audit: desktop/src/main.ts shell routing, delegation, and Z4 handoff.
+      const mainTsPath = path.join(desktopRoot, "src", "main.ts");
+      const mainTs = fs.readFileSync(mainTsPath, "utf-8");
+      for (const requiredToken of [
+        "createStoreCatalogController",
+        "createTauriStoreCatalogClient",
+        "renderStoreCatalogHtml",
+        '"store-catalog"',
+        "trustedUi.z4Dialog.openChallenge",
+        "compositor.openZ4Modal",
+        "storeCatalogController.setLocale",
+        "storeCatalogController.setDisclosure",
+        "[data-store-action-kind]",
+        ".nlos-store-row[data-store-pkg][data-store-version]",
+      ]) {
+        assert(
+          mainTs.includes(requiredToken),
+          `main.ts must wire ${requiredToken}`,
+        );
+      }
+
+      // 4. Functional integration: live WorkstationCompositor + TrustedUiSuite + StoreCatalogController.
+      let monoClock = 10_000;
+      const compositor = createWorkstationCompositor({
+        viewportWidth: 1440,
+        viewportHeight: 900,
+        initialLocale: "zh-CN",
+        initialDisclosure: "L1",
+        nowMonoMs: () => monoClock,
+      });
+      const initialSnap = compositor.getSnapshot();
+      const trustedUi = createTrustedUiSuite({
+        initialSessionState: initialSnap.sessionState,
+        initialSessionGeneration: initialSnap.sessionGeneration,
+        locale: initialSnap.locale,
+        disclosure: initialSnap.disclosure,
+      });
+
+      let nextReversibility: "COMPENSATABLE_ROLLBACK" | "IRREVERSIBLE" =
+        "COMPENSATABLE_ROLLBACK";
+      const storeCtrl = createStoreCatalogController({
+        client: {
+          loadSnapshot: async () => sampleSnapshot(),
+          loadTransparency: async () => sampleTransparency(STORE_CHAIN_STATUS_VERIFIED),
+          loadPermissionDiff: async () => sampleDiff(),
+          prepareSensitiveAction: async () => sampleActionEntry(nextReversibility),
+        },
+        initialLocale: initialSnap.locale,
+        initialDisclosure: initialSnap.disclosure,
+        nowMs: () => NOW_MS,
+        openZ4Challenge: (spec) => {
+          const nowMono = monoClock;
+          const activeLocale = compositor.getSnapshot().locale;
+          const isIrreversible =
+            spec.reversibilityAndRisk.reversibilityClass === "IRREVERSIBLE";
+          const challenge = trustedUi.z4Dialog.openChallenge(
+            { kind: "tcb_trusted_broker" },
+            spec,
+            nowMono,
+          );
+          compositor.openZ4Modal(
+            {
+              promptId: challenge.challengeIdHex,
+              title: spec.requestingApp.displayName,
+              summary: `${spec.actionScope.plainSummary[activeLocale]} · ${spec.resourceCeiling.plainCeiling[activeLocale]}`,
+              blastRadiusItems: spec.reversibilityAndRisk.blastRadiusRows,
+              statutoryLock: isIrreversible ? "IRREVERSIBLE_NO_UNDO" : undefined,
+              onConfirm: () => {
+                trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                  confirm: true,
+                  origin: "trusted_shell",
+                  source: "POINTER",
+                  irreversibleHighContrastAck: isIrreversible,
+                  nowMonoMs: monoClock,
+                });
+              },
+              onCancel: () => {
+                trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                  confirm: false,
+                  origin: "trusted_shell",
+                  source: "KEYBOARD",
+                  nowMonoMs: monoClock,
+                });
+              },
+            },
+            nowMono,
+          );
+        },
+      });
+
+      compositor.subscribe((snap) => {
+        trustedUi.setLocaleAndDisclosure(snap.locale, snap.disclosure);
+        storeCtrl.setLocale(snap.locale);
+        storeCtrl.setDisclosure(snap.disclosure);
+      });
+
+      // Verify locale & disclosure synchronization from compositor -> store controller.
+      compositor.setLocale("en-US");
+      compositor.setDisclosure("L2");
+      assert(storeCtrl.getSnapshot().locale === "en-US", "compositor syncs locale to storeCtrl");
+      assert(
+        storeCtrl.getSnapshot().disclosure === "L2",
+        "compositor syncs disclosure to storeCtrl",
+      );
+
+      // Trigger verified sensitive action (COMPENSATABLE_ROLLBACK) -> opens real Z4 challenge & modal.
+      await storeCtrl.refresh();
+      await storeCtrl.selectRelease("a1".repeat(16), sampleEntry().packageVersion);
+      await storeCtrl.requestSensitiveAction(STORE_ACTION_INSTALL);
+
+      assert(trustedUi.isZ4PlaneActive(), "TrustedUiSuite Z4 plane must activate on store handoff");
+      assert(compositor.getSnapshot().z4Active, "Compositor Z4 modal must activate on store handoff");
+      const z4Html = trustedUi.renderActiveOverlayHtml(monoClock);
+      assert(
+        z4Html.includes("Install this application package"),
+        "Z4 security overlay renders store action summary in active en-US locale",
+      );
+
+      // Clickjacking arming window blocks premature confirmation, then succeeds after arming window.
+      const earlyConfirm = compositor.confirmZ4Modal(monoClock + 50);
+      assert(
+        !earlyConfirm.accepted && earlyConfirm.rejectionCode === "Z4_ARMING_GUARD",
+        "Compositor enforces 350ms Z4 arming guard on store confirmation",
+      );
+      monoClock += Z4_ARMING_WINDOW_MS + 20;
+      const validConfirm = compositor.confirmZ4Modal(monoClock);
+      assert(validConfirm.accepted, "Compositor confirms Z4 modal after arming window");
+      assert(
+        trustedUi.z4Dialog.audit.z4ChallengesApproved === 1,
+        "TrustedUiSuite records approved Z4 decision from store handoff",
+      );
+
+      // Irreversible action projects statutory lock IRREVERSIBLE_NO_UNDO into compositor Z4 modal.
+      nextReversibility = "IRREVERSIBLE";
+      await storeCtrl.requestSensitiveAction(STORE_ACTION_INSTALL);
+      assert(
+        compositor.getSnapshot().activeZ4Modal?.statutoryLock === "IRREVERSIBLE_NO_UNDO",
+        "Irreversible store action sets IRREVERSIBLE_NO_UNDO statutory lock on Z4 modal",
+      );
+    },
+  );
 
   console.log(
     `All ${passedSuites} W80-E6C Desktop Store Transparency suites passed (${passedAssertions} assertions).`,

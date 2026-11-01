@@ -60,6 +60,12 @@ import { ClusterPostureController } from "./views/offline-cluster";
 import { createWorkstationSettingsSuiteController } from "./views/settings";
 import { SpotlightController } from "./views/spotlight";
 import {
+  createStoreCatalogController,
+  createTauriStoreCatalogClient,
+  renderStoreCatalogHtml,
+  type StoreCatalogController,
+} from "./views/store-catalog";
+import {
   bindTaskSpaceToCompositor,
   createTaskSpaceSurfaceController,
   taskSpaceView,
@@ -1687,7 +1693,47 @@ function isEditableTextTarget(target: EventTarget | null): boolean {
   );
 }
 
-function buildL3DiagnosticInspectorLayout(config: ConfigDto): HTMLElement {
+function storeCatalogView(controller: StoreCatalogController): HTMLElement {
+  const host = el("div", { className: "store-catalog-host" });
+  const render = (): void => {
+    host.innerHTML = renderStoreCatalogHtml(controller.getSnapshot());
+  };
+  render();
+  controller.subscribe(() => {
+    render();
+  });
+  host.addEventListener("click", (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null) {
+      return;
+    }
+    const actionBtn = target.closest("[data-store-action-kind]");
+    if (actionBtn !== null) {
+      if (actionBtn.hasAttribute("disabled")) {
+        return;
+      }
+      const kind = actionBtn.getAttribute("data-store-action-kind");
+      if (kind !== null && kind.length > 0) {
+        void controller.requestSensitiveAction(kind).catch(() => undefined);
+      }
+      return;
+    }
+    const row = target.closest(".nlos-store-row[data-store-pkg][data-store-version]");
+    if (row !== null) {
+      const pkg = row.getAttribute("data-store-pkg");
+      const ver = Number(row.getAttribute("data-store-version"));
+      if (pkg !== null && pkg.length > 0 && Number.isFinite(ver)) {
+        void controller.selectRelease(pkg, ver).catch(() => undefined);
+      }
+    }
+  });
+  return host;
+}
+
+function buildL3DiagnosticInspectorLayout(
+  config: ConfigDto,
+  storeCatalogController: StoreCatalogController,
+): HTMLElement {
   const layout = el("div", { className: "layout" });
   const sidebar = el("nav", { className: "sidebar" });
   const main = el("main", { className: "main" });
@@ -1701,6 +1747,9 @@ function buildL3DiagnosticInspectorLayout(config: ConfigDto): HTMLElement {
     // TASK_MANAGER_TABS 表;返回 false 的消费在该视图内提示。
     tab.dataset.viewId = id;
     tab.addEventListener("click", () => {
+      if (id === "store-catalog") {
+        void storeCatalogController.refresh().catch(() => undefined);
+      }
       for (const [otherId, otherNode] of views) {
         otherNode.classList.toggle("active", otherId === id);
       }
@@ -1734,6 +1783,7 @@ function buildL3DiagnosticInspectorLayout(config: ConfigDto): HTMLElement {
     }),
   );
   register("task-space", "任务空间", taskSpaceView());
+  register("store-catalog", "应用商店", storeCatalogView(storeCatalogController));
   register(
     "process",
     "进程查询",
@@ -2002,6 +2052,57 @@ async function bootstrap(): Promise<void> {
   const controlCenterController = createSystemControlCenterController();
   const settingsSuiteController = createWorkstationSettingsSuiteController();
   const a11yI18nSuite = createWorkstationA11yI18nSuiteController("zh-CN", false);
+  const storeCatalogController = createStoreCatalogController({
+    client: createTauriStoreCatalogClient(),
+    initialLocale: initialCompSnap.locale,
+    initialDisclosure: initialCompSnap.disclosure,
+    openZ4Challenge: (spec) => {
+      const nowMono = performance.now();
+      const activeLocale = compositor.getSnapshot().locale;
+      const isIrreversible =
+        spec.reversibilityAndRisk.reversibilityClass === "IRREVERSIBLE";
+      const challenge = trustedUi.z4Dialog.openChallenge(
+        { kind: "tcb_trusted_broker" },
+        spec,
+        nowMono,
+      );
+      compositor.openZ4Modal(
+        {
+          promptId: challenge.challengeIdHex,
+          title: spec.requestingApp.displayName,
+          summary: `${spec.actionScope.plainSummary[activeLocale]} · ${spec.resourceCeiling.plainCeiling[activeLocale]}`,
+          blastRadiusItems: spec.reversibilityAndRisk.blastRadiusRows,
+          statutoryLock: isIrreversible ? "IRREVERSIBLE_NO_UNDO" : undefined,
+          onConfirm: () => {
+            try {
+              trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                confirm: true,
+                origin: "trusted_shell",
+                source: "POINTER",
+                irreversibleHighContrastAck: isIrreversible,
+                nowMonoMs: performance.now(),
+              });
+            } catch {
+              // Arming guard or session lock handled by Z4SecurityDialogController.
+            }
+          },
+          onCancel: () => {
+            try {
+              trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+                confirm: false,
+                origin: "trusted_shell",
+                source: "KEYBOARD",
+                nowMonoMs: performance.now(),
+              });
+            } catch {
+              // Challenge may already be invalidated by session lock.
+            }
+          },
+        },
+        nowMono,
+      );
+    },
+  });
 
   bindOmnibarToCompositor(compositor, omnibarController);
   bindTaskSpaceToCompositor(
@@ -2016,6 +2117,8 @@ async function bootstrap(): Promise<void> {
     notificationController.setDisclosureLevel(snap.disclosure);
     spotlightController.setDisclosureLevel(snap.disclosure);
     clusterPostureController.setDisclosureLevel(snap.disclosure);
+    storeCatalogController.setLocale(snap.locale);
+    storeCatalogController.setDisclosure(snap.disclosure);
     if (snap.openZ3FlyoutIds.includes("CONTROL_CENTER")) {
       void controlCenterController.getState();
     } else if (snap.openZ3FlyoutIds.includes("NOTIFICATIONS")) {
@@ -2026,7 +2129,10 @@ async function bootstrap(): Promise<void> {
     void settingsSuiteController.settingsCas;
   });
 
-  const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(config);
+  const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(
+    config,
+    storeCatalogController,
+  );
   compositor.setL3DiagnosticElement(l3DiagnosticLayout);
   compositor.mount(app);
 
@@ -2090,6 +2196,7 @@ async function bootstrap(): Promise<void> {
 
     void omnibarController.refreshKeyPoolStatus();
     void pollDesktopWatermarkEvents(0).catch(() => undefined);
+    void storeCatalogController.refresh().catch(() => undefined);
   }
 }
 
