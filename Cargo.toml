@@ -44,6 +44,7 @@ members = [
     "crates/nlos-publisher-trust",
     "crates/nlos-store-registry",
     "crates/nlos-certify",
+    "crates/nlos-wasm-sandbox",
 ]
 exclude = ["fuzz"]
 resolver = "3"

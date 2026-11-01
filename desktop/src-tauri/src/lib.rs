@@ -18,6 +18,7 @@ pub mod omnibar;
 pub mod plan_editor;
 pub mod session;
 pub mod settings_keychain;
+pub mod store_catalog;
 pub mod surfaces;
 pub mod trusted_ui;
 pub mod window_lifecycle;
