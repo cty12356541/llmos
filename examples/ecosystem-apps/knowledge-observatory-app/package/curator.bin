@@ -1,0 +1,5 @@
+knowledge-observatory-app payload entry v1.0.0
+workflow: harvest-sources -> build-index -> publish-digest
+provider-plane: user-space-driver-provider-v1
+credential-custody: trusted-enforcement-shim-only
+seed-policy: read-only seed templates, zero baked mutable memory

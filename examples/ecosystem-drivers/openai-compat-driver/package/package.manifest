@@ -1,0 +1,10 @@
+# openai-compat-driver v1.0.0 — W80-E6B third-party userland
+# OpenAI-compatible inference gateway adapter sample manifest.
+package-id = 6f70656e6169636f6d70617431303031
+version = 1.0.0
+
+# entries: entry = <name> <role> <path>
+entry = openai-compat-adapter executable adapters/openai-compat-adapter.bin
+entry = openai-extension-manifest data extensions/openai-extension.manifest
+entry = openai-effect-declarations data extensions/openai-effects.manifest
+entry = openai-endpoint-profile data extensions/openai-endpoint.profile

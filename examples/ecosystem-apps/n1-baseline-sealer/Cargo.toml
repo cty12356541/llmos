@@ -1,0 +1,25 @@
+[package]
+name = "n1-baseline-sealer"
+description = "W80-E6B N-1 基准封存器:以 nlos-publisher-trust 三级证书链、nlos-certify 四门流水线与 nlos-store-registry OCI 治理目录,对四个参考 App/Driver 包执行证书链签名、认证、Candidate→Stable 晋升与封存清单落盘。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "n1-baseline-sealer"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+nlos-application = { path = "../../../crates/nlos-application" }
+nlos-artifact = { path = "../../../crates/nlos-artifact" }
+nlos-certify = { path = "../../../crates/nlos-certify" }
+nlos-publisher-trust = { path = "../../../crates/nlos-publisher-trust" }
+nlos-store-registry = { path = "../../../crates/nlos-store-registry" }
+nlos-types = { path = "../../../crates/nlos-types" }
+sha2 = { version = "0.11.0", default-features = false }
+
+[lints]
+workspace = true

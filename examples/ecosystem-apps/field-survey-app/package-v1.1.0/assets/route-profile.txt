@@ -1,0 +1,4 @@
+route-profile = read-only v1.0.0
+route = north-ridge pin=waypoints-v3
+route = river-bend pin=waypoints-v7
+transport = offline-map-cache pin=map-v12

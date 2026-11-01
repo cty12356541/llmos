@@ -1,0 +1,1 @@
+inputs: pinned route and checklist selectors for route (typed selectors only)

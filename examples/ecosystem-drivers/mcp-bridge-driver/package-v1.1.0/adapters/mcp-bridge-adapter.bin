@@ -1,0 +1,9 @@
+mcp-bridge-driver payload entry v1.1.0
+adapter-crate: mcp-bridge-driver
+extension: llmos.ext.driver.mcp-bridge@1.1
+wire-protocol: mcp (JSON-RPC 2.0 over newline-delimited stdio frames)
+supported-protocol-versions: 2025-03-26, 2024-11-05
+driver-plane: user-space DriverProvider under trusted EnforcementShim
+credential-custody: trusted-enforcement-shim-only
+uncertain-policy: crash fences in-flight calls to UNCERTAIN until same-idempotency-key reconcile
+upgrade-note: adds the packaged tools index entry for offline catalog warm-up

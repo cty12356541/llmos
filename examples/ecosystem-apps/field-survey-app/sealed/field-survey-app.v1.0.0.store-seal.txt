@@ -1,0 +1,19 @@
+# W80-E6B N-1 baseline store seal (frozen; regenerate with examples/ecosystem-apps/seal-n1-baseline.sh)
+label = field-survey-app
+publisher = nlos.market.fieldkit-labs tier=CertifiedPublisher leaf_serial=71717171717171717171717171717171
+publisher_id = d64d2f39151b5b04d186440e8365d6ce
+package_id = 6669656c647375727665797731303030
+application_ids = 292688cd6f050b810e4a3ff07a3f1f71 runtime=e6d73af0bc92b1121fd8b4e7b090ab6c
+package_version = 1.0.0
+target_sabi_epoch = 1 host_sabi_epoch = 3
+certify_manifest_digest = 0a26cac58dc160ae55419ea880ba3a733951f00e23fe8ff20eb992c6cb8dee20
+oci_manifest_digest = 0fafaa49d9d74c824d2668387c81a0e91373e217762efd5da7af54b7562b506c
+gates = g1=PASS g2=PASS g3=PASS g4=PASS mask=0b1111
+certification_receipt_id = b8b4cfe956735f12190084aa3a402589
+certification_receipt_signature = 6bcc3ae081e4662d429054640dabf94a7ac522a2658105ba43b71a5be73b4b11c5e416b44936213992c6f9558640c3bfbdfe6eddd3cafc4019b1a0133eabac02
+release_submission_digest = f7bbedcfa4334c0a02716645260beca4f65dd0776a8ffa6ef0aed9126f785e22
+attestation_signature = d006acaac966a6aec8df2625cbd841acf4bb2d2b64c94218ec885c655b1cad2f31ad7f3e1c79c8dca8b001d5d079a48bf66d7dcfbb414307416edf171551180c
+promotion = Candidate->Stable epoch=1
+components = survey-worker-exec:Executable,fieldkit-bridge:Driver,fieldkit-card:UiSurface,sync-field-notes:BackgroundService,survey-checklist-seed:ReadOnlySeedTemplate,route-profile-seed:ReadOnlySeedTemplate
+artifact = examples/ecosystem-apps/field-survey-app/sealed/field-survey-app.v1.0.0.nlos-pkg tree=package package=6669656c647375727665797731303030 version=4294967296 entries=6 tasks=3 sha256=4e529d61239bec8bf289993fd7294991207842fc77620ed7cefa0f19f9d1c4eb bytes=2341
+# artifact = examples/ecosystem-apps/field-survey-app/sealed/field-survey-app.v1.1.0.nlos-pkg tree=package-v1.1.0 package=6669656c647375727665797731303030 version=4295032832 entries=6 tasks=4 sha256=59f219d130fd1845c9d307e6e2e799ca11dbf8e1fe3d05b5f663e16d292111c2 bytes=2618

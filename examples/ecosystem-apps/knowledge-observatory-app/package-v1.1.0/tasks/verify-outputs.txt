@@ -1,0 +1,1 @@
+outputs: verified digest attestation contract for verify

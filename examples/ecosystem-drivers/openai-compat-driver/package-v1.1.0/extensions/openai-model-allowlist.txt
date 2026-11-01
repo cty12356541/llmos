@@ -1,0 +1,4 @@
+# Pinned model allowlist shipped with v1.1.0 (typed selectors, no latest).
+model = glm-4.6 pin=v4.6
+model = glm-4.5-air pin=v4.5.2
+model = local-qwen3-14b pin=v3.2

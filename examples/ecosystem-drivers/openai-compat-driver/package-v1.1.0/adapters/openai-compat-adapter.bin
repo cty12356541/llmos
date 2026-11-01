@@ -1,0 +1,9 @@
+openai-compat-driver payload entry v1.1.0
+adapter-crate: openai-compat-driver
+extension: llmos.ext.driver.openai-compat@1.1
+wire-protocol: openai-chat-completions v1 (sync + SSE stream)
+driver-plane: user-space DriverProvider under trusted EnforcementShim
+credential-custody: trusted-enforcement-shim-only
+metering: five-dimension ResourceAuthority token budget with request-digest idempotency keys
+uncertain-policy: retried completions replay the same digest-derived idempotency key
+upgrade-note: adds the pinned model allowlist entry (anti-latest typed selectors)

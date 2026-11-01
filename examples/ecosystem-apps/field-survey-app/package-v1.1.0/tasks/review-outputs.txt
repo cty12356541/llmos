@@ -1,0 +1,1 @@
+outputs: reviewed survey log attestation contract for review

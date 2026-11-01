@@ -1,0 +1,11 @@
+# nlos-certify sidecar directives for field-survey-app v1.0.0 (W80-E6B).
+publisher-id = nlos.market.fieldkit-labs
+application-id = nlos.market.fieldkit-labs.field-survey
+surface-profile = application-platform
+network-policy = none
+sabi-service = import ARTIFACT feature=content-addressed,scoped-chooser,provenance
+sabi-service = import TASK feature=background-job,lease-heartbeat
+sabi-service = import SCHEDULER feature=timer-trigger
+sabi-service = import APPLICATION feature=lifecycle-query,task-template
+sabi-service = import RESOURCE_ESCROW feature=quota-hold,escrow-settle
+idempotency-passthrough = * 128-bit

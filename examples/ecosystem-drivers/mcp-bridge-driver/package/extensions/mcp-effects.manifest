@@ -1,0 +1,6 @@
+# DRV-LIFE-001 EffectDescriptor declarations for mcp-bridge-driver v1.0.0.
+# Every mutating class must declare reconcile=same-idempotency-key.
+effect = search-knowledge-base class=READ_ONLY reconcile=same-idempotency-key summary="Query the connected knowledge base without mutation"
+effect = append-field-note class=REVERSIBLE reconcile=same-idempotency-key summary="Append one reversible note entry"
+effect = stage-batch-sync class=COMPENSATABLE reconcile=same-idempotency-key summary="Stage a batch sync with a compensating rollback handler" compensation=rollback-batch-sync
+effect = purge-note-cache class=IRREVERSIBLE reconcile=same-idempotency-key summary="Irreversibly purge cached note artifacts"

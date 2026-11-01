@@ -1,0 +1,17 @@
+# field-survey-app v1.1.0 — W80-E6B SameMajor upgrade tree (appends
+# review-notes for Gate 3 update/rollback drills).
+package-id = 6669656c647375727665797731303030
+version = 1.1.0
+
+entry = survey-worker executable survey-worker.bin
+entry = sync-field-notes background-service services/sync-field-notes.svc
+entry = fieldkit-bridge data drivers/fieldkit-bridge.drv
+entry = fieldkit-card data surfaces/fieldkit-card.duis
+entry = survey-checklist data assets/survey-checklist.txt
+entry = route-profile data assets/route-profile.txt
+
+# Execution-frozen v1.0.0 nodes redeclared unchanged; review-notes appended.
+task = 51a1c2d3e4f5061728394a5b6c7d8e01 agent-role tasks/route-binding.txt tasks/route-inputs.txt tasks/route-outputs.txt tasks/route-policy.txt tasks/route-ceiling.txt
+task = 52b2c3d4e5f60718293a4b5c6d7e8f02 executable tasks/collect-binding.txt tasks/collect-inputs.txt tasks/collect-outputs.txt tasks/collect-policy.txt tasks/collect-ceiling.txt deps=51a1c2d3e4f5061728394a5b6c7d8e01
+task = 53c3d4e5f60718293a4b5c6d7e8f0303 executable tasks/sync-binding.txt tasks/sync-inputs.txt tasks/sync-outputs.txt tasks/sync-policy.txt tasks/sync-ceiling.txt deps=52b2c3d4e5f60718293a4b5c6d7e8f02
+task = 54d4e5f60718293a4b5c6d7e8f030404 agent-role tasks/review-binding.txt tasks/review-inputs.txt tasks/review-outputs.txt tasks/review-policy.txt tasks/review-ceiling.txt deps=53c3d4e5f60718293a4b5c6d7e8f0303

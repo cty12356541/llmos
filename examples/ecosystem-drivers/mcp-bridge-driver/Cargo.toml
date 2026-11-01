@@ -1,0 +1,14 @@
+[package]
+name = "mcp-bridge-driver"
+description = "W80-E6B 第三方用户态 MCP 兼容 Driver 参考适配器:JSON-RPC 2.0 stdio 帧、版本化扩展协商、四类 EffectDescriptor 工具目录与崩溃 UNCERTAIN 同幂等键 reconcile 围栏。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ecosystem-driver-kit = { path = "../ecosystem-driver-kit" }
+
+[lints]
+workspace = true

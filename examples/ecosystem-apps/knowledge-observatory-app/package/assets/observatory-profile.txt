@@ -1,0 +1,9 @@
+profile-version = 1.0.0
+observatory-role = digest-curator
+provider-plane = user-space-driver-provider-v1
+credential-custody = trusted-enforcement-shim-only
+default-max-prompt-tokens = 12288
+default-max-completion-tokens = 6144
+default-max-total-tokens = 24576
+default-max-api-calls = 12
+default-max-cost-microcredits = 90000

@@ -1,0 +1,1 @@
+binding: publish node (agent-role driver binding, deterministic seed profile)

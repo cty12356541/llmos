@@ -1,0 +1,16 @@
+[package]
+name = "openai-compat-driver"
+description = "W80-E6B 第三方用户态 OpenAI-compatible 推理网关参考适配器:/v1/chat/completions 与 SSE 流式 codec、版本化扩展封装与 ResourceAuthority 五维 Token 预算计量。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ecosystem-driver-kit = { path = "../ecosystem-driver-kit" }
+nlos-resource = { path = "../../../crates/nlos-resource" }
+nlos-types = { path = "../../../crates/nlos-types" }
+
+[lints]
+workspace = true

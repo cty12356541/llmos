@@ -1,0 +1,1 @@
+inputs: upstream digest revision selectors for verify (content-addressed)

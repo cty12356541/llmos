@@ -1,0 +1,11 @@
+# mcp-bridge-driver v1.1.0 — W80-E6B third-party MCP-compatible driver
+# adapter sample upgrade tree (SameMajor update target for Gate 3 drills).
+package-id = 6d637062726964676531313131313131
+version = 1.1.0
+
+# entries: entry = <name> <role> <path>
+entry = mcp-bridge-adapter executable adapters/mcp-bridge-adapter.bin
+entry = mcp-extension-manifest data extensions/mcp-extension.manifest
+entry = mcp-effect-declarations data extensions/mcp-effects.manifest
+entry = mcp-negotiation-profile data extensions/mcp-negotiation.profile
+entry = mcp-tools-index data extensions/mcp-tools-index.txt

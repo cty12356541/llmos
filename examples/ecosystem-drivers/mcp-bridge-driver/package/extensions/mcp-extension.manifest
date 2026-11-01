@@ -1,0 +1,6 @@
+# Versioned extension manifest parsed by mcp-bridge-driver at load time.
+extension-id = llmos.ext.driver.mcp-bridge
+extension-version = 1.0
+protocol-id = mcp
+protocol-versions = 2025-03-26, 2024-11-05
+codec-freeze-tag = nlos.sabi.DriverProvider/v1.0

@@ -1,0 +1,14 @@
+[package]
+name = "ecosystem-driver-kit"
+description = "W80-E6B 第三方用户态 Driver 参考样板共享 kit:零依赖有界 JSON 编解码、DRV-LIFE-001 四类 EffectDescriptor / 同幂等键 reconcile 围栏与 DRV-PROTO-001 版本化扩展协商原语。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sha2 = { version = "0.11.0", default-features = false }
+
+[lints]
+workspace = true

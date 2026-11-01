@@ -1,0 +1,19 @@
+# W80-E6B N-1 baseline store seal (frozen; regenerate with examples/ecosystem-apps/seal-n1-baseline.sh)
+label = openai-compat-driver
+publisher = nlos.market.openai-gateway-works tier=CertifiedPublisher leaf_serial=73737373737373737373737373737373
+publisher_id = 7e157c405238fa66bf834038cc9bce8b
+package_id = 6f70656e6169636f6d70617431303031
+application_ids = 14dc6b7b1a6ceb80ae8ee9e62ac6d27f runtime=31777266c0ae04385bf475b0859271d3
+package_version = 1.0.0
+target_sabi_epoch = 1 host_sabi_epoch = 3
+certify_manifest_digest = 659c33080eec8b6b5b1d3633025d774d2225b1b8a050380906f46a641a3cd35b
+oci_manifest_digest = c7523ad686f11869fd93e13b424db2c0cf782417dac7214c4ca5180d649b1f02
+gates = g1=PASS g2=PASS g3=PASS g4=PASS mask=0b1111
+certification_receipt_id = e465c084b13729062a2289056416504d
+certification_receipt_signature = 520dbce1b37140dcafbf1b7028cf88478384507dbec32ab9096278195459e5f90a0cf18abcf3d20086f3c0d91eed9ba53b896c63fbf3d2a726a1a04aa0a12509
+release_submission_digest = 77ea8058fbf9f5666169282850d58b194eb5c6cf1756ffe9cbd9cad06c779845
+attestation_signature = 8505c8207aa113f193f424ce6287a99534aa7fe0521875c513c885df9cd19b17df06316484a536370aa2714b1a5dffb2389fd7bd3997287d854c3239cb3d350c
+promotion = Candidate->Stable epoch=1
+components = openai-compat-adapter:Driver,openai-extension-manifest:ReadOnlySeedTemplate,openai-effect-declarations:ReadOnlySeedTemplate,openai-endpoint-profile:ReadOnlySeedTemplate
+artifact = examples/ecosystem-drivers/openai-compat-driver/sealed/openai-compat-driver.v1.0.0.nlos-pkg tree=package package=6f70656e6169636f6d70617431303031 version=4294967296 entries=4 tasks=0 sha256=db0d93d156dd07f6efc937b891dfc97bf9b363aeb0c28081382d22e1e68be0e1 bytes=2080
+# artifact = examples/ecosystem-drivers/openai-compat-driver/sealed/openai-compat-driver.v1.1.0.nlos-pkg tree=package-v1.1.0 package=6f70656e6169636f6d70617431303031 version=4295032832 entries=5 tasks=0 sha256=0467b105904b8b013524c880eef32d33d1fc7fe3f13a661dd6fadfb41940de09 bytes=2413
