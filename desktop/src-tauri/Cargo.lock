@@ -1960,8 +1960,10 @@ dependencies = [
  "nlos-driver-llm-http",
  "nlos-identity",
  "nlos-ipc",
+ "nlos-publisher-trust",
  "nlos-resource",
  "nlos-schema",
+ "nlos-store-registry",
  "nlos-system-control",
  "nlos-task",
  "nlos-types",
@@ -2266,6 +2268,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-migrate"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-identity",
+ "nlos-schema",
+ "nlos-service-directory",
+ "nlos-types",
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "nlos-net"
 version = "0.1.0"
 dependencies = [
@@ -2302,6 +2318,18 @@ name = "nlos-process"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "nlos-types",
+ "rusqlite",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "nlos-publisher-trust"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-capability",
+ "nlos-identity",
  "nlos-types",
  "rusqlite",
  "sha2 0.11.1",
@@ -2350,11 +2378,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-service-directory"
+version = "0.1.0"
+dependencies = [
+ "nlos-schema",
+]
+
+[[package]]
 name = "nlos-store"
 version = "0.1.0"
 dependencies = [
  "nlos-operation",
  "nlos-runtime",
+ "nlos-types",
+ "rusqlite",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "nlos-store-registry"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-migrate",
+ "nlos-publisher-trust",
  "nlos-types",
  "rusqlite",
  "sha2 0.11.1",

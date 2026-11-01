@@ -1,0 +1,401 @@
+/* ==========================================================================
+   NLOS Stage E W80-E6C Desktop Store Transparency View
+   Authority: ADR-0025 Rev 1/2 + ADR-0027 section 2.3 + Stage E progress E6
+   Discipline:
+     - 100% solid opaque Graphite / Paper neutral workstation surfaces (zero blur)
+     - Strict 4px control radius via var(--nlos-radius-ctrl); 0px block joins
+     - Hairline 1px structural borders; single engineering-blue accent only for
+       focus rings / primary buttons / 2px active bars
+     - Dual-pole signal colors only: amber = needs user review, crimson = failed
+       or irreversible; everything else stays neutral monochrome
+     - Zero pictographic characters; monochrome geometric SVG icons only
+     - tabular numerals for versions, epochs, counts and timestamps
+   ========================================================================== */
+
+.nlos-store-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-3);
+  padding: var(--nlos-sp-3);
+  background-color: var(--nlos-bg-window);
+  color: var(--nlos-text-primary);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-base);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: 0px;
+}
+
+.nlos-store-view[hidden] {
+  display: none !important;
+}
+
+.nlos-store-block-title {
+  margin: 0 0 var(--nlos-sp-2);
+  display: flex;
+  align-items: center;
+  gap: var(--nlos-sp-2);
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  color: var(--nlos-text-primary);
+}
+
+.nlos-store-offline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-1);
+  padding: var(--nlos-sp-2) var(--nlos-sp-3);
+  background-color: var(--nlos-bg-chrome);
+  border: 1px solid var(--nlos-signal-action);
+  border-radius: var(--nlos-radius-ctrl);
+  color: var(--nlos-signal-action-text);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-store-offline strong {
+  font-weight: 600;
+}
+
+.nlos-store-offline p {
+  margin: 0;
+  color: var(--nlos-text-primary);
+}
+
+.nlos-store-table-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-1);
+  padding-bottom: var(--nlos-sp-2);
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-store-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-store-table th,
+.nlos-store-table td {
+  padding: 6px var(--nlos-sp-2);
+  text-align: left;
+  border-bottom: 1px solid var(--nlos-border-hairline);
+}
+
+.nlos-store-table th {
+  color: var(--nlos-text-secondary);
+  font-weight: 500;
+  font-size: var(--nlos-fs-mono-xs);
+}
+
+.nlos-store-row:hover {
+  background-color: var(--nlos-bg-hover);
+}
+
+.nlos-store-mono {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-store-version {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-primary);
+}
+
+.nlos-store-empty {
+  color: var(--nlos-text-muted);
+}
+
+.nlos-store-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--nlos-sp-1);
+  background-color: var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-micro);
+  vertical-align: middle;
+}
+
+.nlos-store-dot[data-on="true"] {
+  background-color: var(--nlos-signal-action);
+}
+
+/* Publisher certificate-chain transparency panel */
+
+.nlos-store-chain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-1);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-elevated);
+  border: 1px solid var(--nlos-border-hairline);
+  border-left-width: 2px;
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-store-chain-verified {
+  border-left-color: var(--nlos-accent-primary);
+}
+
+.nlos-store-chain-degraded {
+  border-left-color: var(--nlos-signal-action);
+}
+
+.nlos-store-chain-failed {
+  border-left-color: var(--nlos-signal-danger);
+}
+
+.nlos-store-chain-head {
+  display: flex;
+  align-items: center;
+  gap: var(--nlos-sp-2);
+}
+
+.nlos-store-chain-head .nlos-store-block-title {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.nlos-store-chain-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nlos-sp-1);
+  padding: 2px var(--nlos-sp-2);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-primary);
+  background-color: var(--nlos-bg-window);
+}
+
+.nlos-store-chain-degraded .nlos-store-chain-badge {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-store-chain-failed .nlos-store-chain-badge {
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+}
+
+.nlos-store-chain-notice {
+  margin: 0;
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-store-kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--nlos-sp-1) var(--nlos-sp-3);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-store-kv div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nlos-sp-1);
+  min-width: 0;
+}
+
+.nlos-store-kv dt {
+  color: var(--nlos-text-secondary);
+  flex-shrink: 0;
+}
+
+.nlos-store-kv dd {
+  margin: 0;
+  color: var(--nlos-text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* Permission transparency inspector */
+
+.nlos-store-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-elevated);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-store-inspector h4 {
+  margin: var(--nlos-sp-1) 0 0;
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-store-effect-badge {
+  display: inline-block;
+  padding: 0 var(--nlos-sp-1);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-micro);
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-secondary);
+}
+
+.nlos-store-effect-badge[data-store-effect="IRREVERSIBLE"] {
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+}
+
+.nlos-store-effect-badge[data-store-effect="COMPENSATABLE"] {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-store-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nlos-sp-1) var(--nlos-sp-3);
+  font-size: var(--nlos-fs-mono-xs);
+  color: var(--nlos-text-muted);
+}
+
+.nlos-store-legend-item {
+  white-space: nowrap;
+}
+
+.nlos-store-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nlos-sp-2);
+  padding-top: var(--nlos-sp-1);
+}
+
+.nlos-store-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nlos-sp-1);
+  min-height: var(--nlos-hit-min);
+  padding: 0 var(--nlos-sp-3);
+  background-color: var(--nlos-accent-primary);
+  color: var(--nlos-accent-fg);
+  border: 1px solid var(--nlos-accent-primary);
+  border-radius: var(--nlos-radius-ctrl);
+  font-family: var(--nlos-font-sans);
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--nlos-dur-fast) var(--nlos-ease-snappy);
+}
+
+.nlos-store-action-btn:hover:not(:disabled) {
+  background-color: var(--nlos-accent-primary-hover);
+}
+
+.nlos-store-action-btn:disabled {
+  background-color: var(--nlos-bg-chrome);
+  color: var(--nlos-text-muted);
+  border-color: var(--nlos-border-hairline);
+  cursor: not-allowed;
+}
+
+.nlos-store-action-btn[data-undo-class="IRREVERSIBLE"] {
+  border-color: var(--nlos-signal-danger);
+}
+
+/* Cross-version permission escalation diff */
+
+.nlos-store-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-elevated);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-store-diff-reconsent {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-window);
+  border: 1px solid var(--nlos-signal-action);
+  border-radius: var(--nlos-radius-ctrl);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-store-diff-reconsent p {
+  margin: var(--nlos-sp-1) 0 0;
+  color: var(--nlos-text-primary);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-store-diff-quiet {
+  display: flex;
+  align-items: center;
+  gap: var(--nlos-sp-2);
+  padding: var(--nlos-sp-1) var(--nlos-sp-2);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  color: var(--nlos-text-secondary);
+  font-size: var(--nlos-fs-ui-sm);
+}
+
+.nlos-store-blast {
+  font-family: var(--nlos-font-mono);
+  font-size: var(--nlos-fs-mono-xs);
+  font-weight: 600;
+  color: var(--nlos-text-primary);
+  width: 24px;
+}
+
+/* Sensitive-action notice bar */
+
+.nlos-store-notice {
+  padding: var(--nlos-sp-1) var(--nlos-sp-2);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+  font-size: var(--nlos-fs-ui-sm);
+  color: var(--nlos-text-primary);
+  background-color: var(--nlos-bg-chrome);
+}
+
+.nlos-store-notice[data-store-notice-kind="blocked"] {
+  border-color: var(--nlos-signal-action);
+  color: var(--nlos-signal-action-text);
+}
+
+.nlos-store-notice[data-store-notice-kind="error"] {
+  border-color: var(--nlos-signal-danger);
+  color: var(--nlos-signal-danger-text);
+}
+
+/* L3 deep verification panel */
+
+.nlos-store-l3 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nlos-sp-1);
+  padding: var(--nlos-sp-2);
+  background-color: var(--nlos-bg-recessed);
+  border: 1px solid var(--nlos-border-hairline);
+  border-radius: var(--nlos-radius-ctrl);
+}
+
+.nlos-store-l3 h4 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--nlos-sp-1);
+  font-size: var(--nlos-fs-ui-sm);
+  font-weight: 600;
+  color: var(--nlos-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nlos-store-action-btn {
+    transition-duration: 0ms;
+  }
+}

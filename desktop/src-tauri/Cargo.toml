@@ -42,8 +42,12 @@ ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast
 # W32-F:UI Surface 呈现的本地应用权威直读(ApplicationAuthority inspect 面)。
 nlos-application = { path = "../../crates/nlos-application" }
 nlos-driver-llm-http = { path = "../../crates/nlos-driver-llm-http" }
+# W80-E6C:商店透明目录桥读取 nlos-store-registry / nlos-publisher-trust 数据面
+# (均为仓库内一方 crate,零新增第三方供应链;W80-0-SCAFFOLD 未预加,由本车道补挂)。
+nlos-publisher-trust = { path = "../../crates/nlos-publisher-trust" }
 nlos-resource = { path = "../../crates/nlos-resource" }
 nlos-schema = { path = "../../crates/nlos-schema" }
+nlos-store-registry = { path = "../../crates/nlos-store-registry" }
 nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource", "application"] }
 nlos-types = { path = "../../crates/nlos-types" }
 serde = { version = "1", features = ["derive"] }
