@@ -149,6 +149,10 @@ pub fn run() {
             a11y_i18n::a11y_audit_aria_landmarks,
             a11y_i18n::a11y_verify_keyboard_focus_trap,
             a11y_i18n::a11y_set_reduced_motion_override,
+            store_catalog::store_catalog_snapshot,
+            store_catalog::store_release_transparency,
+            store_catalog::store_permission_diff,
+            store_catalog::store_prepare_sensitive_action,
         ])
         .run(tauri::generate_context!())
     {

@@ -13,13 +13,14 @@
   severity: P1
   status: partial
   description: "安全与权限旁路：reference monitor、IPC 认证或 sandbox 隔离存在未验证旁路"
-  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）且 GUI 壳以认证入口为唯一 IPC 路径（B-GUI-001，无明文捷径）；双层隔离已定案（ADR-0015）；签名强制收敛（W24-004，无签名 TCB 入口删除）；真实 Capability authorizer、principal-level peer attestation 与 Windows 认证面仍未接线（W34-A §5/§6 residual 沿引）"
+  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）且 GUI 壳以认证入口为唯一 IPC 路径（B-GUI-001，无明文捷径）；双层隔离已定案（ADR-0015）并已于 W80（E-SANDBOX-001，H4）落地 crates/nlos-wasm-sandbox 三平台双层 Process + Wasmtime 强沙箱（L1 env_clear/显式 argv/墙钟 kill 硬杀 + L2 手写 WASI 白名单/零 socket 导入/PageLimiter/fuel 与 epoch 中断，54/54 单元与真实子进程逃逸对抗矩阵通过，闭合 U-9）；签名强制收敛（W24-004，无签名 TCB 入口删除）；真实 Capability authorizer、principal-level peer attestation 与 Windows 认证面仍未接线（W34-A §5/§6 residual 沿引）"
   evidence_refs:
     - docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
     - docs/evidence/stage-b/b-capability-004-fault-matrix.md
     - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
     - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
   review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）；真实 Capability authorizer 接线时复审"
 
 - id: RISK-B-02
@@ -124,7 +125,7 @@
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——197 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 197 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——201 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 201 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 
@@ -133,10 +134,11 @@
   severity: P2
   status: partial
   description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
-  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / package-lock.json / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）清空全部 6 个在途 Dependabot PR；W79（E-CERTIFY-001，H4）已落地纯 Rust 依赖许可证与锁文件供应链审计器 crates/nlos-certify/src/supply_chain_audit.rs（递归下降 SPDX 求值器拦截 GPL/AGPL/SSPL/EUPL 强传染性许可证、阻断 */latest 浮动版本与未钉死 Git 依赖、强制核验 SHA-256 checksum 与 SRI integrity：实测根工作区 166 个 Cargo 包 + 119 个 npm 包及 desktop 78 个 npm 包 0 BLOCKER）与常设 CI 自动发现门禁 tests/conformance/schema/test_lockfile_supply_chain_gate.py；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审运行前维持 partial"
+  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / package-lock.json / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）清空全部 6 个在途 Dependabot PR；W79（E-CERTIFY-001，H4）已落地纯 Rust 依赖许可证与锁文件供应链审计器 crates/nlos-certify/src/supply_chain_audit.rs（递归下降 SPDX 求值器拦截 GPL/AGPL/SSPL/EUPL 强传染性许可证、阻断 */latest 浮动版本与未钉死 Git 依赖、强制核验 SHA-256 checksum 与 SRI integrity：实测根工作区 166 个 Cargo 包 + 119 个 npm 包及 desktop 78 个 npm 包 0 BLOCKER）与常设 CI 自动发现门禁 tests/conformance/schema/test_lockfile_supply_chain_gate.py；W80（0436b789 预锁 wasmtime 50.0.1 通过锁文件门禁 + 2ff0b45c E-SECURITY-001 H7 落地 crates/nlos-certify/tests/h7_supply_chain_adversarial.rs 六类供应链/吊销/防抢注/回滚/卸载残留对抗回归 17/17 全部拦截）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审运行前维持 partial"
   evidence_refs:
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
-  review_point: "分域降级（W79-INT，2026-10-31）：open->partial（W76 已清空 6 个 Dependabot PR，W79 E-CERTIFY-001 已落地纯 Rust 锁文件哈希/SPDX 许可证供应链审计器与常设 CI 自动发现门禁 test_lockfile_supply_chain_gate.py）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审时复查"
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  review_point: "分域降级（W79-INT，2026-10-31）：open->partial（W76 已清空 6 个 Dependabot PR，W79 E-CERTIFY-001 已落地纯 Rust 锁文件哈希/SPDX 许可证供应链审计器与常设 CI 自动发现门禁 test_lockfile_supply_chain_gate.py，W80 E-SECURITY-001 已完成 H7 六类供应链与吊销对抗回归矩阵 17/17）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审时复查"
 
 - id: RISK-B-10
   category: cancel-effect-unknown

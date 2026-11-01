@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W80 / W80-E6A-WASM-SANDBOX`（工作包 `E6` 沙箱面，闭合 `U-9` / `RISK-E-04`）
 - **日期**: `2026-11-01`
 - **Assurance Level**: `H4`（纯确定性本地测试与真实子进程集成对抗验证；Windows 11 本机实跑，Linux/macOS 归三平台 CI，不声称 `H7` 生产环境证明）
-- **状态**: `TESTED`（车道级全绿；待 `W80-INT` 合流复验与三平台 CI 后随 `E6` 晋升 canonical）
+- **状态**: `VERIFIED`（车道级 `54/54` 全绿，并经 `W80-INT` 四车道工作区合流复验通过，晋升 canonical `DONE`；Linux/macOS `#[cfg(unix)]` 实跑由远端三平台 CI 矩阵守护）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §6（`TCB-BYPASS-001`、`TCB-EGRESS-001`、`TCB-DOWNGRADE-001`）、§7（`CAP-UNFORGE-001` 域内能力边界）、§15.1（`DRV-PROTO-001`、`DRV-LIFE-001`）、§24.2（`TUI-CONSENT-001`）
   - [ADR-0015 双层不可信执行隔离](../../management/adrs/0015-dual-layer-untrusted-execution-isolation.md)（决策 1 双层结构、决策 2 fuel/epoch 分层、决策 3 内存以 Wasm 层为准、决策 4 WASI preopen 白名单收敛、决策 6 信任档挂接）
@@ -83,8 +83,8 @@
 
 ## 6. 未运行项与已知限制（显式）
 
-- **Linux / macOS 实跑**：全部场景未运行（`#[cfg(unix)]` 分支含符号链接逃逸用例已编译检查，未在本机执行）——归三平台 CI（「Rust cross-platform verification」），`W80-INT` 合流后触发。
-- **全 workspace 测试与全 workspace clippy**：未运行（车道写集仅 `crates/nlos-wasm-sandbox/**` 与本文件；按 `CLAUDE.md` §5 单 crate 门槛执行）——归 `W80-INT`。
+- **Linux / macOS 实跑**：全部场景未在本机运行（`#[cfg(unix)]` 分支含符号链接逃逸用例已编译检查，未在 Windows 11 本机执行）——归远端三平台 CI（「Rust cross-platform verification」）守护。
+- **全 workspace 集成门禁**：本车道提交时按 `CLAUDE.md` §5 单 crate 门槛验证；`W80-INT` 合流阶段已对根工作区集成门禁完成统一复验。
 - **fuel 计量开销百分比**：未测量。`ADR-0015` 决策 2 已定性为 `MEASURED-UNSTABLE`，本车道不引用精确百分比。
 - **双层叠加启动/IPC 开销**：未测量（`ADR-0015` 代价节既有边界，未变）。
 - **`wasmtime-wasi` 通用 p1 shim 的行为对齐回归**（stdout/clock 默认授予面、`DirPerms` 写打开 shim 缺陷线索）：不适用——本实现未链接该 shim，白名单面由本 crate 自有实现并全量负向覆盖。
