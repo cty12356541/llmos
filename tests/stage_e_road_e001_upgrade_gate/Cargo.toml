@@ -1,0 +1,57 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "stage-e-road-e001-upgrade-gate"
+description = "Stage E E7 (W81-E7A) ROAD-E-001 Host N-1 -> N zero-recompile cross-version upgrade full-chain gate and H7 adversarial compatibility suite."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "stage_e_road_e001_upgrade_gate"
+path = "src/lib.rs"
+
+[[bin]]
+name = "road-e001-wasm-sandbox-host"
+path = "src/bin/road_e001_wasm_sandbox_host.rs"
+
+[dependencies]
+ecosystem-driver-kit = { path = "../../examples/ecosystem-drivers/ecosystem-driver-kit" }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+mcp-bridge-driver = { path = "../../examples/ecosystem-drivers/mcp-bridge-driver" }
+minicbor = { version = "2.3.1", default-features = false, features = ["std"] }
+nlos-application = { path = "../../crates/nlos-application" }
+nlos-artifact = { path = "../../crates/nlos-artifact" }
+nlos-capability = { path = "../../crates/nlos-capability" }
+nlos-certify = { path = "../../crates/nlos-certify" }
+nlos-compat-shim = { path = "../../crates/nlos-compat-shim" }
+nlos-driver-mock = { path = "../../crates/nlos-driver-mock" }
+nlos-identity = { path = "../../crates/nlos-identity" }
+nlos-migrate = { path = "../../crates/nlos-migrate" }
+nlos-operation = { path = "../../crates/nlos-operation" }
+nlos-plan = { path = "../../crates/nlos-plan" }
+nlos-publisher-trust = { path = "../../crates/nlos-publisher-trust" }
+nlos-resource = { path = "../../crates/nlos-resource" }
+nlos-runtime = { path = "../../crates/nlos-runtime" }
+nlos-schema = { path = "../../crates/nlos-schema" }
+nlos-search = { path = "../../crates/nlos-search" }
+nlos-service-directory = { path = "../../crates/nlos-service-directory" }
+nlos-slice-k = { path = "../../crates/nlos-slice-k" }
+nlos-store-registry = { path = "../../crates/nlos-store-registry" }
+nlos-task = { path = "../../crates/nlos-task" }
+nlos-types = { path = "../../crates/nlos-types" }
+nlos-wasm-sandbox = { path = "../../crates/nlos-wasm-sandbox" }
+openai-compat-driver = { path = "../../examples/ecosystem-drivers/openai-compat-driver" }
+prost = "0.14.4"
+sha2 = { version = "0.11.1", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
