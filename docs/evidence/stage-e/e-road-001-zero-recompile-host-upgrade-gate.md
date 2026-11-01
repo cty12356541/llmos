@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W81 / W81-E7A-ROADE001-GATE`（工作包 `E7`：`[ROAD-E-001]` 主系统 `N-1 -> N` 跨版本零重编译升级总门禁与复现脚本矩阵）
 - **日期**: `2026-11-02`
 - **Assurance Level**: `H7`（长期兼容与安全 conformance 阶梯下的**确定性本地宿主跨版本原地升级全链路门禁 + 对抗性负向兼容/防篡改集成测试**；不声称 `H8` 生产多机机群金丝雀实证或 `H10` `TLA+/Lean` 形式化机械证明）
-- **状态**: `CANDIDATE`（`W81-E7A` 独立 git worktree 独占写集内全部 Rust / Python 门禁实跑全绿，16 份冻结 `N-1` 封存制品 `pre == post` 零字节漂移；待 `W81-INT` 合流复验与远端三平台 CI 矩阵守护后晋升 `VERIFIED` / canonical `DONE`）
+- **状态**: `VERIFIED`（`W81-E7A` 独立 git worktree 独占写集交付并经 `W81-INT` 合流复验：全部 Rust / Python 门禁实跑全绿，16 份冻结 `N-1` 封存制品 `pre == post` 零字节漂移，已纳入常设跨平台 CI 守护）
 - **验证平台**: Windows（独立 git worktree 基线 `a44d4cd4`，Rust stable `1.97+` / edition `2024`，Python `3.x` 标准库）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §28.5（`[ROAD-E-001]` 阶段 E 完成判据）、§9（`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`KABI-SVC-001`、`KABI-UNCERTAIN-001`、`SABI-DISC-001`、`SABI-CONFORM-001`）、§15.1–§15.3（`DRV-SHIM-001`、`DRV-CRED-001`、`DRV-LIFE-001`）、§23.1–§23.3（`PKG-APPID-001`、`PKG-UPDATE-001`、`PKG-UNINSTALL-001`）、§6/§24.2（`TCB-BYPASS-001`、`CAP-REVOKE-001`）、§31（`EVID-SCOPE-001`、`EVID-REPRO-001`）

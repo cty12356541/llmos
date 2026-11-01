@@ -1210,3 +1210,25 @@
   scope: "crates/nlos-certify/tests/h7_supply_chain_adversarial.rs 在不修改被测生产 crate 源码前提下针对真实 nlos-publisher-trust + LocalOciCasStore + SqliteStoreRegistry + nlos-certify 权威夹具执行六类确定性本地宿主对抗性负向集成测试（篡改 OCI blob 层字节/长度/缺失摘要、伪造自签/非授信中间 CA/替换密钥/未知发布者叶证书、重放旧 RevocationEpoch 与裸 SQLite UPDATE/DELETE 触发器 RAISE(ABORT) 防回滚防反吊销、跨发布者抢注已归属 ApplicationId 三门联防、恶意升级探针失败与半写崩溃 SHA-256 逐位回滚及漂移注入捕获、卸载零能力/后台/私有缓存残留及故障注入捕获；nlos-certify 17/17 全部通过，每条负路径断言具体错误变体）"
   assurance: H7
   date: "2026-11-01"
+
+# ---------------------------------------------------------------------------
+# Stage E W81 Exit Gate & Conformance Audit Evidence (candidate backfill)
+# ---------------------------------------------------------------------------
+- id: e-road-001-zero-recompile-host-upgrade-gate
+  path: docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+  title: "E-ROAD-001：主系统 N-1 -> N 零重编译跨版本升级全链路门禁证据（W81-E7A）"
+  scope: "冻结签名 N-1 参考多组件应用与用户态驱动在主系统原地升级至 N 后零重编译/零重打包/零重签恢复、持久态读取、能力续期、IPC、nlos-compat-shim 垫片协商、驱动热插拔、故障回滚与零残留卸载端到端验证"
+  assurance: H7
+  date: "2026-11-01"
+- id: e-ledger-001-v13-conformance-audit
+  path: docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+  title: "E-LEDGER-001：阶段 E ledger-schema v1.3 台账覆盖率机械核验与合规审计证据（W81-E7B）"
+  scope: "tools/verify_stage_e_ledger_coverage.py 纯标准库机械核验器（13 项正负向篡改单测与 pre-backfill 模拟合流门禁）：覆盖阶段 E 全部 45 项规范 Requirement ID、8 项 E0..E7 工作包、RISK-E-01..05 风险、16 份阶段 E 证据双向索引、Claim<=Evidence 支撑格及零 Emoji/零断链审计"
+  assurance: H4
+  date: "2026-11-01"
+- id: w81-stage-e-exit-gates
+  path: docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
+  title: "W81 阶段 E 退出门禁独立终审报告（W81-E7C）"
+  scope: "独立终审核查 v0.5 §28.5 四大交付物、ROAD-E-001 零重编译跨版本升级实证、E0+E1..E7 全部 16 份证据、ledger-schema v1.3 台账一致性、零 Emoji 与全仓断链扫描、P0=0 及 §E.5.5 六项退出门满足度"
+  assurance: H7
+  date: "2026-11-01"

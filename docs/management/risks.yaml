@@ -1,4 +1,4 @@
-# 风险台账（risks.yaml，schema v1.3，W27-E 种子 + W34-B/W67/W73/W74 回填 + W76 阶段 C & D EXITED 与阶段 E 立项同步）
+# 风险台账（risks.yaml，schema v1.3，W27-E 种子 + W34-B/W67/W73/W74 回填 + W76 阶段 C & D EXITED 与阶段 E 立项 + W81 阶段 E 退出门禁与 RISK-E-01..05 回填同步）
 #
 # 纪律：
 # - 九类来自管理机制 README §9；severity 按 影响×发生概率×不可逆性 保守评定；
@@ -74,7 +74,7 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "W77（8c4ad8c2a + 0d1ccce5b，E-SABI-001 / E-SABI-002，H4）已完成第一步（第 7 通道 nlos.sabi.PrincipalHandshake 入冻达成 crates/nlos-schema REGISTRY 全部 9/9 SABI 通道 frozen=true、N/N-1/N-2 版本兼容矩阵、COMPAT-VER-002 未知关键扩展拒绝、schema/nlos/sabi/v1/deprecation-manifest.yaml 弃用遥测及 schema/golden/epochs/v1.0/ 五语言黄金不可变语料库）；W78（bd8cf7a + 85ca119，E-SHIM-001 / E-MIGRATE-001，H4）已完成核外无特权兼容垫片 crates/nlos-compat-shim（N-1 / N-2 <-> N 线协议转换、minicbor <-> DriverProvider 桥接与 [DRV-SHIM-001] 四层零特权隔离，40/40 测试）及声明式契约检查/跨纪元差异/三态迁移回滚工具链 crates/nlos-migrate + tools/sabi-compat-diff（18/18 Rust + 8/8 Python 测试），ADR-0027 晋升 ACCEPTED；依决策点 E2 审慎护栏继续维持 partial，待 W81 [ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证通过并获维护者签字后，方从 ADR-0014 v1-beta 正式晋升为 SABI v1.0 长期冻结承诺并闭合本项"
+  mitigation: "W77（8c4ad8c2a + 0d1ccce5b，E-SABI-001 / E-SABI-002，H4）已完成第一步（第 7 通道 nlos.sabi.PrincipalHandshake 入冻达成 crates/nlos-schema REGISTRY 全部 9/9 SABI 通道 frozen=true、N/N-1/N-2 版本兼容矩阵、COMPAT-VER-002 未知关键扩展拒绝、schema/nlos/sabi/v1/deprecation-manifest.yaml 弃用遥测及 schema/golden/epochs/v1.0/ 五语言黄金不可变语料库）；W78（bd8cf7a + 85ca119，E-SHIM-001 / E-MIGRATE-001，H4）已完成核外无特权兼容垫片 crates/nlos-compat-shim（40/40 测试）与声明式契约检查/跨纪元差异/三态迁移回滚工具链 crates/nlos-migrate + tools/sabi-compat-diff（18/18 Rust + 8/8 Python 测试）；W80-W81（E-MARKET-001 H4 + E-ROAD-001 H7 + W81 独立终审 H7）已完成 16 份冻结签名 N-1 第三方参考 App/Driver 基准制品跨主系统 N-1->N（host_epoch 1->2）零重编译、零重打包、零重签原地升级全链路实证并触发 ADR-0027 晋升 VERIFIED；依决策点 E2 与 AGENTS.md 规则 7 审慎护栏继续维持 partial（Ready for Maintainer SABI v1.0 Freeze Sign-Off），待人类维护者显式签字后正式闭合本项"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
@@ -84,7 +84,9 @@
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
-  review_point: "W77 已完成第一步（9/9 SABI 通道 frozen=true + 五语言 v1.0 黄金语料库 + 弃用清单遥测，H4），W78（bd8cf7a + 85ca119，E-SHIM-001 / E-MIGRATE-001，H4）已完成核外无特权兼容垫片 crates/nlos-compat-shim（40/40 测试）与迁移检查/回滚工具链 crates/nlos-migrate + tools/sabi-compat-diff（18/18 Rust + 8/8 Python 测试）并触发 ADR-0027 晋升 ACCEPTED；继续按决策点 E2 维持 partial，待 W81（[ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证 + 维护者签字）通过后正式晋升 SABI v1.0 长期冻结承诺并闭合本项"
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+    - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
+  review_point: "W77-W81 已完成 9/9 SABI 通道 frozen=true、五语言 v1.0 黄金语料库、nlos-compat-shim 核外垫片、nlos-migrate 迁移工具链与 [ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证（H7，ADR-0027 晋升 VERIFIED），全部技术前提已闭环；按决策点 E2 呈请维护者审阅 W81 终审报告并显式签字批准 SABI v1.0 长期冻结承诺后正式闭合本项"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
@@ -125,7 +127,7 @@
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——201 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（116 claims / 12 risks / 201 evidence-index + lint_claims.py 44/44 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——204 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（169 claims / 17 risks / 204 evidence-index + lint_claims.py 44/44 与 verify_stage_e_ledger_coverage.py 13/13 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 
@@ -134,11 +136,11 @@
   severity: P2
   status: partial
   description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
-  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / package-lock.json / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）清空全部 6 个在途 Dependabot PR；W79（E-CERTIFY-001，H4）已落地纯 Rust 依赖许可证与锁文件供应链审计器 crates/nlos-certify/src/supply_chain_audit.rs（递归下降 SPDX 求值器拦截 GPL/AGPL/SSPL/EUPL 强传染性许可证、阻断 */latest 浮动版本与未钉死 Git 依赖、强制核验 SHA-256 checksum 与 SRI integrity：实测根工作区 166 个 Cargo 包 + 119 个 npm 包及 desktop 78 个 npm 包 0 BLOCKER）与常设 CI 自动发现门禁 tests/conformance/schema/test_lockfile_supply_chain_gate.py；W80（0436b789 预锁 wasmtime 50.0.1 通过锁文件门禁 + 2ff0b45c E-SECURITY-001 H7 落地 crates/nlos-certify/tests/h7_supply_chain_adversarial.rs 六类供应链/吊销/防抢注/回滚/卸载残留对抗回归 17/17 全部拦截）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审运行前维持 partial"
+  mitigation: "锁文件全量入库（Cargo.lock / fuzz/Cargo.lock / tests/stage_e_road_e001_upgrade_gate/Cargo.lock / package-lock.json / desktop/package-lock.json）；W76（6141dd1 Cargo PR #30/#35/#36/#38 与 6dc79eb npm PR #31/#37）已合并并通过三平台 CI Run 40868357139（13/13 全绿）清空全部 6 个在途 Dependabot PR；W79（E-CERTIFY-001，H4）已落地纯 Rust 依赖许可证与锁文件供应链审计器 crates/nlos-certify/src/supply_chain_audit.rs（递归下降 SPDX 求值器拦截强传染性许可证、阻断浮动版本与未钉死 Git 依赖、强制核验 SHA-256 checksum 与 SRI integrity：实测根工作区 166 个 Cargo 包 + 119 个 npm 包及 desktop 78 个 npm 包 0 BLOCKER）与常设 CI 自动发现门禁 tests/conformance/schema/test_lockfile_supply_chain_gate.py；W80-W81 已预锁 wasmtime 50.0.1 过锁文件门禁、完成 E-SECURITY-001 H7 六类供应链对抗回归矩阵 17/17 拦截及 E7 阶段 E 退出发布门（E-ROAD-001 / E-LEDGER-001）常设 CI 接线；保留每四个周期上游停止维护依赖树人工/制度复审，诚实维持 partial"
   evidence_refs:
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
     - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
-  review_point: "分域降级（W79-INT，2026-10-31）：open->partial（W76 已清空 6 个 Dependabot PR，W79 E-CERTIFY-001 已落地纯 Rust 锁文件哈希/SPDX 许可证供应链审计器与常设 CI 自动发现门禁 test_lockfile_supply_chain_gate.py，W80 E-SECURITY-001 已完成 H7 六类供应链与吊销对抗回归矩阵 17/17）；残余阶段 E 发布门总合流（W81 E7）与每四个周期上游停止维护依赖树复审时复查"
+  review_point: "分域降级（W79-INT，2026-10-31；W81-INT，2026-11-02 收口）：open->partial（锁文件哈希/SPDX 许可证审计器、H7 供应链对抗回归 17/17 与 W81 阶段 E 退出发布门均已挂入常设 CI）；每四个周期执行上游停止维护依赖树制度复审时复查"
 
 - id: RISK-B-10
   category: cancel-effect-unknown
@@ -186,3 +188,67 @@
     - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
     - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
   review_point: "已闭环（2026-09-21，W34-D 移交#1 处置车道）；GC 三层保守引用集语义若变更（如 staged 状态收紧）时按 §17.2 口径复验"
+
+# ---------------------------------------------------------------------------
+# Stage E — Compatibility, Shim, Supply Chain, Sandbox & Migration Risks (W81)
+# ---------------------------------------------------------------------------
+- id: RISK-E-01
+  category: premature-format-freeze
+  severity: P1
+  status: partial
+  description: "在兼容性边界与演进规则未充分暴露前过早宣称 SABI v1.0 冻结，导致后续小版本被迫破坏契约（关联 RISK-B-05）"
+  mitigation: "已通过 E1 SABI 9/9 通道黄金线级语料不可变门禁（check_golden_immutability.py）、E3 sabi-compat-diff 破坏性变更阻断器、E6 四款解耦生态样板与 E7 ROAD-E-001 N-1->N 零重编译升级矩阵完成多工作负载实证；正式 SABI v1.0 冻结签署仍保留维护者终批门控"
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+  review_point: "阶段 E 退出呈批维护者签署 SABI v1.0 正式冻结及后续每次 SABI 次版本演进 PR 时复核"
+
+- id: RISK-E-02
+  category: security-bypass
+  severity: P1
+  status: partial
+  description: "旧协议兼容垫片（nlos-compat-shim）在翻译旧包请求时发生权限放大、丢弃幂等键或越权绕过权威中介"
+  mitigation: "nlos-compat-shim 以 #![forbid(unsafe_code)] 纯用户态零特权组件运行在 EnforcementShim 之外，所有翻译输出强制重经身份/能力/策略权威中介并无损保留 128-bit IdempotencyKey 与 UNCERTAIN 状态，已通过对抗性越权隔离测试与 ROAD-E-001 跨版本升级验证"
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+  review_point: "后续新增 N-1/N-2 垫片翻译分支或新 SABI 通道扩展时强制补跑对抗性越权回归"
+
+- id: RISK-E-03
+  category: third-party-supply-chain
+  severity: P1
+  status: partial
+  description: "商店元数据重放攻击、私钥失窃、恶意定制包或跨发布者抢注既有 ApplicationId（关联 RISK-B-09）"
+  mitigation: "已落地三级发布者 Ed25519 PKI（SigningKeyCustodyVault KEK 托管与双态密钥轮换）、SQLite RAISE(ABORT) 防回滚单调 RevocationEpoch、首次注册 ApplicationId 防抢注、纯 Rust 锁文件哈希/SPDX 许可证供应链门禁与 H7 六类攻击对抗回归；物理硬件 HSM 与商业外部公证 CA 属 E-deferred 运营扩展"
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  review_point: "阶段 E 退出后接入公网多租户商店分发、商业 CA 公证或物理硬件 HSM 密钥托管前复审"
+
+- id: RISK-E-04
+  category: security-bypass
+  severity: P1
+  status: partial
+  description: "跨 OS 与 WASI 碎片化导致第三方不可信扩展逃逸沙箱（关联 U-9）"
+  mitigation: "已落地 nlos-wasm-sandbox L1 专职空环境宿主子进程（env_clear + 显式 argv + 墙钟死线硬杀）与 L2 手写 13 导入 WASI 白名单（零 socket 导入注册、词法+canonicalize 双重路径围栏、64KiB 页硬限、确定性 fuel 与 epoch 中断，Windows 11 本机 54/54 通过闭合 U-9）；Linux/macOS #[cfg(unix)] 符号链接分支与写授信树内极端 TOCTOU 窗口由三平台 CI 与后续生产硬化持续守护"
+  evidence_refs:
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+  review_point: "远端三平台 CI 常态化守护及未来扩展 WASI 导入面（如熵源或多线程提案）前强制复审"
+
+- id: RISK-E-05
+  category: durable-state-loss
+  severity: P1
+  status: partial
+  description: "跨版本升级时数据迁移半途崩溃导致用户数据损坏，或将不可逆 schema 破坏伪装为自动回滚"
+  mitigation: "nlos-migrate 与 nlos-certify Gate 3 强制在独立快照沙箱演练健康探针失败与半途崩溃原子回滚（校验 UserDataContainer 全目录 SHA-256 树摘要逐位全等且零 .tmp/.partial 残留），默认阻断 IRREVERSIBLE 自动升级并在桌面商店强制联动 Z4 显式重授权；真实跨主机物理断电台架与 C-POWER-LOSS 同口径保持显式边界"
+  evidence_refs:
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+  review_point: "后续引入大体积跨代状态迁移器或物理断电故障台架实测时复核"

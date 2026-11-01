@@ -4,7 +4,7 @@
 - **Wave / Lane**: `W81 / W81-E7B-LEDGER-SYNC`（里程碑 `M-E5` 中路，工作包 `E7` 台账覆盖率核验车道）
 - **日期**: `2026-11-01`
 - **Assurance Level**: `H4`（纯 Python 3 标准库确定性本地机械核验、13 项正负向篡改注入单测与 `TemporaryDirectory` 隔离合流预演验证；不声称 `H7` 安全对抗渗透或生产运营证明）
-- **状态**: `CANDIDATE`（本车道遵循独占写集纪律，仅交付机械核验器与候选回填生成器，不直接修改共享治理台账；待 `W81-INT` 在屏障 `B81-INT` 后串行合入候选条目并通过 `--mode strict` 硬门禁后晋升 `VERIFIED`）
+- **状态**: `VERIFIED`（经 `W81-INT` 合流回填三份权威机器台账并通过 `lint_claims.py` `204/204` `0 ERROR` 与 `verify_stage_e_ledger_coverage.py --mode strict` 硬门禁，正式晋升 `VERIFIED`）
 - **权威规范与治理依据**:
   - [06-架构设计总纲-v0.5.md](../../design/06-架构设计总纲-v0.5.md) §28.5（阶段 E 长期兼容制度、应用/驱动商店治理与生态工具链及 `[ROAD-E-001]`）
   - [ledger-schema.md](../../management/ledger-schema.md)（`v1.3` `FROZEN-additive`：`stage: E` 枚举扩域、`Claim <= Evidence` 支撑格 `rank(POC)=3, rank(Hn)=n`、双向 `docs/evidence/stage-e/` 索引与 §5 Canonical YAML 子集）
@@ -146,9 +146,9 @@
 | 11 | `e-market-001-reference-apps-and-drivers` | [docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md](e-market-001-reference-apps-and-drivers.md) | `W80 / E6B` | `H4` | 已入库（`201` 基线内） |
 | 12 | `e-market-002-desktop-store-transparency-ui` | [docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md](e-market-002-desktop-store-transparency-ui.md) | `W80 / E6C` | `H4` | 已入库（`201` 基线内） |
 | 13 | `e-security-001-h7-supply-chain-and-revocation-adversarial` | [docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md](e-security-001-h7-supply-chain-and-revocation-adversarial.md) | `W80 / E6D` | `H7` | 已入库（`201` 基线内） |
-| 14 | `e-road-001-zero-recompile-host-upgrade-gate` | `docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md` | `W81 / E7A` | `H7` | `CANDIDATE`（`+1 -> 202`） |
-| 15 | `e-ledger-001-v13-conformance-audit` | [docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md](e-ledger-001-v13-conformance-audit.md) | `W81 / E7B` | `H4` | `CANDIDATE`（`+1 -> 203`） |
-| 16 | `w81-stage-e-exit-gates` | `docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md` | `W81 / E7C` | `H7` | `CANDIDATE`（`+1 -> 204`） |
+| 14 | `e-road-001-zero-recompile-host-upgrade-gate` | [docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md](e-road-001-zero-recompile-host-upgrade-gate.md) | `W81 / E7A` | `H7` | 已入库（`W81-INT` `+1 -> 202`） |
+| 15 | `e-ledger-001-v13-conformance-audit` | [docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md](e-ledger-001-v13-conformance-audit.md) | `W81 / E7B` | `H4` | 已入库（`W81-INT` `+1 -> 203`） |
+| 16 | `w81-stage-e-exit-gates` | [docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md](reviews/w81-stage-e-exit-gates.md) | `W81 / E7C` | `H7` | 已入库（`W81-INT` `+1 -> 204`） |
 
 ---
 

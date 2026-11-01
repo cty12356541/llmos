@@ -2204,21 +2204,46 @@ class StageELedgerCoverageSelfTests(unittest.TestCase):
         self.assertEqual(sim_counts["evidence_index_total"], 204)
         self.assertEqual(sim_counts["stage_e_evidence_indexed"], 16)
 
+    def _reset_repo_to_pre_w81_backfill(self, repo: Path) -> int:
+        """Reset claims.yaml, risks.yaml, and evidence-index.yaml in `repo` to pre-W81 state."""
+        lc = load_lint_claims_module(repo)
+        claims = lc.parse_canonical_yaml((repo / lc.CLAIMS_PATH).read_text(encoding="utf-8"))
+        risks = lc.parse_canonical_yaml((repo / lc.RISKS_PATH).read_text(encoding="utf-8"))
+        index = lc.parse_canonical_yaml((repo / lc.INDEX_PATH).read_text(encoding="utf-8"))
+        assert isinstance(claims, list) and isinstance(risks, list) and isinstance(index, list)
+
+        pre_claims = [c for c in claims if isinstance(c, dict) and c.get("stage") != "E"]
+        pre_risks = [
+            r for r in risks if isinstance(r, dict) and not str(r.get("id", "")).startswith("RISK-E-")
+        ]
+        w81_paths = set(W81_PENDING_EVIDENCE_PATHS)
+        pre_index = [e for e in index if isinstance(e, dict) and e.get("path") not in w81_paths]
+
+        (repo / lc.CLAIMS_PATH).write_text(render_claims_candidates_yaml(pre_claims), encoding="utf-8")
+        (repo / lc.RISKS_PATH).write_text(render_risks_candidates_yaml(pre_risks), encoding="utf-8")
+        (repo / lc.INDEX_PATH).write_text(render_evidence_candidates_yaml(pre_index), encoding="utf-8")
+        return len(pre_claims)
+
     def test_03_emit_candidates_canonical_yaml_roundtrip(self) -> None:
-        lc = load_lint_claims_module(REPO_ROOT)
-        cand = generate_candidate_data(REPO_ROOT)
-        for section_name, expected_len in (("evidence", 3), ("claims", 53), ("risks", 5)):
-            yaml_block = cand["yaml"][section_name]
-            parsed = lc.parse_canonical_yaml(yaml_block)
-            self.assertIsInstance(parsed, list)
-            self.assertEqual(len(parsed), expected_len)
+        tmp, repo = self._clone_sim_repo()
+        try:
+            self._reset_repo_to_pre_w81_backfill(repo)
+            lc = load_lint_claims_module(repo)
+            cand = generate_candidate_data(repo)
+            for section_name, expected_len in (("evidence", 3), ("claims", 53), ("risks", 5)):
+                yaml_block = cand["yaml"][section_name]
+                parsed = lc.parse_canonical_yaml(yaml_block)
+                self.assertIsInstance(parsed, list)
+                self.assertEqual(len(parsed), expected_len)
+        finally:
+            tmp.cleanup()
 
     def test_04_earlier_stage_preregistered_id_prevents_duplicate_emission(self) -> None:
         tmp, repo = self._clone_sim_repo()
         try:
-            # Build a pre-backfill-like claims.yaml where TUI-CONSENT-001 is already registered under Stage D.
+            # Build a pre-backfill claims.yaml where TUI-CONSENT-001 is already registered under Stage D.
+            pre_count = self._reset_repo_to_pre_w81_backfill(repo)
             lc = load_lint_claims_module(repo)
-            claims = lc.parse_canonical_yaml((REPO_ROOT / lc.CLAIMS_PATH).read_text(encoding="utf-8"))
             prereg_block = render_claims_candidates_yaml(
                 [
                     {
@@ -2234,18 +2259,15 @@ class StageELedgerCoverageSelfTests(unittest.TestCase):
                     }
                 ]
             )
-            base_claims_text = (REPO_ROOT / lc.CLAIMS_PATH).read_text(encoding="utf-8")
+            base_claims_text = (repo / lc.CLAIMS_PATH).read_text(encoding="utf-8")
             (repo / lc.CLAIMS_PATH).write_text(base_claims_text + "\n" + prereg_block, encoding="utf-8")
-            # Reset index & risks to baseline so generate_candidate_data computes fresh delta.
-            shutil.copy2(REPO_ROOT / lc.INDEX_PATH, repo / lc.INDEX_PATH)
-            shutil.copy2(REPO_ROOT / lc.RISKS_PATH, repo / lc.RISKS_PATH)
 
             cand = generate_candidate_data(repo)
             self.assertIn("TUI-CONSENT-001", cand["classification"]["registered_earlier_stage"])
             emitted_ids = [c["requirement_id"] for c in cand["claim_candidates"]]
             self.assertNotIn("TUI-CONSENT-001", emitted_ids)
             self.assertEqual(len(emitted_ids), 52)
-            self.assertEqual(len(claims) + 1 + len(emitted_ids), 169)
+            self.assertEqual(pre_count + 1 + len(emitted_ids), 169)
         finally:
             tmp.cleanup()
 

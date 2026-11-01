@@ -2054,3 +2054,997 @@
   limitations:
     - "已实证 12 域 SystemControlCenter（System Informer 十层父子归属树、阶段 C Cell 三族租约检视与 RequestProcessMigration、Headlamp 裁剪与 5+1 法定锁、Terraform +/-/~ 爆炸半径预览与 Topic Purge 5 秒武装确认、ControlCommandId 对账恢复）、四层 SettingsDomain CAS/watch、可撤销 ContentTypeAssociation、零明文 KeychainReference、WCAG 2.2 AA 20 组对比度审计、Z0-Z4 ARIA 语义树与 Z4 焦点陷阱、prefers-reduced-motion 冻结及 zh-CN/en-US 100% 键值与零行话对偶；第三语言扩展与硬件读屏器外设矩阵留归阶段 E"
   source: "stage-d-progress.md §D.3.1 D-CONTROL-SETTINGS-A11Y（W72-W74，base 40f9967a）：PARTIAL_PASS"
+
+# ===========================================================================
+# Stage E — Long-Term SABI Compatibility, Store Governance & Ecosystem (W81)
+# ===========================================================================
+- requirement_id: ROAD-E-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-compat-shim
+    - crates/nlos-migrate
+    - crates/nlos-package
+    - crates/nlos-store-registry
+    - scripts/run_road_e001_upgrade_matrix.py
+  test_refs:
+    - tests/stage_e_road_e001_upgrade_gate
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在本地确定性多纪元宿主矩阵上实证冻结签名 N-1（target_sabi_epoch=1）参考多组件应用与用户态驱动在主系统原地升级至 N 后零重编译/零重打包/零重签完成状态恢复、能力续期、IPC、nlos-compat-shim 垫片协商、驱动热插拔、回滚与零残留卸载；公网多租户云市场分发、商业法币计费及维护者签署 SABI v1.0 / EXITED 批复保持显式边界"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E7 / §E.5.5 ROAD-E-001（W81）：PARTIAL_PASS"
+
+- requirement_id: COMPAT-VER-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1
+    - tools/sabi-compat-diff/sabi_compat_diff.py
+    - crates/nlos-migrate
+    - crates/nlos-certify/src/gate1_protocol.rs
+  test_refs:
+    - tools/sabi-compat-diff/test_sabi_compat_diff.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已冻结 SABI v1 N/N-1/N-2 三纪元兼容窗口与 APPLICATION_PLATFORM/DESKTOP SurfaceProfile 准入矩阵并由 Gate 1 与 sabi-compat-diff 机械守护；正式 SABI v1.0 里程碑签署需维护者终批（关联 RISK-E-01 / RISK-B-05）"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E3,E5（W77-W79）：PARTIAL_PASS"
+
+- requirement_id: COMPAT-VER-002
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1
+    - crates/nlos-migrate
+    - crates/nlos-compat-shim
+    - crates/nlos-certify/src/gate1_protocol.rs
+  test_refs:
+    - crates/nlos-migrate/tests/static_checker.rs
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证 SABI 线级扩展协商、可选字段安全降级与未知 critical 扩展 fail-closed 拒绝；跨大版本 SABI v2 破坏性迁移不在 v1 周期范围内"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E2,E3（W77-W78）：PARTIAL_PASS"
+
+- requirement_id: COMPAT-DEPRECATE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/deprecation-manifest.yaml
+    - tools/sabi-compat-diff/sabi_compat_diff.py
+    - crates/nlos-migrate
+  test_refs:
+    - tools/sabi-compat-diff/test_sabi_compat_diff.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+    - crates/nlos-migrate/tests/static_checker.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已通过 deprecation-manifest.yaml、sabi-compat-diff 与 nlos-migrate 升级处方强制执行不少于 2 个次版本/纪元的弃用缓冲窗口与移除阻断；仅覆盖本地确定性 CI 门禁，不含外部注册中心遥测"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E3（W77-W78）：PARTIAL_PASS"
+
+- requirement_id: KABI-IDEM-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-types
+    - crates/nlos-operation
+    - crates/nlos-compat-shim
+    - crates/nlos-certify/src/gate1_protocol.rs
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 SABI 黄金语料、nlos-compat-shim 旧包翻译面与 Gate 1 认证审计中强制校验 128-bit IdempotencyKey 无损透传与同键重放幂等；外部不受控第三方 SaaS 远端幂等取决于对应驱动副作用级别声明"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E2,E5（W77-W79）：PARTIAL_PASS"
+
+- requirement_id: KABI-HANDLE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-types
+    - crates/nlos-capability
+    - crates/nlos-compat-shim
+    - crates/nlos-plan/src/ecosystem_selector.rs
+  test_refs:
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片与 7 类跨生态 Typed Selector 解析路径强制执行不透明不可伪造句柄绑定，拒绝裸宿主路径或跨主体句柄伪造；确定性本地 H4 集成测试级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E4（W78-W79）：PARTIAL_PASS"
+
+- requirement_id: KABI-SVC-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - crates/nlos-driver-llm-http
+    - examples/ecosystem-drivers/openai-compat-driver
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：微内核保持零厂商 LLM API 与零应用市场框架侵入，nlos-up 试用栈与 OpenAI/MCP 生态驱动均严格运行于用户态 DriverProvider + EnforcementShim 边界之外；商业多供应商云路由属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1,E6（W77-PRE..W80）：PARTIAL_PASS"
+
+- requirement_id: KABI-ERR-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-types
+    - crates/nlos-compat-shim
+    - schema/nlos/sabi/v1/envelope.proto
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 SABI v1 envelope 黄金线级向量与 nlos-compat-shim 跨纪元错误码映射中保持微内核标准错误分类零静默吞没、零敏感宿主路径泄漏；本地 H4 确定性验证级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E2（W77-W78）：PARTIAL_PASS"
+
+- requirement_id: KABI-UNCERTAIN-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-operation
+    - crates/nlos-compat-shim
+    - crates/nlos-migrate
+    - crates/nlos-certify/src/gate1_protocol.rs
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-migrate/tests/static_checker.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片、nlos-migrate 静态审计、Gate 1 商店认证门与 mcp-bridge-driver 中强制保留 UNCERTAIN 终态并校验同幂等键对账契约；物理外部硬件设备在途擦除不在软件对账范围内"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E3,E5（W78-W80）：PARTIAL_PASS"
+
+- requirement_id: SABI-DISC-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-service-directory
+    - schema/nlos/sabi/v1/service_directory.proto
+    - crates/nlos-up
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - tests/conformance/schema/test_golden_immutability.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已冻结 ServiceDirectory v1 发现协议黄金向量并在本地试用栈与 SurfaceProfile 边界门禁完成确定性验证；跨公网联邦服务目录发现属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1（W77-PRE..W77）：PARTIAL_PASS"
+
+- requirement_id: SABI-COMMON-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/envelope.proto
+    - crates/nlos-schema
+    - tools/check_golden_immutability.py
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已冻结 SABI v1 公共信封（版本、追踪、相关 ID 与结构化错误头）并通过黄金线级不可变门禁校验；正式 SABI v1.0 签署保留维护者批复门控"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1（W77）：PARTIAL_PASS"
+
+- requirement_id: SABI-RECEIPT-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - crates/nlos-certify/src/receipt.rs
+    - crates/nlos-store-registry
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证本地试用栈审计收据、SABI 黄金收据向量与域分离签名 StoreCertificationReceipt 全链路验签；外部第三方透明日志公证属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1,E5（W77-PRE..W79）：PARTIAL_PASS"
+
+- requirement_id: SABI-AUTH-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/principal_handshake.proto
+    - crates/nlos-identity
+    - crates/nlos-up
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - tests/conformance/schema/test_golden_immutability.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已冻结 PrincipalHandshake v1 线级黄金向量并在 nlos-up 本地栈实证主体身份与能力握手绑定；企业外部 OIDC/SSO 联合身份目录属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1（W77-PRE..W77）：PARTIAL_PASS"
+
+- requirement_id: SABI-TRANSPORT-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-ipc
+    - crates/nlos-channel
+    - crates/nlos-compat-shim
+  test_refs:
+    - tests/conformance/ipc
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证传输无关 SABI 帧封装与 nlos-compat-shim 旧版本消息无损转译（零特权旁路）；跨数据中心广域网传输优化不在阶段 E 核心范围内"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E2（W77-W78）：PARTIAL_PASS"
+
+- requirement_id: SABI-CONFORM-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1
+    - tools/check_golden_immutability.py
+    - crates/nlos-certify/src/gate1_protocol.rs
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已交付 SABI 9/9 通道黄金线级语料不可变门禁与商店上架 Gate 1 自动化一致性认证；驱动包扩展副作用清单 sidecar 与 nlos-package 四键基础清单的语法分界已在 E-MARKET-001 如实记录"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E5（W77,W79）：PARTIAL_PASS"
+
+- requirement_id: DRV-NEGO-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/driver_provider.proto
+    - crates/nlos-compat-shim
+    - examples/ecosystem-drivers/ecosystem-driver-kit
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 nlos-compat-shim、Gate 1（SEMANTIC_SETTLEMENT->RESOURCE_ESCROW 依赖门控）及 MCP/OpenAI 参考驱动套件中实证协议版本交集协商与不交集 fail-closed 断连；外部商业网关实时在线联调属后续生态扩展"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E2,E5,E6（W77-PRE..W80）：PARTIAL_PASS"
+
+- requirement_id: DRV-BOUND-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-compat-shim
+    - crates/nlos-wasm-sandbox
+  test_refs:
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证用户态驱动与兼容垫片严格隔离于内核特权域之外，社区不可信扩展强制封入双层 Wasm 子进程沙箱；Windows 11 本机实测通过，Linux/macOS #[cfg(unix)] 分支由远端三平台 CI 守护"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E6（W78,W80）：PARTIAL_PASS"
+
+- requirement_id: DRV-ACTIVE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-lease
+    - crates/nlos-compat-shim
+    - crates/nlos-application
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在驱动热替换、兼容垫片挂载切换与事务升级演练中强制代数/租约围栏防双活脑裂；本地确定性 H4 沙箱级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E5（W78-W79）：PARTIAL_PASS"
+
+- requirement_id: DRV-CRED-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - crates/nlos-driver-llm-http
+    - crates/nlos-migrate
+    - crates/nlos-certify/src/gate2_supply_chain.rs
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - crates/nlos-migrate/tests/static_checker.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证驱动凭据仅经受控句柄注入、nlos-migrate 与 Gate 2 硬编码密钥扫描强制脱敏阻断且日志零明文回显；硬件 TPM/HSM 外部密钥托管属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E3,E5（W77-PRE..W79）：PARTIAL_PASS"
+
+- requirement_id: DRV-PROTO-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1/driver_provider.proto
+    - examples/ecosystem-drivers/mcp-bridge-driver
+    - examples/ecosystem-drivers/openai-compat-driver
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在冻结 DriverProvider v1 通道之上通过版本化扩展封装交付 MCP（JSON-RPC 2.0 stdio）与 OpenAI-compatible（同步+SSE 流式）两款解耦用户态驱动（31/31 测试）；以脚本化传输 double 验证协议语义，未依赖外部商业在线网关"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1,E6（W77,W80）：PARTIAL_PASS"
+
+- requirement_id: DRV-LIFE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-compat-shim
+    - crates/nlos-wasm-sandbox
+    - examples/ecosystem-drivers/ecosystem-driver-kit
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证驱动协作退出/强杀终态分类（GuestExited/TrapKind）、四类 EffectDescriptor 声明校验及崩溃转 UNCERTAIN 后的同幂等键对账恢复；本地 H4 确定性宿主验证级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E2,E5,E6（W78-W80）：PARTIAL_PASS"
+
+- requirement_id: DRV-SHIM-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-compat-shim/src/lib.rs
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已交付零 unsafe 纯用户态无特权兼容垫片 crates/nlos-compat-shim，覆盖 N-1/N-2 旧包消息翻译、驱动适配与对抗性越权阻断回归；后续新增跨代垫片规则仍须按 RISK-E-02 复审"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2（W78）：PARTIAL_PASS"
+
+- requirement_id: DRV-DISC-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-plan/src/ecosystem_selector.rs
+    - crates/nlos-service-directory
+  test_refs:
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 nlos-plan 落地全部 7 类跨生态 Typed Selector 不可变句柄发现与 G3 WaitingAuthorization->Materializing 四门条件物化门控（正式闭合 U-7/U-8）；跨组织远程目录联邦发现属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E4,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-SEP-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-package
+    - crates/nlos-application
+    - crates/nlos-store-registry
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 OCI CAS 商店布局、Gate 3/4 沙箱与参考多组件应用中严格隔离只读代码镜像、UserDataContainer 与私有缓存目录；本地文件系统确定性沙箱验证级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E5,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-IMM-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-package
+    - crates/nlos-migrate
+    - crates/nlos-certify/src/gate2_supply_chain.rs
+  test_refs:
+    - crates/nlos-migrate/tests/static_checker.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 nlos-migrate 与 Gate 2 包纯度扫描中强制只读内容寻址载荷校验并拦截混入的可变 SQLite/WAL 二进制头；不依赖 OS 内核级 dm-verity 块设备挂载"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E3,E5（W77-PRE..W79）：PARTIAL_PASS"
+
+- requirement_id: PKG-SEED-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-package
+    - crates/nlos-migrate
+    - examples/ecosystem-apps/knowledge-observatory-app
+  test_refs:
+    - crates/nlos-migrate/tests/migration_sandbox.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 starter-assistant-app 与两款 6-entry 生态参考应用中实证显式只读 seed 槽位物化至 UserDataContainer 且零反向污染封存包体；确定性本地 H4 验证级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E3,E5,E6（W78-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-UPDATE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-migrate
+    - crates/nlos-certify/src/gate3_update_rollback.rs
+    - crates/nlos-application
+  test_refs:
+    - crates/nlos-migrate/tests/migration_sandbox.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 Gate 3 与 H7 恶意升级崩溃对抗矩阵中实证健康探针失败与半途崩溃后 UserDataContainer SHA-256 树摘要逐位原子回滚及漂移注入捕获，并对 IRREVERSIBLE 自动升级默认阻断；真实硬件断电故障台架与 C-POWER-LOSS 同口径保持显式边界"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E3,E5,E6（W78-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-UNINSTALL-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-application
+    - crates/nlos-certify/src/gate4_uninstall_audit.rs
+  test_refs:
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在 Gate 4 与 H7 卸载残留对抗测试中实证活跃后台任务门控、能力即时吊销、零私有缓存残留、共享导出 Artifact 完好可读及默认 100% 保留 UserDataContainer（仅签名 Z4 收据可清除）；本地确定性对抗回归级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E5,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-OCI-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store-registry/src/lib.rs
+    - desktop/src-tauri/src/store_catalog.rs
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已落地 LocalOciCasStore 双重 SHA-256 与字节长度校验、SQLite WAL+FULL 商店治理目录物理解耦及 H7 OCI 层篡改/截断/缺失摘要 100% 拦截；公网分布式 CDN 镜像同步属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E5,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-MULTI-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store-registry
+    - examples/starter-assistant-app
+    - examples/ecosystem-apps/knowledge-observatory-app
+    - examples/ecosystem-apps/field-survey-app
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在商店五类槽位复合包索引与两款 6-entry 多组件参考应用（executable + background-service + driver + UI surface + 2 read-only seeds）完成端到端封存与安装升级实证；本地 H4 验证级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E5,E6（W77-PRE..W80）：PARTIAL_PASS"
+
+- requirement_id: PKG-APPID-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-publisher-trust/src/lib.rs
+    - crates/nlos-store-registry/src/lib.rs
+    - crates/nlos-certify/src/receipt.rs
+  test_refs:
+    - crates/nlos-publisher-trust/tests/publisher_trust_gate.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在信任权威、商店上架门与认证收据签发门三处联合强制 (PublisherId, ApplicationId) 首次注册归属锁定、三方联合签名迁移及 H7 跨发布者抢注 100% 拦截；外部法律商标仲裁流程属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E4,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: TCB-BYPASS-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-wasm-sandbox/src/lib.rs
+    - crates/nlos-compat-shim/src/lib.rs
+  test_refs:
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：nlos-wasm-sandbox 将引擎执行面收敛为 pub(crate) 且生产路径仅经独立空环境子进程 nlos-wasm-sandbox-host 承载，nlos-compat-shim 零特权运行于 EnforcementShim 之外；写授信树内极端符号链接 TOCTOU 窗口与 Linux/macOS CI 分支在 E-SANDBOX-001 如实标注"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E6（W78,W80）：PARTIAL_PASS"
+
+- requirement_id: TCB-EGRESS-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - crates/nlos-certify/src/gate2_supply_chain.rs
+    - crates/nlos-wasm-sandbox
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证 nlos-up 默认仅绑定 127.0.0.1、Gate 2 拦截 platform-core/TCB 组件违规请求 net.egress、以及 Wasm 强沙箱零 socket 导入注册（导入 sock_open 实例化即拒绝）；宿主 OS 防火墙级全局流量过滤不在本层范围内"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E5,E6（W77-PRE..W80）：PARTIAL_PASS"
+
+- requirement_id: TCB-DOWNGRADE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store-registry
+    - crates/nlos-wasm-sandbox
+    - desktop/src-tauri/src/store_catalog.rs
+    - desktop/src/views/store-catalog
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - desktop/src-tauri/tests/store_catalog_trust_side.rs
+    - desktop/src/views/store-catalog/__tests__/store-catalog-transparency.test.ts
+  evidence_refs:
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在商店目录差异引擎与桌面透明面板中强制拦截沙箱降档与跨版本权限/不可逆副作用提权，必须经证书链在线复验通过并触发 Z4 显式重授权；确定性组件与桥接集成测试级别（不含人工物理窗口点击录制）"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E4,E5,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: CAP-UNFORGE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-capability
+    - crates/nlos-publisher-trust
+    - crates/nlos-certify/src/receipt.rs
+  test_refs:
+    - crates/nlos-publisher-trust/tests/publisher_trust_gate.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在三级发布者 PKI、StoreCertificationReceipt 与 SignedEntitlementToken 中采用显式域分离 Ed25519 签名与 SigningKeyCustodyVault（OperatorFileSealed KEK）密钥托管；物理硬件 HSM 托管属 E-deferred"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E4,E5（W79）：PARTIAL_PASS"
+
+- requirement_id: CAP-ATTEN-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-capability
+    - crates/nlos-compat-shim
+    - crates/nlos-plan/src/ecosystem_selector.rs
+    - crates/nlos-wasm-sandbox
+  test_refs:
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片权限不可放大测试、G3 跨生态选择器条件物化门与 WASI 预打开只读/路径围栏中实证能力单调衰减；确定性本地 H4 测试级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E4,E6（W78-W80）：PARTIAL_PASS"
+
+- requirement_id: CAP-REVOKE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-publisher-trust
+    - crates/nlos-store-registry
+    - crates/nlos-certify/src/gate4_uninstall_audit.rs
+    - desktop/src-tauri/src/store_catalog.rs
+  test_refs:
+    - crates/nlos-publisher-trust/tests/publisher_trust_gate.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已实证单调 RevocationEpoch（含 SQLite RAISE(ABORT) 防回滚/防反吊销触发器）、Level 3 QuarantineInstallation 级联能力吊销与应用禁用、以及卸载即时能力吊销 H7 对抗回归；持有宿主文件系统根写权限整库替换旧 DB 副本的防御依赖上层纪元水位对账"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E4,E5,E6（W79-W80）：PARTIAL_PASS"
+
+- requirement_id: TUI-CONSENT-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop/src-tauri/src/store_catalog.rs
+    - desktop/src/views/store-catalog
+    - desktop/src/trusted-ui
+  test_refs:
+    - desktop/src-tauri/tests/store_catalog_trust_side.rs
+    - desktop/src/views/store-catalog/__tests__/store-catalog-transparency.test.ts
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：桌面商店敏感动作（INSTALL / IRREVERSIBLE_UPGRADE / DOWNGRADE_SANDBOX）强制在线复验发布者证书链并 100% 投影至既有 Z4 实心确认屏（零自绘确认弹窗、零行话、零 Emoji）；确定性桥接与前端 1933 断言组件测试级别"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E5,E6（W77-PRE..W80）：PARTIAL_PASS"
+
+- requirement_id: NLOS-DEFER-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - docs/management/stage-e-progress.md
+    - docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md
+    - crates/nlos-store-registry
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - tools/verify_stage_e_ledger_coverage.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已严格守住 E-core 与 E-deferred 边界——仅实现不透明 SignedEntitlementToken 离线验签与幂等席位核销槽位，显式延后法币支付清结算、公网多租户云市场运营、商业硬件 HSM 公证 CA 与自动 ABI 猜测生成"
+  source: "stage-e-progress.md §E.1.1 / §E.2.3（W76-W81）：PARTIAL_PASS"
+
+- requirement_id: EVID-SCOPE-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - scripts/lint_claims.py
+    - tools/verify_stage_e_ledger_coverage.py
+    - docs/management/ledger-schema.md
+  test_refs:
+    - scripts/test_lint_claims.py
+    - tools/verify_stage_e_ledger_coverage.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：已由 lint_claims.py（44/44 单测）与 verify_stage_e_ledger_coverage.py（13/13 正负向单测）机械强制阶段 E 全量条目满足 rank(claim.assurance) <= max(rank(evidence_refs)) 且无越级 DESIGN/EXITED 冒充"
+  source: "stage-e-progress.md §E.1.1 / §E.2.1 / §E.5.5（W76,W81）：PARTIAL_PASS"
+
+- requirement_id: EVID-NONLINEAR-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - docs/management/stage-e-progress.md
+    - tools/verify_stage_e_ledger_coverage.py
+  test_refs:
+    - scripts/test_lint_claims.py
+    - tools/verify_stage_e_ledger_coverage.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：阶段 E 全程（W76..W81）严格执行独立 Git Worktree 互斥写集、CANDIDATE->VERIFIED 波屏障由单一 Integrator 晋升及双向证据索引核验；后续阶段演化继续沿用同一机器台账契约"
+  source: "stage-e-progress.md §E.1.1 / §E.3.2（W76-W81）：PARTIAL_PASS"
+
+- requirement_id: EVID-NEG-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-wasm-sandbox
+    - crates/nlos-compat-shim
+    - crates/nlos-certify
+  test_refs:
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：阶段 E 兼容垫片、双层 Wasm 强沙箱 21 类逃逸矩阵、供应链 H7 六类攻击矩阵及台账篡改自测均强制断言具体错误变体/errno/触发器消息（零裸 is_err()）；非无界模糊渗透或外部红队测试"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E2,E6（W78,W80-W81）：PARTIAL_PASS"
+
+- requirement_id: EVID-REPRO-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - examples/ecosystem-apps/seal-n1-baseline.sh
+    - tools/verify_stage_e_ledger_coverage.py
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+    - tools/verify_stage_e_ledger_coverage.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：每份阶段 E 证据均附确定性单命令复现入口（含 nlos-up 一键本地栈、seal-n1-baseline.sh 连续双跑 16/16 封存产物 SHA-256 逐字节一致及台账覆盖率核验器）；跨三平台远端 CI 构建缓存耗时不计入确定性基准"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E6,E7（W77-PRE..W81）：PARTIAL_PASS"
+
+- requirement_id: EVID-GEN-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - tools/check_golden_immutability.py
+    - tools/check-generated-schema.mjs
+    - tools/sabi-compat-diff/sabi_compat_diff.py
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：SABI v1 生成 schema、冻结黄金线级向量与锁文件供应链均纳入 tests/conformance/schema 常设自动化门禁防漂移守护；仅覆盖仓库内确定性离线工具链"
+  source: "stage-e-progress.md §E.1.1 / §E.2.2 E1（W77-W79）：PARTIAL_PASS"
+
+- requirement_id: DUI-ASSOC-001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-certify/src/gate2_supply_chain.rs
+  test_refs:
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：Gate 2 自动化认证流水线强制拦截任何静默篡改默认 URI/MIME/文件类型关联而不经用户显式授权的上架包声明；宿主 OS 级文件关联注册同步不在阶段 E 商店离线流水线范围内"
+  source: "stage-e-progress.md §E.2.2 E5（W79）：PARTIAL_PASS"
+
+- requirement_id: E-TRIAL-BOOTSTRAP
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-up
+    - crates/nlos-driver-llm-http
+    - docs/developers/quickstart-trial.md
+    - examples/starter-assistant-app
+  test_refs:
+    - crates/nlos-up/tests/bootstrap_smoke.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
+    - docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E0（W77-PRE / M-E0.5）已交付一键本地试用栈 crates/nlos-up、OpenAI 兼容真实大模型 HTTP 驱动（含 glm-keypool 接管 smoke）、15 分钟开发者快速上手指南与独立 workspace starter-assistant-app（v1.0.0/v1.1.0）；微内核保持零厂商 API 侵入"
+  source: "stage-e-progress.md §E.2.2 E0（W77-PRE）：PARTIAL_PASS"
+
+- requirement_id: E-SABI-POLICY-CORPUS
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - schema/nlos/sabi/v1
+    - tools/check_golden_immutability.py
+    - docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md
+  test_refs:
+    - tests/conformance/schema/test_golden_immutability.py
+    - tests/conformance/schema/test_sabi_compat_diff_gate.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
+    - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E1（W77 / M-E1）已补齐 SABI v1 9/9 通道 schema、三纪元版本演进矩阵、deprecation-manifest.yaml 与冻结黄金线级语料不可变门禁；正式 SABI v1.0 冻结签署待维护者终批（关联 RISK-E-01 / RISK-B-05）"
+  source: "stage-e-progress.md §E.2.2 E1（W77）：PARTIAL_PASS"
+
+- requirement_id: E-COMPAT-SHIM
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-compat-shim
+  test_refs:
+    - crates/nlos-compat-shim/tests/mount_and_protocol_translation.rs
+    - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E2（W78 / M-E2 左半）已交付 #![forbid(unsafe_code)] 纯用户态无特权兼容垫片 crates/nlos-compat-shim，实证 N-1/N-2 协议与驱动消息翻译、幂等键与 UNCERTAIN 无损透传及对抗性越权阻断；后续新纪元翻译规则按 RISK-E-02 持续复核"
+  source: "stage-e-progress.md §E.2.2 E2（W78）：PARTIAL_PASS"
+
+- requirement_id: E-MIGRATE-KIT
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-migrate
+    - tools/sabi-compat-diff
+  test_refs:
+    - crates/nlos-migrate/tests/static_checker.rs
+    - crates/nlos-migrate/tests/migration_sandbox.rs
+    - tools/sabi-compat-diff/test_sabi_compat_diff.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E3（W78 / M-E2 右半）已交付 nlos-migrate CLI/库（静态清单兼容性检查、包纯度与密钥脱敏扫描、UpgradePrescription 生成及三态迁移原子回滚沙箱）与纯标准库 tools/sabi-compat-diff；严禁任何未经声明的启发式 ABI 猜测生成"
+  source: "stage-e-progress.md §E.2.2 E3（W78）：PARTIAL_PASS"
+
+- requirement_id: E-PUBLISHER-TRUST
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-publisher-trust
+    - crates/nlos-plan/src/ecosystem_selector.rs
+  test_refs:
+    - crates/nlos-publisher-trust/tests/publisher_trust_gate.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E4（W79 / M-E3 左车道）已交付三级发布者 Ed25519 PKI（SigningKeyCustodyVault KEK 托管与双态密钥轮换）、SQLite 防回滚单调 RevocationEpoch、ApplicationId 首次注册防抢注与 nlos-plan 全部 7 类跨生态 Typed Selector + G3 四门条件物化（闭合 U-7/U-8）；商业硬件 HSM 公证 CA 属 E-deferred"
+  source: "stage-e-progress.md §E.2.2 E4（W79）：PARTIAL_PASS"
+
+- requirement_id: E-STORE-CERTIFY
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store-registry
+    - crates/nlos-certify
+    - tests/conformance/schema/test_lockfile_supply_chain_gate.py
+  test_refs:
+    - crates/nlos-store-registry/tests/store_registry_gate.rs
+    - crates/nlos-certify/tests/certify_pipeline_gate.rs
+    - crates/nlos-certify/tests/e2e_trust_store_certify_pipeline.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
+    - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+  assurance: H4
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E5（W79 / M-E3 中右车道）已交付 LocalOciCasStore 五槽位商店治理目录、SignedEntitlementToken 幂等核销、三级撤回级联吊销及 nlos-certify 四门自动化认证流水线（含纯 Rust 锁文件哈希/SPDX 供应链审计推进 RISK-B-09 open->partial）；法币支付清结算与公网多租户商店运营属 E-deferred"
+  source: "stage-e-progress.md §E.2.2 E5（W79）：PARTIAL_PASS"
+
+- requirement_id: E-MARKET-SANDBOX-H7
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-wasm-sandbox
+    - examples/ecosystem-apps
+    - examples/ecosystem-drivers
+    - desktop/src-tauri/src/store_catalog.rs
+    - desktop/src/views/store-catalog
+  test_refs:
+    - crates/nlos-wasm-sandbox/tests/escape_matrix.rs
+    - desktop/src-tauri/tests/store_catalog_trust_side.rs
+    - desktop/src/views/store-catalog/__tests__/store-catalog-transparency.test.ts
+    - crates/nlos-certify/tests/h7_supply_chain_adversarial.rs
+  evidence_refs:
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+    - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E6（W80 / M-E4）已交付双层不可信 Wasm 强沙箱（54/54 测试，闭合 U-9）、2 款参考多组件应用 + 2 款用户态驱动及 16/16 字节确定性封存 N-1 基准包、桌面实心商店 L1/L2/L3 透明面板与 Z4 联动（1933 断言）及 H7 供应链/吊销六类攻击对抗回归；Linux/macOS #[cfg(unix)] 沙箱分支由远端三平台 CI 常态守护"
+  source: "stage-e-progress.md §E.2.2 E6（W80）：PARTIAL_PASS"
+
+- requirement_id: E-UPGRADE-GATE-ROADE001
+  stage: E
+  status: PARTIAL_PASS
+  implementation_refs:
+    - scripts/run_road_e001_upgrade_matrix.py
+    - tools/verify_stage_e_ledger_coverage.py
+  test_refs:
+    - tests/stage_e_road_e001_upgrade_gate
+    - tools/verify_stage_e_ledger_coverage.py
+  evidence_refs:
+    - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
+    - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+    - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
+  assurance: H7
+  limitations:
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E7（W81 / M-E5）已交付 ROAD-E-001 主系统 N-1->N 零重编译升级全链路门禁、ledger-schema v1.3 机械覆盖率核验器及阶段 E 独立退出终审；阶段 E 顶层状态仍需维护者审阅全部退出门证据后正式批复 EXITED"
+  source: "stage-e-progress.md §E.2.2 E7 / §E.3.2 W81（W81）：PARTIAL_PASS"
