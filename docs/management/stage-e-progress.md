@@ -483,6 +483,8 @@ flowchart LR
 | **`L-014`** | **`SABI v1.1` 纯增量薄通道 B**（~3 个 RPC 方法，既有 9 通道零字节改动） | [crates/nlos-wasm-sandbox](../../crates/nlos-wasm-sandbox) + [mcp-bridge-driver](../../examples/ecosystem-drivers/mcp-bridge-driver/src/lib.rs) + `Z4` / `G3` 门控 | 水下双层 Wasm 强沙箱（`W80`）与 MCP 驱动桥尚未向外部 Agent 暴露按 `CapabilityHandle` 委托执行工具的窄腰入口 | 新增沙箱工具 / MCP 委托执行薄通道（`list_tools`、`invoke_tool` 并协同 `OperationControl` / `WaitControl`），彻底消除应用层手搓 DNS SSRF 防火墙与同进程高危工具执行 |
 | **托管约定 C** | **0 新 `.proto`**（受管进程环境变量契约） | `crates/nlos-up` / `crates/nlos-package` / `crates/nlos-process` | 外部多语言应用仍需手写 `ManagedLlmosDaemon` 与三进程 `supervisor` | 按清单拉起受管外部 Python/TS 组件进程（如 `adapter` / `brain`）并自动注入 `LLMOS_AUTH_ENDPOINT`、`LLMOS_PROCESS_IDENTITY_SEED`、`LLMOS_ROOT_CAPABILITY_SLOT` |
 
+   **`L-015`（2026-11-02 立项后新增外部上报，候选增补，`AWAITING_MAINTAINER_SCOPE_RULING`——是否纳入 `W82` 范围属人类维护者裁定事项，裁定前零代码、零 `claims.yaml` 录入）**：外部常驻双脑应用 `qq-agent` 在 TTS 语音管线联调中上报（受理登记与双侧锚点核验见 [E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md)）——`SABI v1.0` 冻结的 `ChannelControl` 单帧 `64 KiB` payload 上界（[lib.rs](../../crates/nlos-schema/src/lib.rs) `MAX_CHANNEL_CONTROL_PAYLOAD_BYTES`，`ADR-0014` / `W73` `L-002` 冻结契约）首次被真实外部富媒体场景顶到：语音 WAV base64 后常见 `>16 KB`、稍长语音逼近乃至超过单帧上界，协议层无大载荷分帧重组或旁路传递原语，一切富媒体出站应用被迫自建「落盘 + 回灌 + 非标 URI + 缓存清理」应用侧脏活（恰为本节第 1 点要消灭的类型）。候选收口方向（上报方建议、非结论）：`SABI v1.1` 纯增量传输层分帧重组（选项 A）或 `Capability` 作用域 Blob/文件句柄引用传递（选项 B）；上报方明确不建议上调单帧上界（选项 C，破坏 `v1.0` 冻结与 golden 11 向量零漂移门禁）。若裁定纳入：并入 `W82-B` 或单开车道需一并裁定（选项 A 触及 `crates/nlos-ipc` / `crates/nlos-system-control`，与 `W82-A` 写集交叠，须串行或拆分）。
+
 3. **`W82` 依赖感知互斥写集多轨 DAG 编排蓝图（5 车道 + 2 屏障，供 `W81` 签字收官后直接装填 `.agentdash/ledger.json`）**：
 
 | 波次阶段 / 屏障 | 车道 ID | 角色与闭合项 | 严格独占写集（Write-Set `∩ = ∅`） | 车道准出验收门禁 |
