@@ -461,9 +461,9 @@ flowchart LR
 - **技术退出门禁 1–5 已 100% 闭环，门禁 6 严格等候人类维护者显式签字**：依据 `AGENTS.md` 第 7 条与 [§E.5.5](#e55-阶段-e-退出门禁检查表) 门禁 6，任何 Agent 严禁自行将阶段顶部状态翻转为 `EXITED` 或单方面将 `RISK-B-05` 翻转为 `closed`；当前阶段 E 保持 `IN_PROGRESS / NOT EXITED`（`READY_FOR_MAINTAINER_SIGNOFF`），待人类维护者审阅 [W81 独立终审报告](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md) 与 [exit-unknown-risks.md](./exit-unknown-risks.md) 并显式批复后，即可一键执行状态翻转；
 - **`E-deferred` 外部物理/商业/组织边界零夸大保留**：Layer-3+ 真机可编程断电台架（`U-4` / `RISK-B-02`）、多机裸金属 `1M_LOGICAL` WAN 压测（`U-1` / `RISK-B-07`）、远端失联主机不可逆外部物理副作用擦除（`U-5` / `RISK-B-11`）、外部商业 CA 硬件令牌宿主 OS 安装器公证（`RISK-B-06`）、公网多租户云商店/法币计费（`NLOS-DEFER-001`）以及单人维护集中度与四周期上游依赖复审（`RISK-B-08` / `RISK-B-09`）均按实证边界诚实保留。
 
-### E.6.1.8 W82（后续生态打通立项：PLANNED / NOT_STARTED，保障等级：DESIGN）跨工作区 qq-agent Dogfood 二期与 SABI 最小完备「窄腰（Narrow Waist）」波次规划（L-008 ~ L-015）
+### E.6.1.8 W82（后续生态打通：IN_PROGRESS / EXECUTING（2026-11-02 维护者指示启动，Phase 1 三车道 A/B/C 已并行派发），保障等级：DESIGN）跨工作区 qq-agent Dogfood 二期与 SABI 最小完备「窄腰（Narrow Waist）」波次规划（L-008 ~ L-015）
 
-于 `W81` 收官与退出签字候批基线 `fbb993fd` 之上，承接首个外部真实常驻双脑应用 `qq-agent`（`W1 -> W4` 跨工作区架构审计移交简报，接续 [W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md) 已闭合的 `L-001` ~ `L-007`），在不打断 `W81` 阶段 E 退出终审与 `SABI v1.0` 正式长期冻结签字的前提下，正式立项后续生态破壁波次 **`W82`（跨工作区 Dogfood 二期与外部多语言 Agent SABI 最小完备「窄腰」打通波次，当前状态：`PLANNED / NOT_STARTED`，保障等级：`DESIGN`，对应 [W81 独立终审 `BOUND-E-06`](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md) 与 [language-sdk-support-plan.md](./language-sdk-support-plan.md)）**：
+于 `W81` 收官与退出签字候批基线 `fbb993fd` 之上，承接首个外部真实常驻双脑应用 `qq-agent`（`W1 -> W4` 跨工作区架构审计移交简报，接续 [W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md) 已闭合的 `L-001` ~ `L-007`），在不打断 `W81` 阶段 E 退出终审与 `SABI v1.0` 正式长期冻结签字的前提下，正式立项后续生态破壁波次 **`W82`（跨工作区 Dogfood 二期与外部多语言 Agent SABI 最小完备「窄腰」打通波次，当前状态：`IN_PROGRESS / EXECUTING`（2026-11-02 维护者指示启动，Phase 1 三车道 A/B/C 并行派发于隔离 worktree 分支），保障等级：`DESIGN`，对应 [W81 独立终审 `BOUND-E-06`](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md) 与 [language-sdk-support-plan.md](./language-sdk-support-plan.md)）**：
 
 1. **真实外部常驻 Agent 验证出的三大系统护城河与生态试金石**：
    - **根治「糊涂代理人（Confused Deputy）」安全死结**：将外部 API 明文密钥与网络/文件沙箱收归 `llmos` 内核/沙箱态，使外部 Python/TypeScript 推理进程仅持单向衰减 `Capability` 令牌；
