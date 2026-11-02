@@ -122,7 +122,7 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
 | Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012/013 均已通过三平台，最新 run 30743421174 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
-| Python/TS SABI 最小完备窄腰（`L-008` ~ `L-014`：单连接多轮复用、`WaitClient`/`OperationClient`/`--auth-socket`、`nlos-sdk` 独立 wheel 打包 `gen/python`、受控 LLM 五维预算网关与沙箱工具薄通道） | `PLANNED / DESIGN`（2026-11-02 立项排入 `W82`，承接 `qq-agent` `W1 -> W4` Dogfood 二期审计，不阻塞 `W81` `SABI v1.0` 冻结） | [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` |
+| Python/TS SABI 最小完备窄腰（`L-008` ~ `L-015`：单连接多轮复用、`WaitClient`/`OperationClient`/`--auth-socket`、`nlos-sdk` 独立 wheel 打包 `gen/python`、受控 LLM 五维预算网关与沙箱工具薄通道、`ChannelControl` 大载荷原语 `L-015`（2026-11-02 裁定并入 `W82-B`，绝对安全宗旨）） | `PLANNED / DESIGN`（2026-11-02 立项排入 `W82`，承接 `qq-agent` `W1 -> W4` Dogfood 二期审计，不阻塞 `W81` `SABI v1.0` 冻结） | [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` |
 | Go generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `DEFERRED` | 新 Evidence，不提前编号 |

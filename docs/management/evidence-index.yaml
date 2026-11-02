@@ -1238,6 +1238,6 @@
 - id: e-dogfood-001-qq-agent-l015-channel-payload-bound
   path: docs/evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md
   title: "E-DOGFOOD-001：外部 qq-agent Dogfood 上报 L-015——ChannelControl 64 KiB 单帧上界与富媒体（语音）载荷冲突（上报受理登记，非闭环）"
-  scope: "外部常驻双脑应用 qq-agent TTS 语音管线联调上报：OutboundReply.voice_uri base64 富媒体载荷逼近/超过 SABI v1.0 冻结 ChannelControl 单帧 64 KiB 上界（crates/nlos-schema/src/lib.rs:58，ADR-0014 / W73 L-002 冻结契约），协议层无大载荷分帧重组原语，应用侧被迫落盘+回灌过渡；llmos 受理侧双侧权威锚点核验登记（超限帧未独立复现，保守评 POC），W82 §E.6.1.8 候选增补，范围/车道归属 AWAITING_MAINTAINER_SCOPE_RULING，零 claims 预支"
+  scope: "外部常驻双脑应用 qq-agent TTS 语音管线联调上报：OutboundReply.voice_uri base64 富媒体载荷逼近/超过 SABI v1.0 冻结 ChannelControl 单帧 64 KiB 上界（crates/nlos-schema/src/lib.rs:58，ADR-0014 / W73 L-002 冻结契约），协议层无大载荷分帧重组原语，应用侧被迫落盘+回灌过渡；llmos 受理侧双侧权威锚点核验登记（超限帧未独立复现，保守评 POC）；2026-11-02 维护者裁定 RULED_INTO_W82_B（并入 W82-B 车道，绝对安全为设计宗旨，选项 B Capability 引用传递为默认优先路线），实现仍零代码零 claims 预支"
   assurance: POC
   date: "2026-11-02"
