@@ -43,6 +43,16 @@ export interface WindowFrameOptions {
   readonly geometry?: SolvedWindowGeometry;
   readonly srcdoc?: string;
   readonly iframeSrc?: string;
+  /**
+   * Optional first-party TCB-trusted workstation surface factory (e.g. 12-Domain Control Center,
+   * Task Space DAG, Store Catalog, Settings Suite). Untrusted third-party packages MUST omit this
+   * and run strictly inside the null-origin CSP sandboxed `<iframe>`.
+   */
+  readonly trustedSurfaceFactory?: (ctx: {
+    readonly doc: Document;
+    readonly locale: WorkstationLocale;
+    readonly disclosure: DisclosureLevel;
+  }) => HTMLElement;
   readonly locale?: WorkstationLocale;
   readonly disclosure?: DisclosureLevel;
   readonly callbacks?: WindowFrameCallbacks;
@@ -316,8 +326,10 @@ export function createWindowFrameElement(options: WindowFrameOptions): HTMLEleme
     section.style.borderRadius = floating ? "6px" : "0px";
   }
 
-  section.addEventListener("pointerdown", () => {
-    options.callbacks?.onFocus?.(options.windowId);
+  section.addEventListener("click", () => {
+    if (!focused) {
+      options.callbacks?.onFocus?.(options.windowId);
+    }
   });
 
   // 30px Solid Trusted Titlebar
@@ -489,25 +501,42 @@ export function createWindowFrameElement(options: WindowFrameOptions): HTMLEleme
   }
   viewport.className = vpClasses.join(" ");
 
-  const iframe = doc.createElement("iframe");
-  iframe.className = "nlos-wm-iframe";
-  iframe.setAttribute("sandbox", CSP_SANDBOX_POLICY);
-  iframe.setAttribute("csp", CSP_SURFACE_DIRECTIVE);
-  iframe.setAttribute("referrerpolicy", "no-referrer");
-  iframe.setAttribute("title", options.title);
-  if (isSafeSurfaceSrc(options.iframeSrc)) {
-    iframe.setAttribute("src", options.iframeSrc!);
+  if (options.trustedSurfaceFactory) {
+    const trustedHost = doc.createElement("div");
+    trustedHost.className = "nlos-wm-trusted-surface";
+    trustedHost.style.width = "100%";
+    trustedHost.style.height = "100%";
+    trustedHost.style.overflow = "auto";
+    if (occluded) {
+      trustedHost.hidden = true;
+      trustedHost.setAttribute("aria-hidden", "true");
+    } else {
+      trustedHost.appendChild(
+        options.trustedSurfaceFactory({ doc, locale, disclosure }),
+      );
+    }
+    viewport.appendChild(trustedHost);
   } else {
-    iframe.setAttribute("srcdoc", options.srcdoc ?? "");
+    const iframe = doc.createElement("iframe");
+    iframe.className = "nlos-wm-iframe";
+    iframe.setAttribute("sandbox", CSP_SANDBOX_POLICY);
+    iframe.setAttribute("csp", CSP_SURFACE_DIRECTIVE);
+    iframe.setAttribute("referrerpolicy", "no-referrer");
+    iframe.setAttribute("title", options.title);
+    if (isSafeSurfaceSrc(options.iframeSrc)) {
+      iframe.setAttribute("src", options.iframeSrc!);
+    } else {
+      iframe.setAttribute("srcdoc", options.srcdoc ?? "");
+    }
+    if (occluded) {
+      iframe.hidden = true;
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.tabIndex = -1;
+    } else if (stale) {
+      iframe.tabIndex = -1;
+    }
+    viewport.appendChild(iframe);
   }
-  if (occluded) {
-    iframe.hidden = true;
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.tabIndex = -1;
-  } else if (stale) {
-    iframe.tabIndex = -1;
-  }
-  viewport.appendChild(iframe);
 
   if (occluded) {
     const guard = doc.createElement("div");
