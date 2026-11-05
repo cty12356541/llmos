@@ -54,31 +54,43 @@
 
 .nlos-task-space[data-disclosure-level="L2"] .nlos-task-space__workspace-split,
 .nlos-task-space[data-disclosure-level="L3"] .nlos-task-space__workspace-split {
-  grid-template-columns: minmax(0, 1fr) 420px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* L1 High-Density Commitment Table */
 .nlos-task-table {
   width: 100%;
   border-collapse: collapse;
-  background-color: var(--nlos-bg-canvas, #111214);
+  background-color: var(--nlos-bg-window, #111214);
   border-radius: 0px;
 }
 
 .nlos-task-table th,
 .nlos-task-table td {
-  padding: 6px 10px;
+  padding: 6px 8px;
   text-align: left;
   border-bottom: 1px solid var(--nlos-border-hairline, #2a2d32);
   vertical-align: middle;
 }
 
 .nlos-task-table th {
-  background-color: var(--nlos-bg-panel, #17191c);
+  background-color: var(--nlos-bg-chrome, #17191c);
   color: var(--nlos-text-secondary, #a2a8b4);
   font-weight: 600;
   font-size: 11px;
+  white-space: nowrap;
   user-select: none;
+}
+
+.nlos-task-row__status-col,
+.nlos-task-row__app-col,
+.nlos-task-row__partial-col,
+.nlos-task-row__actions-col {
+  white-space: nowrap;
+}
+
+.nlos-task-row__goal-col {
+  min-width: 170px;
 }
 
 .nlos-task-row {
@@ -135,11 +147,13 @@
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
-  background-color: var(--nlos-bg-panel, #17191c);
+  background-color: var(--nlos-bg-chrome, #17191c);
   color: var(--nlos-text-primary, #eceef2);
-  border: 1px solid var(--nlos-border-strong, #383c44);
+  border: 1px solid var(--nlos-border-focused, #383c44);
   border-radius: 2px;
   font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
 }
 

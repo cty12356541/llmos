@@ -58,11 +58,11 @@
 .nlos-association-row,
 .nlos-keychain-row {
   display: grid;
-  grid-template-columns: minmax(200px, 1.8fr) minmax(160px, 1.3fr) minmax(140px, 1fr) minmax(180px, 1.4fr);
+  grid-template-columns: minmax(150px, 1.6fr) minmax(120px, 1.1fr) minmax(110px, 0.9fr) minmax(150px, 1.4fr);
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-subtle, #232730);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--nlos-border-hairline, #232730);
   border-radius: 0px;
   font-variant-numeric: tabular-nums;
 }
@@ -106,11 +106,13 @@
   justify-content: center;
   gap: 6px;
   padding: 4px 10px;
-  background-color: var(--bg-surface, #1e2229);
-  color: var(--text-primary, #eceff4);
-  border: 1px solid var(--border-strong, #2e3440);
+  background-color: var(--nlos-bg-chrome, #1e2229);
+  color: var(--nlos-text-primary, #eceff4);
+  border: 1px solid var(--nlos-border-focused, #2e3440);
   border-radius: 4px;
   font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
 }
 
