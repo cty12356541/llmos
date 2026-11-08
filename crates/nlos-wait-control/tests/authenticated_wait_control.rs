@@ -450,7 +450,10 @@ async fn expired_signing_key_fails_closed_against_the_clock_wall() {
         ),
         "unexpected client error: {client_error:?}"
     );
-    assert!(waits.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        waits.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[tokio::test]
@@ -503,7 +506,10 @@ async fn bad_signature_fails_closed_without_touching_the_registry() {
         ),
         "unexpected client error: {client_error:?}"
     );
-    assert!(waits.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        waits.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[tokio::test]
@@ -635,5 +641,8 @@ async fn unknown_principal_fails_closed() {
         ),
         "unexpected outcome: {outcome:?}"
     );
-    assert!(waits.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        waits.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
