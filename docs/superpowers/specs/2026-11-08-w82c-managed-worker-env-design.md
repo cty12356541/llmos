@@ -148,13 +148,18 @@ nlos-up workers [--root <DIR>] --workers-manifest <PATH> [--grace-ms <N>]
   派生 `ManagedWorkerEnv`(三变量,单元间仅 SLOT 不同)→ `ProcessSupervisor`
   组拉起(Unix `process_group(0)`;kill_scope=ProcessGroup)→ 等待关停信号
   (Ctrl-C/SIGTERM)或全部单元退出 → 逐单元升级式树回收(4.4)→ 关守护进程。
-- 机读输出行(沿 desktop 的 `READY/STOPPED` 协议):
+- 机读输出行(沿 desktop 的 `READY/STOPPED` 协议;**2026-11-08 实现期修订**:
+  workers 模式沿 desktop 同款先输出守护进程就绪行 `READY service=system_control
+  root=...`(print_daemon_ready),`workers=<N>` 行才是 worker 就绪标记,消费方
+  应键于后者;KILL 行 outcome 为 Debug 拼写并带独立 escalated 字段,另有
+  `outcome=error` 错误臂):
 
 ```
 WORKERS manifest=<path> units=<N>
 WORKER name=<name> pid=<os_pid> status=spawned
+READY service=system_control root=...
 READY service=system_control workers=<N>
-KILL name=<name> outcome=<terminated|escalated|already-terminated> group_drained=<bool>
+KILL name=<name> outcome=<Terminated|AlreadyTerminated|error> escalated=<bool> group_drained=<bool>
 STOPPED service=system_control
 ```
 
@@ -171,8 +176,10 @@ STOPPED service=system_control
    既有 `taskkill /F /T`)。
 2. 宽限轮询直子 `try_wait`(grace-ms);超时 → 强杀 `killpg(pgid, SIGKILL)`
    (Windows 单次 taskkill 已是强杀,无二级)。
-3. 组排空核验:重复 `killpg(pgid, SIGTERM)` 至 ESRCH(对残余成员的重复
-   SIGTERM 是幂等且处于拆除语境,无副作用面);ESRCH 即 `group_drained=true`。
+3. 组排空核验(**2026-11-08 实现期修订**:有界重复组强杀 `killpg(pgid, SIGKILL)`
+   至 ESRCH——SIGTERM 对忽略信号的残余成员无法保证排空,SIGKILL 保证收口;直子
+   在宽限内自行退出即进入本步,孙进程在 t0 已随组收过 SIGTERM、不另获宽限,
+   回收优先于孙进程额外宽限是本契约的显式取舍);ESRCH 即 `group_drained=true`。
 4. 回执:每单元一条 `ManagedKillReceipt { process_id, generation, os_pid,
    outcome, escalated, group_drained }`,at-least-once 语义(重放安全,ESRCH 归一
    为 already-terminated)。
