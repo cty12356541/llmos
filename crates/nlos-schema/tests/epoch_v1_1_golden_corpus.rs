@@ -1,6 +1,6 @@
 //! W82-B1 integration test pinning `schema/golden/epochs/v1.1/` against
-//! `nlos-schema`: the three SABI v1.1 thin-waist channels (LlmGateway,
-//! ToolSandbox, BlobReference) must decode, adjudicate at
+//! `nlos-schema`: the three SABI v1.1 thin-waist channels (`LlmGateway`,
+//! `ToolSandbox`, `BlobReference`) must decode, adjudicate at
 //! [`VersionRoute::NativeCurrentEpoch`], and re-encode byte-for-byte
 //! deterministically across all 6 epoch v1.1 golden vectors, including the
 //! unknown-noncritical-extension round-trip vectors.
@@ -60,8 +60,7 @@ fn epoch_v1_1_corpus_llm_gateway_tool_sandbox_and_blob_reference_round_trip() {
     }
 
     // 1. LlmGateway typical positive request
-    let chat_wire =
-        decode_hex_file(&dir.join("nlos.sabi.LlmGateway.LlmChatRequest-v1.1.hex"));
+    let chat_wire = decode_hex_file(&dir.join("nlos.sabi.LlmGateway.LlmChatRequest-v1.1.hex"));
     let chat = decode_llm_chat_request(&chat_wire).expect("decode LlmChatRequest");
     assert_eq!(
         policy
@@ -80,7 +79,10 @@ fn epoch_v1_1_corpus_llm_gateway_tool_sandbox_and_blob_reference_round_trip() {
     let budget = decode_query_budget_request(&budget_wire).expect("decode QueryBudgetRequest");
     let budget_identity = budget.schema.as_ref().unwrap();
     assert_eq!(
-        policy.adjudicate_schema_identity(budget_identity).unwrap().route,
+        policy
+            .adjudicate_schema_identity(budget_identity)
+            .unwrap()
+            .route,
         VersionRoute::NativeCurrentEpoch
     );
     assert_eq!(budget_identity.non_critical_extension_ids, vec![42, 7001]);
