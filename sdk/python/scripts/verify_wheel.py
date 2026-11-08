@@ -35,6 +35,8 @@ PROBE = (
     "import importlib, os;"
     "mods = os.environ['NLOS_PROBE_MODULES'].split(',');"
     "[importlib.import_module(m) for m in mods];"
+    "from nlos_sdk import Ed25519Signer;"
+    "assert len(Ed25519Signer(bytes(32)).sign(b'probe')) == 64;"
     "print('IMPORT-OK', len(mods))"
 )
 
