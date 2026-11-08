@@ -262,12 +262,14 @@ fn validate_cwd(dir: &str) -> Result<(), String> {
     if path.is_absolute() {
         return Err("cwd must be a relative path under the manifest directory".to_owned());
     }
+    // 只接受全 Normal 组件:统一拒绝 Prefix/RootDir(Windows 盘符与根相对
+    // 路径,后者在 Windows 上 is_absolute() 为 false)与 CurDir/ParentDir。
     for component in path.components() {
-        if matches!(
-            component,
-            std::path::Component::ParentDir | std::path::Component::CurDir
-        ) {
-            return Err("cwd must not contain `..` or `.` components".to_owned());
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(
+                "cwd must be a plain relative path (no prefix, root, `..`, or `.` components)"
+                    .to_owned(),
+            );
         }
     }
     Ok(())
