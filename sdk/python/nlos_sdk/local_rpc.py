@@ -231,6 +231,18 @@ async def _read_frame(reader: asyncio.StreamReader, maximum: int) -> bytes:
     return await reader.readexactly(declared)
 
 
+async def _write_frame(
+    writer: asyncio.StreamWriter,
+    wire: bytes,
+    config: TransportConfig,
+) -> None:
+    """写一帧 4 字节大端长度前缀 + 载荷(与 FramedIo::send 同构)。"""
+
+    _ensure_frame_bound(len(wire), config.maximum_frame_bytes)
+    writer.write(len(wire).to_bytes(4, byteorder="big") + wire)
+    await asyncio.wait_for(writer.drain(), timeout=config.write_timeout)
+
+
 def _require_compatible_envelope(message: ExchangeRequest | ExchangeResponse) -> Any:
     if not message.HasField("envelope") or not message.envelope.HasField("schema"):
         raise IpcError("COMPATIBILITY", "schema identity is missing")

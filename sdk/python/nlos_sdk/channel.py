@@ -52,6 +52,10 @@ from .common import (  # noqa: E402
     validate_request_context,
     validate_response_context,
 )
+from .principal_session import (  # noqa: E402
+    SessionIdentity,
+    connect_authenticated as connect_authenticated_rpc,
+)
 from .service_directory import ServiceRequirement  # noqa: E402
 
 ENVELOPE_SCHEMA = "nlos.sabi.Envelope"
@@ -74,6 +78,8 @@ INSPECT_CHANNEL_METHOD = "inspect_channel"
 INSPECT_QUEUE_METHOD = "inspect_queue"
 REGISTER_QUEUE_CONSUMPTION_METHOD = "register_queue_consumption"
 
+# 历史占位身份字节:仅为兼容保留导出,不再是线上默认——身份一律会话派生
+# (authenticated 路径 principal 来自握手,其余每会话随机;见 principal_session)。
 DEFAULT_CAPABILITY_SLOT = 9
 DEFAULT_CAPABILITY_GENERATION = 1
 DEFAULT_PRINCIPAL_ID = b"\x31" * 16
@@ -237,25 +243,84 @@ class ChannelClient:
         endpoint_or_rpc: str | LocalRpcClient,
         config: TransportConfig | None = None,
         *,
-        principal_id: bytes = DEFAULT_PRINCIPAL_ID,
-        application_id: bytes = DEFAULT_APPLICATION_ID,
-        process_id: bytes = DEFAULT_PROCESS_ID,
+        principal_id: bytes | None = None,
+        application_id: bytes | None = None,
+        process_id: bytes | None = None,
         process_generation: int = DEFAULT_PROCESS_GENERATION,
         capability_slot: int = DEFAULT_CAPABILITY_SLOT,
         capability_generation: int = DEFAULT_CAPABILITY_GENERATION,
     ) -> None:
         if isinstance(endpoint_or_rpc, str) and not endpoint_or_rpc:
             raise IpcError("INVALID_CONFIG", "IPC endpoint must not be empty")
+        identity = SessionIdentity(
+            principal_id=(
+                principal_id if principal_id is not None else secrets.token_bytes(16)
+            ),
+            application_id=(
+                application_id
+                if application_id is not None
+                else secrets.token_bytes(16)
+            ),
+            process_id=(
+                process_id if process_id is not None else secrets.token_bytes(16)
+            ),
+            process_generation=process_generation,
+        )
         self._target = endpoint_or_rpc
         self._config = config or TransportConfig()
-        self._principal_id = principal_id
-        self._application_id = application_id
-        self._process_id = process_id
-        self._process_generation = process_generation
+        self._principal_id = identity.principal_id
+        self._application_id = identity.application_id
+        self._process_id = identity.process_id
+        self._process_generation = identity.process_generation
         self._capability_slot = capability_slot
         self._capability_generation = capability_generation
         self._fencing_tokens: dict[tuple[bytes, int], bytes] = {}
         self._channel_generations: dict[bytes, int] = {}
+
+    @classmethod
+    async def connect_authenticated(
+        cls,
+        endpoint: str,
+        *,
+        signer: Any,
+        principal_id: bytes,
+        config: TransportConfig | None = None,
+        application_id: bytes | None = None,
+        process_id: bytes | None = None,
+        **kwargs: Any,
+    ) -> "ChannelClient":
+        """握手一次,返回复用该认证连接的 ``ChannelClient``。
+
+        单通道复用的最小正确版:同一连接顺序多轮,背压与毒化语义继承
+        ``LocalRpcClient``;五通道同连接多路复用的最终形状等 W82-A 冻结,
+        ``principal_session.connect_authenticated`` 返回的可复用 rpc 即扩展缝。
+        ``signer`` 为 ``Ed25519Signer``;``principal_id`` 必须是服务端
+        IdentityAuthority 已登记的 principal(如 daemon READY 行给出的
+        bootstrapped principal)。
+        """
+
+        rpc = await connect_authenticated_rpc(
+            endpoint, signer, principal_id, config
+        )
+        session = SessionIdentity(
+            principal_id=principal_id,
+            application_id=(
+                application_id
+                if application_id is not None
+                else secrets.token_bytes(16)
+            ),
+            process_id=(
+                process_id if process_id is not None else secrets.token_bytes(16)
+            ),
+        )
+        return cls(
+            rpc,
+            config=config,
+            principal_id=session.principal_id,
+            application_id=session.application_id,
+            process_id=session.process_id,
+            **kwargs,
+        )
 
     @classmethod
     def from_endpoint(
