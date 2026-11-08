@@ -1069,12 +1069,14 @@ assert epoch_manifest["schema"] == "nlos.golden.epoch_manifest.v1"
 assert epoch_manifest["epoch"] == "v1.0"
 assert epoch_manifest["sabi_major"] == 1
 assert epoch_manifest["immutable"] is True
-assert set(epoch_manifest["required_channels"]) == set(SABI_V1_CHANNELS.keys())
+# W82-B1: the immutable v1.0 corpus must stay a SUBSET of the live SDK channel
+# table (the table grows additively with SABI v1.1+ channels), never equal.
+assert set(epoch_manifest["required_channels"]) <= set(SABI_V1_CHANNELS.keys())
 assert len(epoch_manifest["required_channels"]) == 9
 
 manifest_by_file = {vec["file"]: vec for vec in epoch_manifest["vectors"]}
 assert len(manifest_by_file) == 11
-assert {vec["channel"] for vec in epoch_manifest["vectors"]} == set(
+assert {vec["channel"] for vec in epoch_manifest["vectors"]} <= set(
     SABI_V1_CHANNELS.keys()
 )
 
@@ -1401,7 +1403,7 @@ for msg_cls, base_wire in [
     )
     assert reencoded == extended, f"{msg_cls.__name__} dropped unknown field"
 
-# [COMPAT-VER-002] negative & positive compatibility matrix across all 9 channels:
+# [COMPAT-VER-002] negative & positive compatibility matrix across all registered channels:
 for channel_name in SABI_V1_CHANNELS:
     for bad_major in (0, 2, 99):
         bad_id = envelope_pb2.SchemaIdentity(
