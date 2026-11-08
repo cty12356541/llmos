@@ -65,6 +65,24 @@ fn pid_gone(pid: u32, seconds: u32) -> bool {
     false
 }
 
+/// 同一解释器在空环境(`env_clear`)下自合成的变量名集合(基线探测,
+/// 构建无关:CI/本机/不同 Python 发行版各自合成什么都由此归一)。
+fn python_self_synthesized_env(python: &Path) -> Vec<String> {
+    let output = std::process::Command::new(python)
+        .args(["-c", "import os\nfor key in sorted(os.environ): print(key)"])
+        .env_clear()
+        .output()
+        .expect("baseline python probe spawns");
+    assert!(
+        output.status.success(),
+        "baseline python probe failed: {output:?}"
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 fn resolve_python3() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -219,21 +237,25 @@ fn python_worker_env_is_exactly_three_vars() {
     .expect("spawn");
     let dump = poll_file(&base.with_extension("env"), 20).expect("python env dump");
     let map = parse_env_dump(&dump);
-    // 平台事实:CPython 在 LC_CTYPE 未设时按 PEP 538 自行注入
-    // LC_CTYPE=C.UTF-8(解释器合成,非父环境继承);剔除后集合恰等三键
-    let inherited: Vec<&str> = map
-        .keys()
-        .map(String::as_str)
-        .filter(|key| *key != "LC_CTYPE")
-        .collect();
+    // 平台事实(CI 实证,2026-11-08):CPython 在 env_clear 的空环境下会自行
+    // 合成环境变量,且集合因构建而异——PEP 538 的 LC_CTYPE=C.UTF-8(常见);
+    // macOS 系统构建另有 __CF_USER_TEXT_ENCODING(CoreFoundation,按 uid 合成)
+    // 与 CPATH/LIBRARY_PATH/MANPATH/SDKROOT(CI macOS 与本机 miniconda 构建
+    // 合成集不同,故不枚举)。基线探测:同一解释器在空环境下自合成什么,
+    // 受管子进程就允许多什么;集合恰等(基线 ∪ 三 LLMOS_*)仍证明父环境零
+    // 泄漏(env_clear 后父变量必须一个不少地缺席)。
+    let baseline = python_self_synthesized_env(&python);
+    let mut expected: Vec<&str> = baseline.iter().map(String::as_str).collect();
+    expected.extend([
+        MANAGED_ENV_AUTH_ENDPOINT,
+        MANAGED_ENV_PROCESS_IDENTITY_SEED,
+        MANAGED_ENV_ROOT_CAPABILITY_SLOT,
+    ]);
+    expected.sort_unstable();
+    let actual: Vec<&str> = map.keys().map(String::as_str).collect();
     assert_eq!(
-        inherited,
-        [
-            "LLMOS_AUTH_ENDPOINT",
-            "LLMOS_PROCESS_IDENTITY_SEED",
-            "LLMOS_ROOT_CAPABILITY_SLOT"
-        ],
-        "python child env leaked: {map:?}"
+        actual, expected,
+        "python child env differs from empty-env baseline + three LLMOS vars: {map:?}"
     );
     assert!(map.contains_key("LLMOS_PROCESS_IDENTITY_SEED"));
     terminate_group_with_escalation(
