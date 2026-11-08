@@ -64,16 +64,17 @@ PDEATHSIG 的固有限制)如实登记为已知边界(§8)。
 
 | 选项 | 结论 |
 |---|---|
-| (a) `RegisterSupervisorPidRequest`/`SupervisorPidEntry` 增加 `kill_scope: KillScope` 字段(`Process`/`ProcessGroup`);`SpawnSupervisedRequest` **保持字段集不变** | **采纳**。scope 是注册期事实,单一真源;INT 后续接吊销→kill 时从同一栅栏取 scope |
+| (a) `SupervisorPidEntry` 增加 `kill_scope: KillScope` 字段(`Process`/`ProcessGroup`);**`RegisterSupervisorPidRequest` 字段集冻结不动**,scope 经新增 `register_at_scope(request, kill_scope)` 参数传入(既有 `register(request)` 委托为 `KillScope::Process`,行为逐字节不变) | **采纳**(2026-11-08 实现期修订:勘察实证 12 处越集 `RegisterSupervisorPidRequest` 字面量——nlos-slice-k 生产 5 处 + 两 crate 测试 7 处,其中 nlos-system-control 为 W82-A 活跃写集;请求结构体加字段必然破坏越集编译,参数式注入零波及。越集 `SupervisorPidEntry` 字面量为零,entry 加字段安全)。scope 是注册期事实,单一真源;INT 后续接吊销→kill 时从同一栅栏取 scope |
 | (b) supervisor 侧表记录 scope | 否决:与 registry 并行的第二真源,unregister/supersede 漂移面 |
 | (c) kill 时隐式假设全部组杀 | 否决:破坏既有单进程 kill 语义与 88 个既有测试契约 |
-| (d) 直接给 `SpawnSupervisedRequest` 加字段 | **被写集约束否决**:`nlos-runtime-tokio/tests/kill_receipt.rs:524` 以结构体字面量构造该类型,nlos-runtime-tokio 在本车道写集之外,字段新增会破坏越集代码 |
+| (d) 直接给 `SpawnSupervisedRequest`/`RegisterSupervisorPidRequest` 加字段 | **被写集约束否决**:`nlos-runtime-tokio/tests/kill_receipt.rs:524` 与上述 12 处越集字面量依赖两结构体字段集 |
 
-**兼容性实证锚点**(scout + grep):`RegisterSupervisorPidRequest`/`SupervisorPidEntry`
-的字面量构造点全部位于 nlos-process 自身 tests(写集内,机械补默认值);
-`SpawnSupervisedRequest` 的越集字面量仅 kill_receipt.rs:524 一处,冻结其字段集即零波及。
-`ProcessSupervisor::kill` 在 `kill_scope == Process` 时走既有逐字节相同代码路径
-(88 个既有测试 + runtime-tokio 测试零语义漂移);`ProcessGroup` 才进入新分派。
+**兼容性实证锚点**(scout + grep):`RegisterSupervisorPidRequest` 与 `SpawnSupervisedRequest`
+的全部字面量构造点在 nlos-process 之外共 13 处(runtime-tokio 1 + slice-k/system-control
+12),两结构体字段集冻结即零波及;`SupervisorPidEntry` 越集字面量为零,slice-k 仅对
+`SupervisorPidDecision` 变体做绑定解构(加字段不破坏);`generation_pid_map()` 快照形状
+不变(system-control/src/daemon.rs 消费面零漂移)。`ProcessSupervisor::kill` 在
+`kill_scope == Process` 时走既有逐字节相同代码路径;`ProcessGroup` 才进入新分派。
 
 ## 4. 契约定义
 

@@ -477,18 +477,19 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 2: nlos-process —— KillScope 事实记录 + 分组拉起 + 组杀适配
 
 **Files:**
-- Modify: `crates/nlos-process/src/supervisor_pid.rs`(`KillScope` + 两结构体字段 + registry 语义 + 新错误变体)
+- Modify: `crates/nlos-process/src/supervisor_pid.rs`(`KillScope` + entry 字段 + `register_at_scope` + 新错误变体;**`RegisterSupervisorPidRequest` 字段集冻结**)
 - Modify: `crates/nlos-process/src/platform_kill.rs`(trait 组杀方法 + Posix/Windows 覆写)
 - Modify: `crates/nlos-process/src/supervisor.rs`(`spawn_supervised_grouped`/`kill_force` + scope 分派)
 - Modify: `crates/nlos-process/src/lib.rs`(re-export)
-- Modify: `crates/nlos-process/tests/*.rs`(既有 `RegisterSupervisorPidRequest`/`SupervisorPidEntry` 字面量机械补 `kill_scope: KillScope::Process`)
 - Create: `crates/nlos-process/tests/managed_supervision.rs`
+- Create: `crates/nlos-process/tests/fixtures/worker_env_dump.sh`(Task 3 复用)
 
 **Interfaces:**
 - Consumes: 无(首改造点)
 - Produces(Task 3/4 依赖):
   - `pub enum KillScope { Process, ProcessGroup }`(`Clone+Copy+Debug+Eq+PartialEq`,定义于 supervisor_pid.rs,lib.rs re-export)
-  - `RegisterSupervisorPidRequest`/`SupervisorPidEntry` 新增 `pub kill_scope: KillScope`
+  - `SupervisorPidEntry` 新增 `pub kill_scope: KillScope`(**`RegisterSupervisorPidRequest` 与 `SpawnSupervisedRequest` 字段集均冻结**——越集字面量 12+1 处:crates/nlos-slice-k/src 5、两 crate tests 8、runtime-tokio 1)
+  - `pub fn register_at_scope(&self, request: RegisterSupervisorPidRequest, kill_scope: KillScope) -> Result<SupervisorPidDecision, SupervisorPidRegistryError>`(既有 `register(request)` 委托为 `KillScope::Process`,行为逐字节不变)
   - `pub fn spawn_supervised_grouped(&self, request: SpawnSupervisedRequest, command: &mut Command) -> Result<SupervisedSpawn, SupervisorError>`(unix 侧应用 `process_group(0)`)
   - `pub fn kill_force(&self, process_id: ProcessId, expected_process_generation: Generation) -> Result<SupervisorSignalOutcome, SupervisorError>`(仅 ProcessGroup scope;Process scope fail-closed)
   - trait 新默认方法 `fn signal_platform_kill_group(&self, process_id: ProcessId, process_generation: Generation, force: bool) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError>`(默认 `Err(Platform("process-group kill unsupported by this adapter"))`)
@@ -502,11 +503,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 #![cfg(unix)]
 
 use nlos_process::{
-    KillScope, PlatformKillAdapter, PosixPlatformKillAdapter, ProcessId, ProcessSupervisor,
-    RegisterSupervisorPidRequest, SpawnSupervisedRequest, SupervisorError,
+    KillScope, PlatformKillAdapter, PlatformKillAdapterOutcome, PosixPlatformKillAdapter,
+    ProcessSupervisor, RegisterSupervisorPidRequest, SpawnSupervisedRequest, SupervisorError,
     SupervisorPidRegistry, SupervisorPidRegistryError, SupervisorSignalOutcome,
 };
-use nlos_types::Generation;
+use nlos_types::{Generation, ProcessId};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -531,21 +532,27 @@ fn sh_sleep_with_grandchild(marker: &str) -> Command {
 fn registry_records_kill_scope_and_replay_mismatch_fails_closed() {
     let registry = SupervisorPidRegistry::new();
     let process_id = ProcessId::from_bytes([7; 16]);
-    let request = |kill_scope| RegisterSupervisorPidRequest {
+    let request = || RegisterSupervisorPidRequest {
         process_id,
         process_generation: Generation::INITIAL,
         os_pid: 4242,
         registered_at_ms: 0,
-        kill_scope,
     };
-    registry.register(request(KillScope::Process)).expect("register");
+    registry
+        .register_at_scope(request(), KillScope::Process)
+        .expect("register");
     let entry = registry.lookup(process_id).expect("lookup");
     assert_eq!(entry.kill_scope, KillScope::Process);
     // 同 (id, gen, pid) 但 scope 不同 → fail-closed
-    let err = registry.register(request(KillScope::ProcessGroup)).unwrap_err();
+    let err = registry
+        .register_at_scope(request(), KillScope::ProcessGroup)
+        .unwrap_err();
     assert!(matches!(err, SupervisorPidRegistryError::KillScopeMismatch { .. }), "{err}");
-    // 完全一致的 replay 仍通过
-    registry.register(request(KillScope::Process)).expect("replay");
+    // 完全一致的 replay 仍通过;经典 register 委托 Process scope 同样 replay 通过
+    registry
+        .register_at_scope(request(), KillScope::Process)
+        .expect("replay");
+    registry.register(request()).expect("classic register replays");
 }
 
 #[test]
@@ -706,7 +713,7 @@ pub enum KillScope {
 }
 ```
 
-(b) `RegisterSupervisorPidRequest` 与 `SupervisorPidEntry` 各加字段(放在 `registered_at_ms` 之后):
+(b) **`RegisterSupervisorPidRequest` 字段集不动**;仅 `SupervisorPidEntry` 加字段(放在 `registered_at_ms` 之后):
 
 ```rust
     /// 本注册的 kill 作用域(见 [`KillScope`])。
@@ -741,17 +748,76 @@ pub enum KillScope {
             ),
 ```
 
-(d) `register()` 内 `let entry = SupervisorPidEntry { ... }` 加 `kill_scope: request.kill_scope,`;replay 分支(`if current.os_pid == request.os_pid` 之前)加:
+(d) `register()` 保留签名并委托,门控逻辑移入新的 `register_at_scope()`(放在 `register` 之后):
 
 ```rust
-            if current.kill_scope != request.kill_scope {
-                return Err(SupervisorPidRegistryError::KillScopeMismatch {
-                    process_id: request.process_id,
-                    generation: request.process_generation,
-                    registered: current.kill_scope,
-                    presented: request.kill_scope,
-                });
+    /// Registers with an explicit [`KillScope`] — the scoped face
+    /// supervised group spawns (W82-C) register through. Same fail-closed
+    /// gate order as [`Self::register`], plus: an exact-replay presentation
+    /// carrying a *different* scope is a contradictory statement about an
+    /// immutable registration fact and fails closed.
+    pub fn register_at_scope(
+        &self,
+        request: RegisterSupervisorPidRequest,
+        kill_scope: KillScope,
+    ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
+        let mut entries = self.lock()?;
+        let entry = SupervisorPidEntry {
+            process_id: request.process_id,
+            process_generation: request.process_generation,
+            os_pid: request.os_pid,
+            registered_at_ms: request.registered_at_ms,
+            kill_scope,
+        };
+        let Some(&current) = entries.get(&request.process_id) else {
+            entries.insert(request.process_id, entry);
+            return Ok(SupervisorPidDecision::Registered(entry));
+        };
+        if current.process_generation == request.process_generation {
+            if current.os_pid == request.os_pid {
+                if current.kill_scope != kill_scope {
+                    return Err(SupervisorPidRegistryError::KillScopeMismatch {
+                        process_id: request.process_id,
+                        generation: request.process_generation,
+                        registered: current.kill_scope,
+                        presented: kill_scope,
+                    });
+                }
+                // Exact replay: the original entry (with its original
+                // `registered_at_ms`) stays in place untouched.
+                return Ok(SupervisorPidDecision::Replayed(current));
             }
+            return Err(SupervisorPidRegistryError::OsPidRebind {
+                process_id: request.process_id,
+                generation: request.process_generation,
+                registered: current.os_pid,
+                presented: request.os_pid,
+            });
+        }
+        if request.process_generation < current.process_generation {
+            return Err(SupervisorPidRegistryError::StaleProcessGeneration {
+                process_id: request.process_id,
+                current: current.process_generation,
+                presented: request.process_generation,
+            });
+        }
+        entries.insert(request.process_id, entry);
+        Ok(SupervisorPidDecision::Superseded {
+            previous: current,
+            current: entry,
+        })
+    }
+```
+
+并把原 `register()` 的方法体整体替换为委托(行为逐字节不变,越集 12 处字面量调用零感知):
+
+```rust
+    pub fn register(
+        &self,
+        request: RegisterSupervisorPidRequest,
+    ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
+        self.register_at_scope(request, KillScope::Process)
+    }
 ```
 
 - [ ] **Step 3: 实现 platform_kill.rs 组杀面**
@@ -866,13 +932,15 @@ pub enum KillScope {
     ) -> Result<SupervisedSpawn, SupervisorError> {
         let mut child = command.spawn().map_err(SupervisorError::Spawn)?;
         let os_pid = child.id();
-        match self.registry.register(RegisterSupervisorPidRequest {
-            process_id: request.process_id,
-            process_generation: request.process_generation,
-            os_pid,
-            registered_at_ms: request.registered_at_ms,
+        match self.registry.register_at_scope(
+            RegisterSupervisorPidRequest {
+                process_id: request.process_id,
+                process_generation: request.process_generation,
+                os_pid,
+                registered_at_ms: request.registered_at_ms,
+            },
             kill_scope,
-        }) {
+        ) {
             Ok(decision) => Ok(SupervisedSpawn { child, decision }),
             Err(error) => {
                 let torn_down_os_pid = child.id();
@@ -985,15 +1053,22 @@ pub enum KillScope {
 
 `pub use supervisor_pid::{...}` 行加入 `KillScope`(按字母序放在 `RegisterSupervisorPidRequest` 前)。
 
-- [ ] **Step 6: 既有测试字面量机械修补**
+- [ ] **Step 6: 越集零波及核验(替代原字面量修补)**
 
-Run: `grep -n "RegisterSupervisorPidRequest {" crates/nlos-process/tests/*.rs crates/nlos-process/src/*.rs`
-对每个字面量(预期 ~10 处,分布在 platform_kill.rs / supervisor.rs / supervisor_pid_registry.rs / supervisor_pid_scan.rs 的 tests)在 `registered_at_ms: ...` 行后加 `kill_scope: KillScope::Process,`;对应文件 `use nlos_process::{...}`/`use crate::...` 导入 `KillScope`。若 grep 还发现 `SupervisorPidEntry {` 字面量,同样补 `kill_scope: KillScope::Process,`。
+`RegisterSupervisorPidRequest`/`SpawnSupervisedRequest` 字段集冻结 ⇒ 越集
+12+1 处字面量无需任何改动。核验(不触碰这些 crate 的任何文件):
+
+```bash
+grep -rn "RegisterSupervisorPidRequest {" crates/ --include="*.rs" | grep -v "crates/nlos-process/" | wc -l
+# 期望 12;且:
+cargo check -p nlos-slice-k -p nlos-system-control --all-targets 2>&1 | tail -3
+# 期望编译通过,零改动越集文件(git status 只允许 nlos-process + 计划文档)
+```
 
 - [ ] **Step 7: 跑新旧测试确认通过**
 
 Run: `cargo test -p nlos-process 2>&1 | tail -8`
-Expected: 新 managed_supervision 5 测试 PASS + 既有 88+2 全 PASS。
+Expected: 新 managed_supervision 5 测试 PASS + 既有全 PASS(macOS 可见约 86,余为 Windows 门控)。
 
 - [ ] **Step 8: 提交**
 
@@ -1001,16 +1076,17 @@ Expected: 新 managed_supervision 5 测试 PASS + 既有 88+2 全 PASS。
 cargo fmt -p nlos-process
 git add crates/nlos-process/src/supervisor_pid.rs crates/nlos-process/src/platform_kill.rs \
   crates/nlos-process/src/supervisor.rs crates/nlos-process/src/lib.rs \
-  crates/nlos-process/tests/managed_supervision.rs crates/nlos-process/tests/fixtures/worker_env_dump.sh \
-  $(grep -l "kill_scope" crates/nlos-process/tests/*.rs | grep -v managed_supervision | tr '\n' ' ')
+  crates/nlos-process/src/supervisor_pid_scan.rs \
+  crates/nlos-process/tests/managed_supervision.rs crates/nlos-process/tests/fixtures/worker_env_dump.sh
 git diff --staged --stat   # 只含 nlos-process
 git -c user.name="cty12356541" -c user.email="171764500+cty12356541@users.noreply.github.com" commit -m "feat(nlos-process): 受管进程组拉起与组杀原语(KillScope 事实记录) (W82-C)
 
-KillScope(Process/ProcessGroup)登记入 RegisterSupervisorPidRequest/
-SupervisorPidEntry(replay 携带矛盾 scope fail-closed);unix 分组拉起
-process_group(0)(safe CommandExt)+ killpg(SIGTERM/SIGKILL) 组杀,
-Windows 沿用 taskkill /F /T;SpawnSupervisedRequest 字段集冻结不动。
-验证:cargo test -p nlos-process 新 5 + 既有全绿(macOS)。
+KillScope(Process/ProcessGroup)登记入 SupervisorPidEntry(register_at_scope
+注入,请求结构体字段集冻结,越集 12+1 处字面量零波及;replay 携带矛盾
+scope fail-closed);unix 分组拉起 process_group(0)(safe CommandExt)+
+killpg(SIGTERM/SIGKILL) 组杀,Windows 沿用 taskkill /F /T。
+验证:cargo test -p nlos-process 新 5 + 既有全绿;cargo check -p
+nlos-slice-k -p nlos-system-control --all-targets 通过零改动(macOS)。
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
