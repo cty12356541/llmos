@@ -520,8 +520,7 @@ fn sh_sleep_with_grandchild(marker: &str) -> Command {
     // 孙进程:sleep 300(其 pid 写入 marker.grandpid);直子 sh 存活等待。
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(format!(
-        "sleep 300 & echo $! > {marker}.grandpid; sleep 300 & echo $! > {marker}.grandpid; \
-         echo $$ > {marker}.pid; wait"
+        "sleep 300 & echo $! > {marker}.grandpid; echo $$ > {marker}.pid; wait"
     ));
     command
 }
@@ -557,9 +556,9 @@ fn posix_adapter_group_signal_resolves_generation_fence() {
         .signal_platform_kill_group(process_id, Generation::INITIAL.checked_next().unwrap(), false)
         .unwrap_err();
     let _ = err;
-    // 未知 (id,gen) 映射到不存在的 pid → killpg ESRCH → AlreadyTerminated
+    // 未知 (id,gen) 之外的已映射但不存在 pid → killpg ESRCH → AlreadyTerminated
     let outcome = adapter
-        .signal_platform_kill_group(ProcessId::from_bytes([8; 16]), Generation::INITIAL, true)
+        .signal_platform_kill_group(process_id, Generation::INITIAL, true)
         .expect("probe");
     assert_eq!(outcome, nlos_process::PlatformKillAdapterOutcome::AlreadyTerminated);
 }
@@ -1613,7 +1612,6 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 //! 白名单 + SIGTERM 主进程 → 子进程树(含孙)干净回收。unix 门控。
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1679,8 +1677,44 @@ fn pid_gone(pid: u32, seconds: u32) -> bool {
     false
 }
 
-fn spawn_nlos_up_workers(root: &Path, manifest: &Path) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_nlos-up"))
+/// 运行中的 nlos-up workers:后台线程全量收集 stdout(直到 EOF),
+/// 主线程轮询关键行;SIGTERM 后 join 收全输出。
+struct RunningUp {
+    child: Child,
+    stdout: std::sync::Arc<std::sync::Mutex<String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RunningUp {
+    fn wait_for_line(&self, needle: &str, seconds: u32) -> String {
+        for _ in 0..(seconds * 20) {
+            if let Ok(buf) = self.stdout.lock() {
+                if buf.contains(needle) {
+                    return buf.clone();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("nlos-up workers never printed {needle:?}:\n{}", self.snapshot());
+    }
+
+    fn snapshot(&self) -> String {
+        self.stdout.lock().map(|buf| buf.clone()).unwrap_or_default()
+    }
+
+    fn sigterm_and_collect(mut self) -> (String, std::process::ExitStatus) {
+        let pid = self.child.id();
+        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let status = self.child.wait().expect("wait nlos-up exit");
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        (self.snapshot(), status)
+    }
+}
+
+fn spawn_nlos_up_workers(root: &Path, manifest: &Path) -> RunningUp {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nlos-up"))
         .args([
             "workers",
             "--root",
@@ -1691,22 +1725,29 @@ fn spawn_nlos_up_workers(root: &Path, manifest: &Path) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("spawn nlos-up workers")
-}
-
-fn wait_for_ready(child: &mut Child) -> String {
+        .expect("spawn nlos-up workers");
     let stdout = child.stdout.take().expect("piped stdout");
-    let reader = BufReader::new(stdout);
-    let mut collected = String::new();
-    for line in reader.lines() {
-        let line = line.expect("read line");
-        collected.push_str(&line);
-        collected.push('\n');
-        if line.starts_with("READY service=system_control") {
-            return collected;
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let sink = std::sync::Arc::clone(&shared);
+    let reader = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => {
+                    if let Ok(mut buf) = sink.lock() {
+                        buf.push_str(&line);
+                        buf.push('\n');
+                    }
+                }
+                Err(_) => break,
+            }
         }
+    });
+    RunningUp {
+        child,
+        stdout: shared,
+        reader: Some(reader),
     }
-    panic!("nlos-up workers exited before READY:\n{collected}");
 }
 
 #[test]
@@ -1731,8 +1772,8 @@ fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
     )
     .expect("write manifest");
 
-    let mut child = spawn_nlos_up_workers(&root, &manifest_path);
-    let stdout_head = wait_for_ready(&mut child);
+    let up = spawn_nlos_up_workers(&root, &manifest_path);
+    let stdout_head = up.wait_for_line("READY service=system_control", 60);
     assert!(stdout_head.contains("WORKERS manifest="), "{stdout_head}");
     assert!(stdout_head.contains("units=2"), "{stdout_head}");
     assert!(stdout_head.contains("WORKER name=adapter pid="), "{stdout_head}");
@@ -1763,15 +1804,11 @@ fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
     }
 
     // 主进程退出(SIGTERM)→ 子进程树(直子 + 孙)回收
-    let up_pid = child.id();
-    let status = Command::new("kill").args(["-TERM", &up_pid.to_string()]).status();
-    assert!(status.expect("send TERM").success());
-    let output = child.wait_with_output().expect("wait nlos-up");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, status) = up.sigterm_and_collect();
     assert!(stdout.contains("KILL name=adapter outcome="), "{stdout}");
     assert!(stdout.contains("KILL name=brain outcome="), "{stdout}");
     assert!(stdout.contains("STOPPED service=system_control"), "{stdout}");
-    assert!(output.status.success(), "exit {:?}\n{stdout}", output.status.code());
+    assert!(status.success(), "exit {:?}\n{stdout}", status.code());
 
     for unit in ["adapter", "brain"] {
         let pid: u32 = poll_file(&dump_base(unit).with_extension("pid"), 5)
@@ -1811,8 +1848,8 @@ fn workers_python_unit_env_whitelist_gate_letter() {
     )
     .expect("write manifest");
 
-    let mut child = spawn_nlos_up_workers(&root, &manifest_path);
-    let stdout_head = wait_for_ready(&mut child);
+    let up = spawn_nlos_up_workers(&root, &manifest_path);
+    let stdout_head = up.wait_for_line("READY service=system_control", 60);
     assert!(stdout_head.contains("WORKER name=pyworker"), "{stdout_head}");
 
     let dump = poll_file(&scratch.0.join("pyw.env"), 30).expect("python env dump");
@@ -1820,10 +1857,8 @@ fn workers_python_unit_env_whitelist_gate_letter() {
     assert_eq!(map.len(), 3, "python child env leaked: {map:?}");
     assert!(map.contains_key("LLMOS_AUTH_ENDPOINT"));
 
-    let up_pid = child.id();
-    let _ = Command::new("kill").args(["-TERM", &up_pid.to_string()]).status();
-    let output = child.wait_with_output().expect("wait");
-    assert!(output.status.success());
+    let (_stdout, status) = up.sigterm_and_collect();
+    assert!(status.success());
     let pid: u32 = poll_file(&scratch.0.join("pyw.pid"), 5).unwrap().trim().parse().unwrap();
     assert!(pid_gone(pid, 20), "python worker survived reclaim");
 }
