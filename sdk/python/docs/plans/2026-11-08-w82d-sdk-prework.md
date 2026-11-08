@@ -1,6 +1,6 @@
 # W82-D 屏障前先行件 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 两件不依赖 W82-A/B 新产出的先行件——(1) L-012 wheel 打包把 `gen/python/nlos/**` 生成模块纳入 wheel 并钉 protobuf 运行时;(2) 镜像 Rust 冻结契约的 Ed25519 挑战应答持久会话客户端——外加把 `tests/conformance/ipc/channel_control.py` 修到可稳定重复跑通。
 
@@ -405,18 +405,18 @@ git commit  # feat(nlos-sdk): 认证持久会话客户端单连接顺序多轮 (
 
 ### Task 8: 对抗式审查(ultracode workflow)
 
-- [ ] 用 Workflow 并行审查 diff 四维:①契约镜像保真(逐行对 Rust 源)②打包正确性(sdist 场景、site-packages 冲突、pip/uv 差异)③会话语义 vs lib.rs 毒化/背压 ④测试质量与供应链(PyNaCl 来源、--no-deps 影响)。确认项修复后复跑门禁。
+- [x] 用 Workflow 并行审查 diff 四维:①契约镜像保真(逐行对 Rust 源)②打包正确性(sdist 场景、site-packages 冲突、pip/uv 差异)③会话语义 vs lib.rs 毒化/背压 ④测试质量与供应链(PyNaCl 来源、--no-deps 影响)。确认项修复后复跑门禁。
 
 ### Task 9: 门禁 + push + PR
 
-- [ ] `python3 -m pytest sdk/python/tests -v` 全绿;`verify_wheel.py` ALL PASS;`authenticated_session.py`、`channel_control.py` ×3 回执齐
-- [ ] 提交五查(`git log origin/main..HEAD`/`git diff --staged`/敏感扫描)
-- [ ] `git push -u origin claude/w82d-sdk-prework-d01a37` → 按 §6 开 PR(标题沿用提交风格;正文:问题/根因/修复/验证数据表/未运行项:Windows 实机、CI 接线归 INT、TS SDK 待裁定、Ed25519 选型待签认;不自行合并)
+- [x] `python3 -m pytest sdk/python/tests -v` 全绿;`verify_wheel.py` ALL PASS;`authenticated_session.py`、`channel_control.py` ×3 回执齐
+- [x] 提交五查(`git log origin/main..HEAD`/`git diff --staged`/敏感扫描)
+- [x] `git push -u origin claude/w82d-sdk-prework-d01a37` → 按 §6 开 PR(标题沿用提交风格;正文:问题/根因/修复/验证数据表/未运行项:Windows 实机、CI 接线归 INT、TS SDK 待裁定、Ed25519 选型待签认;不自行合并)
 
 ### Task 10: 回执报告主入口 + 共享笔记
 
-- [ ] 共享笔记目录留 hand-over(两件回执摘要 + 未运行项 + 冲突点如有)
-- [ ] `SendMessage` 报主入口:commit/PR 链接、验收证据要点、选型待签认、CI 接线归 INT
+- [x] 共享笔记目录留 hand-over(两件回执摘要 + 未运行项 + 冲突点如有)
+- [x] `SendMessage` 报主入口:commit/PR 链接、验收证据要点、选型待签认、CI 接线归 INT
 
 ## Self-Review
 
