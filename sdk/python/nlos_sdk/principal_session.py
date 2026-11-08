@@ -133,6 +133,11 @@ async def connect_authenticated(
         writer.close()
         await _swallow_wait_closed(writer)
         raise IpcError("HANDSHAKE", f"handshake failed: {error}") from error
+    except BaseException:
+        # 外部取消(CancelledError 是 BaseException):同步关写端不留半开
+        # 连接,不再 await(避免取消上下文里二次挂起)。
+        writer.close()
+        raise
     return LocalRpcClient(reader, writer, resolved)
 
 

@@ -183,7 +183,7 @@ async def main() -> None:
         assert not created.replayed
         assert len(created.channel_id) == 16
         assert created.generation == 1
-        await client._target.close()
+        await client.close()
         print(
             "[authenticated_session] case 1/5 authenticated create_channel PASS "
             f"(channel_id={created.channel_id.hex()}, fencing={created.fencing_token.hex()[:16]}…)",
@@ -207,7 +207,7 @@ async def main() -> None:
         assert not entry.replayed
         assert entry.sequence == 1
         assert entry.payload == payload
-        await client._target.close()
+        await client.close()
         print(
             "[authenticated_session] case 2/5 authenticated enqueue PASS "
             f"(seq={entry.sequence}, payload_len={entry.payload_len})",
@@ -220,14 +220,14 @@ async def main() -> None:
             auth_endpoint, signer=signer, principal_id=principal_id, config=config
         )
         entries = await client.receive(created.channel_id, limit=8)
-        await client._target.close()
+        await client.close()
         assert len(entries) == 1 and entries[0].payload == payload
 
         client = await ChannelClient.connect_authenticated(
             auth_endpoint, signer=signer, principal_id=principal_id, config=config
         )
         state = await client.inspect_queue(created.channel_id)
-        await client._target.close()
+        await client.close()
         assert state.outstanding_entries == 1
         assert state.next_sequence == 2
         print(

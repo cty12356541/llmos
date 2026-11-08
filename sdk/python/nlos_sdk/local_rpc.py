@@ -127,6 +127,9 @@ class LocalRpcClient:
             raise IpcError("CONNECTION_UNUSABLE", "IPC connection is unusable; reconnect")
 
         self._in_flight = True
+        # 镜像 lib.rs:445-448:进首个 await 前预毒化——外部取消/丢弃本协程
+        # 后,半写或滞留缓冲的连接不可被后续调用复用;仅全链成功恢复。
+        self._usable = False
         operation = "WRITE"
         try:
             prefix = len(wire).to_bytes(4, byteorder="big")
@@ -148,6 +151,7 @@ class LocalRpcClient:
                     "REQUEST_ID_MISMATCH",
                     "IPC response request_id does not match the request",
                 )
+            self._usable = True
             return response
         except asyncio.IncompleteReadError as error:
             await self._poison()
@@ -164,6 +168,11 @@ class LocalRpcClient:
         except Exception as error:
             await self._poison()
             raise IpcError(operation, f"IPC {operation.lower()} failed") from error
+        except BaseException:
+            # 外部取消(CancelledError 是 BaseException):保持预毒化,同步
+            # 关写端,不 await(避免在已取消上下文里再挂起)。
+            self._writer.close()
+            raise
         finally:
             self._in_flight = False
 

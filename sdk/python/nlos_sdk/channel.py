@@ -302,25 +302,37 @@ class ChannelClient:
         rpc = await connect_authenticated_rpc(
             endpoint, signer, principal_id, config
         )
-        session = SessionIdentity(
-            principal_id=principal_id,
-            application_id=(
-                application_id
-                if application_id is not None
-                else secrets.token_bytes(16)
-            ),
-            process_id=(
-                process_id if process_id is not None else secrets.token_bytes(16)
-            ),
-        )
-        return cls(
-            rpc,
-            config=config,
-            principal_id=session.principal_id,
-            application_id=session.application_id,
-            process_id=session.process_id,
-            **kwargs,
-        )
+        try:
+            session = SessionIdentity(
+                principal_id=principal_id,
+                application_id=(
+                    application_id
+                    if application_id is not None
+                    else secrets.token_bytes(16)
+                ),
+                process_id=(
+                    process_id if process_id is not None else secrets.token_bytes(16)
+                ),
+            )
+            return cls(
+                rpc,
+                config=config,
+                principal_id=session.principal_id,
+                application_id=session.application_id,
+                process_id=session.process_id,
+                **kwargs,
+            )
+        except BaseException:
+            # 握手已消耗服务端 nonce;构造失败必须关闭连接,不留已认证半开会话
+            await rpc.close()
+            raise
+
+    async def close(self) -> None:
+        """关闭底层持久连接(认证会话),幂等;明文一次性 target 无操作。"""
+
+        target = self._target
+        if isinstance(target, LocalRpcClient):
+            await target.close()
 
     @classmethod
     def from_endpoint(

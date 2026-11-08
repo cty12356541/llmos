@@ -56,6 +56,7 @@ class HandshakeServer:
         signer: Ed25519Signer,
         rounds: int = 16,
         response_delay: float = 0.0,
+        challenge_delay: float = 0.0,
         reject_attestation: bool = False,
         garbage_challenge: bool = False,
         failure_envelopes: bool = False,
@@ -63,6 +64,7 @@ class HandshakeServer:
         self._signer = signer
         self._rounds = rounds
         self._response_delay = response_delay
+        self._challenge_delay = challenge_delay
         self._reject_attestation = reject_attestation
         self._garbage_challenge = garbage_challenge
         self._failure_envelopes = failure_envelopes
@@ -73,6 +75,7 @@ class HandshakeServer:
         self.exchanges = 0
         self.attestations = 0
         self.rejected = 0
+        self.handlers_done = 0
 
     async def start(self) -> None:
         tmp = Path(tempfile.gettempdir())
@@ -101,6 +104,8 @@ class HandshakeServer:
         config = TransportConfig()
         self.connections += 1
         try:
+            if self._challenge_delay:
+                await asyncio.sleep(self._challenge_delay)
             if self._garbage_challenge:
                 writer.write(b"\x00\x00\x00\x04\xff\xff\xff\xff")
                 await writer.drain()
@@ -125,6 +130,7 @@ class HandshakeServer:
         except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
             return
         finally:
+            self.handlers_done += 1
             writer.close()
             try:
                 await writer.wait_closed()
@@ -302,10 +308,86 @@ async def test_channel_client_reuses_authenticated_session_across_calls() -> Non
                 with pytest.raises(ChannelControlError):
                     await client.inspect_channel(b"\x99" * 16)
         finally:
-            await client._target.close()
+            await client.close()
         assert server.connections == 1, "三条 RPC 必须复用同一认证连接"
         assert server.exchanges == 3
         assert client._principal_id == principal
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_mid_exchange_poisons_session() -> None:
+    """镜像 lib.rs:445-448 预毒化:外部取消(如 wait_for)后连接必须不可复用。
+
+    回归锚:曾复现为取消后 _usable 仍 True,下一轮读到上一轮的滞留响应,
+    幂等重试场景下静默拿到陈旧答案(对抗审查确认项 1/3)。
+    """
+
+    async with session_server(rounds=4, response_delay=0.3) as server:
+        rpc = await connect_authenticated(
+            server.path, server._signer, principal_id=b"\x42" * 16
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                rpc.exchange(build_request(secrets.token_bytes(16))),
+                timeout=0.05,
+            )
+        # 取消后:连接必须已毒化,不得把滞留的第一轮响应当第二轮答案
+        with pytest.raises(IpcError, match="unusable"):
+            await rpc.exchange(build_request(secrets.token_bytes(16)))
+
+
+@pytest.mark.asyncio
+async def test_cancelled_connect_closes_transport_no_leak() -> None:
+    """外部取消握手必须关闭传输,不留半开连接(审查确认项 2/5)。"""
+
+    async with session_server(rounds=1, challenge_delay=0.3) as server:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                connect_authenticated(
+                    server.path, server._signer, principal_id=b"\x42" * 16
+                ),
+                timeout=0.05,
+            )
+        for _ in range(50):
+            if server.handlers_done >= 1:
+                break
+            await asyncio.sleep(0.02)
+        assert server.handlers_done == 1, "取消后服务端 handler 必须看到断连退出"
+
+
+@pytest.mark.asyncio
+async def test_connect_authenticated_closes_session_when_construction_fails() -> None:
+    """握手成功但会话构造失败必须关连接(审查确认项 4)。"""
+
+    async with session_server(rounds=2) as server:
+        with pytest.raises(ValueError):
+            await ChannelClient.connect_authenticated(
+                server.path,
+                signer=server._signer,
+                principal_id=b"\x42" * 16,
+                application_id=b"wrong-length",
+            )
+        for _ in range(50):
+            if server.handlers_done >= 1:
+                break
+            await asyncio.sleep(0.02)
+        assert server.handlers_done == 1, "构造失败必须关闭已握手的连接"
+
+
+@pytest.mark.asyncio
+async def test_channel_client_close_is_public_and_idempotent() -> None:
+    """公开 close()(审查确认项 6):认证会话与明文 target 均可安全关闭。"""
+
+    async with session_server(rounds=2) as server:
+        client = await ChannelClient.connect_authenticated(
+            server.path, signer=server._signer, principal_id=b"\x42" * 16
+        )
+        await client.close()
+        await client.close()  # 幂等
+        with pytest.raises(IpcError, match="unusable"):
+            await client._target.exchange(build_request(secrets.token_bytes(16)))
+    plain = ChannelClient("some-unused-endpoint")
+    await plain.close()  # 明文一次性 target:无持久连接,不抛
 
 
 def test_session_identity_derives_random_non_principal_ids() -> None:
