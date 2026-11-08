@@ -16,6 +16,11 @@ wasmtime = "50.0.1"
 # W80-0-SCAFFOLD 预锁 Wasmtime 供应链(阶段 E 唯一获批新增第三方依赖,RISK-E-04
 # 要求锁定 Wasmtime 版本);feature 组合由 W80-E6A 车道仅在本文件内调整,
 # 严禁触碰根 Cargo.lock。
+sha2.workspace = true
+# W82-INT 前置预锁 sha2(2026-11-08 维护者终裁 D9 摘要原语推荐路线,W80-0-SCAFFOLD
+# 同型):复用根 Cargo.toml 既有工作区共享依赖(0.11.1,33 个 crate 在用),对供应链
+# 零新增第三方包;使用代码归 W82-B Phase B-3(工具 ABI journal/目录缓存 SHA-256
+# 摘要,设计定稿 docs/management/w82-b-design-draft.md §9.2),本提交仅声明与入锁。
 
 [lints]
 workspace = true

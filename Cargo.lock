@@ -1583,6 +1583,7 @@ dependencies = [
 name = "nlos-wasm-sandbox"
 version = "0.1.0"
 dependencies = [
+ "sha2 0.11.1",
  "wasmtime",
 ]
 
