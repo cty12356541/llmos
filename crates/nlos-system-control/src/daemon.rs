@@ -108,14 +108,16 @@ use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
     IdentityBinding, KeyPurpose,
 };
+use nlos_ipc::handshake::VerifiedPrincipalHandshake;
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
+use nlos_ipc::handshake::transport::authenticated_serve_connection;
 #[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
 #[cfg(windows)]
 use nlos_ipc::windows::NamedPipeListenerAdapter;
 use nlos_ipc::{
     OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, handshake::HandshakeError,
-    serve_one,
+    serve_connection,
 };
 use nlos_notify::{NotificationService, NotifyError};
 use nlos_plan::{PlanStoreError, SqlitePlanAuthority};
@@ -131,11 +133,12 @@ use nlos_resource::{ResourceAuthority, ResourceAuthorityError};
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_schema::sabi::v1::{
-    ControlCommand as SabiWireCommand, ExchangeResponse, GetSystemControlRequest, SabiErrorCode,
-    SabiFailure, SabiRequestContext,
+    ControlCommand as SabiWireCommand, Envelope, ExchangeResponse, GetSystemControlRequest,
+    SabiErrorCode, SabiFailure, SabiRequestContext,
 };
 use nlos_search::{SearchError, SearchService};
 use nlos_semantic::{SemanticAuthority, SemanticAuthorityError};
+use nlos_service_directory::SnapshotDirectory;
 use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_task::{SqliteTaskAuthority, TASK_PROFILE_10K, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
@@ -148,7 +151,10 @@ use ed25519_dalek::Signer as _;
 use crate::application_inspector::ApplicationAuthorityInspector;
 use crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor;
 use crate::auth::EndpointListener;
-use crate::auth::{authenticated_serve_one_control_with_channel, serve_validated_with_channel};
+use crate::auth::directory_control::ServiceDirectorySurface;
+use crate::auth::operation_control::OperationControlService;
+use crate::auth::wait_control::DaemonWaitControl;
+use crate::auth::{connection_verified_at_ms, serve_validated_with_control_services};
 use crate::cell_inspector::LocalSingleNodeCellInspector;
 use crate::channel_control::{
     AllowAllChannelControlAuthorizer, ChannelControlAuthorizer, ChannelControlService,
@@ -199,12 +205,24 @@ const OPERATOR_ROOT_RIGHTS: CapabilityRights = CapabilityRights::SEMANTIC_APPEND
     .union(CapabilityRights::DELEGATE);
 /// Handshake nonce registry capacity for the authenticated endpoint.
 const HANDSHAKE_NONCE_CAPACITY: usize = 64;
+/// Default connection idle budget (W82-A): a persistent connection with no
+/// inbound frame for this long is retired fail-closed (the resident client
+/// reconnects — one handshake, not a per-exchange reconnect). Configurable
+/// per daemon through [`DaemonOptions::with_connection_idle_timeout`].
+pub const DAEMON_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Named-pipe instance budget for one daemon endpoint on Windows (the
 /// `bind`/`accept` contract requires at least two instances: one listening,
-/// one connected). The service loops serve one exchange per round, so a
-/// small backlog lets clients queue while one exchange is in flight.
+/// one connected). W82-A re-evaluation for persistent connections: every
+/// long-lived session holds one pipe instance for its whole lifetime (the
+/// kernel enforces `max_instances`), so the budget bounds CONCURRENT
+/// resident sessions at `instances - 1`. Sixteen keeps one listening slot
+/// plus fifteen concurrent persistent clients per endpoint — the single-shot
+/// posture (4 ⇒ 3 concurrent) would starve a multi-agent host. Honest
+/// boundary: measured on code semantics only; not exercised on a real
+/// Windows host from this lane (macOS dev machine) — three-platform CI
+/// covers compilation.
 #[cfg(windows)]
-const DAEMON_PIPE_INSTANCES: usize = 4;
+const DAEMON_PIPE_INSTANCES: usize = 16;
 
 // Default endpoint-path derivation, centralized in this one place per OS
 // form:
@@ -344,6 +362,9 @@ pub enum DaemonError {
     /// The ADR-0022 operator root issuance was rejected by the capability
     /// authority (identity resolution, signature gate, or storage failure).
     Capability(CapabilityAuthorityError),
+    /// The W82-A directory snapshot rejected the daemon's own five-service
+    /// registration set (duplicate bindings, bounds, or name validation).
+    Directory(nlos_service_directory::RegistrationError),
 }
 
 impl fmt::Display for DaemonError {
@@ -375,6 +396,7 @@ impl fmt::Display for DaemonError {
             Self::KeyFile(reason) => write!(formatter, "identity key file: {reason}"),
             Self::OperatorKeyFile(error) => write!(formatter, "{error}"),
             Self::Capability(error) => write!(formatter, "operator root issuance: {error}"),
+            Self::Directory(error) => write!(formatter, "directory snapshot: {error}"),
         }
     }
 }
@@ -406,6 +428,7 @@ impl Error for DaemonError {
             Self::KeyFile(_) => None,
             Self::OperatorKeyFile(error) => Some(error),
             Self::Capability(error) => Some(error),
+            Self::Directory(error) => Some(error),
         }
     }
 }
@@ -444,6 +467,11 @@ pub struct DaemonOptions {
     /// Materialization driver tuning (window, cadence, backoff, fault
     /// threshold); the first scheduler pass runs immediately on start.
     pub driver_config: MaterializationDriverConfig,
+    /// Connection idle budget for the persistent serving loops (W82-A): a
+    /// connection with no inbound frame for this long is closed fail-closed.
+    /// Default [`DAEMON_CONNECTION_IDLE_TIMEOUT`]; must be non-zero (the
+    /// serve primitive rejects zero as invalid config).
+    pub connection_idle_timeout: Duration,
 }
 
 impl DaemonOptions {
@@ -458,6 +486,7 @@ impl DaemonOptions {
             operator_purpose_digest: None,
             worker_config: RecoveryWorkerConfig::default(),
             driver_config: MaterializationDriverConfig::default(),
+            connection_idle_timeout: DAEMON_CONNECTION_IDLE_TIMEOUT,
         }
     }
 
@@ -514,6 +543,15 @@ impl DaemonOptions {
     #[must_use]
     pub const fn with_driver_config(mut self, config: MaterializationDriverConfig) -> Self {
         self.driver_config = config;
+        self
+    }
+
+    /// Overrides the connection idle budget of the persistent serving loops
+    /// (W82-A): a connection with no inbound frame for this long is closed
+    /// fail-closed. Zero is invalid (the serve primitive rejects it).
+    #[must_use]
+    pub const fn with_connection_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.connection_idle_timeout = idle_timeout;
         self
     }
 
@@ -851,6 +889,12 @@ pub struct SystemControlDaemon {
     pub desktop_surface: Arc<InMemoryDesktopControlSurface>,
     /// Stage D single-node cell topology and lease inspector seam (`IPC-D7`).
     pub cell_inspector: Arc<LocalSingleNodeCellInspector>,
+    /// Immutable `ServiceDirectory` snapshot of the daemon's five-service
+    /// offering (W82-A, `L-011`): every frozen service bound to both local
+    /// endpoints; assembled once, served by every `negotiate` round.
+    pub directory: Arc<SnapshotDirectory>,
+    /// Connection idle budget handed to the persistent serving loops.
+    pub connection_idle_timeout: Duration,
     /// In-process supervisor pid registry behind the kill arm's platform
     /// adapter (daemon-lifetime memory instance; see
     /// [`Self::register_supervisor_pid`] for the honest registration-surface
@@ -1144,6 +1188,19 @@ pub fn assemble(
         ServerHandshakeContext::new(&auth_socket_path, HANDSHAKE_NONCE_CAPACITY)
             .map_err(DaemonError::Handshake)?,
     );
+    // W82-A directory snapshot: the five frozen services on both endpoints,
+    // validated once at assembly so every later `negotiate` round serves an
+    // immutable, consistent offering.
+    let directory = Arc::new(
+        SnapshotDirectory::new(
+            crate::auth::directory_control::daemon_registrations(
+                &auth_socket_path,
+                &plain_socket_path,
+            )
+            .map_err(DaemonError::Directory)?,
+        )
+        .map_err(DaemonError::Directory)?,
+    );
     let listener_authenticated = bind_socket(&auth_socket_path)?;
     let listener_plain = bind_socket(&plain_socket_path)?;
 
@@ -1172,6 +1229,8 @@ pub fn assemble(
         runtime,
         desktop_surface: Arc::new(InMemoryDesktopControlSurface::default()),
         cell_inspector: Arc::new(LocalSingleNodeCellInspector::default()),
+        directory,
+        connection_idle_timeout: options.connection_idle_timeout,
         supervisor_registry: SupervisorPidRegistry::new(),
         handshake,
         random,
@@ -1189,10 +1248,16 @@ pub fn assemble(
     ))
 }
 
-/// Serves the authenticated endpoint until `stop` is observed: one
-/// ADR-0011-handshake-verified connection per round, one control exchange
-/// per connection. Idle accept windows are normal rounds; transport errors
-/// back off briefly instead of retiring the endpoint.
+/// Serves the authenticated endpoint until `stop` is observed (W82-A
+/// persistent-session posture): every accept round admits ONE connection,
+/// runs the ADR-0011 handshake on it once, and then serves BOUNDED
+/// multi-round exchanges on that connection — each round rebuilt through
+/// [`round_response`] with the connection's verified principal threaded into
+/// the wait face — until the client closes or the connection idle timeout
+/// expires fail-closed. Connections serve on their own tasks, so one
+/// resident session never blocks the next accept. Idle accept windows are
+/// normal rounds; transport errors back off briefly instead of retiring the
+/// endpoint.
 ///
 /// # Panics
 ///
@@ -1203,64 +1268,95 @@ pub async fn serve_authenticated_endpoint(
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        let plans = PlanAuthorityTaskNodeSource::new(&daemon.plans);
-        let fibers = TokioExecutionFiberSource::new(&daemon.runtime);
-        let topics = TopicAuthoritySource::new(&daemon.topics);
-        let operations = OperationStoreSource::new(&daemon.operations);
-        let (operation_arms, applications) = daemon.executor_stack();
-        let control = RecoverySystemControl::new(
-            daemon.tasks.as_ref(),
-            daemon.worker.as_ref(),
-            &ControlCapabilityPolicy,
-        )
-        .with_task_node_source(&plans)
-        .with_execution_fiber_source(&fibers)
-        .with_topic_source(&topics)
-        .with_operation_source(&operations)
-        .with_operation_executor(&operation_arms)
-        .with_application_executor(&applications)
-        .with_desktop_enumeration_source(daemon.desktop_surface.as_ref())
-        .with_desktop_mutation_executor(daemon.desktop_surface.as_ref())
-        .with_reconciliation_source(daemon.desktop_surface.as_ref())
-        .with_command_status_ledger(daemon.desktop_surface.command_ledger())
-        .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
-        .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
-        let channel =
-            ChannelControlService::new(daemon.channel.as_ref(), AllowAllChannelControlAuthorizer);
-        let outcome = authenticated_serve_one_control_with_channel(
-            &mut listener,
-            TransportConfig::default(),
-            &control,
-            &channel,
-            daemon.identity.as_ref(),
-            daemon.clock.as_ref(),
-            daemon.handshake.as_ref(),
-            &AllowPeer,
-            monotonic_now_ns(),
-            || daemon.random.bytes32(),
-        )
-        .await;
-        if let Err(error) = outcome {
-            // Idle accept timeouts and peer handshake failures are normal
-            // rounds; anything else backs off so the loop cannot hot-spin.
-            eprintln!("system-control-daemon: authenticated accept/handshake: {error}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        let (stream, peer) = match accept_endpoint(&mut listener).await {
+            Ok(connection) => connection,
+            Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
+            Err(error) => {
+                eprintln!("system-control-daemon: authenticated accept: {error}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let daemon_round = Arc::clone(&daemon);
+        tokio::spawn(async move {
+            // One nonce, one durable verified-at reading per connection —
+            // the same derivation the single-shot wrappers used, extracted
+            // so the multi-round loop derives it identically.
+            let nonce = daemon_round.random.bytes32();
+            let verified_at_ms =
+                match connection_verified_at_ms(daemon_round.clock.as_ref(), &nonce) {
+                    Ok(reading) => reading,
+                    Err(error) => {
+                        eprintln!("system-control-daemon: verified-at clock: {error}");
+                        return;
+                    }
+                };
+            let identity = Arc::clone(&daemon_round.identity);
+            let handshake = Arc::clone(&daemon_round.handshake);
+            let idle_timeout = daemon_round.connection_idle_timeout;
+            let outcome = authenticated_serve_connection(
+                stream,
+                peer,
+                TransportConfig::default(),
+                identity.as_ref(),
+                handshake.nonces(),
+                handshake.binding(),
+                &AllowPeer,
+                idle_timeout,
+                |verified| {
+                    // The verified principal threads into EVERY round's
+                    // handler (the wait face binds mutation idempotency keys
+                    // to it); the per-round closure owns its own daemon Arc.
+                    let daemon = Arc::clone(&daemon_round);
+                    move |validated| {
+                        let daemon = Arc::clone(&daemon);
+                        async move {
+                            Ok(OutboundResponse::Typed(ExchangeResponse {
+                                envelope: Some(round_response(
+                                    daemon.as_ref(),
+                                    Some(verified),
+                                    validated.envelope(),
+                                )),
+                            }))
+                        }
+                    }
+                },
+                move || nonce,
+                verified_at_ms,
+            )
+            .await;
+            match outcome {
+                Err(error) => {
+                    // Handshake refusals (including the peer pre-gate) are
+                    // normal rounds on a resident endpoint; the burned nonce
+                    // is by design.
+                    eprintln!("system-control-daemon: authenticated handshake: {error}");
+                }
+                Ok(outcome) => {
+                    if let Err(error) = outcome.served() {
+                        eprintln!("system-control-daemon: authenticated session: {error}");
+                    }
+                }
+            }
+        });
     }
 }
 
-/// Serves the plain endpoint until `stop` is observed: one connection per
-/// accept round, one `serve_one` exchange per connection against the shared
-/// handler. One bad exchange never takes the endpoint down.
+/// Serves the plain endpoint until `stop` is observed (W82-A
+/// persistent-session posture): every accept round admits ONE connection and
+/// serves BOUNDED multi-round exchanges on it — each round rebuilt through
+/// [`round_response`] with the plain (principal-less) wait face — until the
+/// client closes or the connection idle timeout expires fail-closed.
+/// Connections serve on their own tasks; one bad exchange never takes the
+/// endpoint down and one resident session never blocks the next accept.
 ///
-/// Command time semantics match the authenticated entry (F10/W61-A): the
-/// exchange's wall time is the daemon `AuthorityClock`'s durable wall
-/// reading issued (or durably replayed) for the request's §25.3 correlation
-/// id through [`crate::auth::command_wall_key`] — the shared
-/// [`crate::auth::serve_validated`] projection — so durable mutation
-/// records (`acknowledged_at_ms`, `resumed_at_ms`, ...) are never stamped
-/// from the bare system clock and a retried command re-reads its original
-/// reading on either endpoint.
+/// Command time semantics match the authenticated entry (F10/W61-A): every
+/// exchange's wall time is the daemon `AuthorityClock`'s durable wall reading
+/// issued (or durably replayed) for the request's §25.3 correlation id
+/// through [`crate::auth::command_wall_key`] — the shared
+/// [`crate::auth::serve_validated`] projection — so durable mutation records
+/// are never stamped from the bare system clock and a retried command
+/// re-reads its original reading on either endpoint.
 ///
 /// # Panics
 ///
@@ -1271,7 +1367,7 @@ pub async fn serve_plain_endpoint(
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        let (stream, peer) = match accept_plain(&mut listener).await {
+        let (stream, peer) = match accept_endpoint(&mut listener).await {
             Ok(connection) => connection,
             Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
             Err(error) => {
@@ -1280,79 +1376,112 @@ pub async fn serve_plain_endpoint(
                 continue;
             }
         };
-        let round = Arc::clone(&daemon);
-        let _ = serve_one(
-            stream,
-            TransportConfig::default(),
-            peer,
-            &AllowPeer,
-            move |validated| {
-                let daemon = round;
-                async move {
-                    let plans = PlanAuthorityTaskNodeSource::new(&daemon.plans);
-                    let fibers = TokioExecutionFiberSource::new(&daemon.runtime);
-                    let topics = TopicAuthoritySource::new(&daemon.topics);
-                    let operations = OperationStoreSource::new(&daemon.operations);
-                    let (operation_arms, applications) = daemon.executor_stack();
-                    let control = RecoverySystemControl::new(
-                        daemon.tasks.as_ref(),
-                        daemon.worker.as_ref(),
-                        &ControlCapabilityPolicy,
-                    )
-                    .with_task_node_source(&plans)
-                    .with_execution_fiber_source(&fibers)
-                    .with_topic_source(&topics)
-                    .with_operation_source(&operations)
-                    .with_operation_executor(&operation_arms)
-                    .with_application_executor(&applications)
-                    .with_desktop_enumeration_source(daemon.desktop_surface.as_ref())
-                    .with_desktop_mutation_executor(daemon.desktop_surface.as_ref())
-                    .with_reconciliation_source(daemon.desktop_surface.as_ref())
-                    .with_command_status_ledger(daemon.desktop_surface.command_ledger())
-                    .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
-                    .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
-                    let channel = ChannelControlService::new(
-                        daemon.channel.as_ref(),
-                        AllowAllChannelControlAuthorizer,
-                    );
-                    let response = serve_validated_with_channel(
-                        &control,
-                        &channel,
-                        daemon.clock.as_ref(),
-                        monotonic_now_ns(),
-                        validated.envelope(),
-                    );
-                    Ok(OutboundResponse::Typed(ExchangeResponse {
-                        envelope: Some(response),
-                    }))
-                }
-            },
-        )
-        .await;
+        let daemon_round = Arc::clone(&daemon);
+        tokio::spawn(async move {
+            let idle_timeout = daemon_round.connection_idle_timeout;
+            let served = serve_connection(
+                stream,
+                TransportConfig::default(),
+                peer,
+                &AllowPeer,
+                idle_timeout,
+                move |validated| {
+                    let daemon = Arc::clone(&daemon_round);
+                    async move {
+                        Ok(OutboundResponse::Typed(ExchangeResponse {
+                            envelope: Some(round_response(
+                                daemon.as_ref(),
+                                None,
+                                validated.envelope(),
+                            )),
+                        }))
+                    }
+                },
+            )
+            .await;
+            if let Err(error) = served {
+                eprintln!("system-control-daemon: plain session: {error}");
+            }
+        });
     }
 }
 
-/// Platform dispatch for one plain-endpoint accept, mirroring the dual-path
+/// Builds one round's full handler stack and dispatches one request through
+/// the five-way projection (W82-A). Called ONCE PER EXCHANGE on purpose: the
+/// composite executor snapshots the supervisor pid map at construction (a
+/// registration made between two exchanges is observed by the next round's
+/// kill arm), `monotonic_now_ns()` is re-read for the deadline freshness
+/// gate, and no per-connection state can go stale. `authenticated` carries
+/// the connection's verified principal for the wait face's mutation
+/// idempotency binding (`None` on the plain endpoint's local trust domain).
+fn round_response(
+    daemon: &SystemControlDaemon,
+    authenticated: Option<VerifiedPrincipalHandshake>,
+    request: &Envelope,
+) -> Envelope {
+    let plans = PlanAuthorityTaskNodeSource::new(&daemon.plans);
+    let fibers = TokioExecutionFiberSource::new(&daemon.runtime);
+    let topics = TopicAuthoritySource::new(&daemon.topics);
+    let operations = OperationStoreSource::new(&daemon.operations);
+    let (operation_arms, applications) = daemon.executor_stack();
+    let control = RecoverySystemControl::new(
+        daemon.tasks.as_ref(),
+        daemon.worker.as_ref(),
+        &ControlCapabilityPolicy,
+    )
+    .with_task_node_source(&plans)
+    .with_execution_fiber_source(&fibers)
+    .with_topic_source(&topics)
+    .with_operation_source(&operations)
+    .with_operation_executor(&operation_arms)
+    .with_application_executor(&applications)
+    .with_desktop_enumeration_source(daemon.desktop_surface.as_ref())
+    .with_desktop_mutation_executor(daemon.desktop_surface.as_ref())
+    .with_reconciliation_source(daemon.desktop_surface.as_ref())
+    .with_command_status_ledger(daemon.desktop_surface.command_ledger())
+    .with_cell_topology_inspector(daemon.cell_inspector.as_ref())
+    .with_cell_lease_inspector(daemon.cell_inspector.as_ref());
+    let channel =
+        ChannelControlService::new(daemon.channel.as_ref(), AllowAllChannelControlAuthorizer);
+    let wait = match authenticated {
+        Some(verified) => DaemonWaitControl::authenticated(&daemon.waits, verified),
+        None => DaemonWaitControl::plain(&daemon.waits),
+    };
+    let operation = OperationControlService::new(&daemon.operations);
+    let directory = ServiceDirectorySurface::from_snapshot((*daemon.directory).clone());
+    serve_validated_with_control_services(
+        &control,
+        &channel,
+        &wait,
+        &operation,
+        &directory,
+        daemon.clock.as_ref(),
+        monotonic_now_ns(),
+        request,
+    )
+}
+
+/// Platform dispatch for one endpoint accept, mirroring the dual-path
 /// [`nlos_ipc::handshake::transport`] accept halves: the Unix-domain socket
 /// accept on Unix, the named-pipe accept on Windows (exclusive borrow — the
 /// listener swaps in its next listening instance). Both wrappers hand the
-/// platform stream to the same platform-neutral `serve_one` core, so the
-/// exchange bytes and failure order are identical on every platform.
+/// platform stream to the same platform-neutral serve cores, so the exchange
+/// bytes and failure order are identical on every platform.
 #[cfg(unix)]
-async fn accept_plain(
+async fn accept_endpoint(
     listener: &mut EndpointListener,
 ) -> Result<(tokio::net::UnixStream, PeerIdentity), nlos_ipc::IpcError> {
     listener.accept(TransportConfig::default()).await
 }
 
-/// Platform dispatch for one plain-endpoint accept, mirroring the dual-path
+/// Platform dispatch for one endpoint accept, mirroring the dual-path
 /// [`nlos_ipc::handshake::transport`] accept halves: the Unix-domain socket
 /// accept on Unix, the named-pipe accept on Windows (exclusive borrow — the
 /// listener swaps in its next listening instance). Both wrappers hand the
-/// platform stream to the same platform-neutral `serve_one` core, so the
-/// exchange bytes and failure order are identical on every platform.
+/// platform stream to the same platform-neutral serve cores, so the exchange
+/// bytes and failure order are identical on every platform.
 #[cfg(windows)]
-async fn accept_plain(
+async fn accept_endpoint(
     listener: &mut EndpointListener,
 ) -> Result<
     (
