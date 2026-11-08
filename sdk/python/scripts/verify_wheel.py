@@ -68,6 +68,12 @@ def main() -> int:
         wheel = wheels[0]
         print(f"[verify_wheel] built {wheel.name}")
 
+        # 多根 where 的潜在副作用哨兵:构建不得在 sdk/ 下残留 gen/ 副本
+        stray = SDK_PY.parent / "gen"
+        if stray.exists():
+            print(f"FAIL: 构建残留 {stray} 出现,疑似多根发现副作用,需清理排查", file=sys.stderr)
+            return 1
+
         archive = zipfile.ZipFile(wheel)
         names = archive.namelist()
         missing = [module for module in GEN_MODULES if module not in names]
