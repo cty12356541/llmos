@@ -9,11 +9,13 @@ use nlos_system_control::control::ControlCommand;
 use nlos_system_control::daemon::{
     SystemControlDaemon, assemble, serve_authenticated_endpoint, serve_plain_endpoint,
 };
+use nlos_types::Generation;
 use nlos_up::{
     BootstrapOptions, BootstrapReceipt, DesktopSessionEnv, KeyOrigin, LocalKeyPoolStatusReport,
     SampleAppSeedStatus, ShellKind, TrialCompiledIntentRequest, TrialMeteredChatRequest, UpError,
-    bootstrap_trial_root, daemon_options_for_receipt, encode_hex, inspect_trial_keypool_status,
-    resolve_desktop_env, run_trial_compiled_intent, run_trial_metered_chat,
+    bootstrap_trial_root, daemon_options_for_receipt, derive_managed_worker_process_id, encode_hex,
+    inspect_trial_keypool_status, resolve_desktop_env, run_trial_compiled_intent,
+    run_trial_metered_chat,
 };
 
 const REASONING_EXCERPT_MAX_CHARS: usize = 240;
@@ -24,6 +26,7 @@ usage:
   nlos-up env [--root <DIR>] [--shell powershell|posix] [--keypool-config <FILE>] [--no-keypool-probe]
   nlos-up daemon [--root <DIR>] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
   nlos-up desktop [--root <DIR>] [--desktop-dir <DIR>] [--dry-run] [--seed-sample-app] [--sample-package-dir <DIR>] [--keypool-config <FILE>] [--no-keypool-probe]
+  nlos-up workers [--root <DIR>] --workers-manifest <FILE> [--grace-ms <N>] [--keypool-config <FILE>] [--no-keypool-probe]
   nlos-up pool-status [--keypool-config <FILE>] [--require-live]
   nlos-up chat [--root <DIR>] [--keypool-config <FILE>] [--model <MODEL>] [--max-tokens <N>] [--session <ID>] --prompt <TEXT>
   nlos-up intent [--root <DIR>] [--keypool-config <FILE>] [--model <MODEL>] [--locale zh-CN|en-US] --query <TEXT>";
@@ -40,6 +43,11 @@ enum Command {
         desktop_dir: Option<PathBuf>,
         dry_run: bool,
     },
+    Workers {
+        options: BootstrapOptions,
+        workers_manifest: PathBuf,
+        grace_ms: u64,
+    },
     PoolStatus {
         keypool_config: Option<PathBuf>,
         require_live: bool,
@@ -53,6 +61,7 @@ enum ParseOutcome {
     Command(Command),
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_cli_args<I>(mut args: I) -> Result<ParseOutcome, UpError>
 where
     I: Iterator<Item = String>,
@@ -68,6 +77,8 @@ where
     let mut shell = ShellKind::host_default();
     let mut desktop_dir: Option<PathBuf> = None;
     let mut dry_run = false;
+    let mut workers_manifest: Option<PathBuf> = None;
+    let mut grace_ms: u64 = 3_000;
     let mut require_live = false;
     let mut model: Option<String> = None;
     let mut max_tokens: Option<u32> = None;
@@ -103,6 +114,22 @@ where
             }
             "--dry-run" if subcommand == "desktop" => {
                 dry_run = true;
+            }
+            "--workers-manifest" if subcommand == "workers" => {
+                workers_manifest = Some(PathBuf::from(next_val()?));
+            }
+            "--grace-ms" if subcommand == "workers" => {
+                let raw = next_val()?;
+                grace_ms = raw.parse::<u64>().map_err(|_| {
+                    UpError::InvalidArgument(format!(
+                        "--grace-ms expects a positive integer, got '{raw}'"
+                    ))
+                })?;
+                if grace_ms == 0 {
+                    return Err(UpError::InvalidArgument(
+                        "--grace-ms must be positive".to_owned(),
+                    ));
+                }
             }
             "--require-live" if subcommand == "pool-status" => {
                 require_live = true;
@@ -151,6 +178,8 @@ where
         desktop_dir,
         dry_run,
         require_live,
+        workers_manifest,
+        grace_ms,
         ParsedLlmArgs {
             model,
             max_tokens,
@@ -171,6 +200,7 @@ struct ParsedLlmArgs {
     locale: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_parsed_subcommand(
     subcommand: &str,
     options: BootstrapOptions,
@@ -178,6 +208,8 @@ fn finalize_parsed_subcommand(
     desktop_dir: Option<PathBuf>,
     dry_run: bool,
     require_live: bool,
+    workers_manifest: Option<PathBuf>,
+    grace_ms: u64,
     llm: ParsedLlmArgs,
 ) -> Result<ParseOutcome, UpError> {
     match subcommand {
@@ -189,6 +221,16 @@ fn finalize_parsed_subcommand(
             desktop_dir,
             dry_run,
         })),
+        "workers" => {
+            let workers_manifest = workers_manifest.ok_or_else(|| {
+                UpError::InvalidArgument("workers requires --workers-manifest <FILE>".to_owned())
+            })?;
+            Ok(ParseOutcome::Command(Command::Workers {
+                options,
+                workers_manifest,
+                grace_ms,
+            }))
+        }
         "pool-status" => Ok(ParseOutcome::Command(Command::PoolStatus {
             keypool_config: options.keypool_config_override,
             require_live,
@@ -250,6 +292,11 @@ async fn main() -> ExitCode {
             desktop_dir,
             dry_run,
         } => run_desktop(&options, desktop_dir.as_deref(), dry_run).await,
+        Command::Workers {
+            options,
+            workers_manifest,
+            grace_ms,
+        } => run_workers(&options, &workers_manifest, grace_ms).await,
         Command::PoolStatus {
             keypool_config,
             require_live,
@@ -565,6 +612,153 @@ async fn run_desktop(
             )));
         }
     }
+    Ok(())
+}
+
+struct LaunchedWorker {
+    name: String,
+    process_id: nlos_types::ProcessId,
+    spawn: nlos_process::SupervisedSpawn,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_workers(
+    options: &BootstrapOptions,
+    workers_manifest: &Path,
+    grace_ms: u64,
+) -> Result<(), UpError> {
+    let manifest_dir = workers_manifest
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let manifest = nlos_package::read_managed_worker_manifest(workers_manifest)
+        .map_err(|error| UpError::InvalidArgument(format!("{error}")))?;
+    println!(
+        "WORKERS manifest={} units={}",
+        workers_manifest.display(),
+        manifest.units.len()
+    );
+
+    let receipt = bootstrap_trial_root(options)?;
+    let (daemon, endpoints) = assemble(
+        daemon_options_for_receipt(&receipt),
+        tokio::runtime::Handle::current(),
+    )
+    .map_err(|error| UpError::DesktopProcess(format!("daemon assembly failed: {error}")))?;
+    daemon
+        .dispatch_command(&ControlCommand::InspectHealth, 1_000_000, 0)
+        .map_err(|error| UpError::DesktopProcess(format!("daemon health check failed: {error}")))?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let authenticated = tokio::spawn(serve_authenticated_endpoint(
+        Arc::clone(&daemon),
+        endpoints.listener_authenticated,
+        Arc::clone(&stop),
+    ));
+    let plain = tokio::spawn(serve_plain_endpoint(
+        Arc::clone(&daemon),
+        endpoints.listener_plain,
+        Arc::clone(&stop),
+    ));
+
+    let session_env = session_env_from_live_daemon(&daemon, &receipt);
+    print_daemon_ready(&daemon, &receipt);
+
+    // 三变量派生(spec §4.2):endpoint = 活守护认证 socket;seed = operator
+    // 种子文件路径;slot = 清单字节透传(格式契约 TODO 对表 W82-B)。
+    let supervisor = nlos_process::ProcessSupervisor::new();
+    let mut launched: Vec<LaunchedWorker> = Vec::new();
+    for unit in &manifest.units {
+        let program = nlos_up::resolve_program_path(&unit.interpreter, None).ok_or_else(|| {
+            UpError::ManagedWorker(format!(
+                "worker {:?}: interpreter {:?} could not be resolved to an absolute path",
+                unit.name, unit.interpreter
+            ))
+        })?;
+        let cwd = match &unit.cwd {
+            Some(relative) => manifest_dir.join(relative),
+            None => manifest_dir.clone(),
+        };
+        let env = nlos_process::ManagedWorkerEnv {
+            auth_endpoint: session_env.auth_socket_path.display().to_string(),
+            process_identity_seed: session_env.key_file.display().to_string(),
+            root_capability_slot: unit.root_capability_slot.clone(),
+        };
+        let process_id = derive_managed_worker_process_id(workers_manifest, &unit.name);
+        let request = nlos_process::SpawnSupervisedRequest {
+            process_id,
+            process_generation: Generation::INITIAL,
+            registered_at_ms: 0,
+        };
+        let spawn = nlos_process::spawn_managed_worker(
+            &supervisor,
+            request,
+            program.to_str().ok_or_else(|| {
+                UpError::ManagedWorker(format!(
+                    "worker {:?}: interpreter path is not valid UTF-8",
+                    unit.name
+                ))
+            })?,
+            &unit.argv,
+            &cwd,
+            &env,
+        )
+        .map_err(|error| UpError::ManagedWorker(format!("worker {:?}: {error}", unit.name)))?;
+        println!(
+            "WORKER name={} pid={} status=spawned",
+            unit.name,
+            spawn.os_pid()
+        );
+        launched.push(LaunchedWorker {
+            name: unit.name.clone(),
+            process_id,
+            spawn,
+        });
+    }
+    println!("READY service=system_control workers={}", launched.len());
+
+    // 监护:全部退出或关停信号(Ctrl-C / SIGTERM)即进入回收。
+    loop {
+        let mut any_alive = false;
+        for worker in &mut launched {
+            match worker.spawn.child().try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => any_alive = true,
+                Err(error) => {
+                    eprintln!("WORKER name={} poll_error={error}", worker.name);
+                }
+            }
+        }
+        if !any_alive {
+            break;
+        }
+        tokio::select! {
+            () = wait_for_shutdown_signal() => break,
+            () = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    }
+
+    // 回收:同步升级式 teardown(短阻塞 dev 工具语境可接受)。
+    for worker in &mut launched {
+        match nlos_process::terminate_group_with_escalation(
+            &supervisor,
+            worker.process_id,
+            Generation::INITIAL,
+            worker.spawn.child(),
+            std::time::Duration::from_millis(grace_ms),
+        ) {
+            Ok(kill_receipt) => println!(
+                "KILL name={} outcome={:?} escalated={} group_drained={}",
+                worker.name,
+                kill_receipt.outcome,
+                kill_receipt.escalated,
+                kill_receipt.group_drained
+            ),
+            Err(error) => println!("KILL name={} outcome=error detail=\"{error}\"", worker.name),
+        }
+    }
+
+    shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+    println!("STOPPED service=system_control");
     Ok(())
 }
 
