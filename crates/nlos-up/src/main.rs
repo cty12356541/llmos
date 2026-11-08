@@ -667,52 +667,25 @@ async fn run_workers(
     // 种子文件路径;slot = 清单字节透传(格式契约 TODO 对表 W82-B)。
     let supervisor = nlos_process::ProcessSupervisor::new();
     let mut launched: Vec<LaunchedWorker> = Vec::new();
+    let grace = std::time::Duration::from_millis(grace_ms);
     for unit in &manifest.units {
-        let program = nlos_up::resolve_program_path(&unit.interpreter, None).ok_or_else(|| {
-            UpError::ManagedWorker(format!(
-                "worker {:?}: interpreter {:?} could not be resolved to an absolute path",
-                unit.name, unit.interpreter
-            ))
-        })?;
-        let cwd = match &unit.cwd {
-            Some(relative) => manifest_dir.join(relative),
-            None => manifest_dir.clone(),
-        };
-        let env = nlos_process::ManagedWorkerEnv {
-            auth_endpoint: session_env.auth_socket_path.display().to_string(),
-            process_identity_seed: session_env.key_file.display().to_string(),
-            root_capability_slot: unit.root_capability_slot.clone(),
-        };
-        let process_id = derive_managed_worker_process_id(workers_manifest, &unit.name);
-        let request = nlos_process::SpawnSupervisedRequest {
-            process_id,
-            process_generation: Generation::INITIAL,
-            registered_at_ms: 0,
-        };
-        let spawn = nlos_process::spawn_managed_worker(
+        match spawn_worker_unit(
             &supervisor,
-            request,
-            program.to_str().ok_or_else(|| {
-                UpError::ManagedWorker(format!(
-                    "worker {:?}: interpreter path is not valid UTF-8",
-                    unit.name
-                ))
-            })?,
-            &unit.argv,
-            &cwd,
-            &env,
-        )
-        .map_err(|error| UpError::ManagedWorker(format!("worker {:?}: {error}", unit.name)))?;
-        println!(
-            "WORKER name={} pid={} status=spawned",
-            unit.name,
-            spawn.os_pid()
-        );
-        launched.push(LaunchedWorker {
-            name: unit.name.clone(),
-            process_id,
-            spawn,
-        });
+            workers_manifest,
+            &manifest_dir,
+            &session_env,
+            unit,
+        ) {
+            Ok(worker) => launched.push(worker),
+            Err(error) => {
+                // 部分失败回收:已有 worker 树不得泄漏——先统一回收(KILL
+                // 回执)并关停守护,再回报失败;与正常关停共用同一 teardown。
+                teardown_launched_workers(&supervisor, &mut launched, grace);
+                shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+                println!("STOPPED service=system_control");
+                return Err(error);
+            }
+        }
     }
     println!("READY service=system_control workers={}", launched.len());
 
@@ -738,13 +711,87 @@ async fn run_workers(
     }
 
     // 回收:同步升级式 teardown(短阻塞 dev 工具语境可接受)。
-    for worker in &mut launched {
+    teardown_launched_workers(&supervisor, &mut launched, grace);
+
+    shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+    println!("STOPPED service=system_control");
+    Ok(())
+}
+
+/// 拉起单个受管 worker 单元:父侧解释器解析 + 三变量白名单分组 spawn。
+///
+/// # Errors
+///
+/// 解释器不可解析/非 UTF-8、或宿主 spawn 失败时返回
+/// [`UpError::ManagedWorker`];调用方负责回收已拉起的先前单元。
+fn spawn_worker_unit(
+    supervisor: &nlos_process::ProcessSupervisor,
+    workers_manifest: &Path,
+    manifest_dir: &Path,
+    session_env: &DesktopSessionEnv,
+    unit: &nlos_package::ManagedWorkerUnit,
+) -> Result<LaunchedWorker, UpError> {
+    let program = nlos_up::resolve_program_path(&unit.interpreter, None).ok_or_else(|| {
+        UpError::ManagedWorker(format!(
+            "worker {:?}: interpreter {:?} could not be resolved to an absolute path",
+            unit.name, unit.interpreter
+        ))
+    })?;
+    let cwd = match &unit.cwd {
+        Some(relative) => manifest_dir.join(relative),
+        None => manifest_dir.to_path_buf(),
+    };
+    let env = nlos_process::ManagedWorkerEnv {
+        auth_endpoint: session_env.auth_socket_path.display().to_string(),
+        process_identity_seed: session_env.key_file.display().to_string(),
+        root_capability_slot: unit.root_capability_slot.clone(),
+    };
+    let process_id = derive_managed_worker_process_id(workers_manifest, &unit.name);
+    let request = nlos_process::SpawnSupervisedRequest {
+        process_id,
+        process_generation: Generation::INITIAL,
+        registered_at_ms: 0,
+    };
+    let spawn = nlos_process::spawn_managed_worker(
+        supervisor,
+        request,
+        program.to_str().ok_or_else(|| {
+            UpError::ManagedWorker(format!(
+                "worker {:?}: interpreter path is not valid UTF-8",
+                unit.name
+            ))
+        })?,
+        &unit.argv,
+        &cwd,
+        &env,
+    )
+    .map_err(|error| UpError::ManagedWorker(format!("worker {:?}: {error}", unit.name)))?;
+    println!(
+        "WORKER name={} pid={} status=spawned",
+        unit.name,
+        spawn.os_pid()
+    );
+    Ok(LaunchedWorker {
+        name: unit.name.clone(),
+        process_id,
+        spawn,
+    })
+}
+
+/// 已拉起受管 worker 的统一回收(正常关停与部分失败路径共用,防两路
+/// 漂移):同步升级式 teardown,KILL 行协议保持一致。
+fn teardown_launched_workers(
+    supervisor: &nlos_process::ProcessSupervisor,
+    launched: &mut [LaunchedWorker],
+    grace: std::time::Duration,
+) {
+    for worker in launched {
         match nlos_process::terminate_group_with_escalation(
-            &supervisor,
+            supervisor,
             worker.process_id,
             Generation::INITIAL,
             worker.spawn.child(),
-            std::time::Duration::from_millis(grace_ms),
+            grace,
         ) {
             Ok(kill_receipt) => println!(
                 "KILL name={} outcome={:?} escalated={} group_drained={}",
@@ -756,10 +803,6 @@ async fn run_workers(
             Err(error) => println!("KILL name={} outcome=error detail=\"{error}\"", worker.name),
         }
     }
-
-    shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
-    println!("STOPPED service=system_control");
-    Ok(())
 }
 
 fn session_env_from_live_daemon(

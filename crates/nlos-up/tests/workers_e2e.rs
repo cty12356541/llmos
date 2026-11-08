@@ -102,11 +102,17 @@ impl RunningUp {
             .unwrap_or_default()
     }
 
-    fn sigterm_and_collect(mut self) -> (String, std::process::ExitStatus) {
+    fn sigterm_and_collect(self) -> (String, std::process::ExitStatus) {
         let pid = self.child.id();
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .status();
+        self.wait_and_collect()
+    }
+
+    /// 等待 nlos-up 自行退出并收全输出(不发送信号;部分失败场景下
+    /// SIGTERM 可能落在 bootstrap 早期,把被测行为误杀)。
+    fn wait_and_collect(mut self) -> (String, std::process::ExitStatus) {
         let status = self.child.wait().expect("wait nlos-up exit");
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -116,14 +122,28 @@ impl RunningUp {
 }
 
 fn spawn_nlos_up_workers(root: &Path, manifest: &Path) -> RunningUp {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nlos-up"))
-        .args([
-            "workers",
-            "--root",
-            &root.display().to_string(),
-            "--workers-manifest",
-            &manifest.display().to_string(),
-        ])
+    spawn_nlos_up_workers_with_path(root, manifest, None)
+}
+
+/// `path_override`:替换子进程 PATH(部分失败测试用它把 unit 2 裸名解释
+/// 器的 PATH 扫描失败点确定性推后,让 unit 1 夹具先写全证据文件)。
+fn spawn_nlos_up_workers_with_path(
+    root: &Path,
+    manifest: &Path,
+    path_override: Option<String>,
+) -> RunningUp {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nlos-up"));
+    command.args([
+        "workers",
+        "--root",
+        &root.display().to_string(),
+        "--workers-manifest",
+        &manifest.display().to_string(),
+    ]);
+    if let Some(path) = path_override {
+        command.env("PATH", path);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -307,6 +327,74 @@ fn workers_python_unit_env_whitelist_gate_letter() {
         .parse()
         .unwrap();
     assert!(pid_gone(pid, 20), "python worker survived reclaim");
+}
+
+/// 部分拉起失败回收(W82-C fix 轮):unit 1 正常拉起后 unit 2 解释器
+/// 不可解析——nlos-up 必须先回收已拉起的 worker 树(KILL 回执)再以
+/// 非零码退出;直子与孙进程均不得泄漏存活。
+#[test]
+fn workers_partial_spawn_failure_still_reclaims_launched_trees() {
+    let scratch = ScratchDir::new("partial");
+    let root = scratch.0.join("root");
+    let manifest_path = scratch.0.join("workers.manifest");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "worker = good /bin/sh {sh} {base}\n\
+             worker = doomed w82c-no-such-interpreter-xyz placeholder\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            base = scratch.0.join("good").display(),
+        ),
+    )
+    .expect("write manifest");
+
+    let up = spawn_nlos_up_workers_with_path(&root, &manifest_path, Some(inflated_path()));
+    let (stdout, status) = up.wait_and_collect();
+    assert!(
+        !status.success(),
+        "partial spawn failure must exit non-zero: {status}\n{stdout}"
+    );
+    assert!(stdout.contains("WORKER name=good pid="), "{stdout}");
+    assert!(stdout.contains("KILL name=good outcome="), "{stdout}");
+    assert!(
+        stdout.contains("STOPPED service=system_control"),
+        "{stdout}"
+    );
+
+    // 直子 pid 取自 WORKER 行(先于失败点打印,天然无竞态);孙进程 pid
+    // 只能来自夹具落盘(见 inflated_path 的观察窗偏置说明)。
+    let pid: u32 = stdout
+        .lines()
+        .find(|line| line.starts_with("WORKER name=good pid="))
+        .and_then(|line| line.split_whitespace().find(|tok| tok.starts_with("pid=")))
+        .and_then(|tok| tok.strip_prefix("pid="))
+        .and_then(|raw| raw.parse().ok())
+        .expect("worker pid from WORKER line");
+    let grandpid: u32 = poll_file(&scratch.0.join("good.grandpid"), 5)
+        .unwrap_or_else(|| panic!("good grandpid file missing"))
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        pid_gone(pid, 20),
+        "worker good pid {pid} leaked after partial-failure reclaim"
+    );
+    assert!(
+        pid_gone(grandpid, 20),
+        "grandchild of good pid {grandpid} leaked after partial-failure reclaim"
+    );
+}
+
+/// 膨胀 PATH(全部为不存在目录):unit 1 解释器为绝对路径不受影响;
+/// unit 2 裸名解释器须扫完全部条目才判定失败——失败点被确定性推后,
+/// 让 unit 1 的夹具先落盘 pid/grandpid 证据(否则升级式回收的 SIGTERM
+/// 可能先于夹具写文件到达,属测试观察窗问题而非回收缺陷)。
+fn inflated_path() -> String {
+    let pad = (0..20_000)
+        .map(|index| format!("/tmp/w82c-nopath-{index}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    format!("{pad}:{}", std::env::var("PATH").unwrap_or_default())
 }
 
 fn resolve_python3() -> Option<PathBuf> {
