@@ -11,17 +11,19 @@
 // 单元）。unsafe 全部收敛于 `src/windows.rs`，逐块附 SAFETY 论证；其余模块
 // 不含任何 unsafe 代码。
 
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nlos_schema::sabi::v1::{self, ExchangeRequest, ExchangeResponse};
 use nlos_schema::{
-    CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES, ValidatedExchangeRequest,
-    ValidatedExchangeResponse, decode_exchange_request, decode_exchange_response,
-    encode_exchange_request, encode_exchange_response,
+    CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES, REQUEST_ID_BYTES,
+    SABI_ENVELOPE_SCHEMA, ValidatedExchangeRequest, ValidatedExchangeResponse,
+    decode_exchange_request, decode_exchange_response, encode_exchange_request,
+    encode_exchange_response,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -383,9 +385,12 @@ where
     /// `idle_timeout` (the inter-frame idle window [`serve_connection`]
     /// enforces), while everything after it — the remaining prefix bytes and
     /// the body — stays under the config's per-frame `read_timeout` exactly
-    /// like [`Self::receive`]. A clean close at a frame boundary and an idle
-    /// expiry are reported as typed outcomes, not errors; a partial frame
-    /// (EOF after the first byte) and bound violations stay errors.
+    /// like [`Self::receive`]. A clean close at a frame boundary, an idle
+    /// expiry, and an over-limit DECLARED length are reported as typed
+    /// outcomes, not errors; a partial frame (EOF after the first byte) and
+    /// I/O failures stay errors. The over-limit body is deliberately NOT
+    /// consumed here — [`serve_connection`] decides the bounded-discard
+    /// per-call rejection posture (W82-B D3).
     ///
     /// # Errors
     ///
@@ -421,10 +426,9 @@ where
             prefix[1..].copy_from_slice(&rest);
             let declared = u32::from_be_bytes(prefix) as usize;
             if declared > maximum {
-                return Err(IpcError::FrameTooLarge {
-                    actual: declared,
-                    maximum,
-                });
+                // Typed outcome, body unconsumed: the caller owns the
+                // bounded-discard decision (W82-B D3 per-call rejection).
+                return Ok(IdleReceive::OverLimit { declared, maximum });
             }
             let mut wire = vec![0_u8; declared];
             self.stream
@@ -434,22 +438,56 @@ where
                     operation: IoOperation::Read,
                     source,
                 })?;
-            Ok(wire)
+            Ok(IdleReceive::Frame(wire))
         };
-        let wire = timeout(self.config.read_timeout, read)
+        timeout(self.config.read_timeout, read)
             .await
-            .map_err(|_| IpcError::Timeout(IoOperation::Read))??;
-        Ok(IdleReceive::Frame(wire))
+            .map_err(|_| IpcError::Timeout(IoOperation::Read))?
+    }
+
+    /// Discards exactly `declared` bytes of an already-rejected frame body
+    /// under the config's per-frame `read_timeout` budget, restoring frame
+    /// synchronization so the connection can survive a per-call rejection
+    /// (W82-B D3). An absurd attacker-controlled declaration cannot sustain
+    /// this read within the budget and surfaces the typed timeout error —
+    /// the caller then drops the connection fail-closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timeout or I/O error.
+    pub(crate) async fn discard_declared(&mut self, declared: usize) -> Result<(), IpcError> {
+        const CHUNK: usize = 8_192;
+        let mut chunk = vec![0_u8; CHUNK.min(declared.max(1))];
+        let mut remaining = declared;
+        let discard = async {
+            while remaining > 0 {
+                let take = remaining.min(chunk.len());
+                self.stream
+                    .read_exact(&mut chunk[..take])
+                    .await
+                    .map_err(|source| IpcError::Io {
+                        operation: IoOperation::Read,
+                        source,
+                    })?;
+                remaining -= take;
+            }
+            Ok(())
+        };
+        timeout(self.config.read_timeout, discard)
+            .await
+            .map_err(|_| IpcError::Timeout(IoOperation::Read))?
     }
 }
 
 /// Outcome of [`FramedIo::receive_with_idle`]: one decoded frame, a clean
-/// peer close at a frame boundary, or an idle-window expiry.
+/// peer close at a frame boundary, an idle-window expiry, or an over-limit
+/// declared length (body unconsumed — see [`FramedIo::discard_declared`]).
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum IdleReceive {
     Frame(Vec<u8>),
     PeerClosed,
     IdleExpired,
+    OverLimit { declared: usize, maximum: usize },
 }
 
 pub enum OutboundResponse {
@@ -619,17 +657,113 @@ pub enum ConnectionTermination {
     /// No request frame arrived within the connection idle timeout — the
     /// fail-closed posture: an idle session is retired, never held open.
     IdleExpired,
+    /// Rejected/malformed frames exceeded the per-session sliding-window
+    /// budget (W82-B D3): the connection is disconnected without answering
+    /// the budget-exceeding frame, bounding the per-call rejection response
+    /// amplification vector.
+    RejectionBudgetExhausted,
 }
 
 /// Outcome of one bounded multi-round [`serve_connection`] cycle: how many
-/// complete request→response exchanges were served, and how the connection
-/// ended.
+/// complete request→response exchanges were served, how many inbound frames
+/// were rejected per-call (over-limit or undecodable), and how the
+/// connection ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServedConnection {
     /// Completed exchanges before termination (saturating).
     pub rounds: u32,
+    /// Frames rejected per-call under the W82-B D3 posture (each answered
+    /// with a typed failure while the connection stayed alive, until the
+    /// budget exhausted).
+    pub rejected_frames: u32,
     /// Why the connection ended.
     pub termination: ConnectionTermination,
+}
+
+/// Per-session frame-rejection budget window (W82-B D3 frozen semantics,
+/// maintainer ruling 2026-11-08): a rejected frame is answered with one
+/// bounded typed failure while the connection stays alive; more than
+/// [`FRAME_REJECTION_BUDGET`] rejections inside this sliding window
+/// disconnects the session (the budget-exceeding frame is NOT answered —
+/// the rejection privilege is revoked), bounding the 4-byte-prefix → full
+/// typed response amplification vector.
+pub const FRAME_REJECTION_WINDOW: Duration = Duration::from_secs(60);
+/// Rejection threshold inside [`FRAME_REJECTION_WINDOW`]: the (budget + 1)-th
+/// strike in the window disconnects.
+pub const FRAME_REJECTION_BUDGET: u32 = 8;
+
+/// The bounded typed failure a rejected frame is answered with. The frame
+/// itself carries no decodable correlation, so the envelope reports the
+/// transport-level neutral identity: zero correlation ids, the envelope
+/// schema, and a `nlos.ipc`/`reject` service/method pair that never
+/// dispatches anywhere — a well-behaved client never receives one (its
+/// `LocalRpcClient` would fail request-id correlation), the response exists
+/// for the D3 per-call rejection contract and observability.
+fn frame_rejection_envelope(reason: &str) -> v1::Envelope {
+    v1::Envelope {
+        schema: Some(v1::SchemaIdentity {
+            name: SABI_ENVELOPE_SCHEMA.to_owned(),
+            major: 1,
+            minor: 1,
+            critical_extension_ids: Vec::new(),
+            non_critical_extension_ids: Vec::new(),
+        }),
+        request_id: vec![0; REQUEST_ID_BYTES],
+        service: "nlos.ipc".to_owned(),
+        method: "reject".to_owned(),
+        common_context: Some(v1::envelope::CommonContext::ResponseContext(
+            v1::SabiResponseContext {
+                correlation_id: vec![0; REQUEST_ID_BYTES],
+                operation: None,
+                receipts: Vec::new(),
+                failure: Some(v1::SabiFailure {
+                    code: v1::SabiErrorCode::InvalidArgument.into(),
+                    retry: v1::RetryDirective::DoNotRetry.into(),
+                    safe_message: reason.to_owned(),
+                }),
+            },
+        )),
+        payload: Vec::new(),
+    }
+}
+
+/// Records one rejection strike against the per-session sliding window and
+/// answers the frame unless the budget just exhausted.
+///
+/// Returns `Some(ServedConnection)` when the D3 budget disconnected the
+/// session (caller returns it), `None` to keep serving.
+async fn reject_frame<S>(
+    connection: &mut FramedIo<S>,
+    strikes: &mut VecDeque<Instant>,
+    rounds: u32,
+    rejected_frames: &mut u32,
+    reason: &str,
+) -> Result<Option<ServedConnection>, IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let now = Instant::now();
+    while strikes
+        .front()
+        .is_some_and(|struck_at| now.duration_since(*struck_at) > FRAME_REJECTION_WINDOW)
+    {
+        strikes.pop_front();
+    }
+    strikes.push_back(now);
+    *rejected_frames += 1;
+    if u32::try_from(strikes.len()).unwrap_or(u32::MAX) > FRAME_REJECTION_BUDGET {
+        // Disconnect without answering: responses are capped at the budget.
+        return Ok(Some(ServedConnection {
+            rounds,
+            rejected_frames: *rejected_frames,
+            termination: ConnectionTermination::RejectionBudgetExhausted,
+        }));
+    }
+    let response = encode_exchange_response(&ExchangeResponse {
+        envelope: Some(frame_rejection_envelope(reason)),
+    })?;
+    connection.send(&response).await?;
+    Ok(None)
 }
 
 /// Authorizes a peer, then serves BOUNDED multi-round exchanges on one
@@ -640,18 +774,27 @@ pub struct ServedConnection {
 /// FIRST byte of the next frame; once a frame starts, it completes (or
 /// fails) under the per-frame budget like [`serve_one`].
 ///
+/// Rejected frames (an over-limit declared length, or an undecodable body)
+/// follow the W82-B D3 frozen posture: each is answered with one bounded
+/// typed failure while the connection STAYS ALIVE — the over-limit body is
+/// discarded under the per-frame budget to keep the stream synchronized —
+/// until more than [`FRAME_REJECTION_BUDGET`] rejections land inside
+/// [`FRAME_REJECTION_WINDOW`], which disconnects the session without
+/// answering (see [`ConnectionTermination::RejectionBudgetExhausted`]).
+///
 /// The handler is `FnMut` and is invoked once per round, so a caller that
 /// rebuilds per-exchange state inside the handler observes the same
 /// per-round freshness semantics as one [`serve_one`] call per connection.
-/// Every round keeps the exact [`serve_one`] wire contract: Typed responses
-/// are stamped with the round's `request_id`, Forwarded responses are
-/// correlation-checked verbatim, and any error (authorization, framing,
-/// handler, I/O) drops the connection fail-closed.
+/// Every completed round keeps the exact [`serve_one`] wire contract: Typed
+/// responses are stamped with the round's `request_id`, Forwarded responses
+/// are correlation-checked verbatim, and any error (authorization, framing
+/// mid-frame, handler, I/O) drops the connection fail-closed.
 ///
 /// # Errors
 ///
 /// Returns authorization, framing, compatibility, handler, or I/O errors; a
-/// clean client close or idle expiry is `Ok` with the termination recorded.
+/// clean client close, idle expiry, or rejection-budget exhaustion is `Ok`
+/// with the termination recorded.
 pub async fn serve_connection<S, A, H, F>(
     stream: S,
     config: TransportConfig,
@@ -676,23 +819,65 @@ where
         .map_err(IpcError::AuthorizationDenied)?;
     let mut connection = FramedIo::new(stream, config);
     let mut rounds = 0_u32;
+    let mut rejected_frames = 0_u32;
+    let mut strikes: VecDeque<Instant> = VecDeque::new();
     loop {
-        let request_wire = match connection.receive_with_idle(idle_timeout).await? {
-            IdleReceive::Frame(wire) => wire,
+        let request = match connection.receive_with_idle(idle_timeout).await? {
+            IdleReceive::Frame(wire) => {
+                let Ok(request) = decode_exchange_request(&wire) else {
+                    // W82-B D3: undecodable body; the frame was fully
+                    // consumed, so the stream stays synchronized — reject
+                    // per-call and keep serving.
+                    if let Some(finished) = reject_frame(
+                        &mut connection,
+                        &mut strikes,
+                        rounds,
+                        &mut rejected_frames,
+                        "frame body is not a decodable exchange request",
+                    )
+                    .await?
+                    {
+                        return Ok(finished);
+                    }
+                    continue;
+                };
+                request
+            }
+            IdleReceive::OverLimit { declared, .. } => {
+                // W82-B D3: bounded discard restores synchronization so the
+                // per-call rejection leaves the connection usable; an
+                // absurd attacker-controlled declaration cannot sustain the
+                // discard inside the per-frame budget and drops the
+                // connection here (fail-closed).
+                connection.discard_declared(declared).await?;
+                if let Some(finished) = reject_frame(
+                    &mut connection,
+                    &mut strikes,
+                    rounds,
+                    &mut rejected_frames,
+                    "frame declares more bytes than the transport maximum",
+                )
+                .await?
+                {
+                    return Ok(finished);
+                }
+                continue;
+            }
             IdleReceive::PeerClosed => {
                 return Ok(ServedConnection {
                     rounds,
+                    rejected_frames,
                     termination: ConnectionTermination::ClientClosed,
                 });
             }
             IdleReceive::IdleExpired => {
                 return Ok(ServedConnection {
                     rounds,
+                    rejected_frames,
                     termination: ConnectionTermination::IdleExpired,
                 });
             }
         };
-        let request = decode_exchange_request(&request_wire)?;
         let request_id = request.envelope().request_id.clone();
         let response = stamp_outbound_response(request_id, handler(request).await?)?;
         let response_wire = response.into_wire()?;

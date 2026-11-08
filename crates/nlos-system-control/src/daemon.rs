@@ -1302,7 +1302,9 @@ pub async fn serve_authenticated_endpoint(
         };
         let Ok(permit) = session_budget.clone().try_acquire_owned() else {
             // Fail-closed above the session budget, before any handshake
-            // side effect (no nonce burned, no clock write).
+            // side effect (no nonce burned, no clock write). The rejection
+            // may surface client-side at connect() or at the first
+            // exchange, depending on the accept/close race.
             eprintln!(
                 "system-control-daemon: authenticated session budget exhausted ({DAEMON_MAX_SESSIONS}), closing newcomer"
             );
@@ -1365,8 +1367,18 @@ pub async fn serve_authenticated_endpoint(
                     eprintln!("system-control-daemon: authenticated handshake: {error}");
                 }
                 Ok(outcome) => {
-                    if let Err(error) = outcome.served() {
-                        eprintln!("system-control-daemon: authenticated session: {error}");
+                    match outcome.served() {
+                        Err(error) => {
+                            eprintln!("system-control-daemon: authenticated session: {error}");
+                        }
+                        Ok(summary) if summary.rejected_frames > 0 => {
+                            // W82-B D3 telemetry surface.
+                            eprintln!(
+                                "system-control-daemon: authenticated session ended: rounds={} rejected_frames={} termination={:?}",
+                                summary.rounds, summary.rejected_frames, summary.termination
+                            );
+                        }
+                        Ok(_) => {}
                     }
                 }
             }
@@ -1450,6 +1462,15 @@ pub async fn serve_plain_endpoint(
             .await;
             if let Err(error) = served {
                 eprintln!("system-control-daemon: plain session: {error}");
+            } else if let Ok(summary) = &served {
+                // W82-B D3 telemetry surface: per-call frame rejections the
+                // session answered before it ended.
+                if summary.rejected_frames > 0 {
+                    eprintln!(
+                        "system-control-daemon: plain session ended: rounds={} rejected_frames={} termination={:?}",
+                        summary.rounds, summary.rejected_frames, summary.termination
+                    );
+                }
             }
         });
     }

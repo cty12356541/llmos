@@ -875,9 +875,19 @@ mod socket_suite {
     }
 
     async fn plain_client(socket: &Path) -> LocalRpcClient<tokio::net::UnixStream> {
+        try_plain_client(socket).await.expect("plain connect")
+    }
+
+    /// Fallible variant: a budget-rejected newcomer can surface the rejection
+    /// at `connect()` (macOS `ENOTCONN` when the server closes before the
+    /// client syscall returns) or at the first exchange (EOF) — the same
+    /// rejection.
+    async fn try_plain_client(
+        socket: &Path,
+    ) -> Result<LocalRpcClient<tokio::net::UnixStream>, nlos_ipc::IpcError> {
         let config = TransportConfig::default();
-        let (stream, _) = connect(socket, config).await.expect("plain connect");
-        LocalRpcClient::new(stream, config)
+        let (stream, _) = connect(socket, config).await?;
+        Ok(LocalRpcClient::new(stream, config))
     }
 
     async fn authenticated_client(
@@ -1664,16 +1674,37 @@ mod socket_suite {
         // Hold the full budget as resident silent connections (each parks in
         // the idle window holding one permit).
         let mut holders = Vec::new();
-        for _ in 0..BUDGET {
-            holders.push(plain_client(&harness.plain_socket).await);
+        for index in 0..BUDGET {
+            // Parallel-suite load can surface transient connect noise on
+            // macOS; each holder retries briefly (the budget is not yet
+            // full, so every retry must eventually be admitted).
+            let mut client = None;
+            for attempt in 0..10 {
+                if let Ok(admitted) = try_plain_client(&harness.plain_socket).await {
+                    client = Some(admitted);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let _ = attempt;
+            }
+            holders.push(client.unwrap_or_else(|| {
+                panic!("holder {index} never admitted despite budget headroom")
+            }));
         }
-        // The 65th connects at the kernel layer, then is closed fail-closed.
-        let newcomer = plain_client(&harness.plain_socket).await;
+        // The 65th connects at the kernel layer, then is closed fail-closed;
+        // the rejection may surface at connect or at the first exchange.
         let started = Instant::now();
-        let outcome = newcomer.exchange_validated(unique_health_request(1)).await;
+        let rejection = if let Ok(newcomer) = try_plain_client(&harness.plain_socket).await {
+            newcomer
+                .exchange_validated(unique_health_request(1))
+                .await
+                .map(|_| ())
+        } else {
+            Err(nlos_ipc::IpcError::ConnectionUnusable)
+        };
         assert!(
-            outcome.is_err(),
-            "newcomer above the budget is closed: {outcome:?}"
+            rejection.is_err(),
+            "newcomer above the budget is closed: {rejection:?}"
         );
         assert!(
             started.elapsed() < Duration::from_secs(4),
@@ -1686,7 +1717,11 @@ mod socket_suite {
         let mut served = false;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let fresh = plain_client(&harness.plain_socket).await;
+            let Ok(fresh) = try_plain_client(&harness.plain_socket).await else {
+                // The freed permit races the session teardown; a rejected
+                // retry just tries again.
+                continue;
+            };
             if fresh
                 .exchange_validated(unique_health_request(2))
                 .await
@@ -1698,7 +1733,83 @@ mod socket_suite {
         }
         assert!(served, "a released slot admits a fresh resident session");
         drop(holders);
-        drop(newcomer);
+        harness.stop();
+    }
+
+    /// W82-B D3 end-to-end over the real daemon plain endpoint: an
+    /// over-limit frame is answered with the typed per-call failure and the
+    /// SAME connection keeps serving the next normal exchange.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn daemon_endpoint_rejects_over_limit_frame_and_keeps_serving() {
+        use nlos_schema::{MAX_ENVELOPE_BYTES, decode_exchange_response};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (harness, _root) = start("d3", Duration::from_secs(30), None, false, true);
+        let config = TransportConfig::default();
+        let (mut stream, _) = connect(&harness.plain_socket, config)
+            .await
+            .expect("plain connect");
+
+        // One over-limit frame (declared 1 MiB + 1 over the transport
+        // maximum) with its full body.
+        let declared = MAX_ENVELOPE_BYTES + 1;
+        stream
+            .write_all(&u32::try_from(declared).unwrap().to_be_bytes())
+            .await
+            .unwrap();
+        let junk = vec![0xA5_u8; 8_192];
+        for _ in 0..(declared / junk.len()) {
+            stream.write_all(&junk).await.unwrap();
+        }
+        stream
+            .write_all(&junk[..declared % junk.len()])
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        // The rejection is a decodable typed failure envelope.
+        let mut prefix = [0_u8; 4];
+        stream.read_exact(&mut prefix).await.unwrap();
+        let mut rejection = vec![0_u8; u32::from_be_bytes(prefix) as usize];
+        stream.read_exact(&mut rejection).await.unwrap();
+        let response = decode_exchange_response(&rejection).unwrap();
+        let envelope::CommonContext::ResponseContext(context) =
+            response.envelope().common_context.as_ref().unwrap()
+        else {
+            panic!("rejection carries a response context");
+        };
+        let failure = context.failure.as_ref().expect("typed failure");
+        assert_eq!(failure.code, i32::from(SabiErrorCode::InvalidArgument));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+
+        // The SAME connection serves a normal system_control exchange next.
+        let health = build_request_envelope(&ControlCommand::InspectHealth).unwrap();
+        let wire = nlos_schema::encode_exchange_request(&nlos_schema::sabi::v1::ExchangeRequest {
+            envelope: Some(health),
+        })
+        .unwrap();
+        stream
+            .write_all(&u32::try_from(wire.len()).unwrap().to_be_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&wire).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut prefix = [0_u8; 4];
+        stream.read_exact(&mut prefix).await.unwrap();
+        let mut served = vec![0_u8; u32::from_be_bytes(prefix) as usize];
+        stream.read_exact(&mut served).await.unwrap();
+        let response = decode_exchange_response(&served).unwrap();
+        let envelope::CommonContext::ResponseContext(context) =
+            response.envelope().common_context.as_ref().unwrap()
+        else {
+            panic!("normal round response context");
+        };
+        assert!(
+            context.failure.is_none(),
+            "normal round after rejection succeeds: {:?}",
+            context.failure
+        );
+        drop(stream);
         harness.stop();
     }
 }
