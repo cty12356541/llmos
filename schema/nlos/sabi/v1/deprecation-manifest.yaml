@@ -1,12 +1,12 @@
 # Machine-readable SABI v1 contract lifecycle and deprecation manifest.
 # Authority: docs/design/06-架构设计总纲-v0.5.md section 9 (COMPAT-VER-001, COMPAT-VER-002, COMPAT-DEPRECATE-001)
 # ADR: docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md
-# Wave: W77 / W77-E1A-SABI-REGISTRY (9/9 SABI channels frozen; SABI v1.0 candidate baseline)
+# Wave: W77 / W77-E1A-SABI-REGISTRY (12/12 SABI channels frozen: 9 in the W77 v1.0 baseline; LlmGateway/ToolSandbox/BlobReference added additively by W82-B SABI v1.1)
 
 manifest_version: 1
 current_epoch: 1
 min_compatibility_window_epochs: 2
-frozen_channels_total: 9
+frozen_channels_total: 12
 
 channels:
   - name: "nlos.sabi.Envelope"
@@ -66,6 +66,27 @@ channels:
     reserved_symbols: []
 
   - name: "nlos.sabi.ChannelControl"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.LlmGateway"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.ToolSandbox"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.BlobReference"
     major: 1
     minor: 0
     frozen: true
@@ -225,6 +246,132 @@ entries:
 
   - channel: "nlos.sabi.ChannelControl"
     symbol: "ReceiveChannelRequestWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "LlmChatTurn"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "LlmChatRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "LlmChatResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "LlmUsageWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "QueryBudgetRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "QueryBudgetResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "RecordExternalUsageRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "RecordExternalUsageResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ToolSandbox"
+    symbol: "ToolDescriptorWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ToolSandbox"
+    symbol: "ListToolsRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ToolSandbox"
+    symbol: "ListToolsResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ToolSandbox"
+    symbol: "InvokeToolRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ToolSandbox"
+    symbol: "InvokeToolResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "MintReferenceRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "MintReferenceResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "ReadReferenceRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "ReadReferenceResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "ReleaseReferenceRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "ReleaseReferenceResult"
     kind: "MESSAGE"
     introduced_in_epoch: 1
     state: "ACTIVE"

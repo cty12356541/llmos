@@ -343,7 +343,7 @@ pub fn verify_kabi_internal_refactor_insulation() -> Result<(), String> {
 
 /// Builds Host `N`'s (`current_epoch = 2`) machine-readable `DeprecationManifest`
 /// by evolving the canonical SABI v1 manifest with:
-/// - `current_epoch: 2` (`min_compatibility_window_epochs: 2`, `9` frozen channels);
+/// - `current_epoch: 2` (`min_compatibility_window_epochs: 2`, `12` frozen channels);
 /// - additive minor metadata on `nlos.sabi.Envelope` (`minor: 2`) and
 ///   `nlos.sabi.DriverProvider` (`minor: 1`);
 /// - permanent tombstone slot `901` and symbol `RetiredExperimentalPreV1Slot` on
@@ -384,7 +384,7 @@ pub fn build_host_n_evolved_deprecation_manifest() -> Result<DeprecationManifest
         .map_err(|err| format!("parse_deprecation_manifest(Host N epoch=2): {err}"))?;
     if parsed.current_epoch != HOST_EPOCH_N
         || parsed.min_compatibility_window_epochs < MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS
-        || parsed.frozen_channels_total != 9
+        || parsed.frozen_channels_total != 12
     {
         return Err(format!(
             "unexpected Host N DeprecationManifest header: {parsed:?}"

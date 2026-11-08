@@ -39,7 +39,7 @@ pub const SABI_TAKEOVER_CONTROL_SCHEMA: &str = "nlos.sabi.TakeoverControl";
 pub const SABI_WAIT_CONTROL_SCHEMA: &str = "nlos.sabi.WaitControl";
 /// ADR-0011 connection-level principal handshake channel; the seventh
 /// canonical registry entry, promoted to frozen status in W77 under ADR-0027
-/// (`M-E1` 9/9 channel freeze).
+/// (`M-E1` full channel freeze of the then-9 registered channels).
 pub const SABI_PRINCIPAL_HANDSHAKE_SCHEMA: &str = "nlos.sabi.PrincipalHandshake";
 /// ADR-0024 driver provider channel; the eighth canonical registry entry,
 /// promoted to frozen status under ADR-0014 (`#9 C-PROVIDER-REAL`).
@@ -47,6 +47,21 @@ pub const SABI_DRIVER_PROVIDER_SCHEMA: &str = "nlos.sabi.DriverProvider";
 /// Durable local Channel endpoint control channel; the ninth canonical
 /// registry entry, promoted to frozen status under ADR-0014 (`L-002`).
 pub const SABI_CHANNEL_CONTROL_SCHEMA: &str = "nlos.sabi.ChannelControl";
+/// W82-B SABI v1.1 (`W82-B1`, D2/D10): capability-scoped LLM gateway thin
+/// channel (`llm_chat`/`query_budget`/`attenuate_budget`/
+/// `record_external_usage`); the tenth canonical registry entry, frozen at
+/// introduction under the ADR-0014 additive rules.
+pub const SABI_LLM_GATEWAY_SCHEMA: &str = "nlos.sabi.LlmGateway";
+/// W82-B SABI v1.1 (`W82-B1`, D1/D10): capability-scoped sandboxed tool
+/// delegation thin channel (`list_tools`/`invoke_tool`, coordinating with the
+/// frozen OperationControl/WaitControl channels); the eleventh canonical
+/// registry entry, frozen at introduction under the ADR-0014 additive rules.
+pub const SABI_TOOL_SANDBOX_SCHEMA: &str = "nlos.sabi.ToolSandbox";
+/// W82-B SABI v1.1 (`W82-B1`, D5 option B / L-015): large-payload reference
+/// primitive channel (`mint_reference`/`read_reference`/`release_reference`;
+/// payload bytes never enter any SABI frame); the twelfth canonical registry
+/// entry, frozen at introduction under the ADR-0014 additive rules.
+pub const SABI_BLOB_REFERENCE_SCHEMA: &str = "nlos.sabi.BlobReference";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -56,6 +71,9 @@ pub const MAX_WAIT_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES: usize = 4 * 1024;
 pub const MAX_DRIVER_PROVIDER_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_CHANNEL_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_LLM_GATEWAY_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_TOOL_SANDBOX_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_BLOB_REFERENCE_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_PROVIDER_PROFILE_BYTES: usize = 128;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
@@ -177,8 +195,9 @@ const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
 };
 
 // W77 (`M-E1`, ADR-0027 section 3.1): Peer attestation audit complete; promoted
-// from `frozen: false` to `frozen: true`, completing the 9/9 canonical SABI v1
-// channel freeze:
+// from `frozen: false` to `frozen: true`, completing the freeze of all
+// then-9 canonical SABI v1 channels (12 since the W82-B SABI v1.1 additive
+// extension):
 // - `PrincipalHandshakeChallenge` locks `schema = 1`, `nonce = 2` (field slots
 //   >= 3 remain open for additive peer attestation challenge metadata).
 // - `PrincipalHandshakeAttestation` locks `schema = 1`, `principal_id = 2`,
@@ -213,6 +232,34 @@ const SABI_CHANNEL_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     frozen: true,
 };
 
+// W82-B SABI v1.1 (`W82-B1`, D10: 9 -> 12 frozen channels): the three new
+// thin-waist channels enter the canonical registry directly at minor 0 and
+// frozen under the ADR-0014 additive rules — same shape as the v1.0 freeze,
+// additive with respect to every existing entry.
+const SABI_LLM_GATEWAY_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_LLM_GATEWAY_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+    frozen: true,
+};
+
+const SABI_TOOL_SANDBOX_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_TOOL_SANDBOX_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+    frozen: true,
+};
+
+const SABI_BLOB_REFERENCE_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_BLOB_REFERENCE_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+    frozen: true,
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
@@ -223,6 +270,9 @@ const REGISTRY: &[SchemaDescriptor] = &[
     SABI_PRINCIPAL_HANDSHAKE_V1,
     SABI_DRIVER_PROVIDER_V1,
     SABI_CHANNEL_CONTROL_V1,
+    SABI_LLM_GATEWAY_V1,
+    SABI_TOOL_SANDBOX_V1,
+    SABI_BLOB_REFERENCE_V1,
 ];
 
 #[must_use]
@@ -2827,6 +2877,548 @@ fn validate_provider_isolation_attestation(
         return Err(CompatibilityError::UnsafeProviderProfile);
     }
     Ok(())
+}
+
+// W82-B SABI v1.1 (`W82-B1`): the three thin-waist channel families below
+// mirror the `ChannelControl` bounded-codec pattern — per-method encode
+// validates the schema identity then bounds the payload, per-method decode
+// bounds first then validates the decoded identity. Field-level semantic
+// validation belongs to the W82-B service layers (B-2/B-3/B-4), not to the
+// schema crate.
+
+/// Returns the v1 identity required on every `LlmGateway` payload.
+#[must_use]
+pub fn llm_gateway_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_LLM_GATEWAY_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+fn validate_llm_gateway_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_LLM_GATEWAY_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+/// Validates and encodes a bounded `LlmGateway.llm_chat` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_llm_chat_request(
+    request: &sabi::v1::LlmChatRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.llm_chat` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_llm_chat_request(
+    wire: &[u8],
+) -> Result<sabi::v1::LlmChatRequest, CompatibilityError> {
+    let request: sabi::v1::LlmChatRequest =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `LlmGateway.llm_chat` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_llm_chat_result(
+    result: &sabi::v1::LlmChatResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.llm_chat` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_llm_chat_result(wire: &[u8]) -> Result<sabi::v1::LlmChatResult, CompatibilityError> {
+    let result: sabi::v1::LlmChatResult =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `LlmGateway.query_budget` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_query_budget_request(
+    request: &sabi::v1::QueryBudgetRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.query_budget` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_query_budget_request(
+    wire: &[u8],
+) -> Result<sabi::v1::QueryBudgetRequest, CompatibilityError> {
+    let request: sabi::v1::QueryBudgetRequest =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `LlmGateway.query_budget` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_query_budget_result(
+    result: &sabi::v1::QueryBudgetResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.query_budget` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_query_budget_result(
+    wire: &[u8],
+) -> Result<sabi::v1::QueryBudgetResult, CompatibilityError> {
+    let result: sabi::v1::QueryBudgetResult =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `LlmGateway.attenuate_budget` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_attenuate_budget_request(
+    request: &sabi::v1::AttenuateBudgetRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.attenuate_budget` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_attenuate_budget_request(
+    wire: &[u8],
+) -> Result<sabi::v1::AttenuateBudgetRequest, CompatibilityError> {
+    let request: sabi::v1::AttenuateBudgetRequest =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `LlmGateway.attenuate_budget` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_attenuate_budget_result(
+    result: &sabi::v1::AttenuateBudgetResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.attenuate_budget` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_attenuate_budget_result(
+    wire: &[u8],
+) -> Result<sabi::v1::AttenuateBudgetResult, CompatibilityError> {
+    let result: sabi::v1::AttenuateBudgetResult =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `LlmGateway.record_external_usage` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_record_external_usage_request(
+    request: &sabi::v1::RecordExternalUsageRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.record_external_usage` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_record_external_usage_request(
+    wire: &[u8],
+) -> Result<sabi::v1::RecordExternalUsageRequest, CompatibilityError> {
+    let request: sabi::v1::RecordExternalUsageRequest =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `LlmGateway.record_external_usage` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_record_external_usage_result(
+    result: &sabi::v1::RecordExternalUsageResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_LLM_GATEWAY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `LlmGateway.record_external_usage` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_record_external_usage_result(
+    wire: &[u8],
+) -> Result<sabi::v1::RecordExternalUsageResult, CompatibilityError> {
+    let result: sabi::v1::RecordExternalUsageResult =
+        decode_bounded_with_limit(wire, MAX_LLM_GATEWAY_PAYLOAD_BYTES)?;
+    validate_llm_gateway_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Returns the v1 identity required on every `ToolSandbox` payload.
+#[must_use]
+pub fn tool_sandbox_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_TOOL_SANDBOX_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+fn validate_tool_sandbox_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_TOOL_SANDBOX_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+/// Validates and encodes a bounded `ToolSandbox.list_tools` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_list_tools_request(
+    request: &sabi::v1::ListToolsRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_tool_sandbox_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ToolSandbox.list_tools` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_list_tools_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ListToolsRequest, CompatibilityError> {
+    let request: sabi::v1::ListToolsRequest =
+        decode_bounded_with_limit(wire, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)?;
+    validate_tool_sandbox_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ToolSandbox.list_tools` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_list_tools_result(
+    result: &sabi::v1::ListToolsResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_tool_sandbox_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ToolSandbox.list_tools` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_list_tools_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ListToolsResult, CompatibilityError> {
+    let result: sabi::v1::ListToolsResult =
+        decode_bounded_with_limit(wire, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)?;
+    validate_tool_sandbox_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `ToolSandbox.invoke_tool` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_invoke_tool_request(
+    request: &sabi::v1::InvokeToolRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_tool_sandbox_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ToolSandbox.invoke_tool` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_invoke_tool_request(
+    wire: &[u8],
+) -> Result<sabi::v1::InvokeToolRequest, CompatibilityError> {
+    let request: sabi::v1::InvokeToolRequest =
+        decode_bounded_with_limit(wire, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)?;
+    validate_tool_sandbox_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ToolSandbox.invoke_tool` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_invoke_tool_result(
+    result: &sabi::v1::InvokeToolResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_tool_sandbox_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ToolSandbox.invoke_tool` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_invoke_tool_result(
+    wire: &[u8],
+) -> Result<sabi::v1::InvokeToolResult, CompatibilityError> {
+    let result: sabi::v1::InvokeToolResult =
+        decode_bounded_with_limit(wire, MAX_TOOL_SANDBOX_PAYLOAD_BYTES)?;
+    validate_tool_sandbox_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Returns the v1 identity required on every `BlobReference` payload.
+#[must_use]
+pub fn blob_reference_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_BLOB_REFERENCE_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+fn validate_blob_reference_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_BLOB_REFERENCE_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+/// Validates and encodes a bounded `BlobReference.mint_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_mint_reference_request(
+    request: &sabi::v1::MintReferenceRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.mint_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_mint_reference_request(
+    wire: &[u8],
+) -> Result<sabi::v1::MintReferenceRequest, CompatibilityError> {
+    let request: sabi::v1::MintReferenceRequest =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `BlobReference.mint_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_mint_reference_result(
+    result: &sabi::v1::MintReferenceResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.mint_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_mint_reference_result(
+    wire: &[u8],
+) -> Result<sabi::v1::MintReferenceResult, CompatibilityError> {
+    let result: sabi::v1::MintReferenceResult =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `BlobReference.read_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_read_reference_request(
+    request: &sabi::v1::ReadReferenceRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.read_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_read_reference_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ReadReferenceRequest, CompatibilityError> {
+    let request: sabi::v1::ReadReferenceRequest =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `BlobReference.read_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_read_reference_result(
+    result: &sabi::v1::ReadReferenceResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.read_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_read_reference_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ReadReferenceResult, CompatibilityError> {
+    let result: sabi::v1::ReadReferenceResult =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `BlobReference.release_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_release_reference_request(
+    request: &sabi::v1::ReleaseReferenceRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.release_reference` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_release_reference_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ReleaseReferenceRequest, CompatibilityError> {
+    let request: sabi::v1::ReleaseReferenceRequest =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `BlobReference.release_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_release_reference_result(
+    result: &sabi::v1::ReleaseReferenceResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `BlobReference.release_reference` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_release_reference_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ReleaseReferenceResult, CompatibilityError> {
+    let result: sabi::v1::ReleaseReferenceResult =
+        decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
+    validate_blob_reference_identity(result.schema.as_ref())?;
+    Ok(result)
 }
 
 /// Validates common request metadata against the negotiated method contract.
