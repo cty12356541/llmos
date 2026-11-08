@@ -377,6 +377,79 @@ where
             .await
             .map_err(|_| IpcError::Timeout(IoOperation::Read))?
     }
+
+    /// Reads one bounded frame under a two-phase budget for long-lived
+    /// sessions: the FIRST byte of the length prefix may take up to
+    /// `idle_timeout` (the inter-frame idle window [`serve_connection`]
+    /// enforces), while everything after it — the remaining prefix bytes and
+    /// the body — stays under the config's per-frame `read_timeout` exactly
+    /// like [`Self::receive`]. A clean close at a frame boundary and an idle
+    /// expiry are reported as typed outcomes, not errors; a partial frame
+    /// (EOF after the first byte) and bound violations stay errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bound, timeout (per-frame), or I/O error.
+    pub(crate) async fn receive_with_idle(
+        &mut self,
+        idle_timeout: Duration,
+    ) -> Result<IdleReceive, IpcError> {
+        let maximum = self.config.maximum_frame_bytes;
+        let mut first = [0_u8; 1];
+        match timeout(idle_timeout, self.stream.read(&mut first)).await {
+            Err(_elapsed) => return Ok(IdleReceive::IdleExpired),
+            Ok(Err(source)) => {
+                return Err(IpcError::Io {
+                    operation: IoOperation::Read,
+                    source,
+                });
+            }
+            Ok(Ok(0)) => return Ok(IdleReceive::PeerClosed),
+            Ok(Ok(_)) => {}
+        }
+        let read = async {
+            let mut rest = [0_u8; LENGTH_PREFIX_BYTES - 1];
+            self.stream
+                .read_exact(&mut rest)
+                .await
+                .map_err(|source| IpcError::Io {
+                    operation: IoOperation::Read,
+                    source,
+                })?;
+            let mut prefix = [0_u8; LENGTH_PREFIX_BYTES];
+            prefix[0] = first[0];
+            prefix[1..].copy_from_slice(&rest);
+            let declared = u32::from_be_bytes(prefix) as usize;
+            if declared > maximum {
+                return Err(IpcError::FrameTooLarge {
+                    actual: declared,
+                    maximum,
+                });
+            }
+            let mut wire = vec![0_u8; declared];
+            self.stream
+                .read_exact(&mut wire)
+                .await
+                .map_err(|source| IpcError::Io {
+                    operation: IoOperation::Read,
+                    source,
+                })?;
+            Ok(wire)
+        };
+        let wire = timeout(self.config.read_timeout, read)
+            .await
+            .map_err(|_| IpcError::Timeout(IoOperation::Read))??;
+        Ok(IdleReceive::Frame(wire))
+    }
+}
+
+/// Outcome of [`FramedIo::receive_with_idle`]: one decoded frame, a clean
+/// peer close at a frame boundary, or an idle-window expiry.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum IdleReceive {
+    Frame(Vec<u8>),
+    PeerClosed,
+    IdleExpired,
 }
 
 pub enum OutboundResponse {
@@ -507,22 +580,125 @@ where
     // 校验关联,失配以类型化错误拒绝发送。客户端侧的关联校验保留为
     // 纵深防御。
     let request_id = request.envelope().request_id.clone();
-    let response = match handler(request).await? {
+    let response = stamp_outbound_response(request_id, handler(request).await?)?;
+    let response_wire = response.into_wire()?;
+    connection.send(&response_wire).await
+}
+
+/// Stamps one outbound response with the request's correlation id (深审计 36
+/// D3): Typed responses get the echoed `request_id` stamped by the library so
+/// a handler that forgets the echo cannot poison the client with a
+/// `RequestIdMismatch`; Forwarded responses keep the upstream bytes verbatim
+/// (avoiding re-encoding drift) and are only correlation-checked, with a
+/// mismatch rejected as a typed error before anything is sent.
+fn stamp_outbound_response(
+    request_id: Vec<u8>,
+    response: OutboundResponse,
+) -> Result<OutboundResponse, IpcError> {
+    match response {
         OutboundResponse::Typed(mut response) => {
             if let Some(envelope) = response.envelope.as_mut() {
                 envelope.request_id = request_id;
             }
-            OutboundResponse::Typed(response)
+            Ok(OutboundResponse::Typed(response))
         }
         OutboundResponse::Forwarded(validated) => {
             if validated.envelope().request_id != request_id {
                 return Err(IpcError::RequestIdMismatch);
             }
-            OutboundResponse::Forwarded(validated)
+            Ok(OutboundResponse::Forwarded(validated))
         }
-    };
-    let response_wire = response.into_wire()?;
-    connection.send(&response_wire).await
+    }
+}
+
+/// How one [`serve_connection`] cycle ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionTermination {
+    /// The peer closed the connection cleanly at a frame boundary.
+    ClientClosed,
+    /// No request frame arrived within the connection idle timeout — the
+    /// fail-closed posture: an idle session is retired, never held open.
+    IdleExpired,
+}
+
+/// Outcome of one bounded multi-round [`serve_connection`] cycle: how many
+/// complete request→response exchanges were served, and how the connection
+/// ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServedConnection {
+    /// Completed exchanges before termination (saturating).
+    pub rounds: u32,
+    /// Why the connection ended.
+    pub termination: ConnectionTermination,
+}
+
+/// Authorizes a peer, then serves BOUNDED multi-round exchanges on one
+/// connection: receive → decode → `handler` → send, repeated until the client
+/// closes the connection or the connection-level `idle_timeout` expires
+/// between frames (fail-closed). Unlike the per-frame `read_timeout` baked
+/// into [`TransportConfig`], the idle budget covers only the wait for the
+/// FIRST byte of the next frame; once a frame starts, it completes (or
+/// fails) under the per-frame budget like [`serve_one`].
+///
+/// The handler is `FnMut` and is invoked once per round, so a caller that
+/// rebuilds per-exchange state inside the handler observes the same
+/// per-round freshness semantics as one [`serve_one`] call per connection.
+/// Every round keeps the exact [`serve_one`] wire contract: Typed responses
+/// are stamped with the round's `request_id`, Forwarded responses are
+/// correlation-checked verbatim, and any error (authorization, framing,
+/// handler, I/O) drops the connection fail-closed.
+///
+/// # Errors
+///
+/// Returns authorization, framing, compatibility, handler, or I/O errors; a
+/// clean client close or idle expiry is `Ok` with the termination recorded.
+pub async fn serve_connection<S, A, H, F>(
+    stream: S,
+    config: TransportConfig,
+    peer: PeerIdentity,
+    authorizer: &A,
+    idle_timeout: Duration,
+    mut handler: H,
+) -> Result<ServedConnection, IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    A: PeerAuthorizer,
+    H: FnMut(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+{
+    if idle_timeout.is_zero() {
+        return Err(IpcError::InvalidConfig(
+            "connection idle timeout must be non-zero",
+        ));
+    }
+    authorizer
+        .authorize(&peer)
+        .map_err(IpcError::AuthorizationDenied)?;
+    let mut connection = FramedIo::new(stream, config);
+    let mut rounds = 0_u32;
+    loop {
+        let request_wire = match connection.receive_with_idle(idle_timeout).await? {
+            IdleReceive::Frame(wire) => wire,
+            IdleReceive::PeerClosed => {
+                return Ok(ServedConnection {
+                    rounds,
+                    termination: ConnectionTermination::ClientClosed,
+                });
+            }
+            IdleReceive::IdleExpired => {
+                return Ok(ServedConnection {
+                    rounds,
+                    termination: ConnectionTermination::IdleExpired,
+                });
+            }
+        };
+        let request = decode_exchange_request(&request_wire)?;
+        let request_id = request.envelope().request_id.clone();
+        let response = stamp_outbound_response(request_id, handler(request).await?)?;
+        let response_wire = response.into_wire()?;
+        connection.send(&response_wire).await?;
+        rounds = rounds.saturating_add(1);
+    }
 }
 
 pub(crate) fn map_io(operation: IoOperation, source: io::Error) -> IpcError {
