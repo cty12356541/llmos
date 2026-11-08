@@ -1330,6 +1330,42 @@ mod socket_suite {
             .await
             .expect("system_control interleave");
 
+            // channel: a real create per pass over the same connection
+            // (unique key), positively decoded.
+            {
+                use nlos_system_control::channel_control::{
+                    CHANNEL_CONTROL_SERVICE, CREATE_CHANNEL_METHOD,
+                    channel_control_schema_identity, decode_create_channel_result,
+                    encode_create_channel_request,
+                };
+                let key = [0xF8_u8 + pass; 16];
+                let mut request = super::wait_envelope(
+                    CREATE_CHANNEL_METHOD,
+                    super::wait_request_context(key),
+                    encode_create_channel_request(
+                        &nlos_schema::sabi::v1::CreateChannelRequestWire {
+                            schema: Some(channel_control_schema_identity()),
+                            capacity_bytes: 128,
+                            policy_digest: vec![0x44; 32],
+                            idempotency_key: key.to_vec(),
+                            created_at_ms: 2_000,
+                        },
+                    )
+                    .unwrap(),
+                );
+                request.service = CHANNEL_CONTROL_SERVICE.to_owned();
+                request.request_id = key.to_vec();
+                let response = exchange(nlos_schema::sabi::v1::ExchangeRequest {
+                    envelope: Some(request),
+                })
+                .await
+                .expect("channel interleave");
+                decode_create_channel_result(&response.envelope().payload)
+                    .unwrap()
+                    .record
+                    .expect("channel created over the wire");
+            }
+
             // service_directory: negotiate wait_control
             let mut negotiate = super::negotiate_wire(SABI_WAIT_CONTROL_SCHEMA);
             negotiate.request_id = vec![0xE2 + pass; 16];
@@ -1391,12 +1427,61 @@ mod socket_suite {
             .unwrap();
             let status =
                 nlos_schema::decode_operation_status(&response.envelope().payload).unwrap();
-            assert_eq!(
-                status.state,
-                i32::from(nlos_schema::sabi::v1::OperationLifecycleState::Registered),
-                "pass {pass}: seeded operation queries Registered before cancel"
-            );
-            assert_eq!(status.receipt, None, "no receipt in Registered state");
+            if pass == 0 {
+                assert_eq!(
+                    status.state,
+                    i32::from(nlos_schema::sabi::v1::OperationLifecycleState::Registered),
+                    "pass 0: seeded operation queries Registered before cancel"
+                );
+                assert_eq!(status.receipt, None, "no receipt in Registered state");
+
+                // cancel over the wire: the never-dispatched operation
+                // completes as CancelledBeforeEffect carrying the
+                // deterministic no-effect receipt.
+                let cancel = {
+                    use nlos_schema::{
+                        encode_cancel_operation_request, operation_control_schema_identity,
+                    };
+                    let mut envelope = super::op_ctl_envelope();
+                    envelope.method = "cancel".to_owned();
+                    envelope.request_id = vec![0xE7; 16];
+                    envelope.payload = encode_cancel_operation_request(
+                        &nlos_schema::sabi::v1::CancelOperationRequest {
+                            schema: Some(operation_control_schema_identity()),
+                            operation: Some(nlos_schema::sabi::v1::OperationReference {
+                                operation_id: operation_handle.operation_id.as_bytes().to_vec(),
+                                generation: operation_handle.generation.get(),
+                            }),
+                            expected_cancel_epoch: status.cancel_epoch,
+                        },
+                    )
+                    .unwrap();
+                    envelope
+                };
+                let response = exchange(nlos_schema::sabi::v1::ExchangeRequest {
+                    envelope: Some(cancel),
+                })
+                .await
+                .unwrap();
+                let cancelled =
+                    nlos_schema::decode_operation_status(&response.envelope().payload).unwrap();
+                assert_eq!(
+                    cancelled.state,
+                    i32::from(
+                        nlos_schema::sabi::v1::OperationLifecycleState::CancelledBeforeEffect
+                    ),
+                    "cancel completes the never-dispatched operation"
+                );
+                assert!(cancelled.receipt.is_some(), "no-effect receipt attached");
+            } else {
+                assert_eq!(
+                    status.state,
+                    i32::from(
+                        nlos_schema::sabi::v1::OperationLifecycleState::CancelledBeforeEffect
+                    ),
+                    "pass 1: the terminal state is durable"
+                );
+            }
 
             let _ = wait_id;
         }
@@ -1523,5 +1608,49 @@ mod socket_suite {
         drop(client_a);
         drop(client_b);
         harness.stop();
+    }
+
+    /// The two-phase budget must hold in BOTH directions: an inter-frame
+    /// pause LONGER than the per-frame 5s read budget (but inside the idle
+    /// window) still serves the next round — the idle budget, not the frame
+    /// budget, governs inter-frame waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn inter_frame_pause_longer_than_the_frame_budget_is_served() {
+        let (harness, _root) = start("pause", Duration::from_secs(30), None, false, true);
+        let client = plain_client(&harness.plain_socket).await;
+        client
+            .exchange_validated(unique_health_request(1))
+            .await
+            .expect("first round");
+        // 5.5s: past TransportConfig::default()'s 5s read timeout, well
+        // inside the 30s idle window.
+        tokio::time::sleep(Duration::from_millis(5_500)).await;
+        client
+            .exchange_validated(unique_health_request(2))
+            .await
+            .expect("round after a >5s inter-frame pause (idle budget governs)");
+        drop(client);
+        harness.stop();
+    }
+
+    /// Zero idle timeout is rejected at assembly (fail-closed config gate),
+    /// not first at connection time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn zero_connection_idle_timeout_is_rejected_at_assembly() {
+        let root = TempRoot::new("zero-idle");
+        fs::create_dir_all(&root.0).unwrap();
+        let options = DaemonOptions::new(&root.0)
+            .with_plain_socket(temp_path("zero", "plain"))
+            .with_connection_idle_timeout(Duration::ZERO);
+        let outcome = assemble(options, tokio::runtime::Handle::current());
+        assert!(
+            matches!(
+                outcome,
+                Err(nlos_system_control::daemon::DaemonError::Ipc(
+                    nlos_ipc::IpcError::InvalidConfig(_)
+                ))
+            ),
+            "zero idle timeout fails at assemble"
+        );
     }
 }

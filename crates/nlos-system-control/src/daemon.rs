@@ -1098,6 +1098,11 @@ pub fn assemble(
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<(Arc<SystemControlDaemon>, DaemonEndpoints), DaemonError> {
     let random = RandomSource::from_os()?;
+    if options.connection_idle_timeout.is_zero() {
+        return Err(DaemonError::Ipc(nlos_ipc::IpcError::InvalidConfig(
+            "connection idle timeout must be non-zero",
+        )));
+    }
     fs::create_dir_all(&options.root).map_err(DaemonError::Io)?;
     let auth_socket_path = options.auth_socket_path();
     let plain_socket_path = options.plain_socket_path();
@@ -1267,7 +1272,9 @@ pub async fn serve_authenticated_endpoint(
     mut listener: EndpointListener,
     stop: Arc<AtomicBool>,
 ) {
+    let mut sessions = tokio::task::JoinSet::new();
     while !stop.load(Ordering::Relaxed) {
+        while sessions.try_join_next().is_some() {}
         let (stream, peer) = match accept_endpoint(&mut listener).await {
             Ok(connection) => connection,
             Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
@@ -1278,7 +1285,7 @@ pub async fn serve_authenticated_endpoint(
             }
         };
         let daemon_round = Arc::clone(&daemon);
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             // One nonce, one durable verified-at reading per connection —
             // the same derivation the single-shot wrappers used, extracted
             // so the multi-round loop derives it identically.
@@ -1340,6 +1347,11 @@ pub async fn serve_authenticated_endpoint(
             }
         });
     }
+    // Stop observed: retire the accept loop, then fail-close every live
+    // session (each dropped client reconnects with one fresh handshake —
+    // the same fail-closed posture as the idle timeout).
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
 }
 
 /// Serves the plain endpoint until `stop` is observed (W82-A
@@ -1366,7 +1378,9 @@ pub async fn serve_plain_endpoint(
     mut listener: EndpointListener,
     stop: Arc<AtomicBool>,
 ) {
+    let mut sessions = tokio::task::JoinSet::new();
     while !stop.load(Ordering::Relaxed) {
+        while sessions.try_join_next().is_some() {}
         let (stream, peer) = match accept_endpoint(&mut listener).await {
             Ok(connection) => connection,
             Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
@@ -1377,7 +1391,7 @@ pub async fn serve_plain_endpoint(
             }
         };
         let daemon_round = Arc::clone(&daemon);
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             let idle_timeout = daemon_round.connection_idle_timeout;
             let served = serve_connection(
                 stream,
@@ -1404,6 +1418,11 @@ pub async fn serve_plain_endpoint(
             }
         });
     }
+    // Stop observed: retire the accept loop, then fail-close every live
+    // session (the pre-W82-A loop awaited its single in-flight exchange;
+    // the session set restores that drained shutdown posture).
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
 }
 
 /// Builds one round's full handler stack and dispatches one request through
