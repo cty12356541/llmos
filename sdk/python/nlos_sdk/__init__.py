@@ -1,6 +1,27 @@
 """Candidate Python SDK surface for NLOS SABI."""
 
 from .local_rpc import IpcError, LocalRpcClient, TransportConfig
+from ._signing import (
+    ED25519_SEED_BYTES,
+    ED25519_SIGNATURE_BYTES,
+    Ed25519Signer,
+    SigningUnavailableError,
+)
+from .handshake import (
+    CHANNEL_BINDING_DOMAIN,
+    HANDSHAKE_MESSAGE_DOMAIN,
+    HANDSHAKE_NONCE_BYTES,
+    HANDSHAKE_SCHEMA_MAJOR,
+    HANDSHAKE_SCHEMA_MINOR,
+    HANDSHAKE_SCHEMA_NAME,
+    HANDSHAKE_SIGNATURE_BYTES,
+    MAX_HANDSHAKE_CHANNEL_BINDING_BYTES,
+    build_attestation,
+    decode_challenge,
+    endpoint_channel_binding,
+    endpoint_path_bytes,
+    principal_handshake_message,
+)
 from .common import (
     SABI_V1_CHANNELS,
     CommonSemanticsError,
@@ -34,6 +55,7 @@ __version__ = "0.1.0"
 __all__ = [
     "__version__",
     "AckResult",
+    "CHANNEL_BINDING_DOMAIN",
     "CHANNEL_CONTROL_SCHEMA",
     "CHANNEL_CONTROL_SERVICE",
     "ChannelClient",
@@ -43,8 +65,18 @@ __all__ = [
     "CompactResult",
     "ConnectedService",
     "DirectoryNegotiationError",
+    "ED25519_SEED_BYTES",
+    "ED25519_SIGNATURE_BYTES",
+    "Ed25519Signer",
+    "HANDSHAKE_MESSAGE_DOMAIN",
+    "HANDSHAKE_NONCE_BYTES",
+    "HANDSHAKE_SCHEMA_MAJOR",
+    "HANDSHAKE_SCHEMA_MINOR",
+    "HANDSHAKE_SCHEMA_NAME",
+    "HANDSHAKE_SIGNATURE_BYTES",
     "IpcError",
     "LocalRpcClient",
+    "MAX_HANDSHAKE_CHANNEL_BINDING_BYTES",
     "MethodSemantics",
     "QueueConsumptionRecord",
     "QueueEntryRecord",
@@ -53,7 +85,13 @@ __all__ = [
     "SabiChannelSpec",
     "ServiceDirectoryClient",
     "ServiceRequirement",
+    "SigningUnavailableError",
     "TransportConfig",
+    "build_attestation",
+    "decode_challenge",
+    "endpoint_channel_binding",
+    "endpoint_path_bytes",
+    "principal_handshake_message",
     "validate_request_context",
     "validate_response_context",
     "validate_schema_compatibility",
