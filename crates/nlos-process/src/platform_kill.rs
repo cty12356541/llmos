@@ -64,6 +64,27 @@ pub trait PlatformKillAdapter {
         process_id: ProcessId,
         process_generation: Generation,
     ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError>;
+
+    /// Group-scoped signal over the registered OS pid's whole process
+    /// group (W82-C). `force == false` 请求协作终止(Unix SIGTERM),
+    /// `force == true` 请求强杀(Unix SIGKILL)。默认实现 fail-closed:
+    /// 不支持组语义的适配器(Stub/Noop/错宿主)一律拒绝,不静默降级为
+    /// 单进程信号。
+    ///
+    /// # Errors
+    ///
+    /// Returns an adapter-specific error when the group signal fails; the
+    /// default implementation always fails closed.
+    fn signal_platform_kill_group(
+        &self,
+        _process_id: ProcessId,
+        _process_generation: Generation,
+        _force: bool,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        Err(PlatformKillAdapterError::Platform(
+            "process-group kill unsupported by this adapter",
+        ))
+    }
 }
 
 /// Test-oriented adapter that records every signaled kill without touching the OS.
@@ -205,6 +226,31 @@ impl PosixPlatformKillAdapter {
             pid_map: SupervisedPidMap::GenerationFenced(pid_map),
         }
     }
+
+    fn signal_group(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        force: bool,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        use nix::errno::Errno;
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+
+        let os_pid = self.pid_map.resolve(process_id, process_generation)?;
+        let signal = if force {
+            Signal::SIGKILL
+        } else {
+            Signal::SIGTERM
+        };
+        match killpg(Pid::from_raw(os_pid.cast_signed()), signal) {
+            Ok(()) => Ok(PlatformKillAdapterOutcome::Signaled),
+            Err(Errno::ESRCH) => Ok(PlatformKillAdapterOutcome::AlreadyTerminated),
+            Err(_) => Err(PlatformKillAdapterError::Platform(
+                "killpg failed for mapped os pid group",
+            )),
+        }
+    }
 }
 
 #[cfg(not(unix))]
@@ -245,6 +291,15 @@ impl PlatformKillAdapter for PosixPlatformKillAdapter {
                 "kill(SIGTERM) failed for mapped os pid",
             )),
         }
+    }
+
+    fn signal_platform_kill_group(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        force: bool,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        self.signal_group(process_id, process_generation, force)
     }
 }
 
@@ -364,6 +419,16 @@ impl PlatformKillAdapter for WindowsPlatformKillAdapter {
         Err(PlatformKillAdapterError::Platform(
             "TerminateProcess equivalent failed for mapped os pid",
         ))
+    }
+
+    fn signal_platform_kill_group(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        _force: bool,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        // `taskkill /F /T` 已经是整树强杀:组语义与 force 语义在此合一。
+        self.signal_platform_kill(process_id, process_generation)
     }
 }
 

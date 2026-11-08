@@ -57,8 +57,8 @@ pub use supervisor::{
     SupervisorSignalOutcome,
 };
 pub use supervisor_pid::{
-    RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
-    SupervisorPidRegistryError,
+    KillScope, RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry,
+    SupervisorPidRegistry, SupervisorPidRegistryError,
 };
 pub use supervisor_pid_scan::{
     HostSupervisorPidProbe, SupervisorPidFinding, SupervisorPidLiveness, SupervisorPidProbe,
@@ -1022,7 +1022,7 @@ impl ProcessAuthority {
                         process_id,
                     ) => ProcessAuthorityError::PlatformKillTargetNotRegistered(process_id),
                     // `lookup` holds the registry read lock and reads one
-                    // row; the stale/rebind write-path rejections are
+                    // row; the stale/rebind/scope write-path rejections are
                     // unreachable here but must not panic the mapping.
                     supervisor_pid::SupervisorPidRegistryError::LockPoisoned => {
                         ProcessAuthorityError::LockPoisoned
@@ -1030,7 +1030,8 @@ impl ProcessAuthority {
                     supervisor_pid::SupervisorPidRegistryError::StaleProcessGeneration {
                         ..
                     }
-                    | supervisor_pid::SupervisorPidRegistryError::OsPidRebind { .. } => {
+                    | supervisor_pid::SupervisorPidRegistryError::OsPidRebind { .. }
+                    | supervisor_pid::SupervisorPidRegistryError::KillScopeMismatch { .. } => {
                         ProcessAuthorityError::CorruptRecord(
                             "supervisor pid registry lookup returned a write-path rejection",
                         )
