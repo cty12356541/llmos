@@ -203,8 +203,19 @@ const OPERATOR_ROOT_RIGHTS: CapabilityRights = CapabilityRights::SEMANTIC_APPEND
     .union(CapabilityRights::SEMANTIC_RETRACT)
     .union(CapabilityRights::SEMANTIC_ADJUDICATE)
     .union(CapabilityRights::DELEGATE);
-/// Handshake nonce registry capacity for the authenticated endpoint.
-const HANDSHAKE_NONCE_CAPACITY: usize = 64;
+/// Handshake nonce registry capacity for the authenticated endpoint. Sized
+/// for the CONCURRENT-handshake era (W82-A sessions serve on their own
+/// tasks): comfortably above [`DAEMON_MAX_SESSIONS`], so the registry's
+/// oldest-first displacement cannot evict a legitimately in-flight nonce
+/// while the session cap holds.
+const HANDSHAKE_NONCE_CAPACITY: usize = 256;
+/// Concurrent resident-session budget per endpoint (W82-A review finding:
+/// unbounded per-connection tasks on Unix had no resource ceiling). A
+/// connection arriving above the budget is closed fail-closed at accept
+/// (the client's reconnect loop retries; resident sessions are unaffected).
+/// Windows additionally enforces the kernel pipe-instance ceiling
+/// ([`DAEMON_PIPE_INSTANCES`]) aligned with this budget.
+const DAEMON_MAX_SESSIONS: usize = 64;
 /// Default connection idle budget (W82-A): a persistent connection with no
 /// inbound frame for this long is retired fail-closed (the resident client
 /// reconnects — one handshake, not a per-exchange reconnect). Configurable
@@ -215,14 +226,18 @@ pub const DAEMON_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// one connected). W82-A re-evaluation for persistent connections: every
 /// long-lived session holds one pipe instance for its whole lifetime (the
 /// kernel enforces `max_instances`), so the budget bounds CONCURRENT
-/// resident sessions at `instances - 1`. Sixteen keeps one listening slot
-/// plus fifteen concurrent persistent clients per endpoint — the single-shot
-/// posture (4 ⇒ 3 concurrent) would starve a multi-agent host. Honest
+/// resident sessions at `instances - 1`. Aligned with the daemon-side
+/// session cap ([`DAEMON_MAX_SESSIONS`] = 64 ⇒ 63 resident + 1 listening),
+/// so both platforms enforce one consistent bound. Known overflow posture
+/// (pre-existing adapter behavior, now reachable in steady state): the
+/// client one past the budget connects at the kernel layer and is then
+/// disconnected by the adapter's replacement-instance failure path — the
+/// client's bounded reconnect loop retries until a slot frees. Honest
 /// boundary: measured on code semantics only; not exercised on a real
 /// Windows host from this lane (macOS dev machine) — three-platform CI
 /// covers compilation.
 #[cfg(windows)]
-const DAEMON_PIPE_INSTANCES: usize = 16;
+const DAEMON_PIPE_INSTANCES: usize = DAEMON_MAX_SESSIONS;
 
 // Default endpoint-path derivation, centralized in this one place per OS
 // form:
@@ -1273,6 +1288,7 @@ pub async fn serve_authenticated_endpoint(
     stop: Arc<AtomicBool>,
 ) {
     let mut sessions = tokio::task::JoinSet::new();
+    let session_budget = Arc::new(tokio::sync::Semaphore::new(DAEMON_MAX_SESSIONS));
     while !stop.load(Ordering::Relaxed) {
         while sessions.try_join_next().is_some() {}
         let (stream, peer) = match accept_endpoint(&mut listener).await {
@@ -1284,8 +1300,17 @@ pub async fn serve_authenticated_endpoint(
                 continue;
             }
         };
+        let Ok(permit) = session_budget.clone().try_acquire_owned() else {
+            // Fail-closed above the session budget, before any handshake
+            // side effect (no nonce burned, no clock write).
+            eprintln!(
+                "system-control-daemon: authenticated session budget exhausted ({DAEMON_MAX_SESSIONS}), closing newcomer"
+            );
+            continue;
+        };
         let daemon_round = Arc::clone(&daemon);
         sessions.spawn(async move {
+            let _permit = permit;
             // One nonce, one durable verified-at reading per connection —
             // the same derivation the single-shot wrappers used, extracted
             // so the multi-round loop derives it identically.
@@ -1379,6 +1404,7 @@ pub async fn serve_plain_endpoint(
     stop: Arc<AtomicBool>,
 ) {
     let mut sessions = tokio::task::JoinSet::new();
+    let session_budget = Arc::new(tokio::sync::Semaphore::new(DAEMON_MAX_SESSIONS));
     while !stop.load(Ordering::Relaxed) {
         while sessions.try_join_next().is_some() {}
         let (stream, peer) = match accept_endpoint(&mut listener).await {
@@ -1390,8 +1416,17 @@ pub async fn serve_plain_endpoint(
                 continue;
             }
         };
+        let Ok(permit) = session_budget.clone().try_acquire_owned() else {
+            // Fail-closed above the session budget: resident sessions are
+            // unaffected; the newcomer reconnects when a slot frees.
+            eprintln!(
+                "system-control-daemon: plain session budget exhausted ({DAEMON_MAX_SESSIONS}), closing newcomer"
+            );
+            continue;
+        };
         let daemon_round = Arc::clone(&daemon);
         sessions.spawn(async move {
+            let _permit = permit;
             let idle_timeout = daemon_round.connection_idle_timeout;
             let served = serve_connection(
                 stream,

@@ -1653,4 +1653,52 @@ mod socket_suite {
             "zero idle timeout fails at assemble"
         );
     }
+
+    /// The per-endpoint session budget closes newcomers fail-closed above
+    /// the cap and frees the slot when a resident session ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_budget_closes_newcomers_above_the_cap_and_frees_on_release() {
+        const BUDGET: usize = 64;
+        let (harness, _root) = start("cap", Duration::from_secs(30), None, false, true);
+
+        // Hold the full budget as resident silent connections (each parks in
+        // the idle window holding one permit).
+        let mut holders = Vec::new();
+        for _ in 0..BUDGET {
+            holders.push(plain_client(&harness.plain_socket).await);
+        }
+        // The 65th connects at the kernel layer, then is closed fail-closed.
+        let newcomer = plain_client(&harness.plain_socket).await;
+        let started = Instant::now();
+        let outcome = newcomer.exchange_validated(unique_health_request(1)).await;
+        assert!(
+            outcome.is_err(),
+            "newcomer above the budget is closed: {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "rejection is prompt, not a frame-budget timeout"
+        );
+
+        // Releasing one holder ends its server session and frees the permit:
+        // a fresh connection serves again (bounded retry for task teardown).
+        holders.pop();
+        let mut served = false;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let fresh = plain_client(&harness.plain_socket).await;
+            if fresh
+                .exchange_validated(unique_health_request(2))
+                .await
+                .is_ok()
+            {
+                served = true;
+                break;
+            }
+        }
+        assert!(served, "a released slot admits a fresh resident session");
+        drop(holders);
+        drop(newcomer);
+        harness.stop();
+    }
 }
