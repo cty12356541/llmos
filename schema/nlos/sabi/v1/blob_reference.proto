@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// W82-B SABI v1.1 (D5 option B, L-015): large-payload reference primitive
+// channel. Service dispatch name "blob_reference"; dispatched method strings
+// are "mint_reference", "read_reference", "release_reference". Payload bytes
+// never enter any SABI frame: frames carry only 16-byte reference ids,
+// digests, and bounded chunk windows.
+//
+// A frame whose encoded payload exceeds MAX_BLOB_REFERENCE_PAYLOAD_BYTES
+// (64 KiB) is rejected with a typed FrameTooLarge failure for that call only.
+// A per-session budget bounds rejected/malformed frames (default: more
+// than 8 within a 60s sliding window tears the connection down).
+// Oversized payloads MUST travel by reference (BlobReference), never by
+// enlarging this bound.
+//
+// `reference_id` is deliberately a bare `bytes` 16-byte id, never the
+// envelope `CapabilityHandle` message: wire slots are session-local indices
+// and must stay structurally distinct from reference identity (D5 §5.4).
+// Every chunk read re-validates the token (rights, revocation, read count,
+// TTL) and that the holder principal equals the resolving principal; a
+// mid-read revocation stops the next chunk, so already-delivered chunks are
+// a bounded leak (delivered chunks x 64 KiB) by design.
+
+// `blob_reference.mint_reference` request: the sender declares an existing
+// file inside its own workspace fence. Mint verifies the fence (lexical +
+// canonicalized), the whole-file digest, the size, and binds a per-64KiB
+// chunk digest manifest; the opened descriptor is pinned for all later
+// reads and the path is never re-resolved, structurally eliminating the
+// swap-the-target window.
+message MintReferenceRequest {
+  SchemaIdentity schema = 1;
+  string path_handle = 2;
+  bytes file_digest_sha256 = 3;
+  uint64 size_bytes = 4;
+  uint64 max_reads = 5;
+  uint64 max_chunk_bytes = 6;
+  uint64 valid_until_ms = 7;
+}
+
+// `blob_reference.mint_reference` result.
+message MintReferenceResult {
+  SchemaIdentity schema = 1;
+  bytes reference_id = 2;
+  uint64 minted_at_ms = 3;
+}
+
+// `blob_reference.read_reference` request: one bounded chunk (length_bytes
+// <= 64 KiB). The read cursor lives in the server-side token record, not in
+// the transport: large files are sequential small reads with no reassembly
+// state machine.
+message ReadReferenceRequest {
+  SchemaIdentity schema = 1;
+  bytes reference_id = 2;
+  uint64 offset = 3;
+  uint64 length_bytes = 4;
+}
+
+// `blob_reference.read_reference` result. `chunk_digest_sha256` is the
+// per-chunk digest from the mint-time manifest, verified per chunk (never
+// only end-of-stream).
+message ReadReferenceResult {
+  SchemaIdentity schema = 1;
+  bytes chunk = 2;
+  uint64 offset = 3;
+  bytes chunk_digest_sha256 = 4;
+}
+
+// `blob_reference.release_reference` request: hygienic early discard; TTL
+// and read-count caps already bound convergence, so release is optional.
+message ReleaseReferenceRequest {
+  SchemaIdentity schema = 1;
+  bytes reference_id = 2;
+}
+
+// `blob_reference.release_reference` result.
+message ReleaseReferenceResult {
+  SchemaIdentity schema = 1;
+  bool released = 2;
+}
