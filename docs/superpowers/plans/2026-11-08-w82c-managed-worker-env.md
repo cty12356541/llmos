@@ -1861,14 +1861,25 @@ fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
         let dump = poll_file(&dump_base(unit).with_extension("env"), 30)
             .unwrap_or_else(|| panic!("{unit} env dump missing"));
         let map = parse_env_dump(&dump);
-        assert_eq!(
-            map.keys().collect::<Vec<_>>(),
-            [
-                "LLMOS_AUTH_ENDPOINT",
-                "LLMOS_PROCESS_IDENTITY_SEED",
-                "LLMOS_ROOT_CAPABILITY_SLOT"
-            ],
-            "{unit} child env leaked: {map:?}"
+        // 恰三 LLMOS_* 注入;PWD/SHLVL/_ 为 bash-as-sh 子进程自合成(Task 3 裁定,
+        // 非父泄漏);父环境变量(PATH/HOME 等,cargo test 父必带)零泄漏
+        for required in [
+            "LLMOS_AUTH_ENDPOINT",
+            "LLMOS_PROCESS_IDENTITY_SEED",
+            "LLMOS_ROOT_CAPABILITY_SLOT",
+        ] {
+            assert!(map.contains_key(required), "{unit} missing {required}: {map:?}");
+        }
+        let leaked: Vec<&String> = map
+            .keys()
+            .filter(|key| {
+                !key.starts_with("LLMOS_") && !matches!(key.as_str(), "PWD" | "SHLVL" | "_")
+            })
+            .collect();
+        assert!(leaked.is_empty(), "{unit} child env leaked: {leaked:?}");
+        assert!(
+            !map.contains_key("PATH") && !map.contains_key("HOME"),
+            "{unit}: parent env leaked: {map:?}"
         );
         assert_eq!(
             map.get("LLMOS_AUTH_ENDPOINT").unwrap(),
@@ -1932,7 +1943,15 @@ fn workers_python_unit_env_whitelist_gate_letter() {
 
     let dump = poll_file(&scratch.0.join("pyw.env"), 30).expect("python env dump");
     let map = parse_env_dump(&dump);
-    assert_eq!(map.len(), 3, "python child env leaked: {map:?}");
+    // PWD/SHLVL/_/LC_CTYPE 为解释器自合成(Task 3 裁定);其余非 LLMOS_* 即泄漏
+    let leaked: Vec<&String> = map
+        .keys()
+        .filter(|key| {
+            !key.starts_with("LLMOS_")
+                && !matches!(key.as_str(), "PWD" | "SHLVL" | "_" | "LC_CTYPE")
+        })
+        .collect();
+    assert!(leaked.is_empty(), "python child env leaked: {leaked:?}");
     assert!(map.contains_key("LLMOS_AUTH_ENDPOINT"));
 
     let (_stdout, status) = up.sigterm_and_collect();
