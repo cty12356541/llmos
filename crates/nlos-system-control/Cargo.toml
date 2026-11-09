@@ -33,6 +33,8 @@ daemon = [
     "application",
     "search",
     "notify",
+    "dep:nlos-wait-control",
+    "dep:nlos-service-directory",
     "dep:nlos-artifact",
     "dep:nlos-channel",
     "dep:nlos-semantic",
@@ -83,6 +85,10 @@ nlos-capability = { path = "../nlos-capability", optional = true }
 nlos-search = { path = "../nlos-search", optional = true }
 nlos-notify = { path = "../nlos-notify", optional = true }
 nlos-wait = { path = "../nlos-wait", optional = true }
+nlos-wait-control = { path = "../nlos-wait-control", optional = true, features = [
+    "authenticated-server",
+] }
+nlos-service-directory = { path = "../nlos-service-directory", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["signal"] }

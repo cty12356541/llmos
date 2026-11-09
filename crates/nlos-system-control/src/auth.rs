@@ -66,6 +66,20 @@ use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::NamedPipeClient;
 
+// W82-A daemon-side service adapters (L-009/L-011). The lane's frozen write
+// set names these three files but not `lib.rs`, so they mount here via
+// `#[path]` declarations instead of root-level `mod` statements — the module
+// paths are `crate::auth::{wait_control, operation_control, directory_control}`.
+#[cfg(feature = "daemon")]
+#[path = "directory_control.rs"]
+pub mod directory_control;
+#[cfg(feature = "daemon")]
+#[path = "operation_control.rs"]
+pub mod operation_control;
+#[cfg(feature = "daemon")]
+#[path = "wait_control.rs"]
+pub mod wait_control;
+
 use crate::channel_control::{
     CHANNEL_CONTROL_SERVICE, ChannelControlAuthorizer, ChannelControlBackend, ChannelControlService,
 };
@@ -243,6 +257,74 @@ where
         return channel.handle_for_ipc(request, now_monotonic_ns, 0);
     }
     serve_validated(control, clock, now_monotonic_ns, request)
+}
+
+/// Five-way daemon dispatch (W82-A, `L-009`/`L-011`): one resident
+/// connection's requests fan out to the mounted frozen v1.0 services —
+/// `channel`, `wait_control`, `operation_control`, and `service_directory`
+/// each reach their adapter; everything else (including `"system_control"`
+/// itself and every unknown name) keeps the exact [`serve_validated`]
+/// projection, so the unknown-service failure envelope stays byte-stable
+/// for the conformance suites.
+///
+/// The three thin adapters perform no wall-clock enforcement (their
+/// authorities own every durable timestamp), so they receive `0` for the
+/// wall parameter exactly like the channel arm; the `SystemControl` arm
+/// keeps its clock-issued wall reading.
+#[cfg(feature = "daemon")]
+#[allow(clippy::too_many_arguments)] // Explicit per-service faces keep the projection dependency-injected without a struct bundle.
+pub fn serve_validated_with_control_services<H, A, B, CA>(
+    control: &RecoverySystemControl<'_, H, A>,
+    channel: &ChannelControlService<'_, B, CA>,
+    wait: &wait_control::DaemonWaitControl<'_>,
+    operation: &operation_control::OperationControlService<'_>,
+    directory: &directory_control::ServiceDirectorySurface,
+    clock: &AuthorityClock,
+    now_monotonic_ns: u64,
+    request: &Envelope,
+) -> Envelope
+where
+    H: RecoveryHealthSource,
+    A: SystemControlAuthorizer,
+    B: ChannelControlBackend,
+    CA: ChannelControlAuthorizer,
+{
+    match request.service.as_str() {
+        CHANNEL_CONTROL_SERVICE => channel.handle_for_ipc(request, now_monotonic_ns, 0),
+        wait_control::WAIT_CONTROL_SERVICE => wait.handle_for_ipc(request, now_monotonic_ns, 0),
+        operation_control::OPERATION_CONTROL_SERVICE => {
+            operation.handle_for_ipc(request, now_monotonic_ns, 0)
+        }
+        directory_control::SERVICE_DIRECTORY_SERVICE => {
+            directory.handle_for_ipc(request, now_monotonic_ns, 0)
+        }
+        _ => serve_validated(control, clock, now_monotonic_ns, request),
+    }
+}
+
+/// Issues the per-connection handshake verified-at wall reading: the
+/// durable `AuthorityClock` reading for the one-time nonce's handshake key
+/// (see [`handshake_wall_key`]). Extracted from the single-shot wrappers so
+/// the daemon's multi-round connection loop derives it identically — every
+/// authenticated connection observes a fresh, monotone reading, and a
+/// replayed handshake can never re-read a stale instant.
+///
+/// # Errors
+///
+/// Fails closed with the mapped [`HandshakeError`] when the clock authority
+/// is unavailable (the connection is then refused before any nonce side
+/// effect).
+#[cfg(feature = "daemon")]
+pub fn connection_verified_at_ms(
+    clock: &AuthorityClock,
+    nonce: &[u8; HANDSHAKE_NONCE_BYTES],
+) -> Result<u64, HandshakeError> {
+    clock
+        .wall_now(NowRequest {
+            idempotency_key: handshake_wall_key(nonce),
+        })
+        .map_err(|error| HandshakeError::Identity(IdentityAuthorityError::Clock(error)))
+        .map(|decision| decision.reading().as_u64())
 }
 
 /// Authenticated single-connection serve entry with [`ChannelControlService`]

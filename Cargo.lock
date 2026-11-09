@@ -1471,6 +1471,7 @@ dependencies = [
  "nlos-topic",
  "nlos-types",
  "nlos-wait",
+ "nlos-wait-control",
  "rusqlite",
  "sha2 0.11.1",
  "tokio",

@@ -104,6 +104,7 @@ async fn serve_connection_serves_rounds_until_client_closes() {
         summary,
         ServedConnection {
             rounds: 3,
+            rejected_frames: 0,
             termination: ConnectionTermination::ClientClosed,
         }
     );
@@ -141,6 +142,7 @@ async fn serve_connection_closes_after_idle_timeout_and_fail_closed_is_observabl
         summary,
         ServedConnection {
             rounds: 1,
+            rejected_frames: 0,
             termination: ConnectionTermination::IdleExpired,
         }
     );
@@ -469,6 +471,7 @@ mod authenticated_session {
             *summary,
             ServedConnection {
                 rounds: 3,
+                rejected_frames: 0,
                 termination: ConnectionTermination::ClientClosed,
             }
         );
@@ -533,9 +536,209 @@ mod authenticated_session {
             *summary,
             ServedConnection {
                 rounds: 1,
+                rejected_frames: 0,
                 termination: ConnectionTermination::IdleExpired,
             }
         );
         let _ = std::fs::remove_file(&path);
+    }
+}
+// ---------------------------------------------------------------------------
+// W82-B D3 frozen semantics (maintainer ruling 2026-11-08): per-call frame
+// rejection keeps the connection alive — an over-limit declared length is
+// answered with one bounded typed failure after a bounded discard restores
+// synchronization, an undecodable body likewise — until more than 8
+// rejections land inside the 60-second sliding window, which disconnects
+// WITHOUT answering the budget-exceeding frame.
+//
+// These tests frame manually on the raw duplex stream: FramedIo::send
+// enforces the maximum bound and prefixes its payload, so over-limit and
+// hand-built frames must be written (and read) at the byte level.
+// ---------------------------------------------------------------------------
+mod rejection_suite {
+    use super::*;
+    use nlos_schema::decode_exchange_response;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn write_frame_raw<S>(stream: &mut S, body: &[u8]) -> Result<(), IpcError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let prefix = u32::try_from(body.len()).unwrap().to_be_bytes();
+        stream.write_all(&prefix).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        stream.flush().await.unwrap();
+        Ok(())
+    }
+
+    async fn read_frame_raw<S>(stream: &mut S) -> Result<Vec<u8>, IpcError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let read_error = |source: std::io::Error| IpcError::Io {
+            operation: IoOperation::Read,
+            source,
+        };
+        let mut prefix = [0_u8; 4];
+        stream.read_exact(&mut prefix).await.map_err(read_error)?;
+        let length = u32::from_be_bytes(prefix) as usize;
+        let mut body = vec![0_u8; length];
+        stream.read_exact(&mut body).await.map_err(read_error)?;
+        Ok(body)
+    }
+
+    fn failure_code_of(response_wire: &[u8]) -> (i32, i32, Vec<u8>) {
+        let response = decode_exchange_response(response_wire).unwrap();
+        let envelope = response.envelope();
+        let nlos_schema::sabi::v1::envelope::CommonContext::ResponseContext(context) =
+            envelope.common_context.as_ref().unwrap()
+        else {
+            panic!("rejection carries a response context");
+        };
+        let failure = context.failure.as_ref().expect("typed failure");
+        (failure.code, failure.retry, envelope.request_id.clone())
+    }
+
+    #[tokio::test]
+    async fn over_limit_frame_is_rejected_per_call_and_connection_survives() {
+        let (mut client_stream, server_stream) = duplex(64 * 1024);
+        let config = fast_config(4_096);
+        let server = tokio::spawn(serve_connection(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            Duration::from_secs(30),
+            echo_handler(),
+        ));
+
+        // One over-limit frame (declared 8 KiB over a 4 KiB maximum) with
+        // its FULL body — the server must discard it, stay synchronized,
+        // and answer one bounded typed failure.
+        write_frame_raw(&mut client_stream, &vec![0xA5_u8; 8_192])
+            .await
+            .unwrap();
+        let rejection = read_frame_raw(&mut client_stream).await.unwrap();
+        let (code, retry, request_id) = failure_code_of(&rejection);
+        assert_eq!(
+            code,
+            i32::from(nlos_schema::sabi::v1::SabiErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            retry,
+            i32::from(nlos_schema::sabi::v1::RetryDirective::DoNotRetry)
+        );
+        assert_eq!(request_id, vec![0; 16], "no correlation is manufacturable");
+
+        // The SAME connection then serves a normal exchange.
+        let wire = nlos_schema::encode_exchange_request(&request(7)).unwrap();
+        write_frame_raw(&mut client_stream, &wire).await.unwrap();
+        let response_wire = read_frame_raw(&mut client_stream).await.unwrap();
+        let response = decode_exchange_response(&response_wire).unwrap();
+        assert_eq!(response.envelope().request_id, vec![7; 16]);
+        drop(client_stream);
+
+        let summary = server.await.unwrap().unwrap();
+        assert_eq!(
+            summary,
+            ServedConnection {
+                rounds: 1,
+                rejected_frames: 1,
+                termination: ConnectionTermination::ClientClosed,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn undecodable_body_is_rejected_per_call_and_next_round_succeeds() {
+        let (mut client_stream, server_stream) = duplex(4_096);
+        let config = fast_config(4_096);
+        let server = tokio::spawn(serve_connection(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            Duration::from_secs(30),
+            echo_handler(),
+        ));
+
+        // 0x0F: protobuf field 1 with wire type 7 — invalid on the first
+        // byte, so the frame is well-framed but undecodable.
+        write_frame_raw(&mut client_stream, &[0x0F; 8])
+            .await
+            .unwrap();
+        let rejection = read_frame_raw(&mut client_stream).await.unwrap();
+        let (code, _, _) = failure_code_of(&rejection);
+        assert_eq!(
+            code,
+            i32::from(nlos_schema::sabi::v1::SabiErrorCode::InvalidArgument)
+        );
+
+        let wire = nlos_schema::encode_exchange_request(&request(9)).unwrap();
+        write_frame_raw(&mut client_stream, &wire).await.unwrap();
+        let response_wire = read_frame_raw(&mut client_stream).await.unwrap();
+        let response = decode_exchange_response(&response_wire).unwrap();
+        assert_eq!(response.envelope().request_id, vec![9; 16]);
+        drop(client_stream);
+
+        let summary = server.await.unwrap().unwrap();
+        assert_eq!(
+            summary,
+            ServedConnection {
+                rounds: 1,
+                rejected_frames: 1,
+                termination: ConnectionTermination::ClientClosed,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejection_budget_disconnects_past_eight_strikes_in_window() {
+        let (mut client_stream, server_stream) = duplex(256 * 1024);
+        let config = fast_config(4_096);
+        let server = tokio::spawn(serve_connection(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            Duration::from_secs(30),
+            echo_handler(),
+        ));
+
+        // Strikes 1..=8 inside the window: each is answered.
+        for strike in 0..8 {
+            write_frame_raw(&mut client_stream, &vec![0xA5_u8; 8_192])
+                .await
+                .unwrap_or_else(|error| panic!("strike {strike} write failed: {error:?}"));
+            let rejection = read_frame_raw(&mut client_stream)
+                .await
+                .unwrap_or_else(|error| panic!("strike {strike} read failed: {error:?}"));
+            let (code, _, _) = failure_code_of(&rejection);
+            assert_eq!(
+                code,
+                i32::from(nlos_schema::sabi::v1::SabiErrorCode::InvalidArgument)
+            );
+        }
+        // Strike 9 exceeds the budget: the connection is disconnected
+        // WITHOUT answering this frame.
+        write_frame_raw(&mut client_stream, &vec![0xA5_u8; 8_192])
+            .await
+            .unwrap();
+        let ninth = read_frame_raw(&mut client_stream).await;
+        assert!(
+            ninth.is_err(),
+            "budget-exceeding frame is not answered, connection dropped"
+        );
+        drop(client_stream);
+
+        let summary = server.await.unwrap().unwrap();
+        assert_eq!(
+            summary,
+            ServedConnection {
+                rounds: 0,
+                rejected_frames: 9,
+                termination: ConnectionTermination::RejectionBudgetExhausted,
+            }
+        );
     }
 }
