@@ -36,10 +36,11 @@ use nlos_schema::{
     MAX_HANDSHAKE_CHANNEL_BINDING_BYTES, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES,
     MAX_PROVIDER_PROFILE_BYTES, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
     MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES,
-    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_CHANNEL_CONTROL_SCHEMA,
-    SABI_DRIVER_PROVIDER_SCHEMA, SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA,
-    SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
-    SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA, channel_control_schema_identity,
+    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_BLOB_REFERENCE_SCHEMA,
+    SABI_CHANNEL_CONTROL_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA, SABI_ENVELOPE_SCHEMA,
+    SABI_LLM_GATEWAY_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+    SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA,
+    SABI_TOOL_SANDBOX_SCHEMA, SABI_WAIT_CONTROL_SCHEMA, channel_control_schema_identity,
     decode_artifact_recovery_operations_snapshot, decode_barrier_observation_record,
     decode_cancel_operation_request, decode_control_command_result, decode_create_channel_request,
     decode_driver_provider_request, decode_driver_provider_response,
@@ -197,7 +198,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 9);
+    assert_eq!(registry.len(), 12);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -255,13 +256,29 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_CHANNEL_CONTROL_SCHEMA)
         .unwrap();
     assert_eq!((channel_control.major, channel_control.minor), (1, 0));
+    let llm_gateway = registry
+        .iter()
+        .find(|entry| entry.name == SABI_LLM_GATEWAY_SCHEMA)
+        .unwrap();
+    assert_eq!((llm_gateway.major, llm_gateway.minor), (1, 0));
+    let tool_sandbox = registry
+        .iter()
+        .find(|entry| entry.name == SABI_TOOL_SANDBOX_SCHEMA)
+        .unwrap();
+    assert_eq!((tool_sandbox.major, tool_sandbox.minor), (1, 0));
+    let blob_reference = registry
+        .iter()
+        .find(|entry| entry.name == SABI_BLOB_REFERENCE_SCHEMA)
+        .unwrap();
+    assert_eq!((blob_reference.major, blob_reference.minor), (1, 0));
 }
 
 #[test]
 fn registry_freeze_markers_match_adr_0014() {
     // W77 (`M-E1`, ADR-0027): PrincipalHandshake completed its peer attestation
-    // slot audit and promoted to frozen, locking all 9/9 canonical SABI v1
-    // channels.
+    // slot audit and promoted to frozen, locking the then-9 canonical SABI v1
+    // channels; W82-B SABI v1.1 added LlmGateway/ToolSandbox/BlobReference
+    // directly at frozen (12/12).
     let frozen_names = [
         SABI_ENVELOPE_SCHEMA,
         SABI_SERVICE_DIRECTORY_SCHEMA,
@@ -272,6 +289,9 @@ fn registry_freeze_markers_match_adr_0014() {
         SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
         SABI_DRIVER_PROVIDER_SCHEMA,
         SABI_CHANNEL_CONTROL_SCHEMA,
+        SABI_LLM_GATEWAY_SCHEMA,
+        SABI_TOOL_SANDBOX_SCHEMA,
+        SABI_BLOB_REFERENCE_SCHEMA,
     ];
     for name in frozen_names {
         assert_eq!(registry_frozen(name), Some(true), "{name} must be frozen");
@@ -290,11 +310,15 @@ fn registry_freeze_markers_match_adr_0014() {
 }
 
 #[test]
-fn w77_all_nine_sabi_channels_frozen_and_principal_handshake_headroom_verified() {
+fn all_twelve_sabi_channels_frozen_and_principal_handshake_headroom_verified() {
     use nlos_schema::MAX_EXTENSION_IDS;
 
     let registry = schema_registry();
-    assert_eq!(registry.len(), 9, "expected all 9 canonical SABI channels");
+    assert_eq!(
+        registry.len(),
+        12,
+        "expected all 12 canonical SABI channels"
+    );
     for descriptor in registry {
         assert!(
             descriptor.frozen,

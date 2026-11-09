@@ -34,7 +34,9 @@ type ChannelDescriptor struct {
 	SupportedCriticalExtensions []uint32
 }
 
-// SabiV1Channels mirrors nlos-schema::REGISTRY (all 9 frozen SABI v1.0 channels).
+// SabiV1Channels mirrors nlos-schema::REGISTRY (all 12 frozen SABI v1
+// channels: 9 in the W77 v1.0 baseline; LlmGateway/ToolSandbox/BlobReference
+// added additively by W82-B SABI v1.1).
 var SabiV1Channels = map[string]ChannelDescriptor{
 	"nlos.sabi.Envelope":           {Name: "nlos.sabi.Envelope", Major: 1, Minor: 1},
 	"nlos.sabi.ServiceDirectory":   {Name: "nlos.sabi.ServiceDirectory", Major: 1, Minor: 0},
@@ -45,6 +47,9 @@ var SabiV1Channels = map[string]ChannelDescriptor{
 	"nlos.sabi.PrincipalHandshake": {Name: "nlos.sabi.PrincipalHandshake", Major: 1, Minor: 0},
 	"nlos.sabi.DriverProvider":     {Name: "nlos.sabi.DriverProvider", Major: 1, Minor: 0},
 	"nlos.sabi.ChannelControl":     {Name: "nlos.sabi.ChannelControl", Major: 1, Minor: 0},
+	"nlos.sabi.LlmGateway":         {Name: "nlos.sabi.LlmGateway", Major: 1, Minor: 0},
+	"nlos.sabi.ToolSandbox":        {Name: "nlos.sabi.ToolSandbox", Major: 1, Minor: 0},
+	"nlos.sabi.BlobReference":      {Name: "nlos.sabi.BlobReference", Major: 1, Minor: 0},
 }
 
 // ValidateSchemaIdentity enforces [COMPAT-VER-002]: unknown major and unknown

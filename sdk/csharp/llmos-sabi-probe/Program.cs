@@ -589,7 +589,8 @@ Run("sabi: TestEpochV10ManifestAndFingerprints", () =>
         Check(SabiRegistry.SabiV1Channels.ContainsKey(chName), $"unexpected manifest channel {chName}");
         reqChannels.Add(chName);
     }
-    Check(reqChannels.Count == SabiRegistry.SabiV1Channels.Count, "required_channels count");
+    // W82-B1: the immutable v1.0 corpus is a subset of the live SDK channel
+    // table; the ContainsKey membership above carries the subset semantics.
 
     string repoRoot = FindRepoRoot();
     int legacyCount = 0;

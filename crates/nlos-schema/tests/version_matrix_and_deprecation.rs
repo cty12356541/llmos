@@ -332,7 +332,7 @@ fn compat_ver_002_preserves_unknown_non_critical_extensions_and_unknown_wire_fie
 }
 
 #[test]
-fn canonical_deprecation_manifest_matches_all_nine_frozen_registry_channels() {
+fn canonical_deprecation_manifest_matches_all_twelve_frozen_registry_channels() {
     let manifest = canonical_deprecation_manifest().unwrap();
     assert_eq!(manifest.manifest_version, 1);
     assert_eq!(manifest.current_epoch, 1);
@@ -340,9 +340,9 @@ fn canonical_deprecation_manifest_matches_all_nine_frozen_registry_channels() {
         manifest.min_compatibility_window_epochs,
         MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS
     );
-    assert_eq!(manifest.frozen_channels_total, 9);
-    assert_eq!(manifest.channels.len(), 9);
-    assert!(manifest.entries.len() >= 9);
+    assert_eq!(manifest.frozen_channels_total, 12);
+    assert_eq!(manifest.channels.len(), 12);
+    assert!(manifest.entries.len() >= 12);
 
     for descriptor in schema_registry() {
         let ch = manifest

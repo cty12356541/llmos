@@ -505,9 +505,8 @@ func TestEpochV10ManifestAndFingerprints(t *testing.T) {
 	if m.Schema != "nlos.golden.epoch_manifest.v1" || m.Epoch != "v1.0" || m.SabiMajor != 1 || !m.Immutable {
 		t.Fatalf("unexpected v1.0 manifest header: %+v", m)
 	}
-	if len(m.RequiredChannels) != len(SabiV1Channels) {
-		t.Fatalf("required_channels count=%d, want %d", len(m.RequiredChannels), len(SabiV1Channels))
-	}
+	// W82-B1: the immutable v1.0 corpus is a subset of the live SDK channel
+	// table; per-channel membership below carries the subset semantics.
 	for _, ch := range m.RequiredChannels {
 		if _, ok := SabiV1Channels[ch]; !ok {
 			t.Fatalf("unexpected channel in manifest: %q", ch)
