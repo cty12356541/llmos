@@ -38,6 +38,7 @@
 
 use std::future::Future;
 use std::path::Path;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
@@ -64,7 +65,8 @@ use crate::unix::UnixListenerAdapter;
 #[cfg(windows)]
 use crate::windows::NamedPipeListenerAdapter;
 use crate::{
-    FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
+    FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, ServedConnection,
+    TransportConfig, serve_connection, serve_one,
 };
 
 /// Domain separator keeping endpoint-derived channel bindings distinct from
@@ -323,6 +325,165 @@ where
 
     let served = serve_one(framed.into_inner(), config, peer, authorizer, handler).await;
     Ok(AuthenticatedServeOutcome { verified, served })
+}
+
+/// Outcome of one [`authenticated_serve_connection`] cycle: the principal
+/// identity the handshake verified, and the multi-round serve result (rounds
+/// served plus how the connection ended, or the typed error that dropped it).
+#[derive(Debug)]
+pub struct AuthenticatedServeConnectionOutcome {
+    verified: VerifiedPrincipalHandshake,
+    served: Result<ServedConnection, IpcError>,
+}
+
+impl AuthenticatedServeConnectionOutcome {
+    #[must_use]
+    pub const fn verified(&self) -> &VerifiedPrincipalHandshake {
+        &self.verified
+    }
+
+    #[must_use = "the served result must be inspected before dropping the outcome"]
+    pub const fn served(&self) -> &Result<ServedConnection, IpcError> {
+        &self.served
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        VerifiedPrincipalHandshake,
+        Result<ServedConnection, IpcError>,
+    ) {
+        (self.verified, self.served)
+    }
+}
+
+/// Serves ONE already-accepted authenticated connection with BOUNDED
+/// multi-round semantics: the OS credential pre-gate, one challenge-response
+/// handshake (exactly the [`authenticated_serve_one`] wire order and
+/// fail-closed invariants — the nonce is consumed before signature
+/// verification and burned on failure), and then the
+/// [`serve_connection`](crate::serve_connection) loop until the client closes
+/// or the connection idle timeout expires.
+///
+/// The handshake runs once per connection; the verified principal is threaded
+/// into `handler_factory`, whose returned per-round handler serves every
+/// exchange on that connection (the pattern `nlos-wait-control`'s
+/// authenticated variant demonstrates: request paths that bind mutation
+/// idempotency keys derive them from the connection's verified principal).
+///
+/// Transport acquisition stays with the caller (a daemon that serves each
+/// connection on its own task accepts the platform stream itself), so this
+/// function is platform-neutral: one definition, no listener asymmetry.
+///
+/// # Errors
+///
+/// Fails closed with a typed [`HandshakeError`] for pre-gate denial,
+/// challenge/attestation transport failures (including timeouts), schema
+/// violations (including any non-attestation frame), wrong or replayed
+/// nonces, channel-binding drift, unknown principals, revoked or invalid
+/// keys, and bad signatures. The post-handshake multi-round result is
+/// reported in [`AuthenticatedServeConnectionOutcome::served`], not as a
+/// handshake error.
+#[allow(clippy::too_many_arguments)]
+pub async fn authenticated_serve_connection<S, A, HF, H, F, N>(
+    stream: S,
+    peer: PeerIdentity,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    idle_timeout: Duration,
+    handler_factory: HF,
+    next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeConnectionOutcome, HandshakeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    A: PeerAuthorizer,
+    HF: FnOnce(VerifiedPrincipalHandshake) -> H,
+    H: FnMut(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    authenticated_connection_exchange(
+        stream,
+        peer,
+        config,
+        identity,
+        nonces,
+        endpoint_binding,
+        authorizer,
+        idle_timeout,
+        handler_factory,
+        next_nonce,
+        verified_at_ms,
+    )
+    .await
+}
+
+/// Platform-neutral multi-round authenticated serving core: the OS credential
+/// pre-gate, the challenge-response handshake, and the
+/// [`serve_connection`](crate::serve_connection) loop, in exactly that order.
+/// The wire bytes and failure order match [`authenticated_exchange`] up to the
+/// verified attestation; only the tail differs (bounded rounds instead of one
+/// exchange).
+#[allow(clippy::too_many_arguments)]
+async fn authenticated_connection_exchange<S, A, HF, H, F, N>(
+    stream: S,
+    peer: PeerIdentity,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    idle_timeout: Duration,
+    handler_factory: HF,
+    mut next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeConnectionOutcome, HandshakeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    A: PeerAuthorizer,
+    HF: FnOnce(VerifiedPrincipalHandshake) -> H,
+    H: FnMut(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    authorizer
+        .authorize(&peer)
+        .map_err(HandshakeError::PeerAuthorization)?;
+
+    let mut framed = FramedIo::new(stream, config);
+    let challenge = issue_challenge(nonces, next_nonce())?;
+    framed
+        .send(&encode_challenge_wire(&challenge)?)
+        .await
+        .map_err(transport_failure)?;
+    let attestation_wire = framed.receive().await.map_err(transport_failure)?;
+    let attestation = decode_attestation_wire(&attestation_wire)?;
+
+    // From here the single-use nonce is consumed even if verification then
+    // fails; it is intentionally never returned to the registry.
+    let verified = verify_attestation(
+        identity,
+        nonces,
+        &attestation,
+        endpoint_binding,
+        verified_at_ms,
+    )?;
+
+    let handler = handler_factory(verified);
+    let served = serve_connection(
+        framed.into_inner(),
+        config,
+        peer,
+        authorizer,
+        idle_timeout,
+        handler,
+    )
+    .await;
+    Ok(AuthenticatedServeConnectionOutcome { verified, served })
 }
 
 /// Connects to the Unix socket at `path`, answers the server's challenge on
