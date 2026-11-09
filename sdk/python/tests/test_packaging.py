@@ -43,4 +43,4 @@ def test_protobuf_runtime_is_pinned() -> None:
 
 def test_gen_python_modules_exist() -> None:
     modules = sorted(p.relative_to(GEN_PY).as_posix() for p in GEN_PY.rglob("*_pb2.py"))
-    assert len(modules) == 9, f"预期 9 个生成模块,实得 {modules}"
+    assert len(modules) == 12, f"预期 12 个生成模块,实得 {modules}"
