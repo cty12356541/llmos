@@ -58,7 +58,9 @@ use nlos_resource::{
 };
 use nlos_slice_k::provenance_triple;
 use nlos_system_control::daemon::{DaemonError, DaemonOptions};
-use nlos_types::{ArtifactId, IdempotencyKey, PackageId, PrincipalId, ResourceAccountId};
+use nlos_types::{
+    ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId, ResourceAccountId,
+};
 use sha2::{Digest, Sha256};
 
 /// Canonical Cargo package identifier for the `nlos-up` bootstrap crate.
@@ -122,6 +124,8 @@ pub enum UpError {
     InvalidArgument(String),
     /// Child desktop dev process failed to launch or exited unsuccessfully.
     DesktopProcess(String),
+    /// 受管 worker 拉起/回收链路失败(W82-C)。
+    ManagedWorker(String),
 }
 
 impl From<std::io::Error> for UpError {
@@ -189,6 +193,9 @@ impl fmt::Display for UpError {
             Self::LlmDriver(error) => write!(formatter, "llm driver failure: {error}"),
             Self::InvalidArgument(reason) => write!(formatter, "invalid argument: {reason}"),
             Self::DesktopProcess(reason) => write!(formatter, "desktop launcher failure: {reason}"),
+            UpError::ManagedWorker(detail) => {
+                write!(formatter, "managed worker failure: {detail}")
+            }
         }
     }
 }
@@ -206,7 +213,8 @@ impl Error for UpError {
             Self::InvalidKeyFile(_)
             | Self::InsecureKeyMode(_)
             | Self::InvalidArgument(_)
-            | Self::DesktopProcess(_) => None,
+            | Self::DesktopProcess(_)
+            | Self::ManagedWorker(_) => None,
         }
     }
 }
@@ -1604,6 +1612,63 @@ fn escape_powershell_double_quoted(value: &str) -> String {
 
 fn escape_posix_single_quoted(value: &str) -> String {
     value.replace('\'', "'\\''")
+}
+
+/// 受管 worker `ProcessId` 派生域(W82-C):SHA-256(domain ‖ 清单路径 ‖
+/// 单元名)前 16 字节,沿仓内 `derive_16` 惯例;每进程内唯一即可。
+const MANAGED_WORKER_PROCESS_ID_DOMAIN: &[u8] = b"llmos/nlos-up/managed-worker-process-id/v1";
+
+/// Derives the authority-shaped `ProcessId` for one managed worker unit.
+#[must_use]
+pub fn derive_managed_worker_process_id(manifest_path: &Path, unit_name: &str) -> ProcessId {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(MANAGED_WORKER_PROCESS_ID_DOMAIN);
+    hasher.update(manifest_path.as_os_str().as_encoded_bytes());
+    hasher.update(unit_name.as_bytes());
+    let digest = hasher.finalize();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    ProcessId::from_bytes(id)
+}
+
+/// 父进程侧解释器解析:绝对路径原样;裸名沿 `path_env`(缺省取当前进程
+/// PATH)搜首个存在文件;带分隔符的相对名拒绝(受管子进程环境无 PATH,
+/// 解析必须在父侧完成)。Windows 侧补 `.exe`/`.cmd`/`.bat` 探测。
+#[must_use]
+pub fn resolve_program_path(program: &str, path_env: Option<&str>) -> Option<PathBuf> {
+    let candidate = Path::new(program);
+    if candidate.is_absolute() {
+        return Some(candidate.to_path_buf());
+    }
+    if program.contains('/') || program.contains('\\') {
+        return None;
+    }
+    let owned;
+    let path_value = if let Some(value) = path_env {
+        value
+    } else {
+        owned = std::env::var("PATH").ok()?;
+        &owned
+    };
+    for dir in std::env::split_paths(path_value) {
+        let mut names = vec![program.to_owned()];
+        if cfg!(windows) {
+            names.extend([
+                format!("{program}.exe"),
+                format!("{program}.cmd"),
+                format!("{program}.bat"),
+            ]);
+        }
+        for name in names {
+            let joined = dir.join(name);
+            if joined.is_file() {
+                return Some(joined);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

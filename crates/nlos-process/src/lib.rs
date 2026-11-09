@@ -5,6 +5,7 @@
 //! claim the full cross-authority `BirthDecision`: resource, capability,
 //! namespace and Task contract prepares remain separate acceptance gates.
 
+pub mod managed;
 pub mod migration;
 mod model;
 mod platform_kill;
@@ -27,6 +28,11 @@ use nlos_types::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+pub use managed::{
+    MANAGED_ENV_AUTH_ENDPOINT, MANAGED_ENV_PROCESS_IDENTITY_SEED, MANAGED_ENV_ROOT_CAPABILITY_SLOT,
+    ManagedKillOutcome, ManagedKillReceipt, ManagedWorkerEnv, prepare_managed_command,
+    spawn_managed_worker, terminate_group_with_escalation,
+};
 pub use migration::{
     CapabilityRebindProof, CheckpointPayloadKind, DriverSessionAttachment,
     InitiateProcessMigrationRequest, LeaseCloseRegrantProof, MigratedLeaseEntry,
@@ -57,8 +63,8 @@ pub use supervisor::{
     SupervisorSignalOutcome,
 };
 pub use supervisor_pid::{
-    RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
-    SupervisorPidRegistryError,
+    KillScope, RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry,
+    SupervisorPidRegistry, SupervisorPidRegistryError,
 };
 pub use supervisor_pid_scan::{
     HostSupervisorPidProbe, SupervisorPidFinding, SupervisorPidLiveness, SupervisorPidProbe,
@@ -1022,7 +1028,7 @@ impl ProcessAuthority {
                         process_id,
                     ) => ProcessAuthorityError::PlatformKillTargetNotRegistered(process_id),
                     // `lookup` holds the registry read lock and reads one
-                    // row; the stale/rebind write-path rejections are
+                    // row; the stale/rebind/scope write-path rejections are
                     // unreachable here but must not panic the mapping.
                     supervisor_pid::SupervisorPidRegistryError::LockPoisoned => {
                         ProcessAuthorityError::LockPoisoned
@@ -1030,7 +1036,8 @@ impl ProcessAuthority {
                     supervisor_pid::SupervisorPidRegistryError::StaleProcessGeneration {
                         ..
                     }
-                    | supervisor_pid::SupervisorPidRegistryError::OsPidRebind { .. } => {
+                    | supervisor_pid::SupervisorPidRegistryError::OsPidRebind { .. }
+                    | supervisor_pid::SupervisorPidRegistryError::KillScopeMismatch { .. } => {
                         ProcessAuthorityError::CorruptRecord(
                             "supervisor pid registry lookup returned a write-path rejection",
                         )

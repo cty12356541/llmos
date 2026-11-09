@@ -51,7 +51,7 @@ use nlos_types::{Generation, ProcessId};
 #[cfg(any(unix, windows))]
 use crate::platform_kill::PlatformKillAdapter;
 use crate::supervisor_pid::{
-    RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidRegistry,
+    KillScope, RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidRegistry,
     SupervisorPidRegistryError,
 };
 
@@ -212,6 +212,27 @@ impl PlatformKillAdapter for HostKillAdapter {
             Self::Windows(adapter) => adapter.signal_platform_kill(process_id, process_generation),
         }
     }
+
+    fn signal_platform_kill_group(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        force: bool,
+    ) -> Result<
+        crate::platform_kill::PlatformKillAdapterOutcome,
+        crate::platform_kill::PlatformKillAdapterError,
+    > {
+        match self {
+            #[cfg(unix)]
+            Self::Posix(adapter) => {
+                adapter.signal_platform_kill_group(process_id, process_generation, force)
+            }
+            #[cfg(windows)]
+            Self::Windows(adapter) => {
+                adapter.signal_platform_kill_group(process_id, process_generation, force)
+            }
+        }
+    }
 }
 
 /// A supervisor over real host children, backed by one
@@ -275,14 +296,50 @@ impl ProcessSupervisor {
         request: SpawnSupervisedRequest,
         command: &mut Command,
     ) -> Result<SupervisedSpawn, SupervisorError> {
+        self.spawn_supervised_scoped(request, command, KillScope::Process)
+    }
+
+    /// Spawns `command` as a process-group leader host child
+    /// (`process_group(0)` on Unix — safe `CommandExt`, so the child's
+    /// pgid equals its OS pid and a group kill reaches the whole tree;
+    /// no-op on Windows, where `taskkill /T` already tree-kills) and
+    /// registers it under [`KillScope::ProcessGroup`]. W82-C 托管约定 C
+    /// 的受管拉起入口。
+    ///
+    /// # Errors
+    ///
+    /// Fails when the host spawn fails, or when the registry rejects the
+    /// registration (the child is then torn down).
+    pub fn spawn_supervised_grouped(
+        &self,
+        request: SpawnSupervisedRequest,
+        command: &mut Command,
+    ) -> Result<SupervisedSpawn, SupervisorError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        self.spawn_supervised_scoped(request, command, KillScope::ProcessGroup)
+    }
+
+    fn spawn_supervised_scoped(
+        &self,
+        request: SpawnSupervisedRequest,
+        command: &mut Command,
+        kill_scope: KillScope,
+    ) -> Result<SupervisedSpawn, SupervisorError> {
         let mut child = command.spawn().map_err(SupervisorError::Spawn)?;
         let os_pid = child.id();
-        match self.registry.register(RegisterSupervisorPidRequest {
-            process_id: request.process_id,
-            process_generation: request.process_generation,
-            os_pid,
-            registered_at_ms: request.registered_at_ms,
-        }) {
+        match self.registry.register_at_scope(
+            RegisterSupervisorPidRequest {
+                process_id: request.process_id,
+                process_generation: request.process_generation,
+                os_pid,
+                registered_at_ms: request.registered_at_ms,
+            },
+            kill_scope,
+        ) {
             Ok(decision) => Ok(SupervisedSpawn { child, decision }),
             Err(error) => {
                 let torn_down_os_pid = child.id();
@@ -448,7 +505,12 @@ impl ProcessSupervisor {
         let entry = self.resolve_current_entry(process_id, expected_process_generation)?;
         self.run_kill_after_resolve_hook();
         let adapter = HostKillAdapter::from_fenced_entry(&entry);
-        match adapter.signal_platform_kill(process_id, entry.process_generation) {
+        let signal_result = if entry.kill_scope == KillScope::ProcessGroup {
+            adapter.signal_platform_kill_group(process_id, entry.process_generation, false)
+        } else {
+            adapter.signal_platform_kill(process_id, entry.process_generation)
+        };
+        match signal_result {
             Ok(crate::platform_kill::PlatformKillAdapterOutcome::Signaled) => {
                 Ok(SupervisorSignalOutcome::Applied)
             }
@@ -476,6 +538,56 @@ impl ProcessSupervisor {
     ) -> Result<SupervisorSignalOutcome, SupervisorError> {
         let _ = (process_id, expected_process_generation);
         Err(SupervisorError::UnsupportedOnPlatform { operation: "kill" })
+    }
+
+    /// Force-kills (Unix `killpg(SIGKILL)`, Windows `taskkill /F /T`) the
+    /// process group registered for `(process_id, expected_generation)`.
+    /// Only meaningful for [`KillScope::ProcessGroup`] registrations: a
+    /// `Process`-scope registration fails closed rather than group-signal
+    /// an unrelated process group that pid may happen to lead.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on an unknown mapping, a stale generation, a
+    /// `Process`-scope registration, or an adapter rejection.
+    #[cfg(any(unix, windows))]
+    pub fn kill_force(
+        &self,
+        process_id: ProcessId,
+        expected_process_generation: Generation,
+    ) -> Result<SupervisorSignalOutcome, SupervisorError> {
+        let entry = self.resolve_current_entry(process_id, expected_process_generation)?;
+        self.run_kill_after_resolve_hook();
+        if entry.kill_scope != KillScope::ProcessGroup {
+            return Err(SupervisorError::PlatformKill(
+                crate::platform_kill::PlatformKillAdapterError::Platform(
+                    "kill_force requires a ProcessGroup-scope registration",
+                ),
+            ));
+        }
+        let adapter = HostKillAdapter::from_fenced_entry(&entry);
+        match adapter.signal_platform_kill_group(process_id, entry.process_generation, true) {
+            Ok(crate::platform_kill::PlatformKillAdapterOutcome::Signaled) => {
+                Ok(SupervisorSignalOutcome::Applied)
+            }
+            Ok(crate::platform_kill::PlatformKillAdapterOutcome::AlreadyTerminated) => {
+                Ok(SupervisorSignalOutcome::AlreadyTerminated)
+            }
+            Err(error) => Err(SupervisorError::PlatformKill(error)),
+        }
+    }
+
+    /// 非 unix/windows 宿主 fail-closed(与 `kill` 的平台矩阵对齐)。
+    #[cfg(not(any(unix, windows)))]
+    pub fn kill_force(
+        &self,
+        process_id: ProcessId,
+        expected_process_generation: Generation,
+    ) -> Result<SupervisorSignalOutcome, SupervisorError> {
+        let _ = (process_id, expected_process_generation);
+        Err(SupervisorError::UnsupportedOnPlatform {
+            operation: "kill_force",
+        })
     }
 }
 

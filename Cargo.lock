@@ -1543,6 +1543,8 @@ dependencies = [
  "nlos-driver-llm-http",
  "nlos-identity",
  "nlos-ipc",
+ "nlos-package",
+ "nlos-process",
  "nlos-resource",
  "nlos-schema",
  "nlos-slice-k",

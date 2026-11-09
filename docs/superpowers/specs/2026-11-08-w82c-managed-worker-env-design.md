@@ -64,16 +64,17 @@ PDEATHSIG 的固有限制)如实登记为已知边界(§8)。
 
 | 选项 | 结论 |
 |---|---|
-| (a) `RegisterSupervisorPidRequest`/`SupervisorPidEntry` 增加 `kill_scope: KillScope` 字段(`Process`/`ProcessGroup`);`SpawnSupervisedRequest` **保持字段集不变** | **采纳**。scope 是注册期事实,单一真源;INT 后续接吊销→kill 时从同一栅栏取 scope |
+| (a) `SupervisorPidEntry` 增加 `kill_scope: KillScope` 字段(`Process`/`ProcessGroup`);**`RegisterSupervisorPidRequest` 字段集冻结不动**,scope 经新增 `register_at_scope(request, kill_scope)` 参数传入(既有 `register(request)` 委托为 `KillScope::Process`,行为逐字节不变) | **采纳**(2026-11-08 实现期修订:勘察实证 12 处越集 `RegisterSupervisorPidRequest` 字面量——nlos-slice-k 生产 5 处 + 两 crate 测试 7 处,其中 nlos-system-control 为 W82-A 活跃写集;请求结构体加字段必然破坏越集编译,参数式注入零波及。越集 `SupervisorPidEntry` 字面量为零,entry 加字段安全)。scope 是注册期事实,单一真源;INT 后续接吊销→kill 时从同一栅栏取 scope |
 | (b) supervisor 侧表记录 scope | 否决:与 registry 并行的第二真源,unregister/supersede 漂移面 |
 | (c) kill 时隐式假设全部组杀 | 否决:破坏既有单进程 kill 语义与 88 个既有测试契约 |
-| (d) 直接给 `SpawnSupervisedRequest` 加字段 | **被写集约束否决**:`nlos-runtime-tokio/tests/kill_receipt.rs:524` 以结构体字面量构造该类型,nlos-runtime-tokio 在本车道写集之外,字段新增会破坏越集代码 |
+| (d) 直接给 `SpawnSupervisedRequest`/`RegisterSupervisorPidRequest` 加字段 | **被写集约束否决**:`nlos-runtime-tokio/tests/kill_receipt.rs:524` 与上述 12 处越集字面量依赖两结构体字段集 |
 
-**兼容性实证锚点**(scout + grep):`RegisterSupervisorPidRequest`/`SupervisorPidEntry`
-的字面量构造点全部位于 nlos-process 自身 tests(写集内,机械补默认值);
-`SpawnSupervisedRequest` 的越集字面量仅 kill_receipt.rs:524 一处,冻结其字段集即零波及。
-`ProcessSupervisor::kill` 在 `kill_scope == Process` 时走既有逐字节相同代码路径
-(88 个既有测试 + runtime-tokio 测试零语义漂移);`ProcessGroup` 才进入新分派。
+**兼容性实证锚点**(scout + grep):`RegisterSupervisorPidRequest` 与 `SpawnSupervisedRequest`
+的全部字面量构造点在 nlos-process 之外共 13 处(runtime-tokio 1 + slice-k/system-control
+12),两结构体字段集冻结即零波及;`SupervisorPidEntry` 越集字面量为零,slice-k 仅对
+`SupervisorPidDecision` 变体做绑定解构(加字段不破坏);`generation_pid_map()` 快照形状
+不变(system-control/src/daemon.rs 消费面零漂移)。`ProcessSupervisor::kill` 在
+`kill_scope == Process` 时走既有逐字节相同代码路径;`ProcessGroup` 才进入新分派。
 
 ## 4. 契约定义
 
@@ -147,13 +148,18 @@ nlos-up workers [--root <DIR>] --workers-manifest <PATH> [--grace-ms <N>]
   派生 `ManagedWorkerEnv`(三变量,单元间仅 SLOT 不同)→ `ProcessSupervisor`
   组拉起(Unix `process_group(0)`;kill_scope=ProcessGroup)→ 等待关停信号
   (Ctrl-C/SIGTERM)或全部单元退出 → 逐单元升级式树回收(4.4)→ 关守护进程。
-- 机读输出行(沿 desktop 的 `READY/STOPPED` 协议):
+- 机读输出行(沿 desktop 的 `READY/STOPPED` 协议;**2026-11-08 实现期修订**:
+  workers 模式沿 desktop 同款先输出守护进程就绪行 `READY service=system_control
+  root=...`(print_daemon_ready),`workers=<N>` 行才是 worker 就绪标记,消费方
+  应键于后者;KILL 行 outcome 为 Debug 拼写并带独立 escalated 字段,另有
+  `outcome=error` 错误臂):
 
 ```
 WORKERS manifest=<path> units=<N>
 WORKER name=<name> pid=<os_pid> status=spawned
+READY service=system_control root=...
 READY service=system_control workers=<N>
-KILL name=<name> outcome=<terminated|escalated|already-terminated> group_drained=<bool>
+KILL name=<name> outcome=<Terminated|AlreadyTerminated|error> escalated=<bool> group_drained=<bool>
 STOPPED service=system_control
 ```
 
@@ -170,8 +176,10 @@ STOPPED service=system_control
    既有 `taskkill /F /T`)。
 2. 宽限轮询直子 `try_wait`(grace-ms);超时 → 强杀 `killpg(pgid, SIGKILL)`
    (Windows 单次 taskkill 已是强杀,无二级)。
-3. 组排空核验:重复 `killpg(pgid, SIGTERM)` 至 ESRCH(对残余成员的重复
-   SIGTERM 是幂等且处于拆除语境,无副作用面);ESRCH 即 `group_drained=true`。
+3. 组排空核验(**2026-11-08 实现期修订**:有界重复组强杀 `killpg(pgid, SIGKILL)`
+   至 ESRCH——SIGTERM 对忽略信号的残余成员无法保证排空,SIGKILL 保证收口;直子
+   在宽限内自行退出即进入本步,孙进程在 t0 已随组收过 SIGTERM、不另获宽限,
+   回收优先于孙进程额外宽限是本契约的显式取舍);ESRCH 即 `group_drained=true`。
 4. 回执:每单元一条 `ManagedKillReceipt { process_id, generation, os_pid,
    outcome, escalated, group_drained }`,at-least-once 语义(重放安全,ESRCH 归一
    为 already-terminated)。
