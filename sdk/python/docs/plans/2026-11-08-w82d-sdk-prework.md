@@ -1,6 +1,6 @@
 # W82-D 屏障前先行件 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 两件不依赖 W82-A/B 新产出的先行件——(1) L-012 wheel 打包把 `gen/python/nlos/**` 生成模块纳入 wheel 并钉 protobuf 运行时;(2) 镜像 Rust 冻结契约的 Ed25519 挑战应答持久会话客户端——外加把 `tests/conformance/ipc/channel_control.py` 修到可稳定重复跑通。
 
@@ -62,7 +62,7 @@
 - Consumes: `sdk/python/pyproject.toml`(现状)、`gen/python/nlos/**`(9 个 `_pb2.py`,只读)
 - Produces: `verify_wheel.py`(退出码 0=过;stderr 明细);测试断言 pyproject 不变量
 
-- [ ] **Step 1: 写守卫单测(失败态)**
+- [x] **Step 1: 写守卫单测(失败态)**
 
 ```python
 # sdk/python/tests/test_packaging.py
@@ -104,7 +104,7 @@ def test_gen_python_modules_exist() -> None:
     assert len(modules) == 9, f"预期 9 个生成模块,实得 {modules}"
 ```
 
-- [ ] **Step 2: 写机械验收脚本(构建→逐字节比对→fresh venv 全链路 import)**
+- [x] **Step 2: 写机械验收脚本(构建→逐字节比对→fresh venv 全链路 import)**
 
 ```python
 #!/usr/bin/env python3
@@ -197,7 +197,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 3: 跑红,留失败回执**
+- [x] **Step 3: 跑红,留失败回执**
 
 Run: `python3 -m pytest sdk/python/tests/test_packaging.py -v`(需 pytest;若环境无,先 `pip install pytest` 并记入回执)
 Expected: FAIL(两断言均不过)。
@@ -213,7 +213,7 @@ Expected: 退出 1,`FAIL: wheel 缺生成模块 [...]`。
 **Interfaces:**
 - Produces: wheel 含 `nlos_sdk/**` 与 `nlos/sabi/v1/**`(9 模块);`protobuf==6.33.4` 依赖
 
-- [ ] **Step 1: 修 pyproject**
+- [x] **Step 1: 修 pyproject**
 
 ```toml
 [build-system]
@@ -238,12 +238,12 @@ namespaces = true
 
 注:多根 `where` 把 `../../gen/python` 的 buf 钉扎输出直接纳入 wheel(单一来源,无 vendor 副本可漂移;sdist 不支持——本包只以 wheel 分发,README 注明)。本机制已在 /tmp 沙箱用最小仿形包验证(wheel 内容含 `ns/inner/mod.py`)。
 
-- [ ] **Step 2: 跑绿**
+- [x] **Step 2: 跑绿**
 
 Run: `python3 -m pytest sdk/python/tests/test_packaging.py -v` → PASS
 Run: `python3 sdk/python/scripts/verify_wheel.py` → `ALL PASS`,留全量输出作绿回执。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add sdk/python/pyproject.toml sdk/python/tests/__init__.py sdk/python/tests/test_packaging.py sdk/python/scripts/verify_wheel.py
@@ -273,7 +273,7 @@ git commit  # feat(nlos-sdk): wheel 打包纳入 gen/python 生成模块并钉 p
 
 H7 纪律(SDK 首个非 protobuf 依赖)取最小攻击面;薄层隔离使替换只动 `_signing.py` 一个文件。
 
-- [ ] **Step 1: 红测试(RFC 8032 KAT)**
+- [x] **Step 1: 红测试(RFC 8032 KAT)**
 
 ```python
 # sdk/python/tests/test_signing.py
@@ -315,10 +315,10 @@ def test_public_key_matches_reference() -> None:
     )
 ```
 
-- [ ] **Step 2: 跑红** — `python3 -m pytest sdk/python/tests/test_signing.py -v` → FAIL(ModuleNotFoundError: nlos_sdk._signing)
-- [ ] **Step 3: 实现 `_signing.py`**(如上 Interfaces 描述;lazily import PyNaCl,缺失时抛 `SigningUnavailableError` 带安装指引;seed 强制 32 字节)
-- [ ] **Step 4: 跑绿** → PASS ×4
-- [ ] **Step 5: 与 Task 4 合并提交(见 Task 4 Step 5)**
+- [x] **Step 2: 跑红** — `python3 -m pytest sdk/python/tests/test_signing.py -v` → FAIL(ModuleNotFoundError: nlos_sdk._signing)
+- [x] **Step 3: 实现 `_signing.py`**(如上 Interfaces 描述;lazily import PyNaCl,缺失时抛 `SigningUnavailableError` 带安装指引;seed 强制 32 字节)
+- [x] **Step 4: 跑绿** → PASS ×4
+- [x] **Step 5: 与 Task 4 合并提交(见 Task 4 Step 5)**
 
 ### Task 4: handshake 契约镜像模块(红→绿)
 
@@ -337,11 +337,11 @@ def test_public_key_matches_reference() -> None:
   - `decode_challenge(wire: bytes) -> PrincipalHandshakeChallenge`(nonce==32、schema 名/主版本校验,失配抛 `IpcError("COMPATIBILITY", …)`)
   - `build_attestation(principal_id: bytes, nonce: bytes, channel_binding: bytes, signature: bytes) -> bytes`(wire;长度校验 16/32/1..=256/64;schema 填 `nlos.sabi.PrincipalHandshake` v1.0)
 
-- [ ] **Step 1: 红测试(金向量 + 边界校验)** — 覆盖:摘要向量、Unix 绑定向量、Windows 绑定向量(参数化,docstring 标注「未实机核验:Windows 管道名 UTF-16LE 字节序由 transport.rs:99-107 镜像,未在实机 Windows 对拍」)、path 字节编码表、`decode_challenge` 对坏 nonce/坏 schema 名拒绝、`build_attestation` 各长度失配拒绝、build→ParseFromString→字段往返一致。
-- [ ] **Step 2: 跑红** → FAIL(模块不存在)
-- [ ] **Step 3: 实现 `handshake.py`** — 纯函数,无 I/O;hashlib.sha256;`endpoint_path_bytes`:unix → `os.fsencode(endpoint)`;win32 → `endpoint.encode("utf-16-le" if sys.byteorder=="little" else "utf-16-be")`(镜像 `encode_wide().flat_map(u16::to_ne_bytes)`;Windows 现实全 LE,be 分支为镜像完备性)
-- [ ] **Step 4: 跑绿** → 全 PASS
-- [ ] **Step 5: 提交**
+- [x] **Step 1: 红测试(金向量 + 边界校验)** — 覆盖:摘要向量、Unix 绑定向量、Windows 绑定向量(参数化,docstring 标注「未实机核验:Windows 管道名 UTF-16LE 字节序由 transport.rs:99-107 镜像,未在实机 Windows 对拍」)、path 字节编码表、`decode_challenge` 对坏 nonce/坏 schema 名拒绝、`build_attestation` 各长度失配拒绝、build→ParseFromString→字段往返一致。
+- [x] **Step 2: 跑红** → FAIL(模块不存在)
+- [x] **Step 3: 实现 `handshake.py`** — 纯函数,无 I/O;hashlib.sha256;`endpoint_path_bytes`:unix → `os.fsencode(endpoint)`;win32 → `endpoint.encode("utf-16-le" if sys.byteorder=="little" else "utf-16-be")`(镜像 `encode_wide().flat_map(u16::to_ne_bytes)`;Windows 现实全 LE,be 分支为镜像完备性)
+- [x] **Step 4: 跑绿** → 全 PASS
+- [x] **Step 5: 提交**
 
 ```bash
 git add sdk/python/nlos_sdk/_signing.py sdk/python/nlos_sdk/handshake.py sdk/python/nlos_sdk/__init__.py sdk/python/tests/test_signing.py sdk/python/tests/test_handshake.py
@@ -364,17 +364,17 @@ git commit  # feat(nlos-sdk): Ed25519 挑战应答握手契约镜像与薄签名
   - `ChannelClient.connect_authenticated(cls, endpoint, *, signer, principal_id, config=None, application_id=None, process_id=None, **kwargs) -> ChannelClient` — 握手一次,身份用 `SessionIdentity`,`_target` 为该 `LocalRpcClient`(五通道同连接复用的最终形状留 W82-A;本层是「认证会话+单通道复用」最小正确版,API 留缝:`connect_authenticated` 已返回可复用 rpc,后续 mux 在其上加)
   - `ChannelClient.__init__` 身份参数默认 `None → 每实例 `secrets.token_bytes(16)` 派生(占位常量退场)
 
-- [ ] **Step 1: 红测试** — 进程内测试服务器(asyncio Unix socket,镜像服务端):发挑战→收证明→验签(对期望公钥)→同连接循环 N 轮 echo envelope(request_id 回盖)。用例:
+- [x] **Step 1: 红测试** — 进程内测试服务器(asyncio Unix socket,镜像服务端):发挑战→收证明→验签(对期望公钥)→同连接循环 N 轮 echo envelope(request_id 回盖)。用例:
   1. 握手后同连接 3 轮顺序 exchange(单连接多轮);
   2. 并发第二轮 → `IpcError("BACKPRESSURE")`;
   3. 服务器中途断连 → 该次 exchange 报错,再调 → `CONNECTION_UNUSABLE`(毒化);
   4. 错误密钥签名 → 服务器拒收关连接 → 后续 exchange 失败(失败闭合);
   5. 垃圾挑战帧(非 protobuf)→ `COMPATIBILITY` 类型化错误;
   6. `ChannelClient.connect_authenticated` 全链路:create→enqueue→receive 同一会话(对多轮测试服务器)。
-- [ ] **Step 2: 跑红** → FAIL(模块/工厂不存在)
-- [ ] **Step 3: 实现**(握手期间帧读写带 read/write 超时,失败关连接;成功即构造 `LocalRpcClient(reader, writer, config)`)
-- [ ] **Step 4: 跑绿** → 全 PASS;`python3 -m pytest sdk/python/tests -v` 全套绿
-- [ ] **Step 5: 提交**
+- [x] **Step 2: 跑红** → FAIL(模块/工厂不存在)
+- [x] **Step 3: 实现**(握手期间帧读写带 read/write 超时,失败关连接;成功即构造 `LocalRpcClient(reader, writer, config)`)
+- [x] **Step 4: 跑绿** → 全 PASS;`python3 -m pytest sdk/python/tests -v` 全套绿
+- [x] **Step 5: 提交**
 
 ```bash
 git add sdk/python/nlos_sdk/principal_session.py sdk/python/nlos_sdk/local_rpc.py sdk/python/nlos_sdk/channel.py sdk/python/tests/test_principal_session.py
@@ -390,33 +390,33 @@ git commit  # feat(nlos-sdk): 认证持久会话客户端单连接顺序多轮 (
 - Consumes: Task 5 `ChannelClient.connect_authenticated`、`_signing.Ed25519Signer`;`system-control-daemon`(cargo build 产物,不 cargo run)
 - Produces: 退出码 0 + 机械回执(stdout 逐 case PASS)
 
-- [ ] **Step 1: 写脚本** — 流程:① `secrets.token_bytes(32)` 种子写 0600 临时文件(daemon `--identity-key-file` 契约:64 hex 一行,`parse_key_seed`);② 后台 `cargo build -p nlos-system-control --features daemon --bin system-control-daemon`(>2min 首跑,后台);③ 直启二进制 `--root <tmp> --auth-socket <sock> --plain-socket <sock> --identity-key-file <seedfile>`;④ 解析 `READY … principal=<hex>` 得 principal_id;⑤ 三例各自新会话(服务端单发:每连接 1 握手+1 exchange):create_channel、enqueue、receive+inspect_queue 断言;⑥ 附 plain 端点对照一例;⑦ 全程打印命令与断言结果。
-- [ ] **Step 2: 跑通并留回执**(本条即「对现有 Rust 单发服务端握手成功并完成至少一轮认证 exchange」的正确性证据;Rust `verify_strict` 通过 = digest/binding/签名逐字节兼容)
-- [ ] **Step 3: 提交**(与 Task 7 合并或独立 `test(conformance): …`)
+- [x] **Step 1: 写脚本** — 流程:① `secrets.token_bytes(32)` 种子写 0600 临时文件(daemon `--identity-key-file` 契约:64 hex 一行,`parse_key_seed`);② 后台 `cargo build -p nlos-system-control --features daemon --bin system-control-daemon`(>2min 首跑,后台);③ 直启二进制 `--root <tmp> --auth-socket <sock> --plain-socket <sock> --identity-key-file <seedfile>`;④ 解析 `READY … principal=<hex>` 得 principal_id;⑤ 三例各自新会话(服务端单发:每连接 1 握手+1 exchange):create_channel、enqueue、receive+inspect_queue 断言;⑥ 附 plain 端点对照一例;⑦ 全程打印命令与断言结果。
+- [x] **Step 2: 跑通并留回执**(本条即「对现有 Rust 单发服务端握手成功并完成至少一轮认证 exchange」的正确性证据;Rust `verify_strict` 通过 = digest/binding/签名逐字节兼容)
+- [x] **Step 3: 提交**(与 Task 7 合并或独立 `test(conformance): …`)
 
 ### Task 7: channel_control.py 稳定化 + 重复跑回执
 
 **Files:**
 - Modify: `tests/conformance/ipc/channel_control.py`
 
-- [ ] **Step 1: 现状连跑 3 次记录失败/不稳定点**(疑似:cargo run 冷编译吃掉 READY 120s、socket 残留、stderr 管道无人读)
-- [ ] **Step 2: 最小修复** — 先 `cargo build` 产二进制再直启(消 cargo run 开销)、READY 超时保持但冷编译移出、清理逻辑保持;不做 CI 接线(.github 非写集,回执标注)
-- [ ] **Step 3: 连跑 3 次全绿留回执;提交**
+- [x] **Step 1: 现状连跑 3 次记录失败/不稳定点**(疑似:cargo run 冷编译吃掉 READY 120s、socket 残留、stderr 管道无人读)
+- [x] **Step 2: 最小修复** — 先 `cargo build` 产二进制再直启(消 cargo run 开销)、READY 超时保持但冷编译移出、清理逻辑保持;不做 CI 接线(.github 非写集,回执标注)
+- [x] **Step 3: 连跑 3 次全绿留回执;提交**
 
 ### Task 8: 对抗式审查(ultracode workflow)
 
-- [ ] 用 Workflow 并行审查 diff 四维:①契约镜像保真(逐行对 Rust 源)②打包正确性(sdist 场景、site-packages 冲突、pip/uv 差异)③会话语义 vs lib.rs 毒化/背压 ④测试质量与供应链(PyNaCl 来源、--no-deps 影响)。确认项修复后复跑门禁。
+- [x] 用 Workflow 并行审查 diff 四维:①契约镜像保真(逐行对 Rust 源)②打包正确性(sdist 场景、site-packages 冲突、pip/uv 差异)③会话语义 vs lib.rs 毒化/背压 ④测试质量与供应链(PyNaCl 来源、--no-deps 影响)。确认项修复后复跑门禁。
 
 ### Task 9: 门禁 + push + PR
 
-- [ ] `python3 -m pytest sdk/python/tests -v` 全绿;`verify_wheel.py` ALL PASS;`authenticated_session.py`、`channel_control.py` ×3 回执齐
-- [ ] 提交五查(`git log origin/main..HEAD`/`git diff --staged`/敏感扫描)
-- [ ] `git push -u origin claude/w82d-sdk-prework-d01a37` → 按 §6 开 PR(标题沿用提交风格;正文:问题/根因/修复/验证数据表/未运行项:Windows 实机、CI 接线归 INT、TS SDK 待裁定、Ed25519 选型待签认;不自行合并)
+- [x] `python3 -m pytest sdk/python/tests -v` 全绿;`verify_wheel.py` ALL PASS;`authenticated_session.py`、`channel_control.py` ×3 回执齐
+- [x] 提交五查(`git log origin/main..HEAD`/`git diff --staged`/敏感扫描)
+- [x] `git push -u origin claude/w82d-sdk-prework-d01a37` → 按 §6 开 PR(标题沿用提交风格;正文:问题/根因/修复/验证数据表/未运行项:Windows 实机、CI 接线归 INT、TS SDK 待裁定、Ed25519 选型待签认;不自行合并)
 
 ### Task 10: 回执报告主入口 + 共享笔记
 
-- [ ] 共享笔记目录留 hand-over(两件回执摘要 + 未运行项 + 冲突点如有)
-- [ ] `SendMessage` 报主入口:commit/PR 链接、验收证据要点、选型待签认、CI 接线归 INT
+- [x] 共享笔记目录留 hand-over(两件回执摘要 + 未运行项 + 冲突点如有)
+- [x] `SendMessage` 报主入口:commit/PR 链接、验收证据要点、选型待签认、CI 接线归 INT
 
 ## Self-Review
 
