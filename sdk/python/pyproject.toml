@@ -9,9 +9,14 @@ description = "Python SDK for NLOS SABI local RPC, ServiceDirectory negotiation,
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "protobuf>=5.26.0",
+    "protobuf==6.33.4",
 ]
 
+# L-012:gen/python/nlos/** 是无 __init__.py 的 PEP 420 命名空间包,单根
+# packages.find 会静默漏收。多根 where 把 buf 钉扎输出(python:v33.4)直接
+# 纳入 wheel——单一来源、无 vendor 副本可漂移;路径相对本 pyproject 解析,
+# 仅支持从仓库内构建(本包只以 wheel 分发,sdist 不支持)。
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["nlos_sdk*"]
+where = [".", "../../gen/python"]
+include = ["nlos_sdk*", "nlos*"]
+namespaces = true
