@@ -101,7 +101,9 @@ pub fn spawn_managed_worker(
 pub enum ManagedKillOutcome {
     /// 首发组信号时目标仍存活(后续按回执 escalated 区分是否强杀)。
     Terminated,
-    /// 首发组信号时目标组已整体不存在(ESRCH / taskkill 128)。
+    /// 首发组信号时目标组已无可签发存活成员(ESRCH / taskkill 128 /
+    /// Darwin 对全 zombie 空组的 POSIX EPERM,见
+    /// `platform_kill::group_killpg_outcome` 的平台事实注释)。
     AlreadyTerminated,
 }
 
@@ -114,7 +116,8 @@ pub struct ManagedKillReceipt {
     pub outcome: ManagedKillOutcome,
     /// 宽限超时后是否升级到组 SIGKILL(Windows 单级强杀恒 false)。
     pub escalated: bool,
-    /// 组排空核验:反复组信号至 ESRCH(有界次数内)。
+    /// 组排空核验:反复组信号至 ESRCH(有界次数内;Darwin 全 zombie
+    /// 空组以 POSIX EPERM 表达同一事实,同归已排空)。
     pub group_drained: bool,
     pub exit_status: Option<ExitStatus>,
 }
