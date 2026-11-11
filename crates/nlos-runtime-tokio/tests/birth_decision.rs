@@ -127,10 +127,27 @@ async fn birth_rejection_capacity_when_admission_bound_is_exhausted() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(matches!(
-        runtime.birth_fiber(fiber_spec(2, scope_b), Box::pin(pending())),
-        BirthDecision::Admitted(_)
-    ));
+    // 准入许可(Arc<Semaphore>)随被 spawn 任务的 future drop 而释放,发生在
+    // tokio worker 上——比 join 驱动的注册表 reap 晚几个调度 tick。CI 实证
+    // (2026-11-11 run 42973287409 job 130366475438 ubuntu):注册表排空断言
+    // 通过后立即出生仍被 Capacity 拒——轮询注册表是错误的信号。改为有界
+    // 容忍式等待准入真正重开:Capacity 拒绝出生零副作用(scope 平衡由
+    // release_scope 设计保证),可安全重试;其余拒绝类别照旧即刻 panic。
+    loop {
+        match runtime.birth_fiber(fiber_spec(2, scope_b), Box::pin(pending())) {
+            BirthDecision::Admitted(_) => break,
+            BirthDecision::Rejected(BirthRejection::Capacity(_)) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "admission did not re-open after registry drain"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other @ BirthDecision::Rejected(_) => {
+                panic!("unexpected birth decision after drain: {other:?}")
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
