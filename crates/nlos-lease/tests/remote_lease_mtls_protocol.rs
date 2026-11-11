@@ -1263,8 +1263,16 @@ async fn mtls_03_post_commit_socket_drop_uncertain_blocks_blind_retry_and_reconc
     let cur_fence = authority.fence();
     let cur_epoch = cur_fence.epoch();
 
+    // rpc_call_timeout 从 500ms 放宽到 10s:CI 实证两次独立失败(2026-11-11,
+    // run 42987123075 job 130410837139 与 PR #51 CI job 130490311160,均
+    // macos)中,Phase 2 的 listener_2 真实往返(reconcile 重放 / 冲突 dispatch)
+    // 在 CPU 饥饿下响应超过 500ms,被该配置超时如实分类为
+    // DeadlineExceededUncertain(elapsed_ticks: 15 即本配置喂入的常量,与
+    // panic 消息逐字吻合)。Phase 1 的 Uncertain 由一次性剪断代理的
+    // ConnectionReset 驱动、不受此预算影响;其余场景均为否定路径驱动,无
+    // 行为依赖。与 poc_04(#49)/poc_01(#51)同族先例一致取 10s。
     let fast_cfg = NetTransportConfig {
-        rpc_call_timeout: Duration::from_millis(500),
+        rpc_call_timeout: Duration::from_secs(10),
         timeout_elapsed_ticks: 15,
         ..NetTransportConfig::default()
     };
