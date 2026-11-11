@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -45,24 +46,32 @@ async def start_daemon(
     auth_endpoint: str,
     plain_endpoint: str,
 ) -> asyncio.subprocess.Process:
+    # 先构建后直启:cargo run 会把冷编译塞进 READY 等待窗(冷机构建分钟级,
+    # 超 120s 预算即假失败);构建挪出计时窗,READY 只等真正的进程启动。
+    binary = ROOT / "target" / "debug" / "system-control-daemon"
+    if not binary.exists():
+        subprocess.run(
+            [
+                "cargo",
+                "build",
+                "-p",
+                "nlos-system-control",
+                "--features",
+                "daemon",
+                "--bin",
+                "system-control-daemon",
+            ],
+            cwd=ROOT,
+            check=True,
+        )
     process = await asyncio.create_subprocess_exec(
-        "cargo",
-        "run",
-        "--quiet",
-        "-p",
-        "nlos-system-control",
-        "--features",
-        "daemon",
-        "--bin",
-        "system-control-daemon",
-        "--",
+        str(binary),
         "--root",
         str(root_dir),
         "--auth-socket",
         auth_endpoint,
         "--plain-socket",
         plain_endpoint,
-        cwd=ROOT,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

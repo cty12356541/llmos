@@ -1471,6 +1471,7 @@ dependencies = [
  "nlos-topic",
  "nlos-types",
  "nlos-wait",
+ "nlos-wait-control",
  "rusqlite",
  "sha2 0.11.1",
  "tokio",
@@ -1542,6 +1543,8 @@ dependencies = [
  "nlos-driver-llm-http",
  "nlos-identity",
  "nlos-ipc",
+ "nlos-package",
+ "nlos-process",
  "nlos-resource",
  "nlos-schema",
  "nlos-slice-k",
@@ -1583,6 +1586,7 @@ dependencies = [
 name = "nlos-wasm-sandbox"
 version = "0.1.0"
 dependencies = [
+ "sha2 0.11.1",
  "wasmtime",
 ]
 

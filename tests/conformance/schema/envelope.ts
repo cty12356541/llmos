@@ -1325,20 +1325,26 @@ assert.equal(epochManifest.schema, "nlos.golden.epoch_manifest.v1");
 assert.equal(epochManifest.epoch, "v1.0");
 assert.equal(epochManifest.sabi_major, 1);
 assert.equal(epochManifest.immutable, true);
-assert.deepEqual(
-  new Set(epochManifest.required_channels),
-  new Set(Object.keys(SABI_V1_CHANNELS)),
-);
+// W82-B1: the immutable v1.0 corpus must stay a SUBSET of the live SDK channel
+// table (the table grows additively with SABI v1.1+ channels), never equal.
+for (const ch of epochManifest.required_channels) {
+  assert.ok(
+    ch in SABI_V1_CHANNELS,
+    `v1.0 required channel ${ch} missing from the SDK channel table`,
+  );
+}
 assert.equal(epochManifest.required_channels.length, 9);
 
 const manifestByFile = new Map<string, EpochVectorMeta>(
   epochManifest.vectors.map((vec) => [vec.file, vec]),
 );
 assert.equal(manifestByFile.size, 11);
-assert.deepEqual(
-  new Set(epochManifest.vectors.map((vec) => vec.channel)),
-  new Set(Object.keys(SABI_V1_CHANNELS)),
-);
+for (const vec of epochManifest.vectors) {
+  assert.ok(
+    vec.channel in SABI_V1_CHANNELS,
+    `v1.0 vector channel ${vec.channel} missing from the SDK channel table`,
+  );
+}
 
 function loadEpochVector(filename: string): Uint8Array {
   const meta = manifestByFile.get(filename);
@@ -1725,7 +1731,7 @@ assertUnknownFieldRoundtrip(PrincipalHandshakeAttestationSchema, gHsAtt);
 assertUnknownFieldRoundtrip(DriverProviderRequestSchema, gDrv);
 assertUnknownFieldRoundtrip(CreateChannelRequestWireSchema, gChan);
 
-// [COMPAT-VER-002] negative & positive compatibility matrix across all 9 channels:
+// [COMPAT-VER-002] negative & positive compatibility matrix across all registered channels:
 for (const channelName of Object.keys(SABI_V1_CHANNELS)) {
   for (const badMajor of [0, 2, 99]) {
     const badId = create(SchemaIdentitySchema, {

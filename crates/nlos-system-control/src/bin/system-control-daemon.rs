@@ -119,6 +119,7 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             worker_config: nlos_commit_coordinator::RecoveryWorkerConfig::default(),
             driver_config:
                 nlos_system_control::materialization_driver::MaterializationDriverConfig::default(),
+            connection_idle_timeout: nlos_system_control::daemon::DAEMON_CONNECTION_IDLE_TIMEOUT,
         },
     })
 }

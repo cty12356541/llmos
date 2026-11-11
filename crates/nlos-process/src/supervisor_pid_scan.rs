@@ -46,7 +46,7 @@ use nlos_types::{Generation, ProcessId};
 use crate::model::ProcessBindingRecord;
 use crate::supervisor::{ProcessSupervisor, SupervisorError};
 use crate::supervisor_pid::{
-    RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry,
+    KillScope, RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry,
     SupervisorPidRegistryError,
 };
 
@@ -322,14 +322,26 @@ impl ProcessSupervisor {
             let SupervisorPidFinding::Fresh { target, os_pid } = finding else {
                 continue;
             };
+            // The kill scope is a registration fact, so adoption must not
+            // lose it: a still-live registration re-registers through its
+            // own scope (an exact replay), and a process with no current
+            // row adopts at the classic `Process` scope (W82-C).
+            let kill_scope = match self.registry().lookup(target.process_id) {
+                Ok(entry) => entry.kill_scope,
+                Err(SupervisorPidRegistryError::ProcessNotRegistered(_)) => KillScope::Process,
+                Err(error) => return Err(SupervisorError::Registry(error)),
+            };
             decisions.push(
                 self.registry()
-                    .register(RegisterSupervisorPidRequest {
-                        process_id: target.process_id,
-                        process_generation: target.process_generation,
-                        os_pid: *os_pid,
-                        registered_at_ms,
-                    })
+                    .register_at_scope(
+                        RegisterSupervisorPidRequest {
+                            process_id: target.process_id,
+                            process_generation: target.process_generation,
+                            os_pid: *os_pid,
+                            registered_at_ms,
+                        },
+                        kill_scope,
+                    )
                     .map_err(SupervisorError::Registry)?,
             );
         }

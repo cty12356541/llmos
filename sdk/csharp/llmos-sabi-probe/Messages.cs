@@ -34,7 +34,9 @@ public static class SabiRegistry
     public const string CodeAbiVersion = "E_ABI_VERSION";
     public const string CodeUnsupportedCriticalExtension = "UNSUPPORTED_CRITICAL_EXTENSION";
 
-    // Mirrors nlos-schema::REGISTRY (all 9 frozen SABI v1.0 channels).
+    // Mirrors nlos-schema::REGISTRY (all 12 frozen SABI v1 channels: 9 in the
+    // W77 v1.0 baseline; LlmGateway/ToolSandbox/BlobReference added additively
+    // by W82-B SABI v1.1).
     public static readonly IReadOnlyDictionary<string, ChannelDescriptor> SabiV1Channels =
         new Dictionary<string, ChannelDescriptor>(StringComparer.Ordinal)
         {
@@ -47,6 +49,9 @@ public static class SabiRegistry
             ["nlos.sabi.PrincipalHandshake"] = new("nlos.sabi.PrincipalHandshake", 1, 0, Array.Empty<uint>()),
             ["nlos.sabi.DriverProvider"] = new("nlos.sabi.DriverProvider", 1, 0, Array.Empty<uint>()),
             ["nlos.sabi.ChannelControl"] = new("nlos.sabi.ChannelControl", 1, 0, Array.Empty<uint>()),
+            ["nlos.sabi.LlmGateway"] = new("nlos.sabi.LlmGateway", 1, 0, Array.Empty<uint>()),
+            ["nlos.sabi.ToolSandbox"] = new("nlos.sabi.ToolSandbox", 1, 0, Array.Empty<uint>()),
+            ["nlos.sabi.BlobReference"] = new("nlos.sabi.BlobReference", 1, 0, Array.Empty<uint>()),
         };
 
     // Enforces [COMPAT-VER-002]: unknown major and unknown critical_extension_ids

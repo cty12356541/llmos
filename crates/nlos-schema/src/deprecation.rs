@@ -484,7 +484,7 @@ pub fn parse_deprecation_manifest(
 }
 
 /// Loads the embedded `schema/nlos/sabi/v1/deprecation-manifest.yaml` and cross-checks
-/// all 9 channels (`name`, `major`, `minor`, `frozen == true`) against [`schema_registry`].
+/// all registered channels (`name`, `major`, `minor`, `frozen == true`) against [`schema_registry`].
 ///
 /// # Errors
 ///

@@ -1,0 +1,73 @@
+{
+  "schema": "nlos.golden.epoch_manifest.v1",
+  "epoch": "v1.1",
+  "sabi_major": 1,
+  "immutable": true,
+  "required_channels": [
+    "nlos.sabi.LlmGateway",
+    "nlos.sabi.ToolSandbox",
+    "nlos.sabi.BlobReference"
+  ],
+  "vectors": [
+    {
+      "file": "nlos.sabi.LlmGateway.LlmChatRequest-v1.1.hex",
+      "channel": "nlos.sabi.LlmGateway",
+      "message": "nlos.sabi.v1.LlmChatRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 114,
+      "sha256_wire": "229b865b2094c2d15bfc8aa5a4ca64861e42602d8a2d59d1b2f45ca9f8dbad16",
+      "sha256_file": "dc64aa072e9a91b1d9b9570b480b7014f8c3959f9e2820d6e255026977c7ba01"
+    },
+    {
+      "file": "nlos.sabi.LlmGateway.QueryBudgetRequest-unknown-noncritical-v1.1.hex",
+      "channel": "nlos.sabi.LlmGateway",
+      "message": "nlos.sabi.v1.QueryBudgetRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 31,
+      "sha256_wire": "9a2b4f1b44973ca68ed1a8ae4838c1a1a081a53729c90aac1f20423608e38dd5",
+      "sha256_file": "54669ad0d218073c63ab4f9dd10f3f2d864429cc5b62f88258ca682431e40d03"
+    },
+    {
+      "file": "nlos.sabi.ToolSandbox.InvokeToolRequest-v1.1.hex",
+      "channel": "nlos.sabi.ToolSandbox",
+      "message": "nlos.sabi.v1.InvokeToolRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 71,
+      "sha256_wire": "d4477549ec729baa0a3022a41d2509ffc95244c85b3d2d625815cfbb3f52304f",
+      "sha256_file": "d0ea2a29225350a85248e7529ff08c22f666a4b31043f62fc64a95985d2b3226"
+    },
+    {
+      "file": "nlos.sabi.ToolSandbox.ListToolsRequest-unknown-noncritical-v1.1.hex",
+      "channel": "nlos.sabi.ToolSandbox",
+      "message": "nlos.sabi.v1.ListToolsRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 32,
+      "sha256_wire": "8fd29bbff238695fdf5f449333da07574626170ea848a25c27770b56a69580e6",
+      "sha256_file": "3b6fa7c49fdf5cea481274c447ec37e4c916501fda29d50265793c341697e8df"
+    },
+    {
+      "file": "nlos.sabi.BlobReference.MintReferenceRequest-v1.1.hex",
+      "channel": "nlos.sabi.BlobReference",
+      "message": "nlos.sabi.v1.MintReferenceRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 108,
+      "sha256_wire": "5e3188c86abf539bda3d5b9dfbd63e0635f53f5d9a4bc97fa1eab86da794dd41",
+      "sha256_file": "eca3501239e724e5d065989a4c751987f85ac6c5a54ad9fba7f585685429a49f"
+    },
+    {
+      "file": "nlos.sabi.BlobReference.ReadReferenceRequest-unknown-noncritical-v1.1.hex",
+      "channel": "nlos.sabi.BlobReference",
+      "message": "nlos.sabi.v1.ReadReferenceRequest",
+      "schema_major": 1,
+      "schema_minor": 0,
+      "byte_length": 56,
+      "sha256_wire": "988371fec0467a85c9c3a8effc604098e80821e98a1b4250112ba1b22682486d",
+      "sha256_file": "dbe37a92e900a56b9f67b2ded0da5dcc3bb984fc019ddab67586ca0d4912c5ce"
+    }
+  ]
+}
