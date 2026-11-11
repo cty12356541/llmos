@@ -1162,9 +1162,16 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
     ));
 
     let resolver = Arc::new(MonotonicEndpointResolver::new());
+    // Handshake budgets are deliberately generous (10s): under 8-way parallel
+    // PoC load, CPU starvation can push the 3-phase dial (TCP -> TLS -> 5-axis
+    // fence) past tight budgets, which surfaces as pre-payload failure kinds
+    // (`PeerFenceHandshakeRejected`) and pollutes the taxonomy assertions
+    // below (CI run 42966020087 job 130343332863 observed exactly this on
+    // ubuntu). Only the 120ms `rpc_call_timeout` is load-bearing for the
+    // half-open stall taxonomy under test.
     let fast_cfg = NetTransportConfig {
-        connect_and_tls_timeout: Duration::from_secs(2),
-        fence_handshake_timeout: Duration::from_secs(2),
+        connect_and_tls_timeout: Duration::from_secs(10),
+        fence_handshake_timeout: Duration::from_secs(10),
         rpc_call_timeout: Duration::from_millis(120),
         bulk_transfer_timeout: Duration::from_secs(5),
         timeout_elapsed_ticks: 15,
@@ -1268,13 +1275,16 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
             fence_policy: srv3_deps.fence_policy.as_ref(),
             nonce_registry: srv3_deps.nonce_registry.as_ref(),
             now_ms: NOW_MS,
-            handshake_timeout: Duration::from_secs(2),
+            // Same generous budget as the client side (`fast_cfg`): under
+            // parallel load the client may legitimately take longer than 2s
+            // between handshake completion and writing the business frame.
+            handshake_timeout: Duration::from_secs(10),
         };
         nlos_net::run_server_fence_handshake(&mut tls, &mat, &ctx)
             .await
             .expect("server fence");
         // Read the full business `ControlRpcRequest` frame, then drop with SO_LINGER=0 -> TCP RST!
-        let frame = read_mux_frame(&mut tls, 256 * 1024, Duration::from_secs(2))
+        let frame = read_mux_frame(&mut tls, 256 * 1024, Duration::from_secs(10))
             .await
             .expect("read business frame");
         assert!(matches!(frame, MuxFrame::ControlRpcRequest { .. }));
@@ -1371,6 +1381,39 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
             300,
         ))
         .expect("hint s1 stalled");
+
+    // Condition-based establishment guard: the stall-sensitive assertions
+    // below presuppose that the dial to `srv1` itself succeeded. Under 8-way
+    // parallel PoC CPU starvation the fence handshake phase can time out and
+    // surface as `PeerFenceHandshakeRejected`/`Unavailable` instead of the
+    // intended `ReadTimeout`/`DeadlineExceededUncertain` taxonomy (CI run
+    // 42966020087 job 130343332863). Warm the pooled session first with
+    // bounded retries on the load-transient TLS/fence handshake phases, so
+    // the measured call below exercises ONLY the half-open stall.
+    let mut session_established = false;
+    let mut last_warmup_err = None;
+    for attempt in 0..6u32 {
+        session_established = match transport.get_or_dial_session(node_srv1.cell).await {
+            Ok(_) => true,
+            Err(
+                err @ (DialSessionError::TlsHandshake(_) | DialSessionError::FenceHandshake(_)),
+            ) => {
+                last_warmup_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                false
+            }
+            Err(err) => {
+                panic!("4c warm-up dial failed non-transiently (attempt {attempt}): {err}")
+            }
+        };
+        if session_established {
+            break;
+        }
+    }
+    assert!(
+        session_established,
+        "srv1 session must establish before the stall-sensitive call; last warm-up error: {last_warmup_err:?}"
+    );
 
     let key_readonly = IdempotencyKey::from_bytes([0x4c; 16]);
     let contract_readonly = RemoteCallContract::new([0x4c; 16], key_readonly, 100, 2, 0, false);
