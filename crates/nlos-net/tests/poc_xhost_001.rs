@@ -302,6 +302,17 @@ async fn poc_01_valid_5axis_mtls_and_tls13_exporter_handshake_pins_authenticated
     let accounting_a = SocketActivityAccounting::new();
     let accounting_b = SocketActivityAccounting::new();
 
+    // Handshake budgets are deliberately generous (10s, rest default): the
+    // valid 5-axis dial under test must survive 8-way parallel PoC CPU
+    // starvation (see the dial comment below), and both its success and the
+    // audit receipt counts below presuppose a single dial attempt.
+    // rpc/bulk budgets stay at default.
+    let cfg = NetTransportConfig {
+        connect_and_tls_timeout: Duration::from_secs(10),
+        fence_handshake_timeout: Duration::from_secs(10),
+        ..NetTransportConfig::default()
+    };
+
     let rpc_handler_b = Arc::new(EchoRpcHandler::new(epoch_u64(7), Duration::ZERO));
     let bind_b: SocketAddr = "127.0.0.1:0".parse().expect("loopback");
     let listener_b = MtlsEndpointListener::bind(
@@ -313,7 +324,7 @@ async fn poc_01_valid_5axis_mtls_and_tls13_exporter_handshake_pins_authenticated
             Arc::clone(&verifier),
             Arc::new(MonotonicPeerFenceGate::default()),
         ),
-        NetTransportConfig::default(),
+        cfg,
         accounting_b.clone(),
         Some(rpc_handler_b.clone()),
         None,
@@ -347,13 +358,24 @@ async fn poc_01_valid_5axis_mtls_and_tls13_exporter_handshake_pins_authenticated
             Arc::clone(&verifier),
             Arc::new(MonotonicPeerFenceGate::default()),
         ),
-        NetTransportConfig::default(),
+        cfg,
         accounting_a.clone(),
         None,
         None,
     )
     .expect("init client transport A");
 
+    // The 5-axis handshake under test must succeed (valid peers, valid
+    // pins), but under 8-way parallel PoC load CPU starvation can push the
+    // TCP -> TLS -> 5-axis fence dial past even the default 5s budgets
+    // (12-hog stress observed exactly this once). Unlike the later PoCs,
+    // the dial success IS the assertion here, and every attempt that
+    // reaches the handshake signature writes a durable custody audit
+    // receipt asserted to be exactly 2 below — so a bounded dial retry
+    // only trades the dial flake for a receipt-count flake (6-round stress
+    // observed 3 != 2 after retries). The starvation absorber is therefore
+    // the handshake budget itself (see `cfg` above), keeping the dial a
+    // single deterministic attempt.
     let client_session = transport_a
         .get_or_dial_session(node_b.cell)
         .await
