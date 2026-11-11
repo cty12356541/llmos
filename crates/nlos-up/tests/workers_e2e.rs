@@ -1,7 +1,9 @@
 //! W82-C 端到端:真实 `nlos-up workers` 二进制 + 双单元清单 + 三变量
 //! 白名单 + SIGTERM 主进程 → 子进程树(含孙)干净回收。unix 门控。
 #![cfg(unix)]
-// 测试体逐字取自任务书(W82-C Task 4 brief);样式 lint 就地豁免,不动断言。
+// 测试体取自任务书(W82-C Task 4 brief);样式 lint 就地豁免。python 断言
+// 自 2026-11-11 起按 Task 3 基线探测裁定归一——硬编码名单在 CI macOS 因
+// CoreFoundation 按 uid 自合成 __CF_USER_TEXT_ENCODING 必红(实证见 CI)。
 #![allow(clippy::collapsible_if, clippy::map_unwrap_or)]
 
 use std::path::{Path, PathBuf};
@@ -53,6 +55,27 @@ fn parse_env_dump(text: &str) -> std::collections::BTreeMap<String, String> {
     text.lines()
         .filter_map(|line| line.split_once('='))
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
+}
+
+/// 同一解释器在空环境(`env_clear`)下自合成的变量名集合(基线探测,
+/// 与 nlos-process `managed_env.rs` 同型裁定):自合成集合因解释器构建
+/// 而异(PEP 538 `LC_CTYPE`;macOS 系统构建另有 CoreFoundation 按 uid
+/// 合成的 `__CF_USER_TEXT_ENCODING` 等),硬编码名单在 CI macOS 必红;
+/// 受管子进程允许「基线 ∪ LLMOS_*」,父环境零泄漏的检验力不变。
+fn python_self_synthesized_env(python: &Path) -> Vec<String> {
+    let output = Command::new(python)
+        .args(["-c", "import os\nfor key in sorted(os.environ): print(key)"])
+        .env_clear()
+        .output()
+        .expect("baseline python probe spawns");
+    assert!(
+        output.status.success(),
+        "baseline python probe failed: {output:?}"
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
         .collect()
 }
 
@@ -295,13 +318,12 @@ fn workers_python_unit_env_whitelist_gate_letter() {
 
     let dump = poll_file(&scratch.0.join("pyw.env"), 30).expect("python env dump");
     let map = parse_env_dump(&dump);
-    // PWD/SHLVL/_/LC_CTYPE 为解释器自合成(Task 3 裁定);其余非 LLMOS_* 即泄漏
+    // 解释器自合成集合以基线探测归一(同 managed_env.rs 裁定);其余非
+    // LLMOS_* 即泄漏(PATH/HOME 等父环境变量不在基线内,仍被拦截)
+    let baseline = python_self_synthesized_env(&python);
     let leaked: Vec<&String> = map
         .keys()
-        .filter(|key| {
-            !key.starts_with("LLMOS_")
-                && !matches!(key.as_str(), "PWD" | "SHLVL" | "_" | "LC_CTYPE")
-        })
+        .filter(|key| !key.starts_with("LLMOS_") && !baseline.contains(key))
         .collect();
     assert!(leaked.is_empty(), "python child env leaked: {leaked:?}");
     assert!(map.contains_key("LLMOS_AUTH_ENDPOINT"));
