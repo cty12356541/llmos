@@ -2,16 +2,17 @@
 
 ## 2026-11-14 进度盘点
 
-`PROGRESS-20261114`。盘点从本地 `84630f7f80a04fb228514b210795c14f7f3037f5` 开始，发现本地较 `origin/main` 落后 60 个提交并另有 1 个派发记录提交。本轮合并两侧记录，以远端 `d2a32de9fb02878584eaa85011cf5eaa64085180` 为功能与 CI 核对基线。
+`ALIGN-20261114` 以本地 `main` 和 `origin/main` 共同快照 `a3a1c007560306e6081d7dceff423b4ae8a33cb5` 为当前基线。此前 `PROGRESS-20261114` 盘点从本地 `84630f7f80a04fb228514b210795c14f7f3037f5` 开始，当时本地较 `origin/main` 落后 60 个提交并另有 1 个派发记录提交；`a3a1c007` 整合两侧记录，保留原远端功能基线 `d2a32de9fb02878584eaa85011cf5eaa64085180` 及其独立 CI 记录。
 
 - **阶段 A–D** 均在各自验收范围内 `EXITED`。A 完成启动微内核基线，B 完成单机应用平台，C 验证单机多进程及限定的跨物理主机蜂窝场景，D 验证非开发者多应用桌面纵切面。真实物理断电、`1M_LOGICAL` 裸金属跨机 WAN 与宿主安装器原生签名公证等残域仍按原范围登记。见[阶段总览](../../README.zh-CN.md#当前状态)和[前序阶段交接边界](#e13-前序阶段诚实延续边界与跨阶段移交台账严禁遗漏或夸大)。
 - **阶段 E** 核心工作包 `E0`–`E7` 共 8/8 `DONE`，保障等级为 `H4` / `H7`，`ADR-0027` 为 `VERIFIED`。`W81` 技术门禁 1–5 按当轮基线闭环。阶段 E 仍为 `IN_PROGRESS / NOT EXITED`（`READY_FOR_MAINTAINER_SIGNOFF`）。门禁 6 与 `SABI v1.0` 长期冻结等待维护者显式签字，`RISK-B-05` 仍为 `partial`。见[退出门禁](#e55-阶段-e-退出门禁检查表)。
-- **机器台账** 共 `169 claims / 205 evidence / 17 risks`。阶段 E 有 17 份索引证据，其中 `W81` 收口时的 16 份（`13 H4 + 3 H7`）支撑原有边界，新增的 [E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md) 是超限帧尚待独立复现的 `POC` 反例，保障等级维持原值。全仓 `H8` 证据为 0。风险台账有 15 项 `partial`、1 项 `closed`、1 项 `open`（单维护者依赖 `RISK-B-08`），`open_P0 = 0` 仅反映已登记风险。见[声明](./claims.yaml)、[证据索引](./evidence-index.yaml)和[风险台账](./risks.yaml)。
-- **W82** 为 `IN_PROGRESS / PARTIALLY_MERGED`。已合并 A、B-1、C 的主体和 D 的前置件，整车道验收记为 0/5 `DONE`。本地三条曾用于派发的工作树停留在 `eee9a343`，仅用于追溯 11 月 2 日的启动记录。详见[W82 合并回执](#e618-w82-后续生态接入)。
-- **当前功能基线的 CI** 使用 `d2a32de9`。常规 push 矩阵 9 项通过，规模门跳过。最新定时矩阵（2026-11-14 07:58 UTC+8）12 项通过、1 项失败。失败作业 `Scale probe (include-ignored)` 的实际失败用例是 `nlos-up/tests/workers_e2e.rs:215` 的 `workers_launch_env_whitelist_and_sigterm_reclaims_tree`（2 通过、1 失败，输出停在 `WORKER name=adapter status=spawned`），待诊断。同 SHA 前一次定时矩阵与最新 Layer 2 掉电模拟均通过。见 [push 矩阵](https://github.com/cty12356541/llmos/actions/runs/43008575260)、[最新定时矩阵](https://github.com/cty12356541/llmos/actions/runs/43530982662/job/132248316365)、[前次定时矩阵](https://github.com/cty12356541/llmos/actions/runs/43332824583)与 [Layer 2](https://github.com/cty12356541/llmos/actions/runs/43541640271)。
-- **后续验收** 并行复核 A、诊断 C 的 Worker 失败、补齐 B-2/B-3/B-4 的服务与原语。D 主体经 `B82-SDK`（A+B）后收口，INT 经 `B82-INT`（C+D）后验收三通道挂载、吊销回收联动、外部 Dogfood 和兼容回归。独立 SDK 安装与官方 SDK 发布各有验收门，宿主安装器签名公证及真实用户生产生态仍有待独立验证。见[多语言 SDK 计划](./language-sdk-support-plan.md)和[W81 终审的残余边界](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)。
-- **本轮核查** 台账 lint 与阶段 E 严格覆盖率检查（含相对链接）通过。功能测试采用上述已记录运行结果，本轮未重跑。
-- **本地 AgentDash** 已同步本地台账，schema 和 DAG 检查通过。A/B/C/D 为 `active`，INT 为 `pending`。`0.13.1` 在完成数为 0 时将里程碑误显示为 `planned`。历史 `completed` 事件有 82 条缺 `who`，渲染器推断配对 28 条并丢弃 54 条。本轮有新 hook 事件，历史完成记录仍有缺口。
+- **机器台账** 共 `169 claims / 205 evidence / 17 risks`。阶段 E 有 17 份索引证据，其中 `W81` 收口时的 16 份（`13 H4 + 3 H7`）支撑原有边界，新增的 [E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md) 是超限帧尚待独立复现的 `POC` 反例，保障等级维持原值。全仓 `H8` 声明与证据均为 0。风险台账有 15 项 `partial`、1 项 `closed`、1 项 `open`（单维护者依赖 `RISK-B-08`），`open_P0 = 0` 仅反映已登记风险。见[声明](./claims.yaml)、[证据索引](./evidence-index.yaml)和[风险台账](./risks.yaml)。
+- **W82** 为 `IN_PROGRESS / PARTIALLY_MERGED`。已合并 A 和 C 的主体、B-1 契约与 D 的 Python SDK 前置件，正式整车道验收为 `0/5 DONE`。见 [W82 合并与待验收回执](#e618-w82-后续生态接入)。
+- **当前快照 `a3a1c007`**：[push CI 43571919333](https://github.com/cty12356541/llmos/actions/runs/43571919333) 已结束，9 项常规作业全部通过（三平台主验证、三平台桌面、两项守护进程、MSRV），两项规模作业跳过；[Pages 43571919328](https://github.com/cty12356541/llmos/actions/runs/43571919328) 部署工作流成功。
+- **历史功能基线 `d2a32de9`**：[常规 push 矩阵](https://github.com/cty12356541/llmos/actions/runs/43008575260)为 9 项通过、规模门跳过；[2026-11-14 07:58 UTC+8 定时矩阵](https://github.com/cty12356541/llmos/actions/runs/43530982662/job/132248316365)为 12 项通过、1 项失败。失败作业 `Scale probe (include-ignored)` 中，`nlos-up/tests/workers_e2e.rs:215` 的 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 未通过（该组 2 通过、1 失败，输出停在 `WORKER name=adapter status=spawned`）。同 SHA 的[前次定时矩阵](https://github.com/cty12356541/llmos/actions/runs/43332824583)与 [Layer 2 掉电模拟](https://github.com/cty12356541/llmos/actions/runs/43541640271)通过。Worker 失败仍待诊断，`a3a1c007` 常规矩阵的成功未复验 `include-ignored`。
+- **后续验收** 并行复核 A、诊断 C 的 Worker 失败、补齐 B-2/B-3/B-4 的服务与原语。D 主体经 `B82-SDK`（A+B）后收口，INT 经 `B82-INT`（C+D）后验收三通道挂载、吊销回收联动、外部 Dogfood 和兼容回归。独立 SDK 安装与官方 SDK 发布各有验收门，宿主安装器签名公证及真实用户生产生态仍待独立验证。见[多语言 SDK 计划](./language-sdk-support-plan.md)、[W81 终审](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)与 [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)（`PROPOSED`，适用 v0.5，实施须另行批准）。
+- **本轮变更** 同步进度、规划入口及本地维护回执，见 [ALIGN-20261114](#e619-align-20261114-进度对齐与维护回执)。功能测试引用上述已记录运行结果，本轮未重跑。
+- **本地 AgentDash** W82 台账的 A/B/C/D 为 `active`，INT 为 `pending`。`0.13.1` 在完成数为 0 时将里程碑误显示为 `planned`。此前盘点的历史 `completed` 事件有 82 条缺 `who`，渲染器推断配对 28 条并丢弃 54 条；本轮观察到新 Codex hook 事件，历史完成记录仍有缺口。
 
 ---
 
@@ -542,13 +543,20 @@ flowchart LR
    |---|---|---|
    | `W82-A` | 有界单连接多轮、守护进程五路分派、D3 逐帧拒绝与会话上界。车道回执覆盖明文和认证各千轮，WAL 核验采用写事务计数。见 [PR #43](https://github.com/cty12356541/llmos/pull/43)。 | 汇总正式证据与治理回执。 |
    | `W82-B` | `B-1` 的 `LlmGateway`、`ToolSandbox`、`BlobReference` 三通道机械 schema、生成物与 v1.1 黄金语料已合并，活跃冻结注册表从 9 项增至 12 项。见 [PR #46](https://github.com/cty12356541/llmos/pull/46)。 | `B-2` LLM 预算网关、`B-3` 沙箱工具服务、`B-4` Blob 引用原语及其验收。 |
-   | `W82-C` | 受管 Worker 清单、受控环境变量注入和退出或拉起失败后的进程树回收已合并。见 [PR #45](https://github.com/cty12356541/llmos/pull/45)。 | 诊断最新定时 CI 中的 Worker E2E 失败，与 B 对表 capability slot 格式，并由 INT 接线验收令牌吊销触发的进程树回收。 |
+   | `W82-C` | 受管 Worker 清单、受控环境变量注入和退出或拉起失败后的进程树回收已合并。见 [PR #45](https://github.com/cty12356541/llmos/pull/45)。 | 诊断 `d2a32de9` 定时 CI `43530982662` 中的 Worker E2E 失败，与 B 对表 capability slot 格式，并由 INT 接线验收令牌吊销触发的进程树回收。 |
    | `W82-D` | Python 独立 wheel 打包与 Ed25519 认证持久会话前置件已合并。见 [PR #42](https://github.com/cty12356541/llmos/pull/42)。 | 通过 `B82-SDK` 后补齐 Python/TS 客户端与跨进程 conformance。 |
    | `W82-INT` | 设计终裁登记、`sha2` 预锁与上述实现合流。见 [PR #44](https://github.com/cty12356541/llmos/pull/44)和 [PR #47](https://github.com/cty12356541/llmos/pull/47)。 | 通过 `B82-INT` 后验收三通道挂载、吊销联动、外部双脑 Dogfood 与 `[ROAD-E-001]` 完整回归，提交 Evidence 和台账回执。 |
 
 **状态与保障等级**。`W82` 为 `IN_PROGRESS / PARTIALLY_MERGED`。五条车道中有 **0/5 完成整车道验收并入账为 `DONE`**。已合并实现和公开测试按表列范围引用，余项沿用 `DESIGN`。尚无新增 `W82` 完成声明或交付 Evidence 入账。`E-DOGFOOD-001` 仍按 `POC` 反例登记。
 
 - **与 `W81` 阶段 E 收官及 `SABI v1.0` 冻结正交无冲突**：`W82` 严守既有 `9/9` `SABI v1.0` 冻结通道零破坏性改动红线，不阻塞人类维护者对 `W81` 阶段 E `EXITED` 与 `SABI v1.0` 正式长期冻结（`RISK-B-05`）的终批签字；同时严格遵循工作树卫生纪律，始终按显式写集暂存提交，绝不将任何外部实机运行态未跟踪目录（如 `data/`）纳入版本库。
+
+### E.6.1.9 ALIGN-20261114 进度对齐与维护回执
+
+- 适用范围：`main` 基线 `a3a1c007` 及其远端证据。校准当前与历史 CI 的口径，收敛双语 README 和管理入口的重复描述，并新增 [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)（`PROPOSED`）。阶段状态、W82 验收状态、规范、Claim 与风险等级按原范围登记。
+- 集成顺序：进度文档 (`ALIGN-20261114-DOC` / Attempt 1)、总任务计划起草、旧工作树只读审计并行；清理依赖审计与原始事件归档；单一集成者在正式回执与文档检查完成后合并结果。
+- 本地清理 (`ALIGN-20261114-CLEAN-EXEC` / Attempt 1)：核实 11 月 2 日派发的三条旧工作树均干净、HEAD 为 `eee9a343` 且已被 `main` 包含；解除过期锁前，将每棵工作树的原始 `events.jsonl` 逐文件按原字节归档并核对 SHA-256。已移除 3 个工作树和 14 条已合入的本地分支，保留 `main` 和 `fix/windows-portability-sync-dir-and-uri-guard`（分支头已合入，reflog 中仍有 3 个主线未包含的提交）。主工作树原有改动、远端跟踪引用及主事件日志保留；本地清单为 `.agentdash/archives/cleanup-2026-11-14/manifest.json`。本次清理不改变 W82 验收状态。
+- 本地检查：`git diff --check`、`python scripts/lint_claims.py`、`python tools/verify_stage_e_ledger_coverage.py --mode strict` 与变更文档链接检查通过。`python -B -m unittest scripts.test_lint_claims` 以专用临时目录复验，43 项通过，1 项因未安装 PyYAML 跳过。未重跑功能测试。
 
 ### E.6.2 进度更新协议
 

@@ -87,62 +87,20 @@ Tauri 2 桌面（[ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop-com
 
 ## 当前状态
 
-截至 2026-11-14，阶段 A–D 已按各自评审边界退出。阶段 E 的 E0–E7 共 8 个工程工作包均已完成并具备 H4/H7 证据。阶段 E 正式退出和 SABI v1.0 长期冻结仍待维护者签字。
+进度快照：2026-11-14，`main` 基线 `a3a1c007`。阶段 A–D 已按各自评审边界退出。
 
-| 阶段 | 范围描述 | 当前状态 |
+| 阶段 | 评审范围 | 状态 |
 |---|---|---|
-| **Stage A** | 引导微内核 | `EXITED` |
-| **Stage B** | 单机通用应用平台（[`stage-b-progress.md`](docs/management/stage-b-progress.md)） | `EXITED`（2026-09-21） |
-| **Stage C** | 分布式现代系统：单机多进程 Cell + `C-XHOST` 跨物理主机 mTLS / 保守时钟偏斜租约 / 嵌入式 Raft 控制面（[`stage-c-progress.md`](docs/management/stage-c-progress.md)） | `EXITED`（2026-10-29 `W76`） |
-| **Stage D** | 完整自然语言桌面：五平面 `Z0–Z4` Tauri 2 工业工作站、`L0–L3` 渐进式披露、12 域显控同构、`Z4` 安全确认屏（[`stage-d-progress.md`](docs/management/stage-d-progress.md)） | `EXITED`（2026-10-29 `W76`） |
-| **Stage E** | 兼容制度与生态规模化：`SABI v1.0` 长期兼容、核外兼容垫片、商店治理、`[ROAD-E-001]` 零重编译跨主系统升级总门禁与 `E0` 开箱试用引导（[`stage-e-progress.md`](docs/management/stage-e-progress.md)、[`ADR-0027`](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)） | `IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF (E0–E7: 8/8 DONE, H4/H7; ADR-0027 VERIFIED)` |
+| **A** | 引导微内核 | `EXITED` |
+| **B** | [单机通用应用平台](docs/management/stage-b-progress.md) | `EXITED`（2026-09-21） |
+| **C** | [分布式系统：单机多进程与限定的跨物理主机场景](docs/management/stage-c-progress.md) | `EXITED`（2026-10-29 `W76`） |
+| **D** | [自然语言桌面：非开发者多应用纵切面](docs/management/stage-d-progress.md) | `EXITED`（2026-10-29 `W76`） |
+| **E** | [兼容制度与生态规模化](docs/management/stage-e-progress.md) | `IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF` |
 
-W82 处于 `IN_PROGRESS / PARTIALLY_MERGED`，已合入 IPC 会话复用、受管 Worker 主体、SABI v1.1 契约和 Python SDK 前置工作。三个新通道的服务实现、受管 Worker 吊销联动、SDK 完整客户端及 qq-agent 端到端验收待完成。后续先打通 W82 应用接入，再完成 SDK 分发与用户闭环，最后积累生产生态证据。[PR #47](https://github.com/cty12356541/llmos/pull/47) · [2026-11-14 进度与证据](docs/management/stage-e-progress.md#2026-11-14-进度盘点)
-
-台账共登记 169 条声明、205 条证据和 17 项风险。阶段 E 的 17 条索引包含 W81 收官时的 16 份证据及 `E-DOGFOOD-001` POC 报告。当前 H8 声明与证据均为 0。[证据索引](docs/management/evidence-index.yaml)
-
-> **证据范围与诚实边界声明：** 阶段 B、阶段 C 与阶段 D 均在独立退出门终审（[W67](docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md)、[W73](docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md)、[W74](docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md)）下以 `SATISFIED-WITH-BOUNDARIES`（`P0 = 0`）获批 `EXITED`。阶段 E 全部八大工作包均已完成验证（`H4` / `H7`）：先行开箱试用包 `E0`（`W77-PRE` / `M-E0.5`：`nlos-up` 一键引导、诚实标注 `PROVIDER_ISOLATION_UNVERIFIED` 的用户态 `nlos-driver-llm-http` 本地 KeyPool/HTTP 模型驱动、`starter-assistant-app` 样板包与桌面 KeyPool 桥接；[E-TRIAL-001](docs/evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](docs/evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）、兼容治理首包 `E1`（`W77` / `M-E1`：`9/9` SABI 通道全量入冻、`N / N-1 / N-2` 版本兼容矩阵、`deprecation-manifest.yaml` 弃用遥测与五语言 `v1.0` 黄金不可变语料库；[E-SABI-001](docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md)、[E-SABI-002](docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)）、核外兼容垫片 `E2`（`W78` / `M-E2`：无特权核外 `nlos-compat-shim`，支持 `N-1 / N-2 <-> N` SABI 与旧版 `minicbor <-> DriverProvider` 双向桥接及 `[DRV-SHIM-001]` 四层零秘密隔离；[E-SHIM-001](docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md)）、声明式迁移工具链 `E3`（`W78` / `M-E2`：`nlos-migrate` 清单/弃用静态检查器、`tools/sabi-compat-diff` 与 `[PKG-UPDATE-001]` 三态数据容器迁移回滚沙箱；[E-MIGRATE-001](docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md)）、发布者信任链与跨生态选择器门控 `E4`（`W79` / `M-E3`：`nlos-publisher-trust` 三级 Ed25519 PKI、单调 `RevocationEpoch` 吊销账本、`ApplicationId` 防抢注归属与 `nlos-plan` 7 类生态 Typed Selector 不可变句柄解析 + G3 `WaitingAuthorization` 条件物化门，正式闭合 `U-7` / `U-8`；[E-TRUST-001](docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md)）、商店治理目录与四门认证流水线 `E5`（`W79` / `M-E3`：`nlos-store-registry` OCI 内容寻址目录、不透明 `EntitlementToken` 幂等核销与三级 `RecallAdvisory` 撤回联动，连同 `nlos-certify` 四门自动化认证流水线与纯 Rust SPDX/锁文件供应链审计器，推进 `RISK-B-09` `open -> partial`；[E-STORE-001](docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md)、[E-CERTIFY-001](docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md)）、双层强沙箱与第三方市场样板/桌面商店面/供应链对抗 `E6`（`W80` / `M-E4`：`nlos-wasm-sandbox` 双层 `Process + Wasmtime` 强沙箱 `54/54` 逃逸对抗矩阵正式闭合 `U-9`、两个解耦工作区第三方参考 App/Driver 样板与 16 份字节确定性封存 `N-1` `.nlos-pkg` 基准制品、对接 `Z4` 的桌面商店透明面板 `H4`，以及六类 `H7` 供应链与吊销对抗回归矩阵 `17/17`；[E-SANDBOX-001](docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md)、[E-MARKET-001](docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md)、[E-MARKET-002](docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md)、[E-SECURITY-001](docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md)）以及跨版本升级总门禁与收口终审 `E7`（`W81` / `M-E5`：`[ROAD-E-001]` `HostEpoch 1 -> 2` 零重编译、零重打包、零重签升级门禁 `6/6` Rust + `5/5` Python `H7`、`ledger-schema v1.3` W81 收官时全量台账回填 `169 claims / 17 risks / 204 evidence-index` `H4` 及独立退出门终审 `H7`；[E-ROAD-001](docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md)、[E-LEDGER-001](docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md)、[W81](docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md)），[ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已晋升 `VERIFIED`，当前呈请人类维护者显式签字批复阶段 E `EXITED` 与 `SABI v1.0` 正式长期冻结（闭合 `RISK-B-05`）。Layer-3+ 物理真机掉电台架（`U-4`）、`1M_LOGICAL` 裸金属跨机 WAN 集群实测（`U-1`）、远端失联主机外部物理副作用擦除证明（`U-5`）、严禁免沙箱裸跑第三方原生二进制边界（`U-9` / 决策点 `E3`）、宿主 OS 商业安装器代码签名公证（`RISK-B-06`）与上游依赖周期复审（`RISK-B-09`）均按证据分级纪律如实登记于 [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md)。
-
-### Stage C 已验证工作包摘要（`C-core` + `C-XHOST`）
-
-| 工作包 | 状态 | 已验证范围摘要 |
-|---|---|---|
-| `C-CELL` — Cell 权威与联邦装配 | `Verified` | 本地七件套装配、联邦目录/迁移意图/对账检查点、`PartitionAutonomyGate` 断连自治门 |
-| `C-LEASE` — 配额 / 容量 / 独占设备 Lease | `Verified` | 三族 `SQLite WAL+FULL` 持久状态机、围栏屏障与非互换对账回执 |
-| `C-SYNC` — 跨库事件与制品同步 | `Verified` | 签名事件集合并、签名向量检查点、内容寻址 `ArtifactTransferPackage` 与同步感知 GC |
-| `C-SHARD` — TaskAuthority 分片与接管 | `Verified` | Schema v47 三 Record 对齐、六类端点接管屏障、生产级接管驱动绑定 |
-| `C-FANOUT` — 层级扇出与四域舱壁 | `Verified` | 有界层级扇出树、Merkle 结果根、6 维准入背压、4 域舱壁与 TCB 系统保留水位 |
-| `C-MIGRATE` — 进程迁移协议 | `Verified` | 严格有序 8 步迁移状态机、跨 `CellHost` 双 OS 进程端到端租约与能力重绑守恒 |
-| `C-SCHED` — 三层分布式调度器 | `Verified` | 稳态零全局锁 Worker 热路径、有界 DRR、租约安全工作窃取与反向背压卸载 |
-| `C-PARTITION` — 分区容错与重连收敛 | `Verified` | 四阶段重连收敛编排、`PartitionBoundedLossProof` 精确额度守恒证明 |
-| `C-BENCH` — 单机多分片分布式基准 | `Verified` | `1->8` 进程 Cell `4.44x` 扩展（`--release`）、`10K/100K_LOGICAL` `WAL+FULL`、5 类故障负载验证 |
-| `C-XHOST`（`001`–`005`）— 跨物理主机扩展（[ADR-0026](docs/management/adrs/0026-cross-physical-host-transport-and-consensus-expansion.md)） | `Verified` | `nlos-net` TLS 1.3 mTLS + 五轴 `CellFence`、跨时钟域保守偏斜租约、`nlos-consensus` 嵌入式 Raft 控制面（`N=1` 零开销直通）、跨主机流式同步与迁移、`ChaosTcpProxy` `H6` 多机混沌门禁 |
-
-### Stage D 已验证工作包摘要（`D-core` + `[ROAD-D-001]`）
-
-| 工作包 | 状态 | 已验证范围摘要 |
-|---|---|---|
-| `D-TOKENS-KIT` — 工业工作站视觉令牌与原语套件 | `Verified` | `Graphite` / `Paper` 100% 实心双主题（零毛玻璃/零发光/零 Emoji）与六大工业级 SOTA 可视化原语 |
-| `D-IPC-ENUM` — 12 域分页枚举与显控同构 | `Verified` | `IPC-D1..D8` 有界游标枚举（`limit <= 64`）、显式 `ControlScope`、爆炸半径预览与法定不可篡改禁区 |
-| `D-COMPOSITOR-WM` — 五平面 `Z0–Z4` 合成器与窗口管理 | `Verified` | 五模式平铺优先窗口管理器、`36px` 底部紧凑任务栏、`L0–L3` 渐进式披露 Store 与代际防伪输入路由 |
-| `D-OMNIBAR-MULTIMODAL` — 按需意图面板与多模态 | `Verified` | `Ctrl+Space` `Z3` 命令/意图面板、`TypedIntent` 预览、`[NL-AMBIG-001]` 歧义澄清门、语音流与内容寻址附件 |
-| `D-TRUSTED-UI` — `Z4` 安全确认屏、选择器与剪贴板门 | `Verified` | UAC/Polkit 级实心 `Z4` 安全确认屏（`350ms` 防劫持、`IRREVERSIBLE` 显式披露）、`ChooserGrant` 衰减选择器、污点感知剪贴板/拖拽 |
-| `D-TASK-SPACE-DAG` — `L1–L3` 任务空间与 DAG 编辑器 | `Verified` | `L1` 16 态承诺表、`L2` 单行按需归因抽屉、`L3` 正交 `TaskPlan` DAG 编辑器与 `TaskAttempt` 竞速泳道 |
-| `D-NOTIFY-SEARCH-OFFLINE` — 通知、Spotlight 搜索与离线自治 | `Verified` | 一次性 SHA-256 `ActionToken` 通知核销、`Ctrl+K` `0x1F` 非权威搜索守卫、`[DUI-OFFLINE-001]` 本地断网自治 |
-| `D-CONTROL-SETTINGS-A11Y` 与 `[ROAD-D-001]` — 控制中心、设置、无障碍与终验门 | `Verified` | 12 域 `SystemControlCenter`（108 项 Tauri 命令）、四层 `SettingsDomain` CAS、`KeychainReference`、`WCAG 2.2 AA`、`zh-CN / en-US` 双语包、1,000 轮零泄漏战役与非开发者多应用端到端门禁 |
-
-### Stage E 已验证工作包摘要（`E-core`：`E0`–`E7` + `[ROAD-E-001]`）
-
-| 工作包 | 状态 | 已验证范围摘要 |
-|---|---|---|
-| `E0`（`E-TRIAL-BOOTSTRAP`）— 本地开箱引导与 KeyPool 模型驱动 | `Verified (H4)` | `nlos-up` 一键引导器、用户态 `nlos-driver-llm-http`（直锁 `glm-5.3`、五维 `LlmTokenBudget`、`PROVIDER_ISOLATION_UNVERIFIED`）、`starter-assistant-app` 与桌面 Omnibar 桥接 |
-| `E1`（`E-SABI-POLICY-CORPUS`）— `9/9` SABI 入冻与五语言语料库 | `Verified (H4)` | `PrincipalHandshake` 入冻（`9/9` SABI 通道全量 `frozen = true`）、`N / N-1 / N-2` 兼容矩阵、`deprecation-manifest.yaml` 弃用遥测与 Rust/TS/Python/Go/C# `v1.0` 黄金不可变语料库 |
-| `E2`（`E-COMPAT-SHIM`）— 核外无特权兼容垫片 | `Verified (H4)` | 核外无特权 `nlos-compat-shim`（8 个核心 TCB crate 零反向依赖）、`N-1 / N-2 <-> N` SABI 与 `minicbor <-> DriverProvider` 双向桥接、`[DRV-SHIM-001]` 四层零秘密隔离（`40/40` 测试） |
-| `E3`（`E-MIGRATE-KIT`）— 静态契约检查器与迁移回滚沙箱 | `Verified (H4)` | `nlos-migrate`（`check | drill`）、`tools/sabi-compat-diff` 与 `[PKG-UPDATE-001]` 三态数据容器迁移及 SHA-256 逐位崩溃回滚沙箱（`18/18` Rust + `8/8` Python 测试） |
-| `E4`（`E-PUBLISHER-TRUST`）— 三级发布者 PKI 与生态选择器 | `Verified (H4)` | 三级 Ed25519 证书链（`SigningKeyCustodyVault` 中继托管）、单调 `RevocationEpoch` 防回滚吊销账本、`ApplicationId` 防抢注与 7 类 Typed Selector + G3 `WaitingAuthorization` 门控（闭合 `U-7`/`U-8`） |
-| `E5`（`E-STORE-CERTIFY`）— OCI 商店治理目录与四门认证 | `Verified (H4)` | `LocalOciCasStore` + `SqliteStoreRegistry` 双轨治理目录、不透明 `EntitlementToken` 幂等核销、三级 `RecallAdvisory` 撤回联动、`nlos-certify` 四门认证流水线与纯 Rust SPDX/锁文件供应链审计器 |
-| `E6`（`E-MARKET-SANDBOX-H7`）— 双层强沙箱、商店透明面与 `H7` 对抗 | `Verified (H4/H7)` | `nlos-wasm-sandbox` 双层 `Process + Wasmtime 50.0.1`（`54/54` 逃逸矩阵，闭合 `U-9`）、解耦第三方参考 App/Driver（`16` 份封存 `N-1` 基准包）、桌面商店透明面板（桌面共 `115` 项 Tauri 命令）与六类 `H7` 对抗矩阵（`17/17`） |
-| `E7`（`E-UPGRADE-GATE-ROADE001`）— `[ROAD-E-001]` 总门禁、台账 v1.3 与终审 | `Verified (H7/H4)` | `HostEpoch 1 -> 2` 零重编译/零重打包/零重签升级总门禁（`16/16` 封存 `N-1` SHA-256 不变，`6/6` Rust + `5/5` Python）、`ledger-schema v1.3` W81 收官时全量回填（`169 claims / 17 risks / 204 evidence-index`）、`ADR-0027` 晋升 `VERIFIED` 与 `W81` 独立终审 |
+- **阶段 E：** `E0`–`E7` 共 8 个工程包均为 `DONE`，保障等级为 `H4` / `H7`；[ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已 `VERIFIED`。[W81 终审](docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md)确认技术门禁 1–5 在评审基线内满足。正式退出与 SABI v1.0 长期冻结仍待维护者签字。
+- **W82 应用接入：** `IN_PROGRESS / PARTIALLY_MERGED`，`0/5` 车道完成正式整体验收。[PR #47](https://github.com/cty12356541/llmos/pull/47) 已合入 IPC 会话复用、受管 Worker 主体、SABI v1.1 契约和 Python SDK 前置件。三个新通道的实现、Worker 吊销联动、完整 SDK 客户端及 `qq-agent` 端到端验收待完成。
+- **证据边界：** [权威进度与证据快照](docs/management/stage-e-progress.md#2026-11-14-进度盘点)登记 169 条声明、205 条证据、17 项风险，`H8` 声明与证据均为 0。[残余风险清单](docs/management/exit-unknown-risks.md)记录物理掉电、跨主机规模及原生安装器签名公证等边界。
+- **下一步：** 先完成 W82 验收，再推进 SDK 分发和完整用户流程，继而积累生产生态证据。[NLOS 总任务计划书](docs/management/nlos-goal-delivery-plan.md)按 v0.5 编制，状态为 `PROPOSED`，实施须另行批准。
 
 ---
 
@@ -225,7 +183,7 @@ cargo run -p nlos-up -- desktop --seed-sample-app
 1. **原生 Tauri 桌面工作站窗口（连接真实常驻控制面 + 本机 `glm-keypool` `glm-5.3`）**：运行 `cargo run -p nlos-up -- desktop --seed-sample-app`（Windows GNU 环境若安装了 `C:\msys64\ucrt64` 会由 `nlos-up` 自动注入 `windres`/`gcc` 链接参数，免手工配置直接弹出 `1180x800` `llmos 任务管理器` 窗口；按 `Ctrl+Space` 或点击底部 `36px` 任务栏命令槽即可打开已直连 `glm-5.3` 的 `Z3` 命令面板并体验“模型辅助拆解”）。
 2. **浏览器即时前端预览（`[DUI-OFFLINE-001]` 免编译秒开 UI 布局）**：运行 `cd desktop && npm run dev`，在浏览器访问 `http://localhost:1420` 即可零 Rust 编译等待即时查看五平面 `Z0–Z4` `Graphite / Paper` 实心工业工作站布局、底部 `36px` 任务栏、`L0–L3` 渐进式披露切换、`Z1` 任务空间、`Ctrl+Space` `Z3` 命令面板（本地确定性回退态）与 `Z4` 实心安全确认屏。
 
-完整跨平台操作步骤与诚实公证边界见 [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md)，多步 `TaskPlan` + `Artifact` 因果血缘生产力样板见 [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md)。
+HTTP 模型回执保留 `PROVIDER_ISOLATION_UNVERIFIED` 标记。完整试用步骤与验证边界见 [`docs/developers/quickstart-trial.md`](docs/developers/quickstart-trial.md)，多步 `TaskPlan` + `Artifact` 因果血缘生产力样板见 [`examples/starter-assistant-app/README.md`](examples/starter-assistant-app/README.md)。
 
 ### 1. 构建工作区、运行测试与包管理 CLI
 
@@ -361,7 +319,7 @@ npm run tauri dev
 | 分布式系统与共识 | `nlos-cell`、`nlos-lease`、`nlos-net`、`nlos-consensus`（Stage C 已 `EXITED`） |
 | 控制面守护进程与 CLI | `nlos-system-control`、`nlos-package`（`system-control-daemon`、`system-control-cli` 与包工具链） |
 | TypeScript / Tauri 2 桌面 | `desktop/`（Stage D 已 `EXITED`，五平面 `Z0–Z4` 工业工作站壳） |
-| 开箱引导、长期兼容、商店治理与多语言 SDK | `nlos-up`、`nlos-driver-llm-http`、`nlos-compat-shim`、`nlos-migrate`、`nlos-publisher-trust`、`nlos-store-registry`、`nlos-certify`、`nlos-wasm-sandbox`、`nlos-schema`、`sdk/`、`tests/stage_e_road_e001_upgrade_gate/`（Stage E `READY_FOR_MAINTAINER_SIGNOFF`：`E0`–`E7` 已验证 `H4`/`H7`，`ADR-0027` `VERIFIED`；详见 [`stage-e-progress.md`](docs/management/stage-e-progress.md)） |
+| 开箱引导、长期兼容、商店治理与多语言 SDK | `nlos-up`、`nlos-driver-llm-http`、`nlos-compat-shim`、`nlos-migrate`、`nlos-publisher-trust`、`nlos-store-registry`、`nlos-certify`、`nlos-wasm-sandbox`、`nlos-schema`、`sdk/`、`tests/stage_e_road_e001_upgrade_gate/`（[阶段 E 进度](docs/management/stage-e-progress.md)） |
 
 ---
 
@@ -376,7 +334,7 @@ npm run tauri dev
 | [`docs/management/stage-b-progress.md`](docs/management/stage-b-progress.md) | Stage B 权威进度台账（`EXITED`） |
 | [`docs/management/stage-c-progress.md`](docs/management/stage-c-progress.md) | Stage C 权威进度台账（`EXITED`） |
 | [`docs/management/stage-d-progress.md`](docs/management/stage-d-progress.md) | Stage D 权威进度台账（`EXITED`） |
-| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | Stage E 权威进度台账（`IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF`：`E0`–`E7` Verified `H4`/`H7`；`ADR-0027` `VERIFIED`） |
+| [`docs/management/stage-e-progress.md`](docs/management/stage-e-progress.md) | 阶段 E 权威进度、工作包及验收门 |
 | [`docs/management/exit-unknown-risks.md`](docs/management/exit-unknown-risks.md) | Stage B / C / D / E 退出未知与残余风险清单（`17` 项风险，`P0 = 0`） |
 | [`AGENTS.md`](AGENTS.md) | 仓库内所有 Agent 与贡献者的强制工作规则 |
 
