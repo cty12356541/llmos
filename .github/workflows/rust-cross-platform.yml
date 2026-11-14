@@ -13,6 +13,15 @@ on:
 permissions:
   contents: read
 
+# 全平台 run 步骤统一 bash(-e 失败即红):Windows 默认 pwsh 只以最后一行
+# 命令的退出码决定步骤成败,中间命令失败会被静默吞掉。2026-11-03 夜间
+# Run 41559372100 实证:windows-latest 的 schema 套件 "Ran 24 tests ...
+# FAILED (failures=1)" 但步骤/作业报 success。全部 run 步骤已逐一审计为
+# 纯 POSIX 命令,无 pwsh 专属语法。
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: rust-cross-platform-${{ github.ref }}
   cancel-in-progress: true

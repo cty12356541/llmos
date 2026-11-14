@@ -1162,9 +1162,16 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
     ));
 
     let resolver = Arc::new(MonotonicEndpointResolver::new());
+    // Handshake budgets are deliberately generous (10s): under 8-way parallel
+    // PoC load, CPU starvation can push the 3-phase dial (TCP -> TLS -> 5-axis
+    // fence) past tight budgets, which surfaces as pre-payload failure kinds
+    // (`PeerFenceHandshakeRejected`) and pollutes the taxonomy assertions
+    // below (CI run 42966020087 job 130343332863 observed exactly this on
+    // ubuntu). Only the 120ms `rpc_call_timeout` is load-bearing for the
+    // half-open stall taxonomy under test.
     let fast_cfg = NetTransportConfig {
-        connect_and_tls_timeout: Duration::from_secs(2),
-        fence_handshake_timeout: Duration::from_secs(2),
+        connect_and_tls_timeout: Duration::from_secs(10),
+        fence_handshake_timeout: Duration::from_secs(10),
         rpc_call_timeout: Duration::from_millis(120),
         bulk_transfer_timeout: Duration::from_secs(5),
         timeout_elapsed_ticks: 15,
@@ -1268,13 +1275,16 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
             fence_policy: srv3_deps.fence_policy.as_ref(),
             nonce_registry: srv3_deps.nonce_registry.as_ref(),
             now_ms: NOW_MS,
-            handshake_timeout: Duration::from_secs(2),
+            // Same generous budget as the client side (`fast_cfg`): under
+            // parallel load the client may legitimately take longer than 2s
+            // between handshake completion and writing the business frame.
+            handshake_timeout: Duration::from_secs(10),
         };
         nlos_net::run_server_fence_handshake(&mut tls, &mat, &ctx)
             .await
             .expect("server fence");
         // Read the full business `ControlRpcRequest` frame, then drop with SO_LINGER=0 -> TCP RST!
-        let frame = read_mux_frame(&mut tls, 256 * 1024, Duration::from_secs(2))
+        let frame = read_mux_frame(&mut tls, 256 * 1024, Duration::from_secs(10))
             .await
             .expect("read business frame");
         assert!(matches!(frame, MuxFrame::ControlRpcRequest { .. }));
@@ -1371,6 +1381,39 @@ async fn poc_04_deterministic_socket_failure_taxonomy_and_reconciliation_fence()
             300,
         ))
         .expect("hint s1 stalled");
+
+    // Condition-based establishment guard: the stall-sensitive assertions
+    // below presuppose that the dial to `srv1` itself succeeded. Under 8-way
+    // parallel PoC CPU starvation the fence handshake phase can time out and
+    // surface as `PeerFenceHandshakeRejected`/`Unavailable` instead of the
+    // intended `ReadTimeout`/`DeadlineExceededUncertain` taxonomy (CI run
+    // 42966020087 job 130343332863). Warm the pooled session first with
+    // bounded retries on the load-transient TLS/fence handshake phases, so
+    // the measured call below exercises ONLY the half-open stall.
+    let mut session_established = false;
+    let mut last_warmup_err = None;
+    for attempt in 0..6u32 {
+        session_established = match transport.get_or_dial_session(node_srv1.cell).await {
+            Ok(_) => true,
+            Err(
+                err @ (DialSessionError::TlsHandshake(_) | DialSessionError::FenceHandshake(_)),
+            ) => {
+                last_warmup_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                false
+            }
+            Err(err) => {
+                panic!("4c warm-up dial failed non-transiently (attempt {attempt}): {err}")
+            }
+        };
+        if session_established {
+            break;
+        }
+    }
+    assert!(
+        session_established,
+        "srv1 session must establish before the stall-sensitive call; last warm-up error: {last_warmup_err:?}"
+    );
 
     let key_readonly = IdempotencyKey::from_bytes([0x4c; 16]);
     let contract_readonly = RemoteCallContract::new([0x4c; 16], key_readonly, 100, 2, 0, false);
@@ -2221,6 +2264,44 @@ impl BulkStreamHandler for HoldableBulkHandler {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn poc_08_post_first_byte_bulk_producer_reconciliation_and_bounded_resource_accounting() {
+    // Condition-based establishment guard shared by the stall-sensitive call
+    // sites below (8b, reconciled retry, 8d): their assertions presuppose
+    // that the dial to `node_b` itself succeeded. Under 8-way parallel PoC
+    // CPU starvation the TLS/fence handshake phase can time out and surface
+    // as `Unavailable`/pre-payload kinds instead of the intended
+    // post-first-byte taxonomy (same family as poc_04; see the matching
+    // guard there). Warm the pooled session first with bounded retries on
+    // the load-transient TLS/fence handshake phases, so each measured call
+    // below exercises ONLY its own stall/classification window.
+    // Non-transient dial errors panic immediately and must not be retried
+    // away.
+    async fn warm_dial_session(transport: &MtlsCellTransport, target: CellIdentity, label: &str) {
+        let mut established = false;
+        let mut last_warmup_err = None;
+        for attempt in 0..6u32 {
+            established = match transport.get_or_dial_session(target).await {
+                Ok(_) => true,
+                Err(
+                    err @ (DialSessionError::TlsHandshake(_) | DialSessionError::FenceHandshake(_)),
+                ) => {
+                    last_warmup_err = Some(err);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    false
+                }
+                Err(err) => {
+                    panic!("{label} warm-up dial failed non-transiently (attempt {attempt}): {err}")
+                }
+            };
+            if established {
+                break;
+            }
+        }
+        assert!(
+            established,
+            "{label}: session must establish before the stall-sensitive call; last warm-up error: {last_warmup_err:?}"
+        );
+    }
+
     let dir = TempTestDir::new("s8-f2-f3-hardening");
     let identity =
         Arc::new(IdentityAuthority::open(dir.sub("identity")).expect("open IdentityAuthority"));
@@ -2241,9 +2322,18 @@ async fn poc_08_post_first_byte_bulk_producer_reconciliation_and_bounded_resourc
         completed_streams: Arc::clone(&completed_streams),
     });
 
+    // Handshake budgets are deliberately generous (10s): under 8-way parallel
+    // PoC load, CPU starvation can push the 3-phase dial (TCP -> TLS -> 5-axis
+    // fence) past tight budgets, which surfaces as pre-payload failure kinds
+    // (`Unavailable` / `PeerFenceHandshakeRejected`) and pollutes the
+    // post-first-byte taxonomy assertions below (12-hog x 6-round full-binary
+    // stress on this host reproduced exactly this; same family as poc_04's
+    // CI run 42966020087). The `timeout_elapsed_ticks: 12` accounting and the
+    // RPC/bulk stall budgets stay untouched: they are load-bearing for the
+    // classifications under test.
     let cfg = NetTransportConfig {
-        connect_and_tls_timeout: Duration::from_secs(3),
-        fence_handshake_timeout: Duration::from_secs(3),
+        connect_and_tls_timeout: Duration::from_secs(10),
+        fence_handshake_timeout: Duration::from_secs(10),
         rpc_call_timeout: Duration::from_secs(2),
         bulk_transfer_timeout: Duration::from_secs(3),
         timeout_elapsed_ticks: 12,
@@ -2336,6 +2426,12 @@ async fn poc_08_post_first_byte_bulk_producer_reconciliation_and_bounded_resourc
     );
     assert_eq!(accounting_a.peak_active_connection_count(), 0);
 
+    // 8b is the first real dial in this PoC and its `DeadlineExceededUncertain`
+    // assertion presupposes the dial succeeded (8a above only exercises
+    // pre-dispatch refusals, no dial). Warm the pooled session with bounded
+    // retries so the measured window is the mid-stream producer fault only.
+    warm_dial_session(&transport_a, node_b.cell, "8b").await;
+
     // --- (8b / F2 Post-First-Byte) Mid-stream oversize chunk `k = 1` on `side_effecting = true` ---
     // Chunk 0 (`64 KiB`) crosses the wire after `BulkStreamOpen` (`AfterFirstPayloadByte`),
     // then chunk 1 faults with `MAX_BULK_CHUNK_BYTES + 1`:
@@ -2408,6 +2504,11 @@ async fn poc_08_post_first_byte_bulk_producer_reconciliation_and_bounded_resourc
             .reconciliation_tracker()
             .mark_reconciled(fault_key)
     );
+    // The reconciled retry re-dials `node_b` over a fresh session (the 8b
+    // abort tore the old one down) and its `.expect` presupposes dial
+    // success; warm the pool first so the measured window is the
+    // reconciliation-gated retry only.
+    warm_dial_session(&transport_a, node_b.cell, "reconciled-retry").await;
     let retry_out = transport_a
         .stream_bulk_chunks(node_b.cell, &fault_contract, vec![vec![0x33u8; 1024]])
         .await
@@ -2442,6 +2543,11 @@ async fn poc_08_post_first_byte_bulk_producer_reconciliation_and_bounded_resourc
 
     // --- (8d / F3) `max_concurrent_bulk_streams = 2` Rejects 3rd Concurrent Stream Fail-Closed ---
     hold_drain.store(1, Ordering::Release);
+    // 8d's stream-cap classification presupposes an established session too
+    // (`close_all_sessions` above emptied the pool): re-warm before the
+    // concurrent spawn burst so the measured window is the stream cap,
+    // not the dial.
+    warm_dial_session(&transport_a, node_b.cell, "8d").await;
     let mut stream_tasks = Vec::new();
     for idx in 0u8..3 {
         let t = Arc::clone(&transport_a);

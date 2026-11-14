@@ -1,5 +1,6 @@
 //! Cross-lane W77-INT integration test pinning `schema/golden/epochs/v1.0/`
-//! against `nlos-schema` (9/9 frozen registry, `VersionCompatibilityPolicy`,
+//! against `nlos-schema` (12/12 frozen registry since the W82-B SABI v1.1
+//! additive extension, `VersionCompatibilityPolicy`,
 //! `canonical_deprecation_manifest`, and byte-for-byte deterministic wire
 //! round-trip across all 11 epoch v1.0 golden vectors).
 
@@ -7,9 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nlos_schema::{
-    SABI_CHANNEL_CONTROL_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA, SABI_ENVELOPE_SCHEMA,
-    SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
-    SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
+    SABI_BLOB_REFERENCE_SCHEMA, SABI_CHANNEL_CONTROL_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA,
+    SABI_ENVELOPE_SCHEMA, SABI_LLM_GATEWAY_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA,
+    SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
+    SABI_TAKEOVER_CONTROL_SCHEMA, SABI_TOOL_SANDBOX_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
     VersionCompatibilityPolicy, VersionRoute, canonical_deprecation_manifest,
     decode_create_channel_request, decode_driver_provider_request,
     decode_get_system_control_request, decode_inspect_wait_request,
@@ -46,7 +48,7 @@ fn epoch_v1_0_corpus_envelope_and_core_control_channels_round_trip() {
     let dir = epoch_v1_dir();
     let policy = VersionCompatibilityPolicy::default();
     let manifest = canonical_deprecation_manifest().expect("canonical deprecation manifest");
-    assert_eq!(manifest.channels.len(), 9);
+    assert_eq!(manifest.channels.len(), 12);
 
     let all_channels = [
         SABI_ENVELOPE_SCHEMA,
@@ -58,6 +60,9 @@ fn epoch_v1_0_corpus_envelope_and_core_control_channels_round_trip() {
         SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
         SABI_DRIVER_PROVIDER_SCHEMA,
         SABI_CHANNEL_CONTROL_SCHEMA,
+        SABI_LLM_GATEWAY_SCHEMA,
+        SABI_TOOL_SANDBOX_SCHEMA,
+        SABI_BLOB_REFERENCE_SCHEMA,
     ];
     for channel in all_channels {
         assert_eq!(

@@ -2199,10 +2199,40 @@ class StageELedgerCoverageSelfTests(unittest.TestCase):
         self.assertTrue(report["ok"], msg=f"pre-backfill failed: {report['errors']}")
         self.assertEqual(report["baseline"]["open_p0_risks"], 0)
         sim_counts = report["simulated_post_backfill"]["counts"]
-        self.assertEqual(sim_counts["claims_total"], 169)
-        self.assertEqual(sim_counts["risks_total"], 17)
-        self.assertEqual(sim_counts["evidence_index_total"], 204)
-        self.assertEqual(sim_counts["stage_e_evidence_indexed"], 16)
+        cls = report["classification"]
+
+        # Invariants instead of absolute pins: the simulated post-backfill tree
+        # copies the audited baseline ledgers verbatim and appends exactly the
+        # emitted candidate blocks, so every total must equal its baseline plus
+        # candidate count under any repo state (pre- or post-W81-INT merge).
+        # Absolute equality pins (169/17/204/16) broke on 2026-11-03 when the
+        # legitimate E-DOGFOOD-001 registration (+1 -> 205) turned this standing
+        # self-test -- and therefore main CI -- red on all three platforms.
+        self.assertEqual(
+            sim_counts["claims_total"],
+            report["baseline"]["claims_total"] + cls["candidate_claim_entries_to_add"],
+        )
+        self.assertEqual(
+            sim_counts["risks_total"],
+            report["baseline"]["risks_total"] + cls["candidate_risk_entries_to_add"],
+        )
+        self.assertEqual(
+            sim_counts["evidence_index_total"],
+            report["baseline"]["evidence_indexed"] + cls["candidate_evidence_entries_to_add"],
+        )
+        # Merged-baseline floors (never regress below the W81-INT backfill),
+        # mirroring the standing gate's assertGreaterEqual style so future
+        # legitimate ledger growth keeps passing.
+        self.assertGreaterEqual(sim_counts["claims_total"], 169)
+        self.assertGreaterEqual(sim_counts["risks_total"], 17)
+        self.assertGreaterEqual(sim_counts["evidence_index_total"], 204)
+        self.assertGreaterEqual(
+            sim_counts["stage_e_evidence_indexed"], REQUIRED_STAGE_E_MIN_EVIDENCE_COUNT
+        )
+        self.assertEqual(
+            sim_counts["stage_e_evidence_indexed"],
+            sim_counts["stage_e_evidence_on_disk"],
+        )
 
     def _reset_repo_to_pre_w81_backfill(self, repo: Path) -> int:
         """Reset claims.yaml, risks.yaml, and evidence-index.yaml in `repo` to pre-W81 state."""

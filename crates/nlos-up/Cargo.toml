@@ -16,6 +16,8 @@ nlos-clock = { path = "../nlos-clock" }
 nlos-driver-llm-http.workspace = true
 nlos-identity = { path = "../nlos-identity" }
 nlos-ipc = { path = "../nlos-ipc" }
+nlos-package = { path = "../nlos-package" }
+nlos-process = { path = "../nlos-process" }
 nlos-resource = { path = "../nlos-resource" }
 nlos-schema = { path = "../nlos-schema" }
 nlos-slice-k = { path = "../nlos-slice-k" }

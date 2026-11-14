@@ -29,6 +29,22 @@ use std::sync::{Mutex, MutexGuard};
 
 use nlos_types::{Generation, ProcessId};
 
+/// 一条监管注册在 kill 时的信号作用域(W82-C 托管约定 C)。
+///
+/// `Process` 是既有语义(只对注册 os pid 发信号);`ProcessGroup` 记录该
+/// 子进程以进程组组长身份拉起(unix `process_group(0)`,pgid == os pid),
+/// kill 信号作用于整组。scope 是注册期事实,登记后不可变:同
+/// `(process, generation, os pid)` 的 replay 携带不同 scope 属于矛盾
+/// 陈述,fail-closed 拒绝;代际推进(Supersede)自然携带新 scope。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KillScope {
+    /// 仅注册 os pid 本体(经典单进程语义)。
+    Process,
+    /// 注册 os pid 的整个进程组(树回收语义;Windows 上 `taskkill /T`
+    /// 等价覆盖)。
+    ProcessGroup,
+}
+
 /// One request to bind an OS pid to an authority-assigned Process identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegisterSupervisorPidRequest {
@@ -47,6 +63,8 @@ pub struct SupervisorPidEntry {
     pub process_generation: Generation,
     pub os_pid: u32,
     pub registered_at_ms: u64,
+    /// 本注册的 kill 作用域(见 [`KillScope`])。
+    pub kill_scope: KillScope,
 }
 
 /// Outcome of one supervised pid registration.
@@ -96,6 +114,15 @@ pub enum SupervisorPidRegistryError {
         registered: u32,
         presented: u32,
     },
+    /// The same generation and OS pid replayed with a different kill
+    /// scope; the registration's scope is an immutable fact (fail-closed,
+    /// zero side effect).
+    KillScopeMismatch {
+        process_id: ProcessId,
+        generation: Generation,
+        registered: KillScope,
+        presented: KillScope,
+    },
     LockPoisoned,
 }
 
@@ -125,6 +152,15 @@ impl fmt::Display for SupervisorPidRegistryError {
                 formatter,
                 "os pid rebind rejected for the same process generation: \
                  registered {registered}, presented {presented}"
+            ),
+            Self::KillScopeMismatch {
+                registered,
+                presented,
+                ..
+            } => write!(
+                formatter,
+                "kill scope mismatch rejected for the same registration: \
+                 registered {registered:?}, presented {presented:?}"
             ),
             Self::LockPoisoned => formatter.write_str("supervisor pid registry lock is poisoned"),
         }
@@ -169,12 +205,32 @@ impl SupervisorPidRegistry {
         &self,
         request: RegisterSupervisorPidRequest,
     ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
+        self.register_at_scope(request, KillScope::Process)
+    }
+
+    /// Registers with an explicit [`KillScope`] — the scoped face
+    /// supervised group spawns (W82-C) register through. Same fail-closed
+    /// gate order as [`Self::register`], plus: an exact-replay presentation
+    /// carrying a *different* scope is a contradictory statement about an
+    /// immutable registration fact and fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a stale generation, a same-generation OS pid rebind,
+    /// a same-registration kill-scope contradiction, or a poisoned registry
+    /// lock; rejections have zero side effect.
+    pub fn register_at_scope(
+        &self,
+        request: RegisterSupervisorPidRequest,
+        kill_scope: KillScope,
+    ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
         let mut entries = self.lock()?;
         let entry = SupervisorPidEntry {
             process_id: request.process_id,
             process_generation: request.process_generation,
             os_pid: request.os_pid,
             registered_at_ms: request.registered_at_ms,
+            kill_scope,
         };
         let Some(&current) = entries.get(&request.process_id) else {
             entries.insert(request.process_id, entry);
@@ -182,6 +238,14 @@ impl SupervisorPidRegistry {
         };
         if current.process_generation == request.process_generation {
             if current.os_pid == request.os_pid {
+                if current.kill_scope != kill_scope {
+                    return Err(SupervisorPidRegistryError::KillScopeMismatch {
+                        process_id: request.process_id,
+                        generation: request.process_generation,
+                        registered: current.kill_scope,
+                        presented: kill_scope,
+                    });
+                }
                 // Exact replay: the original entry (with its original
                 // `registered_at_ms`) stays in place untouched.
                 return Ok(SupervisorPidDecision::Replayed(current));

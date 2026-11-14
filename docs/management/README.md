@@ -185,12 +185,14 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 限制在制品：每位实现者最多一个主要 `IN_PROGRESS` Work Package；紧急故障除外。
 
-## 11.3 阶段 E 管理入口（兼容制度与生态规模化，技术退出门禁 1–5 已闭环 IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF）
+## 11.3 阶段 E 管理入口（兼容制度与生态规模化，IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF）
+
+截至 2026-11-14，阶段 A–D 按各自评审边界 `EXITED`。阶段 E 的 `E0–E7` 已完成 `8/8` 个工程工作包（`H4` / `H7`），W81 终审记录技术退出门禁 1–5 已满足，门禁 6 仍待维护者签字。详见[当前进度盘点](./stage-e-progress.md#2026-11-14-进度盘点)。
 
 - 阶段 E 权威进度单与依赖感知互斥波次编排：[stage-e-progress.md](./stage-e-progress.md)（2026-10-29 `W76` 经维护者批复阶段 C/D 正式退出后立项开启，2026-10-30 `W76.1` 增量纳管契约冻结收口与开箱试用先行波，2026-10-30 `W77-PRE` 完成先行开箱试用工作包 **`E0`（`E-TRIAL-BOOTSTRAP`） / 里程碑 `M-E0.5`（`DONE`，保障等级：`H4`；证据 [E-TRIAL-001](../evidence/stage-e/e-trial-001-llm-http-driver.md)、[E-TRIAL-002](../evidence/stage-e/e-trial-002-quickstart-and-starter-app.md)）**，同日 `W77` 完成兼容治理首包 **`E1`（`E-SABI-POLICY-CORPUS`） / 里程碑 `M-E1`（`DONE`，保障等级：`H4`；证据 [E-SABI-001](../evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md)、[E-SABI-002](../evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)——达成 9/9 SABI 通道全量入冻、`N / N-1 / N-2` 兼容矩阵、`deprecation-manifest.yaml` 弃用遥测与五语言 `v1.0` 黄金不可变语料库）**，2026-10-31 `W78` 完成核外兼容垫片 **`E2`（`E-COMPAT-SHIM`）与迁移工具链 `E3`（`E-MIGRATE-KIT`） / 里程碑 `M-E2`（`DONE`，保障等级：`H4`；证据 [E-SHIM-001](../evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md)、[E-MIGRATE-001](../evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md)）**，2026-10-31 `W79` 完成发布者信任链与生态选择器门控 **`E4`（`E-PUBLISHER-TRUST`，正式闭合 `U-7` / `U-8`）及 OCI 商店治理目录与四门自动化认证流水线 `E5`（`E-STORE-CERTIFY`，推进 `RISK-B-09` `open -> partial`） / 里程碑 `M-E3`（`DONE`，保障等级：`H4`；证据 [E-TRUST-001](../evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md)、[E-STORE-001](../evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md)、[E-CERTIFY-001](../evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md)）**，2026-11-01 `W80` 完成三平台双层 Wasm 强沙箱 `nlos-wasm-sandbox`（正式闭合 `U-9`）、解耦第三方参考 App/Driver 市场样板与字节冻结签名 `N-1` 基准包、桌面商店透明面与 `Z4` 联动及六类供应链与吊销对抗回归矩阵 **`E6`（`E-MARKET-SANDBOX-H7`） / 里程碑 `M-E4`（`DONE`，保障等级：`H4` / `H7`；证据 [E-SANDBOX-001](../evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md)、[E-MARKET-001](../evidence/stage-e/e-market-001-reference-apps-and-drivers.md)、[E-MARKET-002](../evidence/stage-e/e-market-002-desktop-store-transparency-ui.md)、[E-SECURITY-001](../evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md)，经远端三平台 CI Run `41324113255` `9/9 PASS` 验证）**，**2026-11-02 `W81` 完成 `[ROAD-E-001]` 主系统 `N-1 -> N` 零重编译跨版本升级全链路门禁、`ledger-schema v1.3` 阶段 E 机器台账全量回填与独立退出门终审 `E7`（`E-UPGRADE-GATE-ROADE001`） / 里程碑 `M-E5`（`DONE`，保障等级：`H7` / `H4`；证据 [E-ROAD-001](../evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md)、[E-LEDGER-001](../evidence/stage-e/e-ledger-001-v13-conformance-audit.md)、[w81-stage-e-exit-gates.md](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md) [`SATISFIED-WITH-BOUNDARIES`, `H7`, `P0=0`]）**；当前阶段总体状态严守 `AGENTS.md` 第 7 条保持 **`IN_PROGRESS / NOT EXITED`（`READY_FOR_MAINTAINER_SIGNOFF`）**——技术退出门禁 1–5 已全数闭环，呈请人类维护者显式签字批复阶段 E `EXITED` 与 `SABI v1.0` 正式长期冻结（闭合 `RISK-B-05`），并诚实对比列明 `E-deferred` 4 项外部物理硬件/商业资质/组织边界）
-- 阶段 E 总体架构决策记录（长期兼容制度、核外兼容垫片与生态商店治理）：[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（**`VERIFIED`** 2026-11-02 `W81`：2026-10-29 `W76` 立项、2026-10-31 `W78` 晋升 `ACCEPTED`，由 `W77-PRE` / `W77`–`W81` `E0`..`E7` 全部 16 份阶段 E 证据（`13 H4 + 3 H7`，含 [E-ROAD-001](../evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md) 与独立终审 [w81-stage-e-exit-gates.md](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)）依 `ADR-0027 §6.1` 触发条件实证闭环晋升 **`VERIFIED`**；同时保留人类维护者对 `SABI v1.0` 正式长期冻结（闭合 `RISK-B-05`）与阶段 E `EXITED` 的显式签字护栏）
-- 需求/风险/证据机器台账 Schema：[ledger-schema.md](./ledger-schema.md) **`v1.3`**（2026-10-29 `W76-SCHEMA-V13` 提交 `ed64ae3` 按 `FROZEN-additive` 纪律完成 `v1.2 -> v1.3` 纯增量升级；`2026-11-02 W81` 完成阶段 E 全量回填后 [claims.yaml](./claims.yaml) 共 **`169`** 条声明（`B:71 + C:35 + D:10 + E:53`，`44 H4 + 9 H7`）、[risks.yaml](./risks.yaml) 共 **`17`** 条风险（`open_P0 = 0`）、[evidence-index.yaml](./evidence-index.yaml) 共 **`204`** 条双向索引证据（含阶段 E 全部 `16` 份），`lint_claims.py` `0 ERROR`、`test_lint_claims` `44/44 OK`、[verify_stage_e_ledger_coverage.py](../../tools/verify_stage_e_ledger_coverage.py) `--mode strict` `PASS`）
-- 后续生态破壁波次立项（不阻塞 `W81` 收官与 `SABI v1.0` 冻结，`IN_PROGRESS / EXECUTING`（2026-11-02 启动，Phase 1 三车道并行），保障等级：`DESIGN`）：`qq-agent`（`W1 -> W4`）跨工作区 Dogfood 二期与 SABI 最小完备「窄腰（Narrow Waist）」打通波次 **`W82`**（闭合 `L-008` ~ `L-015`：`L-015` 为 2026-11-02 维护者裁定纳入的 `ChannelControl` 大载荷传递原语（并入 `W82-B`，以绝对安全为设计宗旨，选项 B `Capability` 引用传递默认优先）；既有 5 通道单连接多轮复用、`WaitControl`/`ServiceDirectory`/`OperationControl`/`--auth-socket` 挂载与 `nlos-sdk` 独立 wheel 打包 + `SABI v1.1` 纯增量新增受控 LLM 五维预算网关与沙箱工具委托 2 个薄通道 + 受管外部 Worker 环境变量注入，详见 [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` 与 [W81 独立终审 BOUND-E-06](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)）
+- 阶段 E 总体架构决策记录（长期兼容制度、核外兼容垫片与生态商店治理）：[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md)（**`VERIFIED`** 2026-11-02 `W81`：2026-10-29 `W76` 立项、2026-10-31 `W78` 晋升 `ACCEPTED`，以 W81 收官时入账的 16 份阶段 E 证据（`13 H4 + 3 H7`，含 [E-ROAD-001](../evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md) 与独立终审 [w81-stage-e-exit-gates.md](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)）满足 `ADR-0027 §6.1` 触发条件并晋升 **`VERIFIED`**；同时保留人类维护者对 `SABI v1.0` 正式长期冻结（闭合 `RISK-B-05`）与阶段 E `EXITED` 的显式签字护栏）
+- 机器台账采用 [ledger-schema.md](./ledger-schema.md) `v1.3`。截至 2026-11-14，[claims.yaml](./claims.yaml) 登记 `169` 条声明（`B:71 + C:35 + D:10 + E:53`，阶段 E 为 `44 H4 + 9 H7`），[risks.yaml](./risks.yaml) 登记 `17` 项风险（`open_P0 = 0`），[evidence-index.yaml](./evidence-index.yaml) 登记 `205` 条证据。阶段 E 的 `17` 条为 W81 收官时的 `16` 条（`13 H4 + 3 H7`）加上 [E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md)（`POC`）。全仓 `H8` 声明与证据均为 `0`。W81 收官时全仓记录为 `204` 条证据，详见 [E-LEDGER-001](../evidence/stage-e/e-ledger-001-v13-conformance-audit.md)。
+- 后续生态接入波次 `W82`（`L-008–L-015`）为 `IN_PROGRESS / PARTIALLY_MERGED`。已合入 A/C 主体、B-1 契约层和 D 的 Python SDK 前置工作。B-2/B-3/B-4 服务实现、C 吊销联动、D 主体和 INT 的 qq-agent 端到端验收待完成。后续先完成 W82 应用接入，再推进 SDK 与发行、形成用户闭环，继而补充生产生态证据。[PR #47](https://github.com/cty12356541/llmos/pull/47) · [车道细目和取证范围](./stage-e-progress.md#2026-11-14-进度盘点)
 - 规范路线：[v0.5 第 28.5 节](../design/06-架构设计总纲-v0.5.md)（`[ROAD-E-001]`）
 
 ## 11.4 阶段 D 管理入口（完整自然语言桌面，已 EXITED（2026-10-29 W76 维护者显式批复退出））
@@ -241,7 +243,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
 
-第一个建议纵切面：
+阶段 B 立项时建议的首个纵切面：
 
 ```text
 signed Package
@@ -254,6 +256,6 @@ signed Package
   → CLI/NL inspect and control
 ```
 
-在该纵切面通过前，不并行冻结完整桌面框架、分布式数据库或公共插件 ABI。
+阶段 B 立项时以该纵切面通过作为并行冻结完整桌面框架、分布式数据库和公共插件 ABI 的前置条件。
 
 阶段 B 的实现状态、当前主线工作包、提交和 Evidence 以[权威进度单](./stage-b-progress.md)为准。任何完成的实现或验证工作都必须在对应 canonical commit 中同步更新该进度单。
