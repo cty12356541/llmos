@@ -1,0 +1,65 @@
+{
+  "status": "PASS",
+  "schema_bytes": 27,
+  "payload_limit": 65536,
+  "digest_bytes": 32,
+  "proposed_chunk_cap": 65408,
+  "canonical_max_overhead": 78,
+  "canonical_max_encoded": 65486,
+  "vectors": [
+    {
+      "offset": "0",
+      "max_chunk": 65469,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65603,
+      "proposed_65408_chunk_encoded": 65475
+    },
+    {
+      "offset": "1",
+      "max_chunk": 65467,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65605,
+      "proposed_65408_chunk_encoded": 65477
+    },
+    {
+      "offset": "127",
+      "max_chunk": 65467,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65605,
+      "proposed_65408_chunk_encoded": 65477
+    },
+    {
+      "offset": "128",
+      "max_chunk": 65466,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65606,
+      "proposed_65408_chunk_encoded": 65478
+    },
+    {
+      "offset": "16384",
+      "max_chunk": 65465,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65607,
+      "proposed_65408_chunk_encoded": 65479
+    },
+    {
+      "offset": "18446744073709551615",
+      "max_chunk": 65458,
+      "encoded_at_max": 65536,
+      "encoded_plus_one": 65537,
+      "encoded_64k_chunk": 65614,
+      "proposed_65408_chunk_encoded": 65486
+    }
+  ],
+  "extension_counterexample": {
+    "noncritical_id_count": 32,
+    "encoded_length": 65584,
+    "required_behavior": "Do not reflect request extensions into canonical response; actual bounded encoder must reject oversize."
+  },
+  "scope": "Checked-in generated TypeScript and locked @bufbuild/protobuf; no authorization, Blob service, fd, or resource behavior exercised."
+}

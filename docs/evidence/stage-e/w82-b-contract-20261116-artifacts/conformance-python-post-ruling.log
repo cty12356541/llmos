@@ -1,0 +1,60 @@
+....................FF..
+======================================================================
+FAIL: test_lint_claims_and_unit_suite_pass (test_stage_e_ledger_and_roade001_gate.StageELedgerV13StandingGateTests.test_lint_claims_and_unit_suite_pass)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\tests\conformance\schema\test_stage_e_ledger_and_roade001_gate.py", line 42, in test_lint_claims_and_unit_suite_pass
+    self.assertEqual(errors, [], f"lint_claims.py reported errors: {errors}")
+AssertionError: Lists differ: [('ERROR', 'evidence-index', 'Ŀ¼�ļ�δ��¼: doc[150 chars]md')] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+('ERROR', 'evidence-index', 'Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md')
+
++ []
+- [('ERROR',
+-   'evidence-index',
+-   'Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md'),
+-  ('ERROR',
+-   'evidence-index',
+-   'Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116.md')] : lint_claims.py reported errors: [('ERROR', 'evidence-index', 'Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md'), ('ERROR', 'evidence-index', 'Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116.md')]
+
+======================================================================
+FAIL: test_verify_stage_e_ledger_coverage_self_test_and_strict_mode (test_stage_e_ledger_and_roade001_gate.StageELedgerV13StandingGateTests.test_verify_stage_e_ledger_coverage_self_test_and_strict_mode)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\tests\conformance\schema\test_stage_e_ledger_and_roade001_gate.py", line 71, in test_verify_stage_e_ledger_coverage_self_test_and_strict_mode
+    self.assertEqual(
+AssertionError: 1 != 0 : verify_stage_e_ledger_coverage.py --self-test failed:
+test_01_extract_stage_e_spec_counts_and_ids (__main__.StageELedgerCoverageSelfTests.test_01_extract_stage_e_spec_counts_and_ids) ... ok
+test_02_pre_backfill_and_simulated_strict_pass (__main__.StageELedgerCoverageSelfTests.test_02_pre_backfill_and_simulated_strict_pass) ... FAIL
+test_03_emit_candidates_canonical_yaml_roundtrip (__main__.StageELedgerCoverageSelfTests.test_03_emit_candidates_canonical_yaml_roundtrip) ... ok
+test_04_earlier_stage_preregistered_id_prevents_duplicate_emission (__main__.StageELedgerCoverageSelfTests.test_04_earlier_stage_preregistered_id_prevents_duplicate_emission) ... ok
+test_05_negative_missing_stage_e_requirement_id (__main__.StageELedgerCoverageSelfTests.test_05_negative_missing_stage_e_requirement_id) ... ok
+test_06_negative_duplicate_requirement_id (__main__.StageELedgerCoverageSelfTests.test_06_negative_duplicate_requirement_id) ... ok
+test_07_negative_claim_exceeds_evidence_assurance (__main__.StageELedgerCoverageSelfTests.test_07_negative_claim_exceeds_evidence_assurance) ... ok
+test_08_negative_stage_e_design_assurance_rejected (__main__.StageELedgerCoverageSelfTests.test_08_negative_stage_e_design_assurance_rejected) ... ok
+test_09_negative_open_p0_risk_rejected (__main__.StageELedgerCoverageSelfTests.test_09_negative_open_p0_risk_rejected) ... ok
+test_10_negative_missing_stage_e_risk_rejected (__main__.StageELedgerCoverageSelfTests.test_10_negative_missing_stage_e_risk_rejected) ... ok
+test_11_negative_unindexed_stage_e_evidence_rejected (__main__.StageELedgerCoverageSelfTests.test_11_negative_unindexed_stage_e_evidence_rejected) ... ok
+test_12_negative_emoji_and_broken_relative_markdown_link_rejected (__main__.StageELedgerCoverageSelfTests.test_12_negative_emoji_and_broken_relative_markdown_link_rejected) ... ok
+test_13_verifier_source_contains_zero_pictographic_emoji (__main__.StageELedgerCoverageSelfTests.test_13_verifier_source_contains_zero_pictographic_emoji) ... ok
+
+======================================================================
+FAIL: test_02_pre_backfill_and_simulated_strict_pass (__main__.StageELedgerCoverageSelfTests.test_02_pre_backfill_and_simulated_strict_pass)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\tools\verify_stage_e_ledger_coverage.py", line 2199, in test_02_pre_backfill_and_simulated_strict_pass
+    self.assertTrue(report["ok"], msg=f"pre-backfill failed: {report['errors']}")
+AssertionError: False is not true : pre-backfill failed: ['[baseline:lint_claims:evidence-index] Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md', '[baseline:lint_claims:evidence-index] Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116.md', '[simulated-post-backfill] [lint_claims:evidence-index] Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md', '[simulated-post-backfill] [lint_claims:evidence-index] Ŀ¼�ļ�δ��¼: docs/evidence/stage-e/w82-b-contract-20261116.md', '[simulated-post-backfill] [evidence:sync] unindexed Stage E evidence file on disk: docs/evidence/stage-e/w82-b-contract-20261116-artifacts/README.md', '[simulated-post-backfill] [evidence:sync] unindexed Stage E evidence file on disk: docs/evidence/stage-e/w82-b-contract-20261116.md']
+
+----------------------------------------------------------------------
+Ran 13 tests in 36.800s
+
+FAILED (failures=1)
+
+
+----------------------------------------------------------------------
+Ran 24 tests in 47.124s
+
+FAILED (failures=2)

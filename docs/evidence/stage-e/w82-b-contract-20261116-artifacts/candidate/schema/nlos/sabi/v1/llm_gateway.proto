@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// W82-B SABI v1.1 (D2/D3/D4/D8): capability-scoped LLM gateway thin channel.
+// Service dispatch name "llm_gateway"; dispatched method strings are
+// "llm_chat", "query_budget", "attenuate_budget", "record_external_usage".
+//
+// A frame whose encoded payload exceeds MAX_LLM_GATEWAY_PAYLOAD_BYTES (64 KiB)
+// is rejected with a typed FrameTooLarge failure for that call only. A
+// per-session budget bounds rejected/malformed frames (default: more
+// than 8 within a 60s sliding window tears the connection down).
+// Oversized payloads MUST travel by reference (BlobReference), never by
+// enlarging this bound.
+//
+// Five-dimension hard budget caps only constrain spend routed through the
+// gateway; externally reported usage is advisory reconciliation data and
+// derives no rights (D4).
+
+// One ordered conversation turn carried inline by `llm_chat`.
+message LlmChatTurn {
+  string role = 1;
+  string content = 2;
+}
+
+// `llm_gateway.llm_chat` request. Conversation history travels inline within
+// the payload bound; longer contexts belong to BlobReference, not to a larger
+// frame. Requests carry no client-declared cost fields: pricing is derived
+// exclusively from the server-side price list (D8).
+message LlmChatRequest {
+  SchemaIdentity schema = 1;
+  string model = 2;
+  repeated LlmChatTurn turns = 3;
+  uint32 max_output_tokens = 4;
+  uint32 temperature_milli = 5;
+  string session_hint = 6;
+}
+
+// `llm_gateway.llm_chat` result (non-streaming completion; a completion larger
+// than the payload bound is a typed rejection, not an enlarged frame).
+message LlmChatResult {
+  SchemaIdentity schema = 1;
+  string model = 2;
+  string content_utf8 = 3;
+  string reasoning_utf8 = 4;
+  LlmUsageWire usage = 5;
+}
+
+// Five-dimension LLM usage accounting (api_calls, prompt_tokens,
+// completion_tokens, total_tokens, cost_microcredits).
+message LlmUsageWire {
+  uint64 api_calls = 1;
+  uint64 prompt_tokens = 2;
+  uint64 completion_tokens = 3;
+  uint64 total_tokens = 4;
+  uint64 cost_microcredits = 5;
+}
+
+// `llm_gateway.query_budget` request over the session's derived account.
+message QueryBudgetRequest {
+  SchemaIdentity schema = 1;
+}
+
+// `llm_gateway.query_budget` result. `external_advisory` usage is advisory
+// reconciliation data only and is never folded into `remaining` (D4:
+// self-reported numbers derive no rights; low reporting distorts only the
+// reporter's own dashboard).
+message QueryBudgetResult {
+  SchemaIdentity schema = 1;
+  LlmUsageWire limit = 2;
+  LlmUsageWire consumed = 3;
+  LlmUsageWire remaining = 4;
+  LlmUsageWire external_advisory = 5;
+}
+
+// `llm_gateway.attenuate_budget` request: derive a child session budget whose
+// five-dimension limits must not exceed the granting parent's effective
+// remaining envelope (parent >= child invariant, D8).
+message AttenuateBudgetRequest {
+  SchemaIdentity schema = 1;
+  LlmUsageWire child_limit = 2;
+  uint64 valid_until_ms = 3;
+}
+
+// `llm_gateway.attenuate_budget` result.
+message AttenuateBudgetResult {
+  SchemaIdentity schema = 1;
+  LlmUsageWire granted_limit = 2;
+  uint64 valid_until_ms = 3;
+}
+
+// `llm_gateway.record_external_usage` request: purely advisory record of usage
+// that bypassed the gateway (unsandboxed clients holding their own provider
+// keys). Monotonic append; duplicates collapse on the 128-bit envelope
+// idempotency key (D4).
+message RecordExternalUsageRequest {
+  SchemaIdentity schema = 1;
+  string provider = 2;
+  string model = 3;
+  LlmUsageWire usage = 4;
+  uint64 recorded_at_ms = 5;
+}
+
+// `llm_gateway.record_external_usage` result.
+message RecordExternalUsageResult {
+  SchemaIdentity schema = 1;
+  bool replayed = 2;
+}

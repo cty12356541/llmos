@@ -1,0 +1,4 @@
+
+> schema:generate
+> buf generate && node tools/normalize-generated-schema.mjs
+

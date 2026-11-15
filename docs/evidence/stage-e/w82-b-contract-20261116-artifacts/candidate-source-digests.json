@@ -1,0 +1,41 @@
+{
+  "base_head": "6415600db5c165a828108709a3dc57602169abaf",
+  "files": {
+    "crates/nlos-schema/src/lib.rs": {
+      "bytes": 198249,
+      "sha256": "475e246212b9384ba57733245cf0fc15fdb6664af9f695b3f29fcc8d11b989db"
+    },
+    "crates/nlos-schema/tests/blob_reference_contract.rs": {
+      "bytes": 3573,
+      "sha256": "6e720f6cf910dbe96579f02f34b90ce3a16b6c6737323ff73ccb30e45d740ee6"
+    },
+    "docs/management/w82-b-design-draft.md": {
+      "bytes": 81408,
+      "sha256": "6d579e2974286c7deacd88f08df77d39d9dc9e97f7a7b71979d89214969199e7"
+    },
+    "gen/python/nlos/sabi/v1/blob_reference_pb2.py": {
+      "bytes": 3712,
+      "sha256": "aba616d0de0dfd43147085021e5704a0e4938c8a55a84e9732dd5b2021455d81"
+    },
+    "gen/typescript/nlos/sabi/v1/blob_reference_pb.ts": {
+      "bytes": 8837,
+      "sha256": "e48a942e816fee581d971d4ade00e722f85959f771a635e8bbc42f8e607097eb"
+    },
+    "schema/nlos/sabi/v1/blob_reference.proto": {
+      "bytes": 4595,
+      "sha256": "46bd4eb24112191b3513b214f609f8e1a88683dd58690c6576d360001343defd"
+    },
+    "schema/nlos/sabi/v1/deprecation-manifest.yaml": {
+      "bytes": 9083,
+      "sha256": "b135ad2ddf3bb559c61b5b97082ce4ff1ecd234aba3e3039268d6d496b7335ee"
+    },
+    "schema/golden/epochs/v1.1-blob-20261116/manifest.json": {
+      "bytes": 645,
+      "sha256": "b6acf0627ab73cb755e8a03ca39ff2ceaa735f231eb8ac2fc7c3d37b1f4dfbe9"
+    },
+    "schema/golden/epochs/v1.1-blob-20261116/nlos.sabi.BlobReference.MintReferenceRequest-recipient-v1.1.hex": {
+      "bytes": 235,
+      "sha256": "3e51b5be0394bc7870db8d977b11d57c095b8af60576257108c017ec71935ac5"
+    }
+  }
+}

@@ -1,0 +1,130 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling anyhow v1.0.104
+   Compiling either v1.17.0
+   Compiling itertools v0.14.0
+   Compiling bytes v1.12.1
+   Compiling equivalent v1.0.2
+   Compiling prettyplease v0.2.37
+   Compiling hashbrown v0.17.1
+   Compiling syn v2.0.119
+   Compiling foldhash v0.1.5
+   Compiling windows-link v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling indexmap v2.14.0
+   Compiling windows-sys v0.61.2
+   Compiling hashbrown v0.15.5
+   Compiling regex-automata v0.4.16
+   Compiling fixedbitset v0.5.7
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling petgraph v0.8.3
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.3.0
+   Compiling regex v1.13.1
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.3.0
+   Compiling protoc-bin-vendored-win32 v3.3.0
+   Compiling multimap v0.10.1
+   Compiling protoc-bin-vendored-macos-x86_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.3.0
+   Compiling log v0.4.33
+   Compiling protoc-bin-vendored-linux-s390_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.3.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.3.0
+   Compiling heck v0.5.0
+   Compiling protoc-bin-vendored v3.3.0
+   Compiling prost-derive v0.14.4
+   Compiling prost v0.14.4
+   Compiling prost-types v0.14.4
+   Compiling prost-build v0.14.4
+   Compiling nlos-schema v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\crates\nlos-schema)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.98s
+     Running unittests src\lib.rs (target\debug\deps\nlos_schema-afef4de91ab85888.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\compatibility.rs (target\debug\deps\compatibility-f00c39cb1f50c0ce.exe)
+
+running 42 tests
+test forwarding_preserves_unknown_protobuf_fields_byte_for_byte ... ok
+test driver_provider_response_bounds_fail_closed ... ok
+test generated_encoding_matches_canonical_golden_vector ... ok
+test exchange_wrappers_preserve_unknown_fields_and_require_an_envelope ... ok
+test generated_encoding_matches_principal_handshake_golden_vector ... ok
+test driver_provider_request_bounds_fail_closed ... ok
+test generated_local_rpc_surface_has_distinct_request_and_response_types ... ok
+test all_twelve_sabi_channels_frozen_and_principal_handshake_headroom_verified ... ok
+test common_request_context_matches_golden_and_method_contract ... ok
+test driver_provider_all_arms_round_trip ... ok
+test channel_control_payloads_are_bounded_and_registry_validated ... ok
+test driver_provider_request_and_response_pin_frozen_golden_bytes ... ok
+test malformed_identity_and_oversized_frames_fail_closed ... ok
+test kill_throttle_reclaim_arms_round_trip_and_pin_their_bounds ... ok
+test mutations_deadlines_and_authority_references_fail_closed ... ok
+test newer_minor_and_noncritical_extensions_are_accepted ... ok
+test operation_control_payloads_are_bounded_typed_and_fail_closed ... ok
+test operation_level_control_payloads_round_trip_and_pin_golden_bytes ... ok
+test principal_handshake_payloads_are_bounded_and_registry_validated ... ok
+test registry_exposes_the_supported_contract ... ok
+test registry_freeze_markers_match_adr_0014 ... ok
+test resource_recovery_snapshot_pins_the_cross_language_golden_bytes ... ok
+test semantic_recovery_snapshot_pins_the_cross_language_golden_bytes ... ok
+test resource_recovery_control_payloads_are_typed_bounded_and_fail_closed ... ok
+test service_directory_payload_has_its_own_identity_and_bound ... ok
+test semantic_recovery_control_payloads_are_typed_bounded_and_fail_closed ... ok
+test unknown_critical_extension_is_rejected ... ok
+test takeover_control_validators_fail_closed_on_bad_bindings ... ok
+test system_control_payloads_are_typed_bounded_and_sanitized ... ok
+test takeover_control_payloads_round_trip_typed_and_bounded ... ok
+test uncertain_and_partial_failures_require_reconciliation_evidence ... ok
+test stage_d_w69_twelve_domain_scopes_views_and_snapshots_enforce_fail_closed_bounds ... ok
+test unknown_major_is_rejected ... ok
+test w32g_durable_operation_snapshot_roundtrips_and_fails_closed ... ok
+test w32g_execution_fiber_snapshot_roundtrips_and_fails_closed ... ok
+test w32g_layer_snapshots_pin_the_deterministic_golden_bytes ... ok
+test w32g_layer_view_requests_carry_fail_closed_addressing ... ok
+test w32g_task_node_snapshot_roundtrips_and_fails_closed ... ok
+test w32g_topic_snapshot_roundtrips_and_fails_closed ... ok
+test w32g_task_group_snapshot_roundtrips_and_fails_closed ... ok
+test w35p11_application_lifecycle_arms_round_trip_and_pin_golden_bytes ... ok
+test wait_control_payloads_are_bounded_and_registry_validated ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\epoch_v1_0_golden_corpus.rs (target\debug\deps\epoch_v1_0_golden_corpus-a76f8a1e9efde37c.exe)
+
+running 2 tests
+test epoch_v1_0_corpus_envelope_and_core_control_channels_round_trip ... ok
+test epoch_v1_0_corpus_takeover_wait_handshake_driver_and_channel_round_trip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\epoch_v1_1_golden_corpus.rs (target\debug\deps\epoch_v1_1_golden_corpus-005345aeeb8aac5d.exe)
+
+running 2 tests
+test epoch_v1_1_schema_identity_helpers_match_the_canonical_registry ... ok
+test epoch_v1_1_corpus_llm_gateway_tool_sandbox_and_blob_reference_round_trip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\version_matrix_and_deprecation.rs (target\debug\deps\version_matrix_and_deprecation-3bea2166fbe5683d.exe)
+
+running 6 tests
+test version_matrix_routes_current_epoch_natively_and_n_minus_1_n_minus_2_to_shim ... ok
+test version_matrix_fails_closed_with_abi_version_on_zero_future_sunset_and_unknown_critical ... ok
+test compat_ver_002_preserves_unknown_non_critical_extensions_and_unknown_wire_fields ... ok
+test deprecation_manifest_accepts_valid_lifecycle_and_audits_active_deprecated_sunset ... ok
+test canonical_deprecation_manifest_matches_all_twelve_frozen_registry_channels ... ok
+test deprecation_manifest_rejects_short_windows_premature_sunset_and_reserved_reuse ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests nlos_schema
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

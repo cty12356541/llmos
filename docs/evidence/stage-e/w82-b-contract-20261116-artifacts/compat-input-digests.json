@@ -1,0 +1,102 @@
+{
+  "baseline_commit": "aed02985850fdde2dab84cd97bcb5e0f1c8a1cda",
+  "candidate_commit": "6415600db5c165a828108709a3dc57602169abaf",
+  "files": {
+    "baseline/schema/nlos/sabi/v1/channel_control.proto": {
+      "bytes": 4761,
+      "sha256": "f229b86fbe0c3c07bcb2aeef1fd41665cfbd68dc2c0760ea59033e9230c6a4ea"
+    },
+    "baseline/schema/nlos/sabi/v1/deprecation-manifest.yaml": {
+      "bytes": 5476,
+      "sha256": "5f4e064878cd0e6e3fb592b365f12437c073bb7205767156dad403c4cb11db0a"
+    },
+    "baseline/schema/nlos/sabi/v1/driver_provider.proto": {
+      "bytes": 3824,
+      "sha256": "ede540779728be5302400932360202f95c0acda29777c68482d7f323bb7b924b"
+    },
+    "baseline/schema/nlos/sabi/v1/envelope.proto": {
+      "bytes": 4314,
+      "sha256": "54a59808b25733ed54c212c85c4e2ccfc33a37050d16a2dc70e48b7f50199aa0"
+    },
+    "baseline/schema/nlos/sabi/v1/operation_control.proto": {
+      "bytes": 1273,
+      "sha256": "205b3386e470b2f3096adeea6693a283bbf145317396f4b0d92498c40af28715"
+    },
+    "baseline/schema/nlos/sabi/v1/principal_handshake.proto": {
+      "bytes": 1005,
+      "sha256": "1c0f4d34bbc576aec446bee4b350bd889c2875621b2a7210d9da70fe172d02da"
+    },
+    "baseline/schema/nlos/sabi/v1/service_directory.proto": {
+      "bytes": 2305,
+      "sha256": "c218c0ea44161eb1109681777871f179e793b5faff48819c85561b9427303a95"
+    },
+    "baseline/schema/nlos/sabi/v1/system_control.proto": {
+      "bytes": 31950,
+      "sha256": "72b72c812387f82c1ad10ff8be4d5d32a0e1d3cbad606ec9a6b0128d03b95c65"
+    },
+    "baseline/schema/nlos/sabi/v1/takeover_control.proto": {
+      "bytes": 1749,
+      "sha256": "ee598f7f6b0c36d7a76c6c85ffbfbebe7fcb8421d40ac40d46941ada144f9974"
+    },
+    "baseline/schema/nlos/sabi/v1/wait_control.proto": {
+      "bytes": 2557,
+      "sha256": "349f9bd492c27ff1dc041bec5a97be8647d38b2521e78bab84779d19f8b92408"
+    },
+    "candidate/schema/nlos/sabi/v1/blob_reference.proto": {
+      "bytes": 3171,
+      "sha256": "afefb9d0545b12db7c0c2f17e47f252eaa56ca80736aebe1c1fb4bc1fc7fce8f"
+    },
+    "candidate/schema/nlos/sabi/v1/channel_control.proto": {
+      "bytes": 4761,
+      "sha256": "f229b86fbe0c3c07bcb2aeef1fd41665cfbd68dc2c0760ea59033e9230c6a4ea"
+    },
+    "candidate/schema/nlos/sabi/v1/deprecation-manifest.yaml": {
+      "bytes": 8860,
+      "sha256": "f38a60a10aaf5177487d139ae547ec9000e88e471b1f93e0b4686f3e7d96a745"
+    },
+    "candidate/schema/nlos/sabi/v1/driver_provider.proto": {
+      "bytes": 3824,
+      "sha256": "ede540779728be5302400932360202f95c0acda29777c68482d7f323bb7b924b"
+    },
+    "candidate/schema/nlos/sabi/v1/envelope.proto": {
+      "bytes": 4314,
+      "sha256": "54a59808b25733ed54c212c85c4e2ccfc33a37050d16a2dc70e48b7f50199aa0"
+    },
+    "candidate/schema/nlos/sabi/v1/llm_gateway.proto": {
+      "bytes": 3720,
+      "sha256": "fcdbaa13ed85430acd446832251e7fc65e0912945e3f29f0a0f16fab2a230a08"
+    },
+    "candidate/schema/nlos/sabi/v1/operation_control.proto": {
+      "bytes": 1273,
+      "sha256": "205b3386e470b2f3096adeea6693a283bbf145317396f4b0d92498c40af28715"
+    },
+    "candidate/schema/nlos/sabi/v1/principal_handshake.proto": {
+      "bytes": 1005,
+      "sha256": "1c0f4d34bbc576aec446bee4b350bd889c2875621b2a7210d9da70fe172d02da"
+    },
+    "candidate/schema/nlos/sabi/v1/service_directory.proto": {
+      "bytes": 2305,
+      "sha256": "c218c0ea44161eb1109681777871f179e793b5faff48819c85561b9427303a95"
+    },
+    "candidate/schema/nlos/sabi/v1/system_control.proto": {
+      "bytes": 31950,
+      "sha256": "72b72c812387f82c1ad10ff8be4d5d32a0e1d3cbad606ec9a6b0128d03b95c65"
+    },
+    "candidate/schema/nlos/sabi/v1/takeover_control.proto": {
+      "bytes": 1749,
+      "sha256": "ee598f7f6b0c36d7a76c6c85ffbfbebe7fcb8421d40ac40d46941ada144f9974"
+    },
+    "candidate/schema/nlos/sabi/v1/tool_sandbox.proto": {
+      "bytes": 2199,
+      "sha256": "6039ab5d000a07b21abc7b27ada2fe3392bd948666633b27b427f0462e9e9b36"
+    },
+    "candidate/schema/nlos/sabi/v1/wait_control.proto": {
+      "bytes": 2557,
+      "sha256": "349f9bd492c27ff1dc041bec5a97be8647d38b2521e78bab84779d19f8b92408"
+    },
+    "compat-diff.json": {
+      "bytes": 69329,
+      "sha256": "d51c65c306d411a5d27d8de3fb526a863d44d9b8808a4b4a0e1728da4751cf88"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+
+> schema:check-generated
+> npm run schema:generate && node tools/check-generated-schema.mjs
+
+
+> schema:generate
+> buf generate && node tools/normalize-generated-schema.mjs
+

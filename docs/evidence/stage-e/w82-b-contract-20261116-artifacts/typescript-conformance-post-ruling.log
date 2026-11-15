@@ -1,0 +1,4 @@
+
+> schema:test:typescript
+> tsx tests/conformance/schema/envelope.ts
+

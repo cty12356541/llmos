@@ -1,0 +1,17 @@
+ci-success-43576575485.log:2676: ubuntu-latest	UNKNOWN STEP	2026-11-14T08:37:10.5237206Z go version go1.27.4 linux/amd64
+ci-success-43576575485.log:2860: ubuntu-latest	UNKNOWN STEP	2026-11-14T08:37:22.3251643Z go version go1.27.4 linux/amd64
+ci-success-43576575485.log:2861: ubuntu-latest	UNKNOWN STEP	2026-11-14T08:37:30.4829841Z ok  	example.com/llmos/sdk-go/sabi	0.005s
+ci-success-43576575485.log:2913: ubuntu-latest	UNKNOWN STEP	2026-11-14T08:37:43.6525763Z cs golden probe: 30 passed, 0 failed (total 30)
+ci-success-43576575485.log:10030: windows-latest	UNKNOWN STEP	2026-11-14T08:37:32.3763251Z go version go1.27.4 windows/amd64
+ci-success-43576575485.log:10221: windows-latest	UNKNOWN STEP	2026-11-14T08:38:44.9087196Z go version go1.27.4 windows/amd64
+ci-success-43576575485.log:10222: windows-latest	UNKNOWN STEP	2026-11-14T08:38:57.6158910Z ok  	example.com/llmos/sdk-go/sabi	0.040s
+ci-success-43576575485.log:10273: windows-latest	UNKNOWN STEP	2026-11-14T08:39:12.8539463Z cs golden probe: 30 passed, 0 failed (total 30)
+ci-success-43576575485.log:19316: macos-latest	UNKNOWN STEP	2026-11-14T08:36:59.1042140Z go version go1.27.4 darwin/arm64
+ci-success-43576575485.log:19513: macos-latest	UNKNOWN STEP	2026-11-14T08:37:27.8634720Z go version go1.27.4 darwin/arm64
+ci-success-43576575485.log:19514: macos-latest	UNKNOWN STEP	2026-11-14T08:37:35.1193510Z ok  	example.com/llmos/sdk-go/sabi	0.009s
+ci-success-43576575485.log:19565: macos-latest	UNKNOWN STEP	2026-11-14T08:37:39.3756390Z cs golden probe: 30 passed, 0 failed (total 30)
+ci-latest-windows.log:498: windows-latest	UNKNOWN STEP	2026-11-14T22:48:29.0384327Z go version go1.27.4 windows/amd64
+ci-latest-windows.log:689: windows-latest	UNKNOWN STEP	2026-11-14T22:49:31.4270554Z go version go1.27.4 windows/amd64
+ci-latest-windows.log:690: windows-latest	UNKNOWN STEP	2026-11-14T22:49:42.6781806Z ok  	example.com/llmos/sdk-go/sabi	0.024s
+ci-latest-windows.log:741: windows-latest	UNKNOWN STEP	2026-11-14T22:49:55.9429822Z cs golden probe: 30 passed, 0 failed (total 30)
+ci-latest-windows.log:5169: windows-latest	UNKNOWN STEP	2026-11-14T23:17:14.8226835Z test result: FAILED. 4 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 129.65s

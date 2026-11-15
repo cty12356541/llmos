@@ -1,0 +1,50 @@
+{
+  "cargo": {
+    "command": "cargo --version",
+    "exit_code": 0,
+    "stdout": "cargo 1.99.0 (5f94df478 2026-08-27)\n",
+    "stderr": ""
+  },
+  "rustc": {
+    "command": "rustc --version",
+    "exit_code": 0,
+    "stdout": "rustc 1.99.0 (b940084d7 2026-09-28)\n",
+    "stderr": ""
+  },
+  "node": {
+    "command": "node --version",
+    "exit_code": 0,
+    "stdout": "v24.19.0\n",
+    "stderr": ""
+  },
+  "npm": {
+    "command": "npm --version",
+    "exit_code": 0,
+    "stdout": "11.17.0\n",
+    "stderr": ""
+  },
+  "python": {
+    "command": "python --version",
+    "exit_code": 0,
+    "stdout": "Python 3.12.10\n",
+    "stderr": ""
+  },
+  "git": {
+    "command": "git --version",
+    "exit_code": 0,
+    "stdout": "git version 2.55.0.windows.3\n",
+    "stderr": ""
+  },
+  "dotnet": {
+    "command": "dotnet --info",
+    "exit_code": 0,
+    "stdout": "\nHost:\n  Version:      8.0.20\n  Architecture: x64\n  Commit:       574100b692\n  RID:          win-x64\n\n.NET SDKs installed:\n  No SDKs were found.\n\n.NET runtimes installed:\n  Microsoft.NETCore.App 8.0.20 [C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App]\n  Microsoft.WindowsDesktop.App 8.0.20 [C:\\Program Files\\dotnet\\shared\\Microsoft.WindowsDesktop.App]\n\nOther architectures found:\n  None\n\nEnvironment variables:\n  Not set\n\nglobal.json file:\n  Not found\n\nLearn more:\n  https://aka.ms/dotnet/info\n\nDownload .NET:\n  https://aka.ms/dotnet/download\n",
+    "stderr": ""
+  },
+  "go": {
+    "command": "go test ./... -count=1",
+    "working_directory": "sdk/go",
+    "status": "NOT_RUN_TOOLCHAIN_UNAVAILABLE",
+    "reason": "go absent from PATH and common installation paths; invoking command failed before tests."
+  }
+}

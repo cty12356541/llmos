@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// Frozen wire enum of the durable wait execution state. `Unspecified` stays 0
+// so a decoding peer fails closed on an unknown or absent state.
+enum WaitStateCode {
+  WAIT_STATE_CODE_UNSPECIFIED = 0;
+  WAIT_STATE_CODE_PENDING = 1;
+  WAIT_STATE_CODE_WOKEN = 2;
+  WAIT_STATE_CODE_CANCELLED = 3;
+}
+
+// One durable wait row as it exists in the `WaitAuthority`.
+message WaitRecord {
+  bytes wait_id = 1;
+  bytes binding = 2;
+  bytes channel_id = 3;
+  uint64 channel_generation = 4;
+  bytes channel_fencing_token = 5;
+  uint64 target_sequence = 6;
+  WaitStateCode state = 7;
+  bytes idempotency_key = 8;
+  uint64 registered_at_ms = 9;
+  uint64 woken_at_ms = 10;
+  uint64 woken_up_to_sequence = 11;
+  uint64 cancelled_at_ms = 12;
+}
+
+// `WaitControl.register_wait` request.
+message RegisterWaitRequest {
+  SchemaIdentity schema = 1;
+  bytes binding = 2;
+  bytes channel_id = 3;
+  uint64 target_sequence = 4;
+  bytes idempotency_key = 5;
+  uint64 registered_at_ms = 6;
+}
+
+// `WaitControl.register_wait` result.
+message RegisterWaitResult {
+  SchemaIdentity schema = 1;
+  WaitRecord record = 2;
+  bool replayed = 3;
+}
+
+// `WaitControl.notify_commits` request.
+message NotifyCommitsRequest {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 up_to_sequence = 3;
+  uint64 notified_at_ms = 4;
+  bytes idempotency_key = 5;
+}
+
+// `WaitControl.notify_commits` result: the exact wake report.
+message WakeReport {
+  SchemaIdentity schema = 1;
+  repeated WaitRecord woken = 2;
+}
+
+// `WaitControl.cancel_wait` request.
+message CancelWaitRequest {
+  SchemaIdentity schema = 1;
+  bytes wait_id = 2;
+  uint64 cancelled_at_ms = 3;
+  bytes idempotency_key = 4;
+}
+
+// `WaitControl.cancel_wait` result.
+message CancelWaitResult {
+  SchemaIdentity schema = 1;
+  WaitRecord record = 2;
+  bool replayed = 3;
+}
+
+// `WaitControl.list_waits` request. An empty `filter_channel_id` lists every
+// wait; otherwise the list is scoped to one Channel.
+message ListWaitsRequest {
+  SchemaIdentity schema = 1;
+  bytes filter_channel_id = 2;
+}
+
+// `WaitControl.list_waits` result: every state, in the authority's durable
+// enumeration order.
+message ListWaitsResult {
+  SchemaIdentity schema = 1;
+  repeated WaitRecord waits = 2;
+}
+
+// `WaitControl.inspect_wait` request.
+message InspectWaitRequest {
+  SchemaIdentity schema = 1;
+  bytes wait_id = 2;
+}
+
+// `WaitControl.inspect_wait` result: one validated durable row.
+message InspectWaitResult {
+  SchemaIdentity schema = 1;
+  WaitRecord record = 2;
+}

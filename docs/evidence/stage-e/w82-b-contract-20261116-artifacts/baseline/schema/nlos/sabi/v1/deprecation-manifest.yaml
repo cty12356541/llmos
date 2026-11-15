@@ -1,0 +1,230 @@
+# Machine-readable SABI v1 contract lifecycle and deprecation manifest.
+# Authority: docs/design/06-架构设计总纲-v0.5.md section 9 (COMPAT-VER-001, COMPAT-VER-002, COMPAT-DEPRECATE-001)
+# ADR: docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md
+# Wave: W77 / W77-E1A-SABI-REGISTRY (9/9 SABI channels frozen; SABI v1.0 candidate baseline)
+
+manifest_version: 1
+current_epoch: 1
+min_compatibility_window_epochs: 2
+frozen_channels_total: 9
+
+channels:
+  - name: "nlos.sabi.Envelope"
+    major: 1
+    minor: 1
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.ServiceDirectory"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.OperationControl"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.SystemControl"
+    major: 1
+    minor: 7
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.TakeoverControl"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.WaitControl"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.PrincipalHandshake"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.DriverProvider"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+  - name: "nlos.sabi.ChannelControl"
+    major: 1
+    minor: 0
+    frozen: true
+    reserved_field_numbers: []
+    reserved_symbols: []
+
+entries:
+  - channel: "nlos.sabi.Envelope"
+    symbol: "Envelope"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.Envelope"
+    symbol: "ExchangeRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.Envelope"
+    symbol: "ExchangeResponse"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ServiceDirectory"
+    symbol: "ResolveServiceRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ServiceDirectory"
+    symbol: "ResolveServiceResponse"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ServiceDirectory"
+    symbol: "NegotiateServiceRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ServiceDirectory"
+    symbol: "NegotiateServiceResponse"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.OperationControl"
+    symbol: "QueryOperationRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.OperationControl"
+    symbol: "CancelOperationRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.OperationControl"
+    symbol: "OperationStatus"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.SystemControl"
+    symbol: "GetSystemControlRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.SystemControl"
+    symbol: "SubmitControlCommandRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.SystemControl"
+    symbol: "ControlCommandResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.TakeoverControl"
+    symbol: "SubmitBarrierObservationRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.TakeoverControl"
+    symbol: "BarrierObservationRecord"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.WaitControl"
+    symbol: "RegisterWaitRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.WaitControl"
+    symbol: "RegisterWaitResult"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.WaitControl"
+    symbol: "NotifyCommitsRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.WaitControl"
+    symbol: "CancelWaitRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.PrincipalHandshake"
+    symbol: "PrincipalHandshakeChallenge"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.PrincipalHandshake"
+    symbol: "PrincipalHandshakeAttestation"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.DriverProvider"
+    symbol: "DriverProviderRequest"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.DriverProvider"
+    symbol: "DriverProviderResponse"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ChannelControl"
+    symbol: "CreateChannelRequestWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ChannelControl"
+    symbol: "EnqueueChannelRequestWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.ChannelControl"
+    symbol: "ReceiveChannelRequestWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"

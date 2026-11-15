@@ -1,0 +1,4 @@
+
+> schema:lint
+> buf lint && buf format -d --exit-code
+

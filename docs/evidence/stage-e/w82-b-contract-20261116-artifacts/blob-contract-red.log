@@ -1,0 +1,32 @@
+   Compiling nlos-schema v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\crates\nlos-schema)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+     Running tests\blob_reference_contract.rs (target\debug\deps\blob_reference_contract-f2e6ef9e29338969.exe)
+
+running 3 tests
+test mint_recipient_field_survives_the_bounded_codec ... FAILED
+test chunk_over_the_effective_bound_is_rejected_even_when_the_frame_fits ... FAILED
+test full_encoded_limit_includes_identity_extensions_and_offset ... ok
+
+failures:
+
+---- mint_recipient_field_survives_the_bounded_codec stdout ----
+
+thread 'mint_recipient_field_survives_the_bounded_codec' (4412) panicked at crates\nlos-schema\tests\blob_reference_contract.rs:31:5:
+assertion `left == right` failed
+  left: [10, 27, 10, 23, 110, 108, 111, 115, 46, 115, 97, 98, 105, 46, 66, 108, 111, 98, 82, 101, 102, 101, 114, 101, 110, 99, 101, 16, 1]
+ right: [10, 27, 10, 23, 110, 108, 111, 115, 46, 115, 97, 98, 105, 46, 66, 108, 111, 98, 82, 101, 102, 101, 114, 101, 110, 99, 101, 16, 1, 66, 16, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- chunk_over_the_effective_bound_is_rejected_even_when_the_frame_fits stdout ----
+
+thread 'chunk_over_the_effective_bound_is_rejected_even_when_the_frame_fits' (35040) panicked at crates\nlos-schema\tests\blob_reference_contract.rs:42:9:
+assertion failed: encode_read_reference_result(&oversized).is_err()
+
+
+failures:
+    chunk_over_the_effective_bound_is_rejected_even_when_the_frame_fits
+    mint_recipient_field_survives_the_bounded_codec
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nlos-schema --test blob_reference_contract`

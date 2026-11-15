@@ -74,6 +74,8 @@ pub const MAX_CHANNEL_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_LLM_GATEWAY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_TOOL_SANDBOX_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_BLOB_REFERENCE_PAYLOAD_BYTES: usize = 64 * 1024;
+/// W82-B 2026-11-16 ruling: reserve metadata space inside the 64 KiB payload.
+pub const MAX_BLOB_REFERENCE_CHUNK_BYTES: usize = 65_408;
 pub const MAX_PROVIDER_PROFILE_BYTES: usize = 128;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
@@ -300,6 +302,10 @@ pub enum CompatibilityError {
         actual: usize,
         maximum: usize,
     },
+    BlobChunkTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
     MalformedProtobuf(String),
     MissingSchemaIdentity,
     MissingExchangeEnvelope,
@@ -391,6 +397,12 @@ impl fmt::Display for CompatibilityError {
         match self {
             Self::FrameTooLarge { actual, maximum } => {
                 write!(formatter, "frame has {actual} bytes; maximum is {maximum}")
+            }
+            Self::BlobChunkTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "BlobReference chunk has {actual} bytes; maximum is {maximum}"
+                )
             }
             Self::MalformedProtobuf(message) => write!(formatter, "malformed protobuf: {message}"),
             Self::MissingSchemaIdentity => formatter.write_str("schema identity is missing"),
@@ -3352,6 +3364,7 @@ pub fn encode_read_reference_result(
     result: &sabi::v1::ReadReferenceResult,
 ) -> Result<Vec<u8>, CompatibilityError> {
     validate_blob_reference_identity(result.schema.as_ref())?;
+    validate_blob_reference_chunk(&result.chunk)?;
     encode_bounded_with_limit(result, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)
 }
 
@@ -3366,7 +3379,18 @@ pub fn decode_read_reference_result(
     let result: sabi::v1::ReadReferenceResult =
         decode_bounded_with_limit(wire, MAX_BLOB_REFERENCE_PAYLOAD_BYTES)?;
     validate_blob_reference_identity(result.schema.as_ref())?;
+    validate_blob_reference_chunk(&result.chunk)?;
     Ok(result)
+}
+
+fn validate_blob_reference_chunk(chunk: &[u8]) -> Result<(), CompatibilityError> {
+    if chunk.len() > MAX_BLOB_REFERENCE_CHUNK_BYTES {
+        return Err(CompatibilityError::BlobChunkTooLarge {
+            actual: chunk.len(),
+            maximum: MAX_BLOB_REFERENCE_CHUNK_BYTES,
+        });
+    }
+    Ok(())
 }
 
 /// Validates and encodes a bounded `BlobReference.release_reference` request.

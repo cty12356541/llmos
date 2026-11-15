@@ -1,0 +1,6 @@
+   Compiling bytes v1.12.1
+    Checking prost v0.14.4
+   Compiling prost-types v0.14.4
+   Compiling prost-build v0.14.4
+   Compiling nlos-schema v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b-contract\llmos\crates\nlos-schema)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 34.93s

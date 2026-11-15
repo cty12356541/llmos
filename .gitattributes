@@ -7,3 +7,10 @@ schema/**/*.yaml text eol=lf
 fuzz/seeds/**/*.hex text eol=lf
 gen/**/*.py text eol=lf
 gen/**/*.ts text eol=lf
+
+# W82-B-CONTRACT: preserve captured artifact bytes and hashed LF source files.
+docs/evidence/stage-e/w82-b-contract-20261116-artifacts/** -text -diff -merge
+docs/evidence/stage-e/w82-b-contract-20261116.md text eol=lf
+crates/nlos-schema/src/lib.rs text eol=lf
+crates/nlos-schema/tests/blob_reference_contract.rs text eol=lf
+docs/management/w82-b-design-draft.md text eol=lf

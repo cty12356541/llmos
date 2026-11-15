@@ -1,0 +1,1964 @@
+{
+  "schema": "nlos.sabi.compat_diff.v1",
+  "compatible": true,
+  "exit_code": 0,
+  "baseline_manifest": "C:/Users/ADMINI~1/AppData/Local/Temp/w82-b-contract-20261116/baseline/schema/nlos/sabi/v1/deprecation-manifest.yaml",
+  "candidate_manifest": "C:/Users/ADMINI~1/AppData/Local/Temp/w82-b-contract-20261116/candidate/schema/nlos/sabi/v1/deprecation-manifest.yaml",
+  "baseline_epoch": 1,
+  "candidate_epoch": 1,
+  "summary": {
+    "UNCHANGED": 233,
+    "ADDITIVE_SAFE": 45,
+    "DEPRECATION_NOTICE": 0,
+    "SUNSET_RETIREMENT": 0,
+    "BREAKING_VIOLATION": 0
+  },
+  "items": [
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "channel",
+      "target": "nlos.sabi.BlobReference",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new frozen SABI channel v1.0"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.ChannelControl",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.DriverProvider",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.Envelope",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.1 unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "channel",
+      "target": "nlos.sabi.LlmGateway",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new frozen SABI channel v1.0"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.OperationControl",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.PrincipalHandshake",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.ServiceDirectory",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.SystemControl",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.7 unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.TakeoverControl",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "channel",
+      "target": "nlos.sabi.ToolSandbox",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new frozen SABI channel v1.0"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "channel",
+      "target": "nlos.sabi.WaitControl",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "frozen channel v1.0 unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::MintReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::MintReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::ReadReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::ReadReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::ReleaseReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.BlobReference::ReleaseReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ChannelControl::CreateChannelRequestWire",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ChannelControl::EnqueueChannelRequestWire",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ChannelControl::ReceiveChannelRequestWire",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.DriverProvider::DriverProviderRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.DriverProvider::DriverProviderResponse",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.Envelope::Envelope",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.Envelope::ExchangeRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.Envelope::ExchangeResponse",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::AttenuateBudgetRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::AttenuateBudgetResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::LlmChatRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::LlmChatResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::LlmChatTurn",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::LlmUsageWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::QueryBudgetRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::QueryBudgetResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::RecordExternalUsageRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.LlmGateway::RecordExternalUsageResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.OperationControl::CancelOperationRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.OperationControl::OperationStatus",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.OperationControl::QueryOperationRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.PrincipalHandshake::PrincipalHandshakeAttestation",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.PrincipalHandshake::PrincipalHandshakeChallenge",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ServiceDirectory::NegotiateServiceRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ServiceDirectory::NegotiateServiceResponse",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ServiceDirectory::ResolveServiceRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.ServiceDirectory::ResolveServiceResponse",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.SystemControl::ControlCommandResult",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.SystemControl::GetSystemControlRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.SystemControl::SubmitControlCommandRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.TakeoverControl::BarrierObservationRecord",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.TakeoverControl::SubmitBarrierObservationRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.ToolSandbox::InvokeToolRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.ToolSandbox::InvokeToolResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.ToolSandbox::ListToolsRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.ToolSandbox::ListToolsResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "entry",
+      "target": "nlos.sabi.ToolSandbox::ToolDescriptorWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new ACTIVE MESSAGE in epoch 1"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.WaitControl::CancelWaitRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.WaitControl::NotifyCommitsRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.WaitControl::RegisterWaitRequest",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "entry",
+      "target": "nlos.sabi.WaitControl::RegisterWaitResult",
+      "rule_id": "COMPAT-DEPRECATE-001",
+      "detail": "ACTIVE contract unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::MintReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'MintReferenceRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::MintReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'MintReferenceResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::ReadReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ReadReferenceRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::ReadReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ReadReferenceResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::ReleaseReferenceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ReleaseReferenceRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "blob_reference.proto::ReleaseReferenceResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ReleaseReferenceResult'"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::AckChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'AckChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::AckChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'AckChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::ChannelRecordWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ChannelRecordWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::CompactChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CompactChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::CompactChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CompactChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::CreateChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CreateChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::CreateChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CreateChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::EnqueueChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'EnqueueChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::EnqueueChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'EnqueueChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::InspectChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::InspectChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::InspectQueueRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectQueueRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::InspectQueueResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectQueueResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::QueueConsumptionRecordWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'QueueConsumptionRecordWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::QueueEntryRecordWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'QueueEntryRecordWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::QueueStateWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'QueueStateWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::ReceiveChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ReceiveChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::ReceiveChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ReceiveChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::RegisterQueueConsumptionRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RegisterQueueConsumptionRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::RegisterQueueConsumptionResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RegisterQueueConsumptionResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::RotateChannelRequestWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RotateChannelRequestWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "channel_control.proto::RotateChannelResultWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RotateChannelResultWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderCancelAck",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderCancelAck' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderCancelRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderCancelRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderCompleteAck",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderCompleteAck' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderCompleteRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderCompleteRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderDispatchAck",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderDispatchAck' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderDispatchRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderDispatchRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderIsolationReport",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderIsolationReport' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderQueryIsolationRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderQueryIsolationRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderRegisterAck",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderRegisterAck' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderRegisterRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderRegisterRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderResponse",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DriverProviderResponse' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::DriverProviderTerminalOutcome",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'DriverProviderTerminalOutcome' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "driver_provider.proto::ProviderIsolationAttestationWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ProviderIsolationAttestationWire' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::CallerIdentity",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CallerIdentity' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::CapabilityHandle",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CapabilityHandle' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::Envelope",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'Envelope' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::ExchangeRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExchangeRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::ExchangeResponse",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExchangeResponse' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::OperationReference",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'OperationReference' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::ReceiptReference",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ReceiptReference' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::RetryDirective",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'RetryDirective' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::SabiErrorCode",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'SabiErrorCode' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::SabiFailure",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SabiFailure' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::SabiRequestContext",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SabiRequestContext' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::SabiResponseContext",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SabiResponseContext' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::SchemaIdentity",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SchemaIdentity' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "envelope.proto::TaskExecutionBinding",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskExecutionBinding' wire layout unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::AttenuateBudgetRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'AttenuateBudgetRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::AttenuateBudgetResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'AttenuateBudgetResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::LlmChatRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'LlmChatRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::LlmChatResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'LlmChatResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::LlmChatTurn",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'LlmChatTurn'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::LlmUsageWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'LlmUsageWire'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::QueryBudgetRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'QueryBudgetRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::QueryBudgetResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'QueryBudgetResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::RecordExternalUsageRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'RecordExternalUsageRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "llm_gateway.proto::RecordExternalUsageResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'RecordExternalUsageResult'"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "operation_control.proto::CancelOperationRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CancelOperationRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "operation_control.proto::OperationLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'OperationLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "operation_control.proto::OperationStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'OperationStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "operation_control.proto::QueryOperationRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'QueryOperationRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "principal_handshake.proto::PrincipalHandshakeAttestation",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'PrincipalHandshakeAttestation' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "principal_handshake.proto::PrincipalHandshakeChallenge",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'PrincipalHandshakeChallenge' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::DirectoryError",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DirectoryError' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::DirectoryErrorCode",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'DirectoryErrorCode' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::LocalEndpoint",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'LocalEndpoint' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::LocalTransportKind",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'LocalTransportKind' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::NegotiateServiceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'NegotiateServiceRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::NegotiateServiceResponse",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'NegotiateServiceResponse' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ResolveServiceRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResolveServiceRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ResolveServiceResponse",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResolveServiceResponse' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ServiceBinding",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ServiceBinding' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ServiceCandidate",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ServiceCandidate' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ServiceCandidateSet",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ServiceCandidateSet' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "service_directory.proto::ServiceVersion",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ServiceVersion' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::AcknowledgeArtifactRecoveryAlertCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'AcknowledgeArtifactRecoveryAlertCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::AcknowledgeResourceRecoveryAlertCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'AcknowledgeResourceRecoveryAlertCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::AcknowledgeSemanticRecoveryAlertCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'AcknowledgeSemanticRecoveryAlertCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ArtifactRecoveryAlertStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ArtifactRecoveryAlertStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ArtifactRecoveryMetrics",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ArtifactRecoveryMetrics' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ArtifactRecoveryOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ArtifactRecoveryOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::BlastRadiusImpactSign",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'BlastRadiusImpactSign' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CancelCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CancelCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellLeaseInspectSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CellLeaseInspectSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellLeaseKind",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'CellLeaseKind' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellLeaseLockState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'CellLeaseLockState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellLeaseStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CellLeaseStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CellListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellReachabilityState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'CellReachabilityState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::CellSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CellSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ChooserGrantListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ChooserGrantListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ChooserGrantStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ChooserGrantStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ContentTypeAssociationListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ContentTypeAssociationListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ContentTypeAssociationStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ContentTypeAssociationStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ContextResidencyTier",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ContextResidencyTier' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlBlastRadiusImpactItem",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ControlBlastRadiusImpactItem' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlBlastRadiusPreviewSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ControlBlastRadiusPreviewSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ControlCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlCommandLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ControlCommandLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlCommandResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ControlCommandResult' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlCommandSource",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ControlCommandSource' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlCommandStatusSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ControlCommandStatusSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ControlScope",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ControlScope' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DesktopWatermarkEvent",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DesktopWatermarkEvent' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DesktopWatermarkPollSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DesktopWatermarkPollSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DisableApplicationCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DisableApplicationCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DurableOperationListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DurableOperationListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DurableOperationSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DurableOperationSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DurableOperationState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'DurableOperationState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::DurableOperationStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'DurableOperationStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ExecutionFiberLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExecutionFiberListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExecutionFiberOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberPhase",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'ExecutionFiberPhase' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExecutionFiberStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ExecutionFiberSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ExecutionFiberSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::GetSystemControlRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'GetSystemControlRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::InstalledApplicationListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InstalledApplicationListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::InstalledApplicationStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InstalledApplicationStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::IssueChooserGrantCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'IssueChooserGrantCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::KeychainReferenceListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'KeychainReferenceListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::KeychainReferenceStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'KeychainReferenceStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::KillCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'KillCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::MutateSearchCandidateCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'MutateSearchCandidateCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::MutateTaskNodeTopologyCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'MutateTaskNodeTopologyCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::NotificationListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'NotificationListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::NotificationSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'NotificationSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::OverrideEffectUnknownOperationCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'OverrideEffectUnknownOperationCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::OverrideTaskAttemptCommitCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'OverrideTaskAttemptCommitCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::PartitionAutonomyGateState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'PartitionAutonomyGateState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::PauseCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'PauseCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::PlanNodeKind",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'PlanNodeKind' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::PlanNodeLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'PlanNodeLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ProcessListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ProcessListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ProcessSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ProcessSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::PurgeTopicCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'PurgeTopicCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ReclaimCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ReclaimCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::RecoveryFailureAuthority",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'RecoveryFailureAuthority' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::RecoveryFailureSummary",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RecoveryFailureSummary' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::RecoveryWorkerLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'RecoveryWorkerLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::RequestProcessMigrationCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RequestProcessMigrationCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResourceRecoveryAlertStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResourceRecoveryAlertStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResourceRecoveryMetrics",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResourceRecoveryMetrics' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResourceRecoveryOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResourceRecoveryOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResourceReservationListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResourceReservationListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResourceReservationSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResourceReservationSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResumeCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResumeCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResumeResourceRecoveryCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResumeResourceRecoveryCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ResumeSemanticRecoveryCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ResumeSemanticRecoveryCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SearchCandidateEntry",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SearchCandidateEntry' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SearchCandidateQuerySnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SearchCandidateQuerySnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SemanticRecoveryAlertStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SemanticRecoveryAlertStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SemanticRecoveryMetrics",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SemanticRecoveryMetrics' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SemanticRecoveryOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SemanticRecoveryOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SetContentTypeAssociationCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SetContentTypeAssociationCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SettingsDomainKind",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'SettingsDomainKind' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SettingsDomainSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SettingsDomainSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SettingsEntryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SettingsEntryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SubmitControlCommandRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SubmitControlCommandRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::SystemControlView",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'SystemControlView' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskAttemptLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskAttemptLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskAttemptListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskAttemptListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskAttemptStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskAttemptStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskGroupLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskGroupListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupMemberStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskGroupMemberStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupMemberType",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskGroupMemberType' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupMembershipState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskGroupMembershipState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskGroupOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskGroupStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskGroupStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskLifecycleState",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskLifecycleState' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskNodeListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskNodeListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskNodeOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskNodeOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskNodeStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskNodeStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskSummaryProjection",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TaskSummaryProjection' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TaskUndoClass",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'TaskUndoClass' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::ThrottleCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ThrottleCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TopicListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TopicListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TopicOperationsSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TopicOperationsSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TopicStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TopicStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::TopicSummaryStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'TopicSummaryStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::UndoReceiptCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'UndoReceiptCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::UninstallApplicationCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'UninstallApplicationCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::UpdateSettingsDomainCommand",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'UpdateSettingsDomainCommand' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::WorkspaceListSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'WorkspaceListSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::WorkspaceSnapshot",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'WorkspaceSnapshot' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "system_control.proto::WorkspaceStatus",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'WorkspaceStatus' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "takeover_control.proto::BarrierObservationEvidence",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'BarrierObservationEvidence' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "takeover_control.proto::BarrierObservationRecord",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'BarrierObservationRecord' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "takeover_control.proto::BarrierObservationSignature",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'BarrierObservationSignature' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "takeover_control.proto::BarrierObservationTarget",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'BarrierObservationTarget' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "takeover_control.proto::SubmitBarrierObservationRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'SubmitBarrierObservationRequest' wire layout unchanged"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "tool_sandbox.proto::InvokeToolRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'InvokeToolRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "tool_sandbox.proto::InvokeToolResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'InvokeToolResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "tool_sandbox.proto::ListToolsRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ListToolsRequest'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "tool_sandbox.proto::ListToolsResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ListToolsResult'"
+    },
+    {
+      "classification": "ADDITIVE_SAFE",
+      "scope": "proto",
+      "target": "tool_sandbox.proto::ToolDescriptorWire",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "added new .proto message 'ToolDescriptorWire'"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::CancelWaitRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CancelWaitRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::CancelWaitResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'CancelWaitResult' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::InspectWaitRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectWaitRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::InspectWaitResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'InspectWaitResult' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::ListWaitsRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ListWaitsRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::ListWaitsResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'ListWaitsResult' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::NotifyCommitsRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'NotifyCommitsRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::RegisterWaitRequest",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RegisterWaitRequest' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::RegisterWaitResult",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'RegisterWaitResult' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::WaitRecord",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'WaitRecord' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::WaitStateCode",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "enum 'WaitStateCode' wire layout unchanged"
+    },
+    {
+      "classification": "UNCHANGED",
+      "scope": "proto",
+      "target": "wait_control.proto::WakeReport",
+      "rule_id": "COMPAT-VER-001",
+      "detail": "message 'WakeReport' wire layout unchanged"
+    }
+  ]
+}

@@ -12,13 +12,14 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file nlos/sabi/v1/blob_reference.proto.
  */
 export const file_nlos_sabi_v1_blob_reference: GenFile = /*@__PURE__*/
-  fileDesc("CiFubG9zL3NhYmkvdjEvYmxvYl9yZWZlcmVuY2UucHJvdG8SDG5sb3Muc2FiaS52MSLNAQoUTWludFJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhMKC3BhdGhfaGFuZGxlGAIgASgJEhoKEmZpbGVfZGlnZXN0X3NoYTI1NhgDIAEoDBISCgpzaXplX2J5dGVzGAQgASgEEhEKCW1heF9yZWFkcxgFIAEoBBIXCg9tYXhfY2h1bmtfYnl0ZXMYBiABKAQSFgoOdmFsaWRfdW50aWxfbXMYByABKAQibwoTTWludFJlZmVyZW5jZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSFAoMcmVmZXJlbmNlX2lkGAIgASgMEhQKDG1pbnRlZF9hdF9tcxgDIAEoBCKAAQoUUmVhZFJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhQKDHJlZmVyZW5jZV9pZBgCIAEoDBIOCgZvZmZzZXQYAyABKAQSFAoMbGVuZ3RoX2J5dGVzGAQgASgEIn8KE1JlYWRSZWZlcmVuY2VSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Eg0KBWNodW5rGAIgASgMEg4KBm9mZnNldBgDIAEoBBIbChNjaHVua19kaWdlc3Rfc2hhMjU2GAQgASgMIl0KF1JlbGVhc2VSZWZlcmVuY2VSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIUCgxyZWZlcmVuY2VfaWQYAiABKAwiWAoWUmVsZWFzZVJlZmVyZW5jZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSEAoIcmVsZWFzZWQYAiABKAhiBnByb3RvMw", [file_nlos_sabi_v1_envelope]);
+  fileDesc("CiFubG9zL3NhYmkvdjEvYmxvYl9yZWZlcmVuY2UucHJvdG8SDG5sb3Muc2FiaS52MSLtAQoUTWludFJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhMKC3BhdGhfaGFuZGxlGAIgASgJEhoKEmZpbGVfZGlnZXN0X3NoYTI1NhgDIAEoDBISCgpzaXplX2J5dGVzGAQgASgEEhEKCW1heF9yZWFkcxgFIAEoBBIXCg9tYXhfY2h1bmtfYnl0ZXMYBiABKAQSFgoOdmFsaWRfdW50aWxfbXMYByABKAQSHgoWcmVjaXBpZW50X3ByaW5jaXBhbF9pZBgIIAEoDCJvChNNaW50UmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIUCgxyZWZlcmVuY2VfaWQYAiABKAwSFAoMbWludGVkX2F0X21zGAMgASgEIoABChRSZWFkUmVmZXJlbmNlUmVxdWVzdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSFAoMcmVmZXJlbmNlX2lkGAIgASgMEg4KBm9mZnNldBgDIAEoBBIUCgxsZW5ndGhfYnl0ZXMYBCABKAQifwoTUmVhZFJlZmVyZW5jZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSDQoFY2h1bmsYAiABKAwSDgoGb2Zmc2V0GAMgASgEEhsKE2NodW5rX2RpZ2VzdF9zaGEyNTYYBCABKAwiXQoXUmVsZWFzZVJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhQKDHJlZmVyZW5jZV9pZBgCIAEoDCJYChZSZWxlYXNlUmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIQCghyZWxlYXNlZBgCIAEoCGIGcHJvdG8z", [file_nlos_sabi_v1_envelope]);
 
 /**
  * `blob_reference.mint_reference` request: the sender declares an existing
  * file inside its own workspace fence. Mint verifies the fence (lexical +
- * canonicalized), the whole-file digest, the size, and binds a per-64KiB
- * chunk digest manifest; the opened descriptor is pinned for all later
+ * canonicalized), the whole-file digest, the size, and binds a fixed-block
+ * digest manifest with block size max_chunk_bytes (1..65408). The opened
+ * descriptor is pinned for all later
  * reads and the path is never re-resolved, structurally eliminating the
  * swap-the-target window.
  *
@@ -59,6 +60,18 @@ export type MintReferenceRequest = Message<"nlos.sabi.v1.MintReferenceRequest"> 
    * @generated from field: uint64 valid_until_ms = 7;
    */
   validUntilMs: bigint;
+
+  /**
+   * Explicit 16-byte recipient PrincipalId, resolved through the identity
+   * authority. Mint authorization binds this field and all file/constraint
+   * fields to the authenticated sender; each read requires authenticated
+   * principal == this recipient plus valid service/token authorization.
+   * Missing/invalid recipient MUST be rejected by the service. Historical
+   * messages without field 8 remain decodable, but confer no recipient grant.
+   *
+   * @generated from field: bytes recipient_principal_id = 8;
+   */
+  recipientPrincipalId: Uint8Array;
 };
 
 /**
@@ -98,10 +111,13 @@ export const MintReferenceResultSchema: GenMessage<MintReferenceResult> = /*@__P
   messageDesc(file_nlos_sabi_v1_blob_reference, 1);
 
 /**
- * `blob_reference.read_reference` request: one bounded chunk (length_bytes
- * <= 64 KiB). The read cursor lives in the server-side token record, not in
- * the transport: large files are sequential small reads with no reassembly
- * state machine.
+ * `blob_reference.read_reference` request: one aligned mint-time block or
+ * the final short block. offset must align to the token's fixed block size;
+ * length_bytes is a receiving bound <=65408 and must fit the actual block.
+ * The service validates the whole block against its mint-time digest before
+ * returning bytes. It must not return an unverified partial block. Offset,
+ * file extent, overflow, TTL, read-count and holder checks belong to the
+ * service. No transport reassembly state machine is introduced.
  *
  * @generated from message nlos.sabi.v1.ReadReferenceRequest
  */
@@ -136,8 +152,11 @@ export const ReadReferenceRequestSchema: GenMessage<ReadReferenceRequest> = /*@_
 
 /**
  * `blob_reference.read_reference` result. `chunk_digest_sha256` is the
- * per-chunk digest from the mint-time manifest, verified per chunk (never
- * only end-of-stream).
+ * digest of this exact mint-time block (including a final short block),
+ * verified before delivery, never only end-of-stream. chunk is at most
+ * 65408 bytes AND the complete encoded result is at most 65536 bytes.
+ * Services construct the canonical schema identity, rather than reflecting
+ * request extensions; bounded encoding remains mandatory for all results.
  *
  * @generated from message nlos.sabi.v1.ReadReferenceResult
  */

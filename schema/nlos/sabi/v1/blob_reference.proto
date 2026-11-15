@@ -6,9 +6,10 @@ import "nlos/sabi/v1/envelope.proto";
 
 // W82-B SABI v1.1 (D5 option B, L-015): large-payload reference primitive
 // channel. Service dispatch name "blob_reference"; dispatched method strings
-// are "mint_reference", "read_reference", "release_reference". Payload bytes
-// never enter any SABI frame: frames carry only 16-byte reference ids,
-// digests, and bounded chunk windows.
+// are "mint_reference", "read_reference", "release_reference". Application
+// messages carry references; authenticated, independently authorized reads
+// return bytes only in this channel's bounded ReadReferenceResult.chunk.
+// Payload bytes MUST NOT be written to ordinary request/response logs.
 //
 // A frame whose encoded payload exceeds MAX_BLOB_REFERENCE_PAYLOAD_BYTES
 // (64 KiB) is rejected with a typed FrameTooLarge failure for that call only.
@@ -23,12 +24,16 @@ import "nlos/sabi/v1/envelope.proto";
 // Every chunk read re-validates the token (rights, revocation, read count,
 // TTL) and that the holder principal equals the resolving principal; a
 // mid-read revocation stops the next chunk, so already-delivered chunks are
-// a bounded leak (delivered chunks x 64 KiB) by design.
+// a bounded leak (delivered chunks x 65408 bytes) by design. A reference id
+// is object identity, not bearer authorization or a capability slot.
+// After a service restart, old tokens MUST fail closed: a pinned descriptor
+// cannot be recovered by reopening its stored path. A new mint is required.
 
 // `blob_reference.mint_reference` request: the sender declares an existing
 // file inside its own workspace fence. Mint verifies the fence (lexical +
-// canonicalized), the whole-file digest, the size, and binds a per-64KiB
-// chunk digest manifest; the opened descriptor is pinned for all later
+// canonicalized), the whole-file digest, the size, and binds a fixed-block
+// digest manifest with block size max_chunk_bytes (1..65408). The opened
+// descriptor is pinned for all later
 // reads and the path is never re-resolved, structurally eliminating the
 // swap-the-target window.
 message MintReferenceRequest {
@@ -39,6 +44,13 @@ message MintReferenceRequest {
   uint64 max_reads = 5;
   uint64 max_chunk_bytes = 6;
   uint64 valid_until_ms = 7;
+  // Explicit 16-byte recipient PrincipalId, resolved through the identity
+  // authority. Mint authorization binds this field and all file/constraint
+  // fields to the authenticated sender; each read requires authenticated
+  // principal == this recipient plus valid service/token authorization.
+  // Missing/invalid recipient MUST be rejected by the service. Historical
+  // messages without field 8 remain decodable, but confer no recipient grant.
+  bytes recipient_principal_id = 8;
 }
 
 // `blob_reference.mint_reference` result.
@@ -48,10 +60,13 @@ message MintReferenceResult {
   uint64 minted_at_ms = 3;
 }
 
-// `blob_reference.read_reference` request: one bounded chunk (length_bytes
-// <= 64 KiB). The read cursor lives in the server-side token record, not in
-// the transport: large files are sequential small reads with no reassembly
-// state machine.
+// `blob_reference.read_reference` request: one aligned mint-time block or
+// the final short block. offset must align to the token's fixed block size;
+// length_bytes is a receiving bound <=65408 and must fit the actual block.
+// The service validates the whole block against its mint-time digest before
+// returning bytes. It must not return an unverified partial block. Offset,
+// file extent, overflow, TTL, read-count and holder checks belong to the
+// service. No transport reassembly state machine is introduced.
 message ReadReferenceRequest {
   SchemaIdentity schema = 1;
   bytes reference_id = 2;
@@ -60,8 +75,11 @@ message ReadReferenceRequest {
 }
 
 // `blob_reference.read_reference` result. `chunk_digest_sha256` is the
-// per-chunk digest from the mint-time manifest, verified per chunk (never
-// only end-of-stream).
+// digest of this exact mint-time block (including a final short block),
+// verified before delivery, never only end-of-stream. chunk is at most
+// 65408 bytes AND the complete encoded result is at most 65536 bytes.
+// Services construct the canonical schema identity, rather than reflecting
+// request extensions; bounded encoding remains mandatory for all results.
 message ReadReferenceResult {
   SchemaIdentity schema = 1;
   bytes chunk = 2;

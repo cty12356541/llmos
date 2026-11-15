@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// Local transports that may carry the same negotiated SABI contract. The
+// endpoint is returned only after negotiation; applications must not infer it.
+enum LocalTransportKind {
+  LOCAL_TRANSPORT_KIND_UNSPECIFIED = 0;
+  LOCAL_TRANSPORT_KIND_UNIX_SOCKET = 1;
+  LOCAL_TRANSPORT_KIND_WINDOWS_NAMED_PIPE = 2;
+}
+
+message ServiceVersion {
+  string schema_name = 1;
+  uint32 major = 2;
+  uint32 minor = 3;
+}
+
+// A transport-neutral candidate returned by resolve. Endpoint details remain
+// hidden until negotiate has selected a compatible binding.
+message ServiceCandidate {
+  bytes binding_id = 1;
+  uint64 generation = 2;
+  string service = 3;
+  ServiceVersion version = 4;
+  repeated uint32 feature_ids = 5;
+  repeated LocalTransportKind transport_kinds = 6;
+}
+
+message ResolveServiceRequest {
+  SchemaIdentity schema = 1;
+  string service = 2;
+}
+
+message ServiceCandidateSet {
+  repeated ServiceCandidate candidates = 1;
+}
+
+enum DirectoryErrorCode {
+  DIRECTORY_ERROR_CODE_UNSPECIFIED = 0;
+  DIRECTORY_ERROR_CODE_INVALID_REQUEST = 1;
+  DIRECTORY_ERROR_CODE_NOT_FOUND = 2;
+  DIRECTORY_ERROR_CODE_SCHEMA_UNSUPPORTED = 3;
+  DIRECTORY_ERROR_CODE_VERSION_UNSUPPORTED = 4;
+  DIRECTORY_ERROR_CODE_REQUIRED_FEATURE_UNSUPPORTED = 5;
+  DIRECTORY_ERROR_CODE_TRANSPORT_UNSUPPORTED = 6;
+}
+
+// Error details deliberately contain no OS path, implementation language, or
+// policy-sensitive registration inventory.
+message DirectoryError {
+  DirectoryErrorCode code = 1;
+  string service = 2;
+}
+
+message ResolveServiceResponse {
+  SchemaIdentity schema = 1;
+  oneof result {
+    ServiceCandidateSet candidates = 2;
+    DirectoryError error = 3;
+  }
+}
+
+message NegotiateServiceRequest {
+  SchemaIdentity schema = 1;
+  string service = 2;
+  string schema_name = 3;
+  uint32 major = 4;
+  uint32 minimum_minor = 5;
+  repeated uint32 required_feature_ids = 6;
+  repeated LocalTransportKind supported_transport_kinds = 7;
+}
+
+message LocalEndpoint {
+  LocalTransportKind kind = 1;
+  string address = 2;
+}
+
+message ServiceBinding {
+  ServiceCandidate candidate = 1;
+  LocalEndpoint endpoint = 2;
+}
+
+message NegotiateServiceResponse {
+  SchemaIdentity schema = 1;
+  oneof result {
+    ServiceBinding binding = 2;
+    DirectoryError error = 3;
+  }
+}

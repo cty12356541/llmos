@@ -1,0 +1,11 @@
+
+> schema:check-generated
+> npm run schema:generate && node tools/check-generated-schema.mjs
+
+
+> schema:generate
+> buf generate && node tools/normalize-generated-schema.mjs
+
+generated schema files differ from the checked-in baseline:
+ M gen/python/nlos/sabi/v1/blob_reference_pb2.py
+ M gen/typescript/nlos/sabi/v1/blob_reference_pb.ts

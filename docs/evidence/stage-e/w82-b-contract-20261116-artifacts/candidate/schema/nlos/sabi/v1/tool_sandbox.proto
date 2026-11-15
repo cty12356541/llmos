@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// W82-B SABI v1.1 (D1/D3/D9): capability-scoped sandboxed tool delegation
+// thin channel. Service dispatch name "tool_sandbox"; dispatched method
+// strings are "list_tools" and "invoke_tool". Cancellation and progress
+// observation coordinate with the frozen OperationControl/WaitControl
+// channels rather than private methods (D1), so this surface stays at two
+// methods.
+//
+// A frame whose encoded payload exceeds MAX_TOOL_SANDBOX_PAYLOAD_BYTES
+// (64 KiB) is rejected with a typed FrameTooLarge failure for that call only.
+// A per-session budget bounds rejected/malformed frames (default: more
+// than 8 within a 60s sliding window tears the connection down).
+// Oversized payloads MUST travel by reference (BlobReference), never by
+// enlarging this bound.
+
+// One catalog entry returned by `list_tools`. `effect_class` uses the
+// ecosystem four-class tokens READ_ONLY / REVERSIBLE / COMPENSATABLE /
+// IRREVERSIBLE; COMPENSATABLE entries carry a non-empty
+// `compensation_handler` (undeclared tools are rejected fail-closed).
+message ToolDescriptorWire {
+  string name = 1;
+  string summary = 2;
+  string effect_class = 3;
+  string compensation_handler = 4;
+  string input_schema_json = 5;
+}
+
+// `tool_sandbox.list_tools` request (idempotent re-pull; no subscription).
+message ListToolsRequest {
+  SchemaIdentity schema = 1;
+}
+
+// `tool_sandbox.list_tools` result. A catalog larger than the payload bound
+// is a typed rejection; entries never silently truncate.
+message ListToolsResult {
+  SchemaIdentity schema = 1;
+  repeated ToolDescriptorWire tools = 2;
+}
+
+// `tool_sandbox.invoke_tool` request. `arguments_json` stays small; large
+// arguments travel by reference (BlobReference) resolved to pre-opened
+// workspace files, never by enlarging this frame.
+message InvokeToolRequest {
+  SchemaIdentity schema = 1;
+  string tool = 2;
+  string arguments_json = 3;
+}
+
+// `tool_sandbox.invoke_tool` result. `output_json` is bounded; larger results
+// travel by digest reference into the pre-opened workspace directory.
+message InvokeToolResult {
+  SchemaIdentity schema = 1;
+  string output_json = 2;
+}

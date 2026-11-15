@@ -1,8 +1,10 @@
 # W82-B 车道设计定稿草案:SABI v1.1 薄通道 + L-015 大载荷原语(供维护者终裁)
 
-> **性质:未跟踪的工作文档。若采纳为正式设计,需按 AGENTS.md 规则 CRUD 进项目知识体系,本文件不替代该流程。**
+> **性质：维护者已裁定的 W82-B 设计对象；实现与验收状态以代码及 Evidence 为准，不由设计文字推定。L0/阶段进度登记由 W82-INT 维护。**
 >
 > **维护者终裁(2026-11-08,原话「D1-D11 全部按建议裁定(含第三通道 BlobReference,9→12)」):各章「请裁定」均按建议采纳——D5 第三通道 `nlos.sabi.BlobReference` 获裁,冻结通道 9→12;D10 写集扩展归属按 §10.3 建议执行。本文档自此为裁定后定稿,登记动作归 W82-INT。**
+>
+> **2026-11-16 补充裁定：维护者明确采用 Blob 推荐方案。应用消息只传引用；Blob 服务逐块鉴权返回字节，每块最多 65408 bytes 且完整编码载荷不超过 65536 bytes；新增显式接收者字段并绑定认证身份；重启后旧令牌失效，禁止按旧路径重开；读取限定对齐块及末尾短块。此补充替代下文旧“任何 SABI 帧不含字节”及原始64 KiB块措辞；未改变 D1–D11 编号。详见 §5.5 与 [本轮 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。**
 >
 > 日期:2026-11-08 · 基线:main `72c75e596` · 通道:W82-B-SABI-V11-THIN-WAIST
 > 权威依据:[stage-e-progress.md](stage-e-progress.md) §E.6.1.8、[E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md)(L-015 裁定:选项 B 默认优先、选项 C 否决、选项 A 须附等强 TCB/DoS 论证)、ADR-0010/0014/0022/0027
@@ -114,7 +116,7 @@
 
 ### 5.1 终裁确认:维持选项 B(裁定登记的默认优先路线)
 
-第 12 章给出选项 B 的 TCB 增量分析与内存/DoS 有界性论证,以及选项 A 的**等强对照**(裁定要求「A 须附等强论证方可替代」——我们的结论相反:A 的论证弱于 B,支持维持 B)。要点:选项 A(传输层分帧重组)把重组状态机放进 `nlos-ipc`/`nlos-system-control`(与 W82-A 写集交叠、TCB 内核路径增长),引入每连接重组缓冲的驻留内存与 stall 攻击面,且分帧在途的载荷**不可吊销**;选项 B 全部增量都在 TCB 外的旁路面(引用令牌表 + 逐块受限读),帧内永远只有引用。**请终裁确认 B。**
+第 12 章给出选项 B 的 TCB 增量分析与内存/DoS 有界性论证,以及选项 A 的**等强对照**(裁定要求「A 须附等强论证方可替代」——我们的结论相反:A 的论证弱于 B,支持维持 B)。要点:选项 A(传输层分帧重组)把重组状态机放进 `nlos-ipc`/`nlos-system-control`(与 W82-A 写集交叠、TCB 内核路径增长),引入每连接重组缓冲的驻留内存与 stall 攻击面,且分帧在途的载荷**不可吊销**;选项 B 全部增量都在 TCB 外的旁路面(引用令牌表 + 逐块受限读),应用消息帧只携引用，Blob 服务读响应逐块鉴权返回受限字节（2026-11-16 补充裁定）。**B 已获裁。**
 
 ### 5.2 原语落点:建议独立第三通道 nlos.sabi.BlobReference(9→12);回退方案寄宿 tool_sandbox(9→11)
 
@@ -124,9 +126,9 @@
 - ToolSandbox:能力域是「沙箱工具执行」,同样错置。
 - 只传消息不设 service 的共享 proto:消息可以共享,但方法分派需要 service 名——`sdk/python/nlos_sdk/common.py:43` `SABI_V1_CHANNELS` 未登记的 schema 在默认路径(未显式传 `supported_major` 覆盖)一律 `UNKNOWN_SCHEMA` fail-closed([common.py:74-76](../../sdk/python/nlos_sdk/common.py)),不可分派。
 
-**建议**:新增第三通道 `nlos.sabi.BlobReference`,3 方法(均小帧 ≤64 KiB,字节永不进帧):
-1. `mint_reference`:发送方声明(工作区内文件路径句柄、SHA-256、字节数、约束:读次数上限/单块上限/TTL)。服务层(库形态驻 `nlos-capability`,daemon 挂载归 INT,见 §11 B-4)校验:路径在声明工作区围栏内(词法 + canonicalize)→ **一次性打开文件并将 fd 钉进令牌记录**(平台允许处带 no-follow 语义)→ 全文摘要与长度核验 → 铸造引用令牌。**此后一切读取都从被钉 fd 出,路径永不重新解析**——堵死「mint 后把已验证文件换成指向围栏外的符号链接/硬链接」的换靶窗口(该窗口无竞速、TTL 全程开放,比沙箱证据自认的 canonicalize→open TOCTOU 更宽,必须结构性消除)。令牌同时绑定**逐块摘要清单**(每 64 KiB 块一个 SHA-256,随全文摘要入令牌记录),使读侧逐块可验而非只可期末全验(期末全验是先泄后验,不合格)。
-2. `read_reference`:接收方持令牌按 (offset, len≤64 KiB) 分块读。**每块独立校验**:令牌权利/吊销/读计数/TTL + **holder principal == 解析方 principal**(逐块重验,使日志外泄的 `nlosref://` URI 天然失效——捡到 URI 者无法以属主身份完成握手) + 该块 SHA-256 与令牌摘要清单比对;字节从钉住 fd 的对应偏移读出。大文件 = 多次小帧顺序读,与 W82-A 会话循环天然契合;读取状态(游标)在服务端令牌侧,不在传输层——**无重组状态机**。
+**建议**:新增第三通道 `nlos.sabi.BlobReference`,3 方法（完整服务载荷均 ≤64 KiB；仅 read 响应返回受限字节，应用消息携引用）:
+1. `mint_reference`:发送方声明(工作区内文件路径句柄、SHA-256、字节数、约束:读次数上限/单块上限/TTL、显式接收者 PrincipalId)。服务层(库形态驻 `nlos-capability`,daemon 挂载归 INT,见 §11 B-4)校验:路径在声明工作区围栏内(词法 + canonicalize)→ **一次性打开文件并将 fd 钉进令牌记录**(平台允许处带 no-follow 语义)→ 全文摘要与长度核验 → 铸造引用令牌。**此后一切读取都从被钉 fd 出,路径永不重新解析**——堵死「mint 后把已验证文件换成指向围栏外的符号链接/硬链接」的换靶窗口(该窗口无竞速、TTL 全程开放,比沙箱证据自认的 canonicalize→open TOCTOU 更宽,必须结构性消除)。令牌同时绑定**逐块摘要清单**（按令牌固定有效块长 `b = max_chunk_bytes` 分块，`1 ≤ b ≤ 65408`，末块可短，每块一个 SHA-256，随全文摘要入令牌记录）,使读侧逐块可验而非只可期末全验(期末全验是先泄后验,不合格)。
+2. `read_reference`:接收方持令牌按对齐 offset 读取完整的 mint-time 块（末块可短，接收长度上限≤65408，完整编码≤65536）。**每块独立校验**:令牌权利/吊销/读计数/TTL + **holder principal == 解析方 principal**(逐块重验,使日志外泄的 `nlosref://` URI 天然失效——捡到 URI 者无法以属主身份完成握手) + 该块 SHA-256 与令牌摘要清单比对;字节从钉住 fd 的对应偏移读出。大文件 = 多次小帧顺序读,与 W82-A 会话循环天然契合;读取状态(游标)在服务端令牌侧,不在传输层——**无重组状态机**。
 3. `release_reference`:主动弃用(卫生性;TTL 与读次数上限已保证收敛;被钉 fd 随之释放)。
 
 **应用侧 URI 约定**:qq-agent 把 `voice_uri` 填为 `nlosref://<32hex>`。勘误(见 §14):`voice_uri` **不是** ChannelControl 的 proto 字段——它是 qq-agent 应用层 `OutboundReply` 消息的字段(E-DOGFOOD-001 §1),经 ChannelControl enqueue 的不透明 `bytes payload = 5`([channel_control.proto:88-98](../../schema/nlos/sabi/v1/channel_control.proto))传输。因此 **ChannelControl 零字节改动**的结论不变且更平凡:URI 方案是纯应用层约定,任何 proto 都不需要动。
@@ -141,7 +143,7 @@
 
 **建议 (ii)。理由(全部来自勘察实证)**:
 - (i) **不是纯增量**:[schema.rs:16-18](../../crates/nlos-capability/src/schema.rs) v1 DDL 把 `CHECK(target_kind IN (1, 2))` 与 `CHECK(rights > 0 AND rights <= 15)` 钉进表定义,而 heads 行被表族不可变触发器中的 2 个(`capability_heads_identity_immutable` 禁 UPDATE、`capability_heads_no_delete` 禁 DELETE,[schema.rs:67-95](../../crates/nlos-capability/src/schema.rs);表族共 10 个触发器)锁死——放宽 CHECK 需要 SQLite 表重建迁移(建新表→INSERT..SELECT→删旧→改名),是 v2(纯加表,[schema.rs:103-135](../../crates/nlos-capability/src/schema.rs))量级数倍的改动,且重建窗口本身是风险面。绝对安全宗旨下,为让一种新消费者而重建 TCB 核心表,不成比例。
-- (ii) **完全复制 v2 先例**:在 capability-authority.db 内 additive 新增引用令牌表族(铸造/吊销/读取计数,全部 STRICT + 不可变触发器 + `PRAGMA user_version = 3`),不动任何既有表。令牌记录字段:`reference_id BLOB(16)`(SHA-256 域分隔派生,镜像 [lib.rs:821](../../crates/nlos-capability/src/lib.rs) `derive_id` 模式)、`file_digest_sha256 BLOB(32)`、`path_handle`(工作区相对路径句柄,非宿主绝对路径)、`holder_principal`、`size_bytes`、`max_reads`/`reads_count`、`max_chunk_bytes`、`valid_until_ms`、`minted_at_ms`、`revoked_at_ms`。DDL 保护测试按 [capability_authority.rs:472](../../crates/nlos-capability/tests/capability_authority.rs) / [call_limit_ledger.rs:616](../../crates/nlos-capability/tests/call_limit_ledger.rs) 先例各加 v3 类比。
+- (ii) **完全复制 v2 先例**:在 capability-authority.db 内 additive 新增引用令牌表族(铸造/吊销/读取计数,全部 STRICT + 不可变触发器 + `PRAGMA user_version = 3`),不动任何既有表。令牌记录字段:`reference_id BLOB(16)`(SHA-256 域分隔派生,镜像 [lib.rs:821](../../crates/nlos-capability/src/lib.rs) `derive_id` 模式)、`file_digest_sha256 BLOB(32)`、`path_handle`(工作区相对路径句柄,非宿主绝对路径)、`issuer_principal`、`holder_principal`（显式接收者）、`size_bytes`、`max_reads`/`reads_count`、`max_chunk_bytes`、`valid_until_ms`、`minted_at_ms`、`revoked_at_ms`。DDL 保护测试按 [capability_authority.rs:472](../../crates/nlos-capability/tests/capability_authority.rs) / [call_limit_ledger.rs:616](../../crates/nlos-capability/tests/call_limit_ledger.rs) 先例各加 v3 类比。
 - **衰减性不靠 rights 位也成立**:令牌自带约束列(读次数/块大小/TTL/持有者),v1.1 单级铸造(仅文件属主会话可 mint,接收方不可再委托)即满足「可衰减可吊销」;再委托链留作未来 additive(届时再加 parent 列)。ADR-0010/0022 一致性体现在:铸造命令按签名命令域(`b"nlos/capability/command/v1"` 模式新增 kind 4)经 principal 密钥签署、吊销单调、回执不可变。
 - 附带修正:目标 id 全链硬钉 16 字节([schema.rs:10](../../crates/nlos-capability/src/schema.rs) 与 nominal_id),引用 id 天然 16B,零冲突。
 
@@ -153,11 +155,24 @@
 
 **映射设计(钉死)**:
 1. **会话槽位表在 daemon 侧**:每条已握手连接维护 `slot(u64) → CapabilityId(16B)` 会话本地表,握手/导入时填充;wire slot 永远只是该表的索引,不承载任何全局语义。
-2. **引用令牌不走 slot**:BlobReference 消息用**独立的 `bytes reference_id = 1`(16B)字段**,绝不复用 envelope 的 `CapabilityHandle` 消息类型——这是防同形异义的结构性隔离(编译期不同类型,不靠注释)。SDK 收到 mint 响应后自行把它登记进客户端本地槽位表(客户端槽位编号与 daemon 侧无关)。
-3. **容量与逐出**:会话槽位表容量沿用语义层上界 `MAX_CAPABILITY_HANDLES = 64`([lib.rs:91](../../crates/nlos-schema/src/lib.rs));逐出 = LRU,**仅失效该会话的映射行,不触碰权威记录**(权威记录不逐出,镜像 custody「永久审计记录」纪律)。逐出时若有在途引用(该槽位正被某 read_reference 块序列使用),逐出推迟到块序列完成(pinning);被逐出后客户端以 reference_id 重新解析即可恢复。
-4. **活引用 × 令牌吊销**:每块读取前校验令牌(吊销表 + 读计数 + TTL);中途吊销 ⇒ 下块起拒绝,已交付块即有界泄漏(≤ 已读块数 × 64 KiB),诚实记入语义注释。
+2. **引用令牌不走 slot**:BlobReference 消息用**独立的 `bytes reference_id`(16B)字段**（现有消息字段号为2，字段1为schema）,绝不复用 envelope 的 `CapabilityHandle` 消息类型——这是防同形异义的结构性隔离(编译期不同类型,不靠注释)。SDK 收到 mint 响应后自行把它登记进客户端本地槽位表(客户端槽位编号与 daemon 侧无关)。
+3. **容量与逐出**:会话槽位表容量沿用语义层上界 `MAX_CAPABILITY_HANDLES = 64`([lib.rs:91](../../crates/nlos-schema/src/lib.rs));逐出 = LRU,**仅失效该会话的映射行,不触碰权威记录**(权威记录不逐出,镜像 custody「永久审计记录」纪律)。逐出时若有在途引用(该槽位正被某 read_reference 块序列使用),逐出推迟到块序列完成(pinning);被逐出后仅在已认证 holder 的 authority 校验通过后重新导入 capability 映射；reference_id 只恢复引用对象身份，不能授予 capability。
+4. **活引用 × 令牌吊销**:每块读取前校验令牌(吊销表 + 读计数 + TTL);中途吊销 ⇒ 下块起拒绝,已交付块即有界泄漏(≤ 已读块数 × 65408 bytes),诚实记入语义注释。
 
 **请裁定**:确认 5.1(B 终裁)、5.2(第三通道或回退)、5.3(另立令牌表)、5.4(映射规则)。
+
+### 5.5 2026-11-16 补充裁定：Blob 可实施契约
+
+维护者批准范围为：应用消息只传引用；Blob 服务逐块鉴权返回字节；有效块最多65408、完整protobuf服务载荷最多65536；新增显式接收者并绑定认证身份；重启旧令牌失效，禁止按旧路径重开；只读对齐块与末尾短块。这是对 D5 的补充，不声称原文已有另一编号决策。
+
+- Wire additive 字段为 `MintReferenceRequest.recipient_principal_id = 8`（bytes，服务接受时必须恰好16字节且解析为有效身份）。发送者来自已认证会话，其 mint 授权必须绑定 recipient、文件摘要/大小和全部约束。每块 read 的认证 principal 必须等于 token holder=recipient，同时持有效服务授权；裸 URI/reference ID/root ID 均不授权。缺字段的历史消息仍可解码，但不能由服务解释成隐含授权或公开共享。
+- `max_chunk_bytes=b` 是令牌固定摘要块长，`1≤b≤65408`。read 的 offset 必须与 b 对齐，length_bytes 是接收上限（≤65408且能装下实际块）；读取整块并与 mint-time 摘要比较后才返回相同字节与摘要，末块可短。range切片、EOF表示与读取计数幂等细则属于 B4 实现约束，须显式文档化/取证，不能冒充本次维护者逐项签字。
+- canonical `SchemaIdentity(name=nlos.sabi.BlobReference,major=1,minor=0,无扩展)` 编码27 bytes；含field tag/length后29，chunk开销≤4、offset开销≤11、32-byte SHA-256开销34，总开销≤78。因此65408-byte块最大编码65486≤65536。不得回显请求扩展并沿用此公式；所有结果仍做实际bounded encode。Rust codec 独立检查有效块上限和完整编码上限，服务仍负责摘要长度/内容、对齐、身份和授权。
+- 重启后旧 fd 无法恢复原对象，旧令牌 fail-closed 不可读；保留审计，重新 mint 获得新 fd/摘要/reference ID。不得重开旧路径恢复授权。session slot 表随会话失效，任何重建均重新通过 authority 的 holder/generation/有效期/祖先校验。
+- release/revoke 必须沿用能力权威的 issuer/holder 最小授权原则，并验证签名、绑定和不可变回执；不能因本次明确 recipient 就自动给 sender 或 recipient 增加未声明的管理权。精确 release policy 及EOF/资源配额默认值由 B4 记录为实现约束并接受独立审查。
+- B4 须为单文件大小、摘要清单条数/总元数据、每主体及全局活跃令牌/fd、mint速率/TTL/read数和并发读设置显式界；不能用“文件天然有界”替代资源界。原审计历史行随时间增长的诚实边界保留。
+
+schema兼容验证和编码边界证据见 [W82-B-CONTRACT](../evidence/stage-e/w82-b-contract-20261116.md)。这些是契约与codec事实，不证明引用权威、文件防换靶或daemon服务已实现。
 
 ## 6. D6:current_epoch 维持 1;建 epochs/v1.1 黄金目录
 
@@ -314,7 +329,7 @@
   4. [envelope.ts:1338-1345](../../tests/conformance/schema/envelope.ts) 向量覆盖 deepEqual 同 2;
   5. [Program.cs:592](../../sdk/csharp/llmos-sabi-probe/Program.cs) `required_channels.Count == 表.Count` **计数**相等(:589 的逐通道 Contains 是天然子集语义,可不动);
   6. [golden_test.go:508-509](../../sdk/go/sabi/golden_test.go) 同 5 的计数相等(:512-513 成员检查可不动)。
-  **松绑形态**:1/3 → 「v1.0 required_channels ⊆ SDK 表」;2/4 → 「v1.0 向量覆盖通道集 ⊆ SDK 表」;5/6 → 删计数相等行(或改子集)。**六处必须与 SDK 表扩表同一逻辑变更落地**(B-1 内完成松绑,先于 D 的表扩),否则 D 车道将在无写集归属的文件里爆红。**执行面诚实注记**:六处中只有 1-4 进 CI(`python -m unittest discover -s tests/conformance/schema`,[rust-cross-platform.yml:89](../../.github/workflows/rust-cross-platform.yml));Go/C# 套件**不在任何 CI 步骤内**——B-1 验收清单须加手工跑 `go test ./sdk/...` 与 C# 探针一次,防「改了表、忘了松绑」的隐性红。
+  **松绑形态**:1/3 → 「v1.0 required_channels ⊆ SDK 表」;2/4 → 「v1.0 向量覆盖通道集 ⊆ SDK 表」;5/6 → 删计数相等行(或改子集)。**六处必须与 SDK 表扩表同一逻辑变更落地**(B-1 内完成松绑,先于 D 的表扩),否则 D 车道将在无写集归属的文件里爆红。**执行面诚实注记**:六处中只有 1-4 进 CI(`python -m unittest discover -s tests/conformance/schema`,[rust-cross-platform.yml:89](../../.github/workflows/rust-cross-platform.yml));Go/C# 套件在初稿时**不在 CI 内**；2026-11-16 核对当前 `rust-cross-platform.yml` 已有 `Run Go golden probe` / `Run C# golden probe`，不得沿用旧事实——B-1 验收清单须加手工跑 `go test ./sdk/...` 与 C# 探针一次,防「改了表、忘了松绑」的隐性红。
 
 ### 10.3 写集处置(跨车道与未归属文件)
 
@@ -324,7 +339,7 @@
 | `schema/golden/epochs/v1.1/**`(新) | 无归属 | **建议显式并入 B 写集**(黄金语料是 schema 面的另一半) |
 | `tests/stage_e_road_e001_upgrade_gate/src/step_c_in_place_upgrade.rs:387` | 不在任何 W82 车道写集;主 CI verify 作业内跑 | **建议随 B 车道显式扩写集并按 AGENTS.md 登记**(简报同建议);另注意其 :358-369 对 canonical YAML 的**字面串替换前提**:B 的 manifest 编辑保持 `current_epoch: 1` 原串、不重排 Envelope/DriverProvider 块(只在其后追加),替换逻辑即不受扰 |
 | sdk/python/nlos_sdk/common.py:43、sdk/typescript/src/common.ts:42 | W82-D | **跨车道协调项**:D 在客户端交付时登记;**B-1 的六处断言松绑必须先于 D 扩表落地**(否则 D 在无归属文件里爆红);建议 B/D 在 B82-SDK 屏障对表一次(B 出 proto 定稿即冻结通道名与 (1,0) 版本对,D 照抄) |
-| sdk/go/sabi/messages.go:38、sdk/csharp/llmos-sabi-probe/Messages.cs:38 | **无归属**(D 只有 python/ts) | 建议并入 B(纯机械镜像登记,与 Rust 注册表同一逻辑变更);或 INT——二选一,建议 B。改表须同组松绑 [Program.cs:592](../../sdk/csharp/llmos-sabi-probe/Program.cs) 与 [golden_test.go:508-509](../../sdk/go/sabi/golden_test.go) 的计数相等断言(两套件不在 CI 内,B-1 手工跑一次) |
+| sdk/go/sabi/messages.go:38、sdk/csharp/llmos-sabi-probe/Messages.cs:38 | **无归属**(D 只有 python/ts) | 建议并入 B(纯机械镜像登记,与 Rust 注册表同一逻辑变更);或 INT——二选一,建议 B。改表须同组松绑 [Program.cs:592](../../sdk/csharp/llmos-sabi-probe/Program.cs) 与 [golden_test.go:508-509](../../sdk/go/sabi/golden_test.go) 的计数相等断言(2026-11-16 复核：两探针已进入三平台 CI；B-1 本机可用时仍手工复验) |
 | tests/conformance/schema/envelope.py:1072/:1077-1079、envelope.ts:1328-1332/:1338-1345(六处松绑,§10.2;C#/Go 计数相等随其表登记同组) | **无归属**(D 只有 tests/conformance/ipc/**) | 建议并入 B(集合/覆盖断言松绑是注册表增长的直接机械后果,且须先于 D 扩表) |
 | crates/nlos-compat-shim/src/sabi_adapter.rs:847 map_service_to_channel | 无归属(nlos-compat-shim 不在任何 W82 写集) | **INT 协调项**:挂载新 service 名时把 `llm_gateway`/`tool_sandbox`/`blob_reference` 加入保留名表;B 在 proto 注释钉死 service 名供对表 |
 | 根 Cargo.toml / Cargo.lock | INT 保留(§E.3.2 共享入口纪律) | **B 零依赖新增**的设计(D8 journal/std::fs、D9 手写 JSON)即为此——唯一例外是 D9 摘要原语的推荐路线(INT 前置预锁 sha2,W80-0-SCAFFOLD 同型);若实现期另发现确需新依赖,上报 INT 于屏障处处理,车道内不得自改 |
@@ -351,13 +366,13 @@
 
 ### 12.1 威胁模型与裁定原则映射
 
-裁定原则「依旧以绝对安全为系统设计宗旨」。威胁面:持会话能力的恶意发送方/接收方、被吊销后试图续读的持有者、试图以引用原语越出工作区围栏读任意宿主文件者、试图以铸造/读取风暴耗尽 daemon 内存或磁盘者。两条路线共同目标:大载荷不破坏 64 KiB 帧界、不破坏 epochs/v1.0 零漂移、不经通道明文透传。
+裁定原则「依旧以绝对安全为系统设计宗旨」。威胁面:持会话能力的恶意发送方/接收方、被吊销后试图续读的持有者、试图以引用原语越出工作区围栏读任意宿主文件者、试图以铸造/读取风暴耗尽 daemon 内存或磁盘者。两条路线共同目标:大载荷不破坏 64 KiB 帧界、不破坏 epochs/v1.0 零漂移、应用消息只携引用；Blob read 响应为逐块鉴权的受限字节数据面（不声称握手自动提供加密）。
 
 ### 12.2 选项 B 设计的 TCB 增量
 
 - **零传输层改动**:nlos-ipc / nlos-system-control 一行不动——帧仍是 ≤64 KiB 的一元 exchange,无重组、无分序、无部分状态。与 W82-A 写集零交叠。
 - **TCB 新增面 = 三个可审计小件**:①capability-authority.db 内 additive 令牌表族(v3,全 STRICT + 不可变触发器 + 单调吊销——与 v2 同一安全语法);②BlobReference 服务层(nlos-capability 库形态:mint 围栏校验 + **fd 钉住** + read 逐块鉴权;daemon 挂载归 INT);③D8/D9 同源的持久 journal。全部在既有权威纪律内(签名命令、单调账本、fail-closed 校验),无新密码学原语、无新信任锚。
-- **字节不经通道明文**:帧内只有 (reference_id, digest, len, offset)——机密性上载荷内容不出现在任何 SABI 帧或日志;完整性由令牌内全文 SHA-256 + **逐块摘要清单**绑定,读侧每块即时可验(不依赖期末全验——期末全验是先泄后验)。
+- **引用与块数据分离**：应用消息携 (reference_id, digest, len, offset)，Blob read 响应经逐块鉴权后返回 chunk；不得把载荷字节写入普通请求/响应日志。认证 IPC 不等于加密传输；完整性由令牌内全文 SHA-256 + **逐块摘要清单**绑定,读侧每块即时可验(不依赖期末全验——期末全验是先泄后验)。
 - **可衰减可吊销(与 A 的本质差)**:令牌自带 TTL/读次/块大小/持有者约束;吊销单调入表,**每块读取前校验**——传输中途吊销在下一块生效,已泄有界(§5.4 第 4 条)。选项 A 的分帧在途载荷没有任何吊销语义。
 
 ### 12.3 内存/DoS 有界性(逐向量)
@@ -367,7 +382,7 @@
 | 单帧内存 | ≤64 KiB 服务载荷(外层 envelope ≤1 MiB,与 v1.0 同包络) | D2 论证;decode 前长度检查零分配 |
 | 重组缓冲 | **不存在**(设计上消除) | read 是逐块独立小帧,游标在服务端令牌侧,无传输层重组态——选项 A 的每连接重组缓冲及其 stall/interleave 攻击面整体不出现 |
 | mint 风暴 | 每会话铸造速率受限(per-principal 配额 + TTL 上限) | **活跃令牌**有界:≤ 每主体配额 × 平均 TTL(累计行数另见「令牌表膨胀」行,两者是不同的界,不混谈) |
-| read 风暴 | 每令牌 `max_reads` 与全局 per-session 并发读上限;单块 ≤64 KiB | 并发读 × 64 KiB 即最坏驻留,配额钉死 |
+| read 风暴 | 每令牌 `max_reads` 与全局 per-session 并发读上限;单块 ≤65408 bytes，完整编码≤65536 | 并发读 × 有界块/编码缓冲 即最坏驻留,配额钉死 |
 | fd 钉住 | 读取一律从 mint 时钉住的 fd 出(§5.2),被钉 fd 数 ≤ 活跃令牌数 | mint 配额同时封顶 fd 持有量;release/TTL 到期即释放 |
 | 磁盘耗尽 | **v1.1 零新增中心存储**:引用指向发送方自己工作区内已有文件(mint 校验存在性与摘要,不复制字节);qq-agent 场景 WAV 本就在其落盘缓存 | **诚实修正:仓内不存在工作区/磁盘配额**(燃料/epoch 之外无字节界)——发送方自己工作区的既有占用面,v1.1 不声称新增界也不恶化它;沙箱工具侧另以 `MAX_TOOL_WRITE_BYTES` 逐调用封顶(§9.2);未来若加 blob 上传存储,另立 per-principal 配额 + TTL GC(登记为演进前提) |
 | 令牌表膨胀 | 吊销/过期行只增不减(审计不可变纪律,默认不清理,如实声明);过期行导出归档、主表清理的提案须新裁定 | 镜像 custody「永久审计记录」纪律;磁盘增长随时间线性——明示接受 |

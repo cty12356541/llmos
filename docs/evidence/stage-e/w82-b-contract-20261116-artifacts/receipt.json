@@ -1,0 +1,88 @@
+{
+  "task": "W82-B-CONTRACT",
+  "attempt": "Attempt20261116-1",
+  "candidate_commit": "6415600db5c165a828108709a3dc57602169abaf",
+  "baseline_commit": "aed02985850fdde2dab84cd97bcb5e0f1c8a1cda",
+  "portable_baseline": "baseline/schema/nlos/sabi/v1",
+  "portable_candidate": "candidate/schema/nlos/sabi/v1",
+  "checks": {
+    "cargo_schema": {
+      "exit_code": 0,
+      "passed": 52,
+      "failed": 0
+    },
+    "schema_lint": {
+      "exit_code": 0
+    },
+    "schema_check_generated": {
+      "exit_code": 0
+    },
+    "golden": {
+      "exit_code": 0
+    },
+    "golden_git_diff": {
+      "exit_code": 0
+    },
+    "python_unittest": {
+      "exit_code": 0,
+      "tests": 24
+    },
+    "compat_diff": {
+      "exit_code": 0,
+      "unchanged": 233,
+      "additive_safe": 45,
+      "breaking": 0
+    },
+    "local_go": {
+      "status": "toolchain_unavailable"
+    },
+    "local_csharp": {
+      "exit_code": -2147450735,
+      "status": "sdk_unavailable"
+    },
+    "same_sha_ci_go_csharp": {
+      "run_id": 43649840304,
+      "platforms": [
+        "macos",
+        "ubuntu",
+        "windows"
+      ],
+      "probe_steps": "success",
+      "whole_run": "failure"
+    }
+  },
+  "post_ruling": {
+    "working_tree_based_on": "6415600db5c165a828108709a3dc57602169abaf",
+    "maintainer_approved": true,
+    "codecs_implemented": "recipient field + independent chunk bound; not Blob service",
+    "rust_tests": 56,
+    "rust_failed": 0,
+    "clippy_exit": 0,
+    "fmt_exit": 0,
+    "lint_exit": 0,
+    "typescript_typecheck_exit": 0,
+    "typescript_conformance_exit": 0,
+    "generation_idempotent": true,
+    "original_check_generated_exit": 1,
+    "original_check_generated_reason": "uncommitted authorized gen changes",
+    "compat_pre_b1": {
+      "additive_safe": 46,
+      "breaking": 0
+    },
+    "compat_b1": {
+      "additive_safe": 2,
+      "breaking": 0
+    },
+    "python_conformance_initial_failures": 2,
+    "python_conformance_failure_reason": "new Evidence paths missing shared evidence-index; integrator registration pending",
+    "python_conformance_final": {
+      "tests": 24,
+      "failed": 0,
+      "exit_code": 0,
+      "cause_fixed": "parent registered sole Evidence; supplementary README renamed README.txt"
+    },
+    "public_library_gate": "PASS",
+    "blob_contract_gate": "PASS_PENDING_INDEPENDENT_REVIEW",
+    "daemon_wiring_gate": "BLOCKED_PENDING_BINDING_AND_SERVICE_IMPLEMENTATION"
+  }
+}

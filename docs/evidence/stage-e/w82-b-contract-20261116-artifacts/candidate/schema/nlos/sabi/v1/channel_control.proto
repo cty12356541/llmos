@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// One durable Channel head/generation record as it exists in `ChannelAuthority`.
+message ChannelRecordWire {
+  bytes channel_id = 1;
+  uint64 generation = 2;
+  bytes fencing_token = 3;
+  uint64 capacity_bytes = 4;
+  bytes policy_digest = 5;
+  bytes idempotency_key = 6;
+  uint64 created_at_ms = 7;
+}
+
+// One immutable durable queue entry as written by `ChannelAuthority`.
+message QueueEntryRecordWire {
+  bytes channel_id = 1;
+  uint64 generation = 2;
+  bytes fencing_token = 3;
+  uint64 sequence = 4;
+  bytes payload = 5;
+  uint64 payload_bytes = 6;
+  bytes idempotency_key = 7;
+  uint64 enqueued_at_ms = 8;
+  bytes binding = 9;
+  uint64 fiber_generation = 10;
+}
+
+// One immutable durable queue-consumption registration row.
+message QueueConsumptionRecordWire {
+  bytes registration_id = 1;
+  bytes channel_id = 2;
+  uint64 sequence = 3;
+  bytes binding = 4;
+  uint64 fiber_generation = 5;
+  bytes idempotency_key = 6;
+  uint64 registered_at_ms = 7;
+}
+
+// Verified queue state of one Channel after cursor/bookkeeping cross-check.
+message QueueStateWire {
+  bytes channel_id = 1;
+  uint64 capacity_bytes = 2;
+  uint64 consume_high_water = 3;
+  uint64 trim_high_water = 4;
+  uint64 backlog_bytes = 5;
+  uint64 retained_bytes = 6;
+  uint64 max_sequence = 7;
+}
+
+// `ChannelControl.create_channel` request.
+message CreateChannelRequestWire {
+  SchemaIdentity schema = 1;
+  uint64 capacity_bytes = 2;
+  bytes policy_digest = 3;
+  bytes idempotency_key = 4;
+  uint64 created_at_ms = 5;
+}
+
+// `ChannelControl.create_channel` result.
+message CreateChannelResultWire {
+  SchemaIdentity schema = 1;
+  ChannelRecordWire record = 2;
+  bool replayed = 3;
+}
+
+// `ChannelControl.rotate_channel` request.
+message RotateChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 expected_generation = 3;
+  bytes expected_fencing_token = 4;
+  bytes idempotency_key = 5;
+  uint64 rotated_at_ms = 6;
+}
+
+// `ChannelControl.rotate_channel` result.
+message RotateChannelResultWire {
+  SchemaIdentity schema = 1;
+  ChannelRecordWire record = 2;
+  bool replayed = 3;
+}
+
+// `ChannelControl.enqueue` request.
+message EnqueueChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 expected_generation = 3;
+  bytes expected_fencing_token = 4;
+  bytes payload = 5;
+  bytes idempotency_key = 6;
+  uint64 enqueued_at_ms = 7;
+  bytes producer_binding = 8;
+  uint64 producer_fiber_generation = 9;
+}
+
+// `ChannelControl.enqueue` result.
+message EnqueueChannelResultWire {
+  SchemaIdentity schema = 1;
+  QueueEntryRecordWire record = 2;
+  bool replayed = 3;
+}
+
+// `ChannelControl.receive` request.
+message ReceiveChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint32 limit = 3;
+}
+
+// `ChannelControl.receive` result.
+message ReceiveChannelResultWire {
+  SchemaIdentity schema = 1;
+  repeated QueueEntryRecordWire entries = 2;
+}
+
+// `ChannelControl.ack` request.
+message AckChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 up_to_sequence = 3;
+  uint64 acked_at_ms = 4;
+  bytes idempotency_key = 5;
+}
+
+// `ChannelControl.ack` result.
+message AckChannelResultWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 consume_high_water = 3;
+  uint64 acked_at_ms = 4;
+  bool replayed = 5;
+}
+
+// `ChannelControl.compact` request.
+message CompactChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 trim_to_sequence = 3;
+  bytes idempotency_key = 4;
+}
+
+// `ChannelControl.compact` result.
+message CompactChannelResultWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 trim_high_water = 3;
+  bool replayed = 4;
+}
+
+// `ChannelControl.inspect_channel` request.
+message InspectChannelRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+}
+
+// `ChannelControl.inspect_channel` result.
+message InspectChannelResultWire {
+  SchemaIdentity schema = 1;
+  ChannelRecordWire record = 2;
+}
+
+// `ChannelControl.inspect_queue` request.
+message InspectQueueRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+}
+
+// `ChannelControl.inspect_queue` result.
+message InspectQueueResultWire {
+  SchemaIdentity schema = 1;
+  QueueStateWire state = 2;
+}
+
+// `ChannelControl.register_queue_consumption` request.
+message RegisterQueueConsumptionRequestWire {
+  SchemaIdentity schema = 1;
+  bytes channel_id = 2;
+  uint64 sequence = 3;
+  bytes binding = 4;
+  uint64 fiber_generation = 5;
+  bytes idempotency_key = 6;
+  uint64 registered_at_ms = 7;
+}
+
+// `ChannelControl.register_queue_consumption` result.
+message RegisterQueueConsumptionResultWire {
+  SchemaIdentity schema = 1;
+  QueueConsumptionRecordWire record = 2;
+  bool replayed = 3;
+}

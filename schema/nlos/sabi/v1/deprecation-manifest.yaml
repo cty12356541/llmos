@@ -353,6 +353,14 @@ entries:
     state: "ACTIVE"
 
   - channel: "nlos.sabi.BlobReference"
+    symbol: "MintReferenceRequest.recipient_principal_id"
+    kind: "FIELD"
+    parent_type: "MintReferenceRequest"
+    field_number: 8
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
     symbol: "ReadReferenceRequest"
     kind: "MESSAGE"
     introduced_in_epoch: 1
