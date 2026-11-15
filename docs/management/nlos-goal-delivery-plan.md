@@ -1,8 +1,8 @@
 # 通往通用现代 NLOS 的总交付任务计划书
 
-> 状态：`PROPOSED`，2026-11-14。本文是管理层唯一总交付路线，规划获排期不等于能力已实现；本轮只产出计划，不启动下列实现工作。
+> 状态：`IN_PROGRESS`，2026-11-16。维护者已授权开始推进；首波为 `W82-A-VERIFY`、`W82-C-DIAG` 与 `W82-B-CONTRACT`。本文是管理层唯一总交付路线，执行获准不等于能力已实现，后续工作包仍须满足各自依赖与验收门。
 > 编制：`ALIGN-20261114-PLAN / Attempt 1`；读取基线 `a3a1c007560306e6081d7dceff423b4ae8a33cb5`，其功能基线为 `d2a32de9fb02878584eaa85011cf5eaa64085180`。Owner：项目维护者；执行由各工作包具名责任人承担。
-> 执行者：按 [项目并行与提交协议](./project-knowledge-progressive-disclosure.md#61-子-agent-编排与依赖感知并行) 使用子 Agent，结合 `superpowers:subagent-driven-development` 执行；此处所有未勾选项均是候选工作，不是 DONE 回执。
+> 执行者：按 [项目并行与提交协议](./project-knowledge-progressive-disclosure.md#61-子-agent-编排与依赖感知并行) 使用子 Agent，结合 `superpowers:subagent-driven-development` 执行；未勾选项尚未通过完整验收，不是 DONE 回执。首波 Attempt 为 `20261116-1`，基线为 `6415600db5c165a828108709a3dc57602169abaf`；当前回执见[阶段 E 执行记录](./stage-e-progress.md#2026-11-16-首波执行)。
 
 **目标**：沿既有 A–E 路线，把当前已验证基座交付为第三方可扩展、用户可长期使用、可持续升级的 Windows/macOS 级通用现代 NLOS。
 
@@ -17,7 +17,7 @@
 - A–D 在各自验收边界内已 `EXITED`；E0–E7 为 8/8 工程完成，阶段 E 仍待维护者签字，不能代签 `EXITED` 或 SABI v1.0 长期冻结。
 - W82 已合并 A、B-1、C 主体及 D 的 wheel/Ed25519 前置件；整车道验收 0/5 DONE，B-2/B-3/B-4、SDK 主体与 INT 尚未收口。已有代码先复验，禁止重新实施同一成果。
 - `a3a1c007` 的 [push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) 常规 9 作业成功、2 个规模作业跳过；[Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) 成功。`d2a32de9` 的 [定时运行 43530982662](https://github.com/cty12356541/llmos/actions/runs/43530982662/job/132248316365) Worker E2E 失败仍是待诊断反例，不能由常规 push 成功抵消。
-- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 盘点](./stage-e-progress.md#2026-11-14-进度盘点)及原始台账为准。
+- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-首波执行)及原始台账为准。
 - 本文负责跨能力交付顺序、工作包和终局验收；阶段进度归 `stage-*-progress.md`，需求归 v0.5，决策归 ADR，事实归源提交/Evidence，风险归 `risks.yaml`，声明归 `claims.yaml`。本计划不得覆盖这些对象。
 - 后续 `DEL-*` 仅为管理工作包 ID，分别承接既有 B/C/D/E 能力；不新增正式阶段或 Requirement。全球联邦、完整硬件生态、消费级完善等按 §29.2 分包演进；裸机不是完成终局的前置条件。
 
@@ -27,7 +27,7 @@
 2. 现有 v1.0 九通道与黄金语料零破坏；W82 三新通道保持已裁定的 64 KiB 编码载荷界、contract epoch 1、增量兼容与独立身份语义。设计冲突先形成裁定，不靠修改测试绕过。
 3. 一个派发 = Task ID + 独立 Attempt + base HEAD + read-set + write-set + 验收与 Evidence 路径。以下 `R/W` 是允许范围，启动时收窄到实际文件清单；代码与对应测试归同一 owner。
 4. 实现、普通核查、测试和文档默认 `gpt-6.1-sol / ultra`；跨模块契约、疑难诊断和独立安全/终审使用 `gpt-6-astra / ultra`。速度跟随主 Agent；人类签字、发行账号和真实用户不会由 Agent 角色替代。
-5. `READY` 必须同时满足：依赖验收完成、契约无未决冲突、写集独占、工具/宿主可用、owner 接单。本文所有包初始均为 `PROPOSED`；“首批可派发”只表示条件齐备后可进入 READY。
+5. `READY` 必须同时满足：依赖验收完成、契约无未决冲突、写集独占、工具/宿主可用、owner 接单。本文编制时所有包初始均为 `PROPOSED`；当前派发与验收状态见阶段进度单，“首批可派发”只表示条件齐备后可进入 READY。
 6. 常规实现按“失败测试/复现 → 最小修改 → 目标验证 → 独立审查 → 集成复验”推进；只读复验不要求制造失败测试。每包独立提交，显式暂存写集；禁止顺带清理共享脏工作区。
 7. 每个包输出 `docs/evidence/<所属既有阶段>/` 下的具名记录，含 SHA、环境、命令、原始输出/摘要、负例、范围和限制；管理计划本身不入 Evidence 索引。证据编号由 INT 查重后分配。
 8. `VERIFIED` 需本包正向/失败/安全门及独立审查通过；`DONE` 另需最终树复验、入口/阶段进度/台账更新和提交回执。push、CI、发布、现场验证分别记录，不互相推断。
@@ -79,6 +79,7 @@ flowchart LR
 
 - **首批并行**：A 复验、C 失败诊断、B 契约/B1 复核；槽位允许时 DEL-BASE 与签名/硬件/维护者资源调查可独立开展。现有三条旧派发工作树仅作追溯，重新核对 revision 后创建新 Attempt。
 - **B 内下一波**：公共契约/B1 屏障通过后 B2/B3 可并行，Blob 歧义只阻塞 B4 及 D/INT 中依赖 Blob 的部分，不牵连无关服务。Blob 子门通过后 B4 加入并行，三者独占 driver/sandbox/capability；B3 先验小参数路径，大参数引用真实联动留 INT，接口变化重过受影响屏障。
+- **Windows 规模验证**：`CI-WINDOWS-SCALE-BARRIER` 独立修正 Regime B 探针的准备屏障，并在隔离 Windows runner 复验。该取证与 C 的 Unix Worker 原定时门分别跟踪，可与契约及服务库工作并行。
 - **共享对象收口**：`schema/**`、`gen/**`、`crates/nlos-schema/**`、跨语言注册表/conformance 仅由 B integrator 按原 W82 归属集成；根 Cargo 清单/锁文件仍由 INT 独占，B 提交变更请求。Capability 仅 B4 写；daemon 会话槽位/撤销分派仅 INT 在 A 验收后写。
 - **既有屏障不变**：`B82-SDK = A + B` 验收；D 前置件复验可先行，D 主体在屏障后执行。`B82-INT = C + D` 验收；INT 再完成 C 吊销联动、三服务和真实消费者。
 - 每个依赖子图独立过屏障。某车道失败仅阻塞依赖者；无关只读审计/外部资源准备继续。父 Agent 负责派发、审查、汇总，最终 canonical 由一个 integrator 更新。
@@ -89,28 +90,37 @@ flowchart LR
 
 **Owner**：IPC 验证 Sol；独立边界审查 Astra。**blocked-by**：读取最新合并基线；**blocks**：B82-SDK、INT daemon 写入。
 **R/W**：R=`nlos-ipc`、`nlos-system-control` 及 PR #43；W=这两 crate 的 A 原有测试/实现子集与本包 Evidence。输入为已合并实现，输出为复验回执；无反例则不改代码。
-- [ ] 正向：明文/认证各单连接 1,000 轮、五通道混合分派、按写事务数核 WAL；失败：空闲关闭、断连和半帧；安全：超限/畸形拒帧计数，60s 窗口超过 8 次断连，身份与连接隔离。
-- [ ] 执行 `cargo test -p nlos-ipc --test session_mux` 与 `cargo test -p nlos-system-control --features daemon --test daemon_session_mux`；三平台真实 transport 分支均需非零用例回执。
-- [ ] Evidence 记录测试列表、事务计数和拒帧边界，全部断言通过才交 B82-SDK；Windows 下零用例/跳过不得当 Unix 覆盖。
+- [x] Windows 候选验证明文/认证各单连接 1,000 轮、独立同连接五通道混合分派与 clock 写事务计数，覆盖空闲关闭、断连、半帧、超限/畸形拒帧、60s 窗口老化、窗口内第 9 次断连、身份与连接隔离。测试列表、计数和断言范围见 [A 复验 Evidence](../evidence/stage-e/w82-a-verify-20261116.md)。
+- [x] Windows 候选执行 `cargo test -p nlos-ipc --test session_mux` 与 `cargo test -p nlos-system-control --features daemon --test daemon_session_mux`；真实 Named Pipe 用例分别为 2 项与 12 项。
+- [ ] 在候选集成 SHA 上补 Linux/macOS 的两个套件及拒帧老化单测，收集真实 Unix socket 非零用例回执，完成三平台 A 验收后交 B82-SDK。已合并基线 CI 独立保留。
 
 ### W82-C-DIAG：定时失败根因与受管 Worker 回收
 
 **Owner**：诊断 Astra、定界后修复/验证 Sol。**blocked-by**：旧失败日志与对应 SHA；**blocks**：B82-INT（不阻塞 B2/B3/B4）。
 **R/W**：R=`crates/nlos-up/tests/workers_e2e.rs`、定时 workflow、C 已合并代码；W=`crates/nlos-up/**`、`crates/nlos-package/**`、`crates/nlos-process/**` 中具名最小修复集与 Evidence；workflow 改动先交 integrator。
-- [ ] 保存 43530982662 原日志，在同 OS/解释器/并发条件复现 `workers_launch_env_whitelist_and_sigterm_reclaims_tree`；它是 Unix 普通测试，常规矩阵也可执行，但作业通过不能证明原定时负载条件下根因已解决。区分 Worker 启动、环境合成、读取等待、进程回收与测试夹具失效，禁止先延长 timeout/加重试掩盖。
-- [ ] 正向：清单启动 adapter/brain、最小环境与根 ID 格式；失败：启动半途失败、父退出与重启；安全：父环境敏感值不泄漏、同机兄弟树不误杀。吊销触发实际回收留 INT，跨权限/breakaway 仍挂 U-2。
-- [ ] Unix 执行 `cargo test -p nlos-up --test workers_e2e -- --nocapture`，再复验 `cargo test --workspace --no-fail-fast -- --include-ignored` 的原失败条件；Windows 执行 `cargo test -p nlos-process --test platform_kill`，不能以 cfg 空集冒充原案复现。
-- [ ] Evidence 包含根因、确定性反例、修复前后结果及同条件复验；未稳定复现时记录诊断边界并继续采集，不关闭原失败。
+- [x] 保存 43530982662 原日志，定位通用 READY 前缀允许在 brain 启动前返回的竞态；等待带 Worker 数量的完整行，保留确定性红绿结果。诊断、验收及环境差异见 [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)。
+- [x] Ubuntu 22.04 局部执行 `cargo test --locked -p nlos-up --test workers_e2e -- --nocapture`；Windows 执行 `cargo test -p nlos-process --test platform_kill`，见真实父子树与兄弟不误杀用例。
+- [ ] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收均需整体验收。吊销触发实际回收留 INT，跨权限/breakaway 归 U-2。
+- [ ] 在原 Ubuntu 26.04 OS/解释器/并发与定时负载条件下复验 `cargo test --workspace --no-fail-fast -- --include-ignored`，归档 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 回执，方可关闭原定时失败。
+
+### CI-WINDOWS-SCALE-BARRIER：Windows Regime B 规模探针准备屏障
+
+**Owner**：规模探针实现与验证 Sol，关键计时审查 Astra。**blocked-by**：Windows 定时失败原始日志与分诊；与 C 的 Unix Worker 诊断分别验收。
+- [x] 分诊 [43649840304 的 Windows 作业](https://github.com/cty12356541/llmos/actions/runs/43649840304/job/132615620831)。三轮均未过 Regime B 的 2→8 分片吞吐门。隔离回归在最后一笔预置 Group 事务前暂停分片时，父已可见 ready。该缺口对原失败的实际影响仍待复验。
+- [x] 将各分片 ready 移到所有预置事务之后，并在分片早退时终止和回收仍等待 go 的同伴进程。独立复核通过，主树 6 项非性能用例通过。时序诊断记录准备、等待、工作时长、父墙钟和聚合跨度上下界，原持久化设置、阈值和尝试次数保留。见[准备屏障 Evidence](../evidence/stage-c/c-bench-readiness-20261116.md)。
+- [ ] 在隔离 Windows runner 取得可比较的规模回执，核对各分片时序与吞吐。原吞吐失败因果及精确跨进程聚合跨度待取证。
 
 ### W82-B-CONTRACT：B1 复验与服务契约冻结前复核
 
 **Owner**：B integrator + Astra 契约审查，机械复验 Sol。**blocked-by**：B1 合并树；**blocks**：公共子门阻塞 B2/B3/B4；Blob 子门仅阻塞 B4 和 D/INT 的相关能力，B82-SDK 汇总仍要求 B 完整验收。
 **R/W**：R=已裁定 D1–D11、三新 proto、SDK/daemon 消费点；W=B 原有 schema/gen/注册表/黄金与 conformance 写集、设计冲突记录、Evidence；共享变更由此唯一 owner 集成。
-- [ ] 复核已合并 B1，不重复生成新设计。`schema/nlos/sabi/v1/blob_reference.proto` 须做三项语义一致性复核：注释“载荷不入帧”与 `ReadReferenceResult.chunk` 的 bytes 如何统一；`ReadReferenceRequest.length_bytes <= 64 KiB` 如何计入完整编码开销；`MintReferenceRequest` 无接收主体字段时如何表达双主体传递授权。分别裁定引用/分块语义、有效块界和接收者授权路径，提供边界向量；这不是已证实的运行漏洞，改变已裁定语义时由维护者裁定后才开 B4。
+- [x] 复核已合并 B1。维护者 2026-11-16 补充裁定见[设计 §5.5](./w82-b-design-draft.md#55-2026-11-16-补充裁定blob-可实施契约)：应用消息只传引用，Blob 服务逐块鉴权并返回对齐块或末尾短块；有效块上限 65,408 字节，完整编码载荷上限 65,536 字节；显式接收者绑定认证身份；重启后旧令牌失效，禁止按旧路径重开。字段、Rust 编码双界与边界向量见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
 - [ ] 明确 daemon slot→权威 CapabilityId、Blob reference ID 与持有者/接收者授权、重启后 fd/令牌恢复或失效、chunk 有效长度和资源上界；只持 URI/根 ID 不得获得授权。输出为精确接口清单、正负向向量与 B2/B3/B4/INT 消费签认。
-- [ ] 执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:check-generated`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`。
-- [ ] 用新增 proto 前的可达提交 `6e9f0a9f^` 与候选树做真实双版本 `sabi_compat_diff.py`，保存两份输入/JSON/digest；同时执行 `python tools/check_golden_immutability.py --check-git-diff 6e9f0a9f^`。相同文件自 diff 不作为增量兼容证据。
-- [ ] 在 `sdk/go` 运行 `go test ./... -count=1`，根目录运行 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj`；当前 CI 已有两探针，不沿用旧设计“未入 CI”的历史描述。分别出具公共子门与 Blob 子门回执，只解锁已消除接口冲突的依赖者。
+- [x] 候选执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:typecheck`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`，保存工作树回执。
+- [x] 公共库前置门和 Blob schema/codec 子门通过独立审查。B2/B3 可使用显式可信上下文与授权器开发服务库，B4 可按已裁定契约开发 Blob 服务。
+- [ ] 最终提交后执行 `npm run schema:check-generated`，验证生成物与提交基线一致。
+- [x] 以新增 proto 前的可达提交 `6e9f0a9f^` 和候选树执行真实双版本 `sabi_compat_diff.py`，保存输入、JSON 与 digest，并通过黄金不可变检查。两次差异对照与制品见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
+- [ ] 在最终候选 CI 取得 `sdk/go` 的 `go test ./... -count=1` 与根目录的 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj` 回执；已合并 B1 的两探针结果随相应基线保留。
 
 ### W82-B-2：受控 LLM 五维预算网关
 
@@ -243,4 +253,4 @@ flowchart LR
 
 新反例先持久化并降低受影响 Claim，再新增修复 Attempt；不删除失败记录。维护者裁定规划建议后，把正式参数写入对应权威对象，本文只同步链接。包准出时只更新本次受证支持的范围，不自动关闭 E-deferred 或所有风险。
 
-本计划的文档验收是：链接和路径可定位、依赖无环、共享写集有唯一 integrator、每个长期缺口有 owner/下一验收门、阶段/实现/发布事实不混淆。功能验收命令均为后续执行任务，本轮未运行这些功能门。
+本计划的文档验收是：链接和路径可定位、依赖无环、共享写集有唯一 integrator、每个长期缺口有 owner/下一验收门、阶段/实现/发布事实不混淆。2026-11-14 编制轮未运行功能门；2026-11-16 起逐包执行，实际结果以阶段进度与 Evidence 为准。

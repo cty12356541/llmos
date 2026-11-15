@@ -87,7 +87,7 @@ The Tauri 2 desktop ([ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop
 
 ## Current status
 
-Snapshot: 2026-11-14 (`main` at `a3a1c007`). Stages A–D have exited within their reviewed scopes.
+The 2026-11-16 execution baseline is `main` at `6415600d`. Stages A–D have exited within the scopes of their respective reviews.
 
 | Stage | Reviewed scope | Status |
 |---|---|---|
@@ -99,8 +99,8 @@ Snapshot: 2026-11-14 (`main` at `a3a1c007`). Stages A–D have exited within the
 
 - **Stage E:** All eight engineering packages (`E0`–`E7`) are `DONE` with `H4` / `H7` evidence; [ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) is `VERIFIED`. [W81](docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md) accepted technical gates 1–5 within its baseline. Formal stage exit and the long-term SABI v1.0 freeze require maintainer sign-off.
 - **W82 application integration:** `IN_PROGRESS / PARTIALLY_MERGED`; `0/5` lanes have completed formal acceptance. [PR #47](https://github.com/cty12356541/llmos/pull/47) merged IPC session multiplexing, core managed workers, the SABI v1.1 schemas, and Python SDK groundwork. Remaining work includes the three channel implementations, worker revocation, full SDK clients, and `qq-agent` end-to-end acceptance.
-- **Evidence:** The [current progress and evidence snapshot](docs/management/stage-e-progress.md#2026-11-14-进度盘点) records 169 claims, 205 evidence entries, and 17 risks, with no `H8` claims or evidence. See the [residual risk register](docs/management/exit-unknown-risks.md) for limits including physical power-loss tests, cross-host scale, and native installer signing and notarization.
-- **Next:** Finish W82 acceptance, then work toward SDK distribution, a complete user workflow, and production ecosystem evidence. The [NLOS delivery plan](docs/management/nlos-goal-delivery-plan.md) is `PROPOSED` under v0.5 and requires separate approval before implementation.
+- **Evidence:** The [current progress and evidence snapshot](docs/management/stage-e-progress.md#2026-11-16-首波执行) records 169 claims, 209 evidence entries, and 17 risks, with no `H8` claims or evidence. See the [residual risk register](docs/management/exit-unknown-risks.md) for limits including physical power-loss tests, cross-host scale, and native installer signing and notarization.
+- **Next:** The [NLOS delivery plan](docs/management/nlos-goal-delivery-plan.md) records the first wave's IPC checks, Worker readiness diagnosis, and Blob contract review. Service library work can proceed within the reviewed contracts. Candidate cross-platform verification, the SDK, and end-to-end integration have separate gates.
 
 ---
 
@@ -143,7 +143,7 @@ docs/
   discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
     adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
-    evidence-index.yaml  205 evidence entries, including 17 for Stage E
+    evidence-index.yaml  209 evidence entries, including 20 for Stage E
     claims.yaml      169 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D + 53 Stage E)
 sdk/                 Python · TypeScript · Go · C# SABI SDKs
 schema/              Protobuf + CDDL schemas + golden wire test vectors
