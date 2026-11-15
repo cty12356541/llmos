@@ -11,7 +11,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -396,6 +396,9 @@ struct ShardRunMetrics {
     cell_id_hex: String,
     wal_verified: bool,
     all_heads_independent_seq_one: bool,
+    preload_and_ready_ns: u64,
+    ready_to_go_ns: u64,
+    go_to_work_ns: u64,
     elapsed_ns: u64,
     spawn_ns: Vec<u64>,
     message_ns: Vec<u64>,
@@ -403,12 +406,12 @@ struct ShardRunMetrics {
     control_ns: Vec<u64>,
 }
 
-fn execute_shard_workload(
-    harness: &mut ShardCellHarness,
+fn prepare_shard_for_workload(
+    harness: &ShardCellHarness,
     shard_idx: u16,
-    ops_count: u32,
-    go_file: &Path,
-) -> ShardRunMetrics {
+    ready_file: &Path,
+    mut before_control_group_commit: impl FnMut(u32),
+) -> (Vec<TaskId>, Vec<TaskGroupId>) {
     // Seed active background tasks/groups on this shard so manual control queries run
     // against non-trivial live durable state (`[PERF-CONTROL-001]`).
     let mut control_groups = Vec::with_capacity(CONTROL_OPS_PER_SHARD as usize);
@@ -427,6 +430,7 @@ fn execute_shard_workload(
                 registered_at_ms: 1_100,
             })
             .expect("seed control task");
+        before_control_group_commit(c_idx);
         harness
             .task_authority
             .register_group(GroupSpec {
@@ -450,10 +454,65 @@ fn execute_shard_workload(
         control_groups.push(group_id);
         control_tasks.push(task_id);
     }
+    // Only a fully preloaded shard can participate in the cluster's timed workload.
+    fs::write(ready_file, b"ready").expect("signal shard ready");
+    (control_tasks, control_groups)
+}
+
+#[test]
+fn shard_readiness_waits_for_last_durable_control_group() {
+    let _suite_slot = acquire_bench_slot();
+    let temp = BenchTempDir::new("readiness");
+    let ready_file = temp.path().join("shard.ready");
+    let shard_dir = temp.path().join("cell-shard");
+    fs::create_dir(&shard_dir).expect("create shard directory");
+    let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let ready_while_preloading = thread::scope(|scope| {
+        let worker_ready_file = &ready_file;
+        let worker = scope.spawn(move || {
+            let harness = build_shard_cell_harness(&shard_dir, 0);
+            prepare_shard_for_workload(&harness, 0, worker_ready_file, |index| {
+                if index + 1 == CONTROL_OPS_PER_SHARD {
+                    paused_tx.send(()).expect("signal paused control preload");
+                    resume_rx.recv().expect("resume control preload");
+                }
+            });
+        });
+
+        paused_rx.recv().expect("wait for paused control preload");
+        let ready_while_preloading = ready_file.exists();
+        resume_tx.send(()).expect("release final control write");
+        worker.join().expect("join shard preparation");
+        ready_while_preloading
+    });
+
+    assert!(
+        !ready_while_preloading,
+        "parent observed a ready shard before its last durable control group write"
+    );
+    assert!(
+        ready_file.exists(),
+        "shard never signaled ready after preload"
+    );
+}
+
+fn execute_shard_workload(
+    harness: &mut ShardCellHarness,
+    shard_idx: u16,
+    ops_count: u32,
+    ready_file: &Path,
+    go_file: &Path,
+) -> ShardRunMetrics {
+    let preload_start = Instant::now();
+    let (control_tasks, control_groups) =
+        prepare_shard_for_workload(harness, shard_idx, ready_file, |_| {});
+    let ready_at = Instant::now();
 
     while !go_file.exists() {
         thread::sleep(Duration::from_micros(500));
     }
+    let go_at = Instant::now();
 
     let mut spawn_ns = Vec::with_capacity(ops_count as usize);
     let mut message_ns = Vec::with_capacity(ops_count as usize);
@@ -744,10 +803,14 @@ fn execute_shard_workload(
         && verify_wal_and_full_pragmas(&harness.lease_db_path);
     let cell_id_hex = hex16(harness.cell_authority.identity().as_bytes());
 
+    let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
     ShardRunMetrics {
         cell_id_hex,
         wal_verified,
         all_heads_independent_seq_one,
+        preload_and_ready_ns: ns(ready_at.duration_since(preload_start)),
+        ready_to_go_ns: ns(go_at.duration_since(ready_at)),
+        go_to_work_ns: ns(bench_start.duration_since(go_at)),
         elapsed_ns,
         spawn_ns,
         message_ns,
@@ -775,10 +838,15 @@ fn parse_u64_csv(raw: &str) -> Vec<u64> {
 
 fn write_shard_report(path: &Path, metrics: &ShardRunMetrics) {
     let content = format!(
-        "cell_id_hex={}\nwal_verified={}\nall_heads_independent_seq_one={}\nelapsed_ns={}\nspawn_ns={}\nmessage_ns={}\ncommit_ns={}\ncontrol_ns={}\n",
+        "cell_id_hex={}\nwal_verified={}\nall_heads_independent_seq_one={}\n\
+         preload_and_ready_ns={}\nready_to_go_ns={}\ngo_to_work_ns={}\nelapsed_ns={}\n\
+         spawn_ns={}\nmessage_ns={}\ncommit_ns={}\ncontrol_ns={}\n",
         metrics.cell_id_hex,
         u8::from(metrics.wal_verified),
         u8::from(metrics.all_heads_independent_seq_one),
+        metrics.preload_and_ready_ns,
+        metrics.ready_to_go_ns,
+        metrics.go_to_work_ns,
         metrics.elapsed_ns,
         format_u64_csv(&metrics.spawn_ns),
         format_u64_csv(&metrics.message_ns),
@@ -793,6 +861,9 @@ fn read_shard_report(path: &Path) -> ShardRunMetrics {
     let mut cell_id_hex = String::new();
     let mut wal_verified = false;
     let mut all_heads_independent_seq_one = false;
+    let mut preload_and_ready_ns = 0_u64;
+    let mut ready_to_go_ns = 0_u64;
+    let mut go_to_work_ns = 0_u64;
     let mut elapsed_ns = 0_u64;
     let mut spawn_ns = Vec::new();
     let mut message_ns = Vec::new();
@@ -807,6 +878,11 @@ fn read_shard_report(path: &Path) -> ShardRunMetrics {
             "cell_id_hex" => val.clone_into(&mut cell_id_hex),
             "wal_verified" => wal_verified = val == "1",
             "all_heads_independent_seq_one" => all_heads_independent_seq_one = val == "1",
+            "preload_and_ready_ns" => {
+                preload_and_ready_ns = val.parse().expect("parse preload_and_ready_ns");
+            }
+            "ready_to_go_ns" => ready_to_go_ns = val.parse().expect("parse ready_to_go_ns"),
+            "go_to_work_ns" => go_to_work_ns = val.parse().expect("parse go_to_work_ns"),
             "elapsed_ns" => elapsed_ns = val.parse().expect("parse elapsed_ns"),
             "spawn_ns" => spawn_ns = parse_u64_csv(val),
             "message_ns" => message_ns = parse_u64_csv(val),
@@ -819,6 +895,9 @@ fn read_shard_report(path: &Path) -> ShardRunMetrics {
         cell_id_hex,
         wal_verified,
         all_heads_independent_seq_one,
+        preload_and_ready_ns,
+        ready_to_go_ns,
+        go_to_work_ns,
         elapsed_ns,
         spawn_ns,
         message_ns,
@@ -849,8 +928,7 @@ fn c_bench_cell_shard_worker_entry() {
     let shard_dir = PathBuf::from(shard_dir_str);
 
     let mut harness = build_shard_cell_harness(&shard_dir, shard_idx);
-    fs::write(&ready_file, b"ready").expect("signal shard ready");
-    let metrics = execute_shard_workload(&mut harness, shard_idx, ops_count, &go_file);
+    let metrics = execute_shard_workload(&mut harness, shard_idx, ops_count, &ready_file, &go_file);
     drop(harness);
     write_shard_report(&report_file, &metrics);
 }
@@ -858,7 +936,7 @@ fn c_bench_cell_shard_worker_entry() {
 #[derive(Clone, Debug)]
 struct ClusterRunSummary {
     shard_count: usize,
-    wall_elapsed_ns: u64,
+    gate_window_ns: u64,
     total_lifecycle_ops: usize,
     aggregate_ops_per_sec: f64,
     spawn_lat: LatencySummaryUs,
@@ -867,62 +945,189 @@ struct ClusterRunSummary {
     control_lat: LatencySummaryUs,
 }
 
-fn run_multi_cell_shard_cluster(shard_count: usize) -> ClusterRunSummary {
+fn spawn_shard_child(
+    exe: &Path,
+    idx: usize,
+    shard_dir: &Path,
+    ready_file: &Path,
+    go_file: &Path,
+    report_file: &Path,
+) -> Child {
+    fs::create_dir_all(shard_dir).expect("create shard subdir");
+    Command::new(exe)
+        .args([
+            "--exact",
+            "c_bench_cell_shard_worker_entry",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(ENV_SHARD_DIR, shard_dir)
+        .env(ENV_SHARD_INDEX, idx.to_string())
+        .env(ENV_SHARD_OPS, OPS_PER_SHARD.to_string())
+        .env(ENV_READY_FILE, ready_file)
+        .env(ENV_GO_FILE, go_file)
+        .env(ENV_REPORT_FILE, report_file)
+        .spawn()
+        .expect("spawn child Cell shard process")
+}
+
+fn wait_for_shard_readiness(children: &mut [Child], ready_files: &[PathBuf]) {
+    let wait_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for (idx, child) in children.iter_mut().enumerate() {
+            if let Some(status) = child.try_wait().expect("poll shard child process") {
+                panic!("shard child process {idx} exited before go with {status}");
+            }
+        }
+        if ready_files.iter().all(|ready| ready.exists()) {
+            return;
+        }
+        assert!(
+            Instant::now() < wait_deadline,
+            "timed out waiting for Cell shard process readiness"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+struct ShardChildCleanup<'a> {
+    children: &'a mut Vec<Child>,
+}
+
+impl Drop for ShardChildCleanup<'_> {
+    fn drop(&mut self) {
+        // Signal every live child before waiting for any of them.
+        for child in self.children.iter_mut() {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.kill();
+            }
+        }
+        for child in self.children.iter_mut() {
+            let _ = child.wait();
+        }
+    }
+}
+
+fn run_shard_children(
+    children: &mut Vec<Child>,
+    ready_files: &[PathBuf],
+    go_file: &Path,
+    spawn: impl FnOnce(&mut Vec<Child>),
+) -> u64 {
+    let cleanup = ShardChildCleanup { children };
+    let children = &mut *cleanup.children;
+    spawn(children);
+    // Every shard has to finish DB initialization, lease setup, and durable preload.
+    wait_for_shard_readiness(children, ready_files);
+
+    let wall_start = Instant::now();
+    fs::write(go_file, b"go").expect("release cluster start barrier");
+    for child in children {
+        let status = child.wait().expect("wait for shard child process");
+        assert!(status.success(), "shard child process exited with {status}");
+    }
+    u64::try_from(wall_start.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[test]
+fn shard_readiness_failure_reaps_waiting_peer() {
+    let _suite_slot = acquire_bench_slot();
+    let temp = BenchTempDir::new("readiness-failure");
+    let exe = env::current_exe().expect("locate current test executable");
+    let go_file = temp.path().join("cluster.go");
+    let peer_ready = temp.path().join("peer.ready");
+    let broken_ready = temp.path().join("missing-parent/broken.ready");
+    let mut children = Vec::with_capacity(2);
+
+    let ready_files = [peer_ready, broken_ready];
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_shard_children(&mut children, &ready_files, &go_file, |children| {
+            children.push(spawn_shard_child(
+                &exe,
+                0,
+                &temp.path().join("waiting-peer"),
+                &ready_files[0],
+                &go_file,
+                &temp.path().join("peer.report"),
+            ));
+            wait_for_shard_readiness(children, &ready_files[..1]);
+
+            children.push(spawn_shard_child(
+                &exe,
+                1,
+                &temp.path().join("failing-child"),
+                &ready_files[1],
+                &go_file,
+                &temp.path().join("broken.report"),
+            ));
+        });
+    }));
+
+    let statuses: Vec<_> = children.iter_mut().map(Child::try_wait).collect();
+    // Keep this test from leaving a child behind when it detects a regression.
+    for (child, status) in children.iter_mut().zip(&statuses) {
+        if !matches!(status, Ok(Some(_))) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    let panic = failure.expect_err("parent must detect the early shard exit");
+    assert!(
+        panic
+            .downcast_ref::<String>()
+            .is_some_and(|message| message.contains("shard child process 1 exited before go")),
+        "parent did not report the intended shard's early exit"
+    );
+    assert!(!go_file.exists(), "failed cluster must never release go");
+    assert!(
+        statuses[1]
+            .as_ref()
+            .expect("poll failing child")
+            .is_some_and(|status| !status.success()),
+        "failing child must have a nonzero exit status"
+    );
+    assert!(
+        statuses[0]
+            .as_ref()
+            .expect("poll waiting peer")
+            .is_some_and(|status| !status.success()),
+        "waiting peer remained alive after the parent handled a preready failure"
+    );
+}
+
+fn run_multi_cell_shard_cluster(attempt: usize, shard_count: usize) -> ClusterRunSummary {
     let temp = BenchTempDir::new(&format!("cluster-{shard_count}cells"));
     let go_file = temp.path().join("cluster.go");
     let exe = env::current_exe().expect("locate current test executable");
 
-    let mut children = Vec::with_capacity(shard_count);
-    let mut ready_files = Vec::with_capacity(shard_count);
-    let mut report_files = Vec::with_capacity(shard_count);
+    let ready_files: Vec<_> = (0..shard_count)
+        .map(|idx| temp.path().join(format!("shard-{idx}.ready")))
+        .collect();
+    let report_files: Vec<_> = (0..shard_count)
+        .map(|idx| temp.path().join(format!("shard-{idx}.report")))
+        .collect();
 
-    for idx in 0..shard_count {
-        let shard_dir = temp.path().join(format!("cell-shard-{idx}"));
-        fs::create_dir_all(&shard_dir).expect("create shard subdir");
-        let ready_file = temp.path().join(format!("shard-{idx}.ready"));
-        let report_file = temp.path().join(format!("shard-{idx}.report"));
-
-        let child = Command::new(&exe)
-            .args([
-                "--exact",
-                "c_bench_cell_shard_worker_entry",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env(ENV_SHARD_DIR, &shard_dir)
-            .env(ENV_SHARD_INDEX, idx.to_string())
-            .env(ENV_SHARD_OPS, OPS_PER_SHARD.to_string())
-            .env(ENV_READY_FILE, &ready_file)
-            .env(ENV_GO_FILE, &go_file)
-            .env(ENV_REPORT_FILE, &report_file)
-            .spawn()
-            .expect("spawn child Cell shard process");
-
-        children.push(child);
-        ready_files.push(ready_file);
-        report_files.push(report_file);
-    }
-
-    // Wait for every Cell shard to finish DB initialization + lease setup before starting timer.
-    let wait_deadline = Instant::now() + Duration::from_secs(30);
-    for ready in &ready_files {
-        while !ready.exists() {
-            assert!(
-                Instant::now() < wait_deadline,
-                "timed out waiting for Cell shard process readiness"
-            );
-            thread::sleep(Duration::from_millis(2));
-        }
-    }
-
-    let wall_start = Instant::now();
-    fs::write(&go_file, b"go").expect("release cluster start barrier");
-
-    for mut child in children {
-        let status = child.wait().expect("wait for shard child process");
-        assert!(status.success(), "shard child process exited with {status}");
-    }
-    let wall_elapsed_ns = u64::try_from(wall_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let wall_elapsed_ns = run_shard_children(
+        &mut Vec::with_capacity(shard_count),
+        &ready_files,
+        &go_file,
+        |children| {
+            for (idx, (ready_file, report_file)) in
+                ready_files.iter().zip(&report_files).enumerate()
+            {
+                let shard_dir = temp.path().join(format!("cell-shard-{idx}"));
+                children.push(spawn_shard_child(
+                    &exe,
+                    idx,
+                    &shard_dir,
+                    ready_file,
+                    &go_file,
+                    report_file,
+                ));
+            }
+        },
+    );
 
     let mut distinct_cells = std::collections::BTreeSet::new();
     let mut all_spawn_ns = Vec::new();
@@ -931,7 +1136,7 @@ fn run_multi_cell_shard_cluster(shard_count: usize) -> ClusterRunSummary {
     let mut all_control_ns = Vec::new();
     let mut max_shard_elapsed_ns = 0_u64;
 
-    for report_path in &report_files {
+    for (shard_idx, report_path) in report_files.iter().enumerate() {
         let metrics = read_shard_report(report_path);
         assert!(
             metrics.wal_verified,
@@ -945,6 +1150,14 @@ fn run_multi_cell_shard_cluster(shard_count: usize) -> ClusterRunSummary {
             distinct_cells.insert(metrics.cell_id_hex),
             "every shard process must claim a distinct CellAuthority identity"
         );
+        println!(
+            "[c-bench-task-timing] attempt={attempt} shards={shard_count} shard={shard_idx} \
+             preload_and_ready_ns={} ready_to_go_ns={} go_to_work_ns={} local_work_ns={}",
+            metrics.preload_and_ready_ns,
+            metrics.ready_to_go_ns,
+            metrics.go_to_work_ns,
+            metrics.elapsed_ns,
+        );
         max_shard_elapsed_ns = max_shard_elapsed_ns.max(metrics.elapsed_ns);
         all_spawn_ns.extend(metrics.spawn_ns);
         all_message_ns.extend(metrics.message_ns);
@@ -953,13 +1166,22 @@ fn run_multi_cell_shard_cluster(shard_count: usize) -> ClusterRunSummary {
     }
 
     assert_eq!(distinct_cells.len(), shard_count);
+    // The activity span includes every local work interval and is contained by the
+    // parent's go-to-exit interval. Report both bounds without comparing absolute
+    // Instants across processes or counting teardown as measured workload.
+    let bound_gap_ns = wall_elapsed_ns.saturating_sub(max_shard_elapsed_ns);
+    println!(
+        "[c-bench-task-timing] attempt={attempt} shards={shard_count} \
+         active_span_lower_ns={max_shard_elapsed_ns} parent_go_to_exit_ns={wall_elapsed_ns} \
+         bound_gap_ns={bound_gap_ns}"
+    );
     let effective_window_ns = max_shard_elapsed_ns.max(1);
     let total_lifecycle_ops = all_spawn_ns.len() + all_message_ns.len() + all_commit_ns.len();
     let aggregate_ops_per_sec = throughput_ops_per_sec(total_lifecycle_ops, effective_window_ns);
 
     ClusterRunSummary {
         shard_count,
-        wall_elapsed_ns: effective_window_ns.min(wall_elapsed_ns),
+        gate_window_ns: effective_window_ns,
         total_lifecycle_ops,
         aggregate_ops_per_sec,
         spawn_lat: summarize_ns_as_us(&all_spawn_ns),
@@ -1092,14 +1314,14 @@ fn road_c002_sharded_spawn_message_commit_scales_without_global_lock_or_total_or
         let mut summaries = Vec::with_capacity(4);
         #[allow(clippy::cast_precision_loss)]
         for shard_count in [1_usize, 2, 4, 8] {
-            let summary = run_multi_cell_shard_cluster(shard_count);
+            let summary = run_multi_cell_shard_cluster(sweep_attempt + 1, shard_count);
             println!(
                 "[c-bench-task] attempt={} shards={} window_ms={:.2} total_ops={} agg_ops_per_sec={:.1} \
                  spawn_us(n={},p50={},p95={},p99={},max={}) msg_us(p50={},p95={},p99={},max={}) \
                  commit_us(p50={},p95={},p99={},max={}) ctrl_us(p50={},p95={},p99={},max={})",
                 sweep_attempt + 1,
                 summary.shard_count,
-                (summary.wall_elapsed_ns as f64) / 1_000_000.0,
+                (summary.gate_window_ns as f64) / 1_000_000.0,
                 summary.total_lifecycle_ops,
                 summary.aggregate_ops_per_sec,
                 summary.spawn_lat.count,
@@ -2124,7 +2346,7 @@ fn synthetic_cluster_sweep(ops: [f64; 4], commit_p50_us: [u64; 4]) -> Vec<Cluste
             };
             ClusterRunSummary {
                 shard_count,
-                wall_elapsed_ns: 1_000_000_000,
+                gate_window_ns: 1_000_000_000,
                 total_lifecycle_ops: sample_count * 3,
                 aggregate_ops_per_sec,
                 spawn_lat: base_lat,

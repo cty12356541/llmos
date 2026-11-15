@@ -1012,6 +1012,12 @@
   scope: "PERF-CLASS-001 Fast/Streaming/Slow 三类工作负载与 PERF-BENCH-001 SQLite WAL+FULL 真实持久屏障实测 + 1->2->4->8 独立 OS 进程 Cell 分片无全局锁/无跨 Cell 全局总序 spawn/message/commit 扩展性验证（release 4.44x / dev 5.78x）+ PERF-SCALE-001/002 & SCALE-PROFILE-001 8-Cell 分片 10K_LOGICAL 与 100K_LOGICAL（1%/5%/10% 活跃工作集扫描、检查点驱逐重水化、恢复扫描有界、磁盘/RSS 披露）+ PERF-CONTROL-001 100K 负载下 p50=84us 有界控制延迟 + ROAD-C-002 五类故障全覆盖（stale TaskAuthority epoch、分区双主、fanout storm、provider stall、Cell bulkhead）；1M_LOGICAL 与跨物理机网络基准显式留界"
   assurance: H6
   date: "2026-10-26"
+- id: c-bench-readiness-20261116
+  path: docs/evidence/stage-c/c-bench-readiness-20261116.md
+  title: "C-BENCH-READINESS-20261116：分片基准的预置屏障与计时边界"
+  scope: "Windows 分片基准的真实 SQLite 准备屏障、真实子进程 ready/go 与早退回收回归，以及分片局部时长与聚合跨度上下界的记录；范围限基准工具，隔离 Windows CI 吞吐门、精确跨进程跨度及与旧失败的因果关系待验"
+  assurance: H4
+  date: "2026-11-16"
 - id: w67-stage-c-exit-gates
   path: docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
   title: "W67 阶段 C 退出门综合证据评审记录（ROAD-C-001 / ROAD-C-002 / C-core 九包 / 移交 #1–#17 / 全仓零冻结审计）"
