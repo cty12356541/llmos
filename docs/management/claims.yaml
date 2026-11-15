@@ -1266,7 +1266,7 @@
   limitations:
     - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（SQLite WAL+FULL）实测 1->2->4->8 子进程分片无全局锁扩展（release 4.44x）、8-Cell 10K/100K_LOGICAL、以及跨网络套接字 1/2/4 Cell 分片数据面 spawn/message/commit 0 Raft RPC 扩展与五类故障全覆盖（C-XHOST-005）；1M_LOGICAL 裸金属多数据中心 WAN 档位显式未声称"
     - "W76（e77c094，Run 40868357139）已回填 Ubuntu/macOS/Windows 三平台 CI --release 五探针数字（B-SCALE-RELEASE-001 §6.1），但单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 8-Cell 分片基准与 1M_LOGICAL 未覆盖（RISK-B-07 / U-1），故不发布无限定生产量级口号"
-    - "2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过。分片在预置持久化完成前发布 ready 已独立复现，其对原失败的影响待隔离 Windows CI 复验。见 [当前执行记录](./stage-e-progress.md#2026-11-16-首波执行)"
+    - "2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过。准备屏障修正后，4fc70be1 的 Windows 原吞吐目标通过，旧失败因果未定。同 SHA 的 Ubuntu 主作业 Regime C 失败，独立诊断通过但未复现长尾。见 [准备屏障与 CI 证据](../evidence/stage-c/c-bench-readiness-20261116.md)"
   source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W76 + W73 退出门终审 + W76 三平台 release 回填（base e77c094）：SATISFIED-WITH-BOUNDARIES"
 
 # ===== 阶段 C 核心工作包（stage-c-progress.md §C.3.1 C-core）=====
@@ -1445,7 +1445,7 @@
   assurance: H6
   limitations:
     - "已在单机 Windows 11 x86_64 6C/12T（SQLite WAL+FULL）验证 PERF-CLASS-001、1->8 子进程分片无全局锁扩展、8-Cell 10K/100K_LOGICAL（1%/5%/10% 工作集）、PERF-CONTROL-001（p50=84-85us）及 ROAD-C-002 五类故障；1M_LOGICAL 与跨物理机网络基准显式未声称"
-    - "上述数字适用于历史受测工作站。2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过；已复现 ready 早于预置持久化完成，对吞吐失败的影响待隔离 Windows CI 复验。见 [当前执行记录](./stage-e-progress.md#2026-11-16-首波执行)"
+    - "上述数字适用于历史受测工作站。2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过，修后候选 4fc70be1 的 Windows 原目标通过，成功日志无 Regime 或时序数值。Ubuntu 主作业 Regime C 仍有失败样本，具体瓶颈待取证。见 [准备屏障与 CI 证据](../evidence/stage-c/c-bench-readiness-20261116.md)"
   source: "stage-c-progress.md §C.3.1 C-BENCH 行（base 9e5e0edc）：PARTIAL_PASS"
 
 # ===== 阶段 B -> C 移交项工作包与服务解冻扩展（stage-c-progress.md §C.3.2 #1-#17）=====

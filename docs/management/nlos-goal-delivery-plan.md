@@ -15,8 +15,8 @@
 ## 1. 事实起点、权威归属与范围
 
 - A–D 在各自验收边界内已 `EXITED`；E0–E7 为 8/8 工程完成，阶段 E 仍待维护者签字，不能代签 `EXITED` 或 SABI v1.0 长期冻结。
-- W82 已合并 A、B-1、C 主体及 D 的 wheel/Ed25519 前置件；整车道验收 0/5 DONE，B-2/B-3/B-4、SDK 主体与 INT 尚未收口。已有代码先复验，禁止重新实施同一成果。
-- `a3a1c007` 的 [push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) 常规 9 作业成功、2 个规模作业跳过；[Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) 成功。`d2a32de9` 的 [定时运行 43530982662](https://github.com/cty12356541/llmos/actions/runs/43530982662/job/132248316365) Worker E2E 失败仍是待诊断反例，不能由常规 push 成功抵消。
+- W82 已合并 A、B-1、C 主体及 D 的 wheel/Ed25519 前置件。首波 A 三平台验收完成，整车道验收 `1/5 DONE`。B-2/B-3/B-4、C 的 D7 与重启、SDK 主体和 INT 尚待验收。已有代码先复验，禁止重新实施同一成果。
+- 历史基线 `a3a1c007` 的 push CI 常规 9 作业成功，2 个规模作业跳过，Pages 部署成功。`d2a32de9` 的原 Worker E2E 失败已诊断并在首波集成代码的 `include-ignored` 作业复验通过，原负面证据保留。[历史 push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) · [历史 Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) · [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)
 - 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-首波执行)及原始台账为准。
 - 本文负责跨能力交付顺序、工作包和终局验收；阶段进度归 `stage-*-progress.md`，需求归 v0.5，决策归 ADR，事实归源提交/Evidence，风险归 `risks.yaml`，声明归 `claims.yaml`。本计划不得覆盖这些对象。
 - 后续 `DEL-*` 仅为管理工作包 ID，分别承接既有 B/C/D/E 能力；不新增正式阶段或 Requirement。全球联邦、完整硬件生态、消费级完善等按 §29.2 分包演进；裸机不是完成终局的前置条件。
@@ -92,7 +92,7 @@ flowchart LR
 **R/W**：R=`nlos-ipc`、`nlos-system-control` 及 PR #43；W=这两 crate 的 A 原有测试/实现子集与本包 Evidence。输入为已合并实现，输出为复验回执；无反例则不改代码。
 - [x] Windows 候选验证明文/认证各单连接 1,000 轮、独立同连接五通道混合分派与 clock 写事务计数，覆盖空闲关闭、断连、半帧、超限/畸形拒帧、60s 窗口老化、窗口内第 9 次断连、身份与连接隔离。测试列表、计数和断言范围见 [A 复验 Evidence](../evidence/stage-e/w82-a-verify-20261116.md)。
 - [x] Windows 候选执行 `cargo test -p nlos-ipc --test session_mux` 与 `cargo test -p nlos-system-control --features daemon --test daemon_session_mux`；真实 Named Pipe 用例分别为 2 项与 12 项。
-- [ ] 在候选集成 SHA 上补 Linux/macOS 的两个套件及拒帧老化单测，收集真实 Unix socket 非零用例回执，完成三平台 A 验收后交 B82-SDK。已合并基线 CI 独立保留。
+- [x] 集成代码 `4fc70be1` 在三平台完成 IPC 12/12、daemon 17/17 与拒帧老化，含真实 Unix socket / Named Pipe。主树定向验证和独立审查通过，A 验收完成。B82-SDK 仍需 B 整车道通过。[集成验收](../evidence/stage-e/w82-a-verify-20261116.md#2026-11-16-集成代码三平台验收)
 
 ### W82-C-DIAG：定时失败根因与受管 Worker 回收
 
@@ -101,14 +101,16 @@ flowchart LR
 - [x] 保存 43530982662 原日志，定位通用 READY 前缀允许在 brain 启动前返回的竞态；等待带 Worker 数量的完整行，保留确定性红绿结果。诊断、验收及环境差异见 [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)。
 - [x] Ubuntu 22.04 局部执行 `cargo test --locked -p nlos-up --test workers_e2e -- --nocapture`；Windows 执行 `cargo test -p nlos-process --test platform_kill`，见真实父子树与兄弟不误杀用例。
 - [ ] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收均需整体验收。吊销触发实际回收留 INT，跨权限/breakaway 归 U-2。
-- [ ] 在原 Ubuntu 26.04 OS/解释器/并发与定时负载条件下复验 `cargo test --workspace --no-fail-fast -- --include-ignored`，归档 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 回执，方可关闭原定时失败。
+- [x] 集成代码 `4fc70be1` 在 Ubuntu 26.04.1 的 `cargo test --workspace --no-fail-fast -- --include-ignored` 作业成功。原失败项 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 实测通过，关闭原定时失败的 C-DIAG 子门。[复验记录](../evidence/stage-e/w82-c-diag-20261116.md#2026-11-16-集成代码的-ubuntu-worker-复验)
 
 ### CI-WINDOWS-SCALE-BARRIER：Windows Regime B 规模探针准备屏障
 
 **Owner**：规模探针实现与验证 Sol，关键计时审查 Astra。**blocked-by**：Windows 定时失败原始日志与分诊；与 C 的 Unix Worker 诊断分别验收。
-- [x] 分诊 [43649840304 的 Windows 作业](https://github.com/cty12356541/llmos/actions/runs/43649840304/job/132615620831)。三轮均未过 Regime B 的 2→8 分片吞吐门。隔离回归在最后一笔预置 Group 事务前暂停分片时，父已可见 ready。该缺口对原失败的实际影响仍待复验。
+- [x] 分诊发现旧 Windows 三轮均未过 Regime B 的 2→8 分片吞吐门。隔离回归在最后一笔预置 Group 事务前暂停分片时，父已可见 ready。该缺口对原吞吐失败的实际影响尚未证实。[原 Windows 作业](https://github.com/cty12356541/llmos/actions/runs/43649840304/job/132615620831)
 - [x] 将各分片 ready 移到所有预置事务之后，并在分片早退时终止和回收仍等待 go 的同伴进程。独立复核通过，主树 6 项非性能用例通过。时序诊断记录准备、等待、工作时长、父墙钟和聚合跨度上下界，原持久化设置、阈值和尝试次数保留。见[准备屏障 Evidence](../evidence/stage-c/c-bench-readiness-20261116.md)。
-- [ ] 在隔离 Windows runner 取得可比较的规模回执，核对各分片时序与吞吐。原吞吐失败因果及精确跨进程聚合跨度待取证。
+- [x] `4fc70be1` 修后 Windows 主作业的原分片吞吐目标通过，外层套件 7 通过、1 忽略（内部入口）。成功日志未展示 Regime、吞吐或逐分片时序，旧失败因果与精确跨进程跨度待取证。[Windows 复验](../evidence/stage-c/c-bench-readiness-20261116.md#2026-11-16-修后-windows-目标复验)
+- [x] 同源码在隔离 Ubuntu runner 原样运行目标并采样，首轮 Regime C 通过，原主作业长尾未复现。[Ubuntu 独立诊断](../evidence/stage-c/c-bench-readiness-20261116.md#2026-11-16-ubuntu-独立诊断)
+- [ ] 在失败时收集同类 CPU、I/O、挂载和前序测试数据，或固定宿主配对测量完整前序测试与独立目标执行。保留现有吞吐门、工作负载和 WAL/FULL，待获得可比较数据后再决定修复。
 
 ### W82-B-CONTRACT：B1 复验与服务契约冻结前复核
 
@@ -118,9 +120,9 @@ flowchart LR
 - [ ] 明确 daemon slot→权威 CapabilityId、Blob reference ID 与持有者/接收者授权、重启后 fd/令牌恢复或失效、chunk 有效长度和资源上界；只持 URI/根 ID 不得获得授权。输出为精确接口清单、正负向向量与 B2/B3/B4/INT 消费签认。
 - [x] 候选执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:typecheck`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`，保存工作树回执。
 - [x] 公共库前置门和 Blob schema/codec 子门通过独立审查。B2/B3 可使用显式可信上下文与授权器开发服务库，B4 可按已裁定契约开发 Blob 服务。
-- [ ] 最终提交后执行 `npm run schema:check-generated`，验证生成物与提交基线一致。
+- [x] 提交至 `4fc70be1` 后，原 `npm run schema:check-generated` 退出 0，24 个生成文件与提交基线一致。见[阶段 E 首波回执](./stage-e-progress.md#2026-11-16-首波执行)。
 - [x] 以新增 proto 前的可达提交 `6e9f0a9f^` 和候选树执行真实双版本 `sabi_compat_diff.py`，保存输入、JSON 与 digest，并通过黄金不可变检查。两次差异对照与制品见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
-- [ ] 在最终候选 CI 取得 `sdk/go` 的 `go test ./... -count=1` 与根目录的 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj` 回执；已合并 B1 的两探针结果随相应基线保留。
+- [x] `4fc70be1` 在三平台运行 `sdk/go` 的 `go test ./... -count=1` 均通过，根目录的 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj` 各 30/30。已合并 B1 的结果随历史基线保留。[三平台契约回执](./stage-e-progress.md#2026-11-16-首波执行)
 
 ### W82-B-2：受控 LLM 五维预算网关
 

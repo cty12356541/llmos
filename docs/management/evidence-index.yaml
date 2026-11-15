@@ -1015,7 +1015,7 @@
 - id: c-bench-readiness-20261116
   path: docs/evidence/stage-c/c-bench-readiness-20261116.md
   title: "C-BENCH-READINESS-20261116：分片基准的预置屏障与计时边界"
-  scope: "Windows 分片基准的真实 SQLite 准备屏障、真实子进程 ready/go 与早退回收回归，以及分片局部时长与聚合跨度上下界的记录；范围限基准工具，隔离 Windows CI 吞吐门、精确跨进程跨度及与旧失败的因果关系待验"
+  scope: "真实 SQLite 预置屏障、子进程 ready/go 与早退回收回归、分片计时上下界及修后 Windows 原吞吐目标通过。保留同 SHA 的 Ubuntu 主作业失败、include-ignored 通过与独立成功样本，精确跨进程跨度及失败根因未知"
   assurance: H4
   date: "2026-11-16"
 - id: w67-stage-c-exit-gates
@@ -1254,7 +1254,7 @@
 - id: w82-a-verify-20261116
   path: docs/evidence/stage-e/w82-a-verify-20261116.md
   title: "W82-A 真实 IPC 会话复验"
-  scope: "Windows 候选真实 Named Pipe 明文与认证各千轮、独立同连接五通道交错、clock 写事务计数、半帧与拒帧窗口和连接隔离的定向验证；Linux/macOS 真实 Unix socket 回执仅适用已合并基线，候选三平台门待验证"
+  scope: "4fc70be1 三平台真实 Named Pipe/Unix socket 验收通过，每平台 IPC 12/12、daemon 17/17、拒帧老化通过。覆盖明文与认证各千轮、独立同连接五通道交错、clock 写事务计数、半帧、拒帧窗口和连接隔离"
   assurance: H4
   date: "2026-11-16"
 - id: w82-b-contract-20261116
@@ -1266,6 +1266,6 @@
 - id: w82-c-diag-20261116
   path: docs/evidence/stage-e/w82-c-diag-20261116.md
   title: "W82-C-DIAG：Worker 就绪边界竞态诊断（2026-11-16）"
-  scope: "定时失败日志和 Worker READY 顺序的诊断、只修改测试等待条件的确定性红绿验证、Windows 进程树回收与 Ubuntu 22.04 真实 Worker 局部 E2E；原 Ubuntu 26.04 全负载复验、根能力绑定与实际吊销联动待验"
+  scope: "Worker READY 顺序诊断与确定性红绿验证、Windows 进程树回收、Ubuntu 22.04 局部 E2E 及集成代码在 Ubuntu 26.04.1 include-ignored 作业中的原失败用例复验（Worker E2E 5/5）。D7 根能力权威绑定、父退出重启与实际吊销联动待验"
   assurance: H4
   date: "2026-11-16"

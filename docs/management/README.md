@@ -187,10 +187,10 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 ## 11.3 阶段 E 管理入口（兼容制度与生态规模化，IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF）
 
-2026-11-16 执行基线 `6415600d`：阶段 A–D 按各自评审边界 `EXITED`；阶段 E 的 `E0`–`E7` 共 `8/8` 个工程包 `DONE`（`H4` / `H7`）。[W81 终审](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)确认技术门禁 1–5 在当轮评审基线内满足；阶段 E 正式退出及 `SABI v1.0` 长期冻结仍待维护者签字。
+2026-11-16 受测代码基线为 `4fc70be1`。阶段 A–D 按各自评审边界 `EXITED`，阶段 E 的 `E0`–`E7` 共 `8/8` 个工程包 `DONE`（`H4` / `H7`）。技术门禁 1–5 在 W81 评审基线内满足，阶段 E 正式退出及 `SABI v1.0` 长期冻结仍待维护者签字。[W81 终审](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)
 
 - [阶段 E 权威进度单](./stage-e-progress.md#2026-11-16-首波执行)：首波证据、基线 CI 与独立的 Windows 规模反例。[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已 `VERIFIED`，规范路线见 [v0.5 §28.5](../design/06-架构设计总纲-v0.5.md)（`[ROAD-E-001]`）。
-- [W82 车道与合并回执](./stage-e-progress.md#e618-w82-后续生态接入)：`IN_PROGRESS / PARTIALLY_MERGED`，已有实现合入，`0/5` 车道完成正式整体验收。下一步补齐服务和 SDK 后完成 `qq-agent` 端到端验收。
+- W82 为 `IN_PROGRESS / PARTIALLY_MERGED`。A 三平台验收通过，已有 `1/5` 车道完成。后续补齐服务、Worker 权威绑定及重启，再按屏障推进 SDK 和 `qq-agent` 端到端验收。[W82 车道与合并回执](./stage-e-progress.md#e618-w82-后续生态接入)
 - [机器台账口径](./stage-e-progress.md#2026-11-16-首波执行)：`169` 条声明、`209` 条证据（阶段 E 有 `20` 条）、`17` 项风险；`H8` 声明与证据均为 `0`。详见 [claims](./claims.yaml)、[证据索引](./evidence-index.yaml)和[风险](./risks.yaml)。
 - [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)（`IN_PROGRESS`，适用 v0.5）：首波 A 复验、C 诊断与 B 契约复核已有局部回执。后续服务库、SDK、发行及生产生态按依赖和取证门逐包推进。
 
