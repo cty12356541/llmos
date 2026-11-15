@@ -1257,3 +1257,9 @@
   scope: "已合并 B1 公共 schema 和 Blob 补充裁定后的增量契约、接收者字段、有效块与完整编码双界、原黄金不可变以及双版本兼容验证；范围限库层契约与编码，不含 daemon 授权、B4 服务实现或外部消费者验收"
   assurance: H4
   date: "2026-11-16"
+- id: w82-c-diag-20261116
+  path: docs/evidence/stage-e/w82-c-diag-20261116.md
+  title: "W82-C-DIAG：Worker 就绪边界竞态诊断（2026-11-16）"
+  scope: "定时失败日志和 Worker READY 顺序的诊断、只修改测试等待条件的确定性红绿验证、Windows 进程树回收与 Ubuntu 22.04 真实 Worker 局部 E2E；原 Ubuntu 26.04 全负载复验、根能力绑定与实际吊销联动待验"
+  assurance: H4
+  date: "2026-11-16"

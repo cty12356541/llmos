@@ -6,10 +6,13 @@
 // CoreFoundation 按 uid 自合成 __CF_USER_TEXT_ENCODING 必红(实证见 CI)。
 #![allow(clippy::collapsible_if, clippy::map_unwrap_or)]
 
+mod workers_readiness;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use workers_readiness::workers_are_ready;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -103,17 +106,17 @@ struct RunningUp {
 }
 
 impl RunningUp {
-    fn wait_for_line(&self, needle: &str, seconds: u32) -> String {
+    fn wait_for_workers(&self, expected_workers: usize, seconds: u32) -> String {
         for _ in 0..(seconds * 20) {
             if let Ok(buf) = self.stdout.lock() {
-                if buf.contains(needle) {
+                if workers_are_ready(&buf, expected_workers) {
                     return buf.clone();
                 }
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!(
-            "nlos-up workers never printed {needle:?}:\n{}",
+            "nlos-up never reported all {expected_workers} workers ready:\n{}",
             self.snapshot()
         );
     }
@@ -205,7 +208,7 @@ fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
     .expect("write manifest");
 
     let up = spawn_nlos_up_workers(&root, &manifest_path);
-    let stdout_head = up.wait_for_line("READY service=system_control", 60);
+    let stdout_head = up.wait_for_workers(2, 60);
     assert!(stdout_head.contains("WORKERS manifest="), "{stdout_head}");
     assert!(stdout_head.contains("units=2"), "{stdout_head}");
     assert!(
@@ -310,7 +313,7 @@ fn workers_python_unit_env_whitelist_gate_letter() {
     .expect("write manifest");
 
     let up = spawn_nlos_up_workers(&root, &manifest_path);
-    let stdout_head = up.wait_for_line("READY service=system_control", 60);
+    let stdout_head = up.wait_for_workers(1, 60);
     assert!(
         stdout_head.contains("WORKER name=pyworker"),
         "{stdout_head}"
