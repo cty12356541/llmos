@@ -900,3 +900,53 @@ pub(crate) async fn timeout_io<T>(
         .map_err(|_| IpcError::Timeout(operation))?
         .map_err(|source| map_io(operation, source))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejection_window_expires_old_strikes_without_resetting_total() {
+        let (_client, server) = tokio::io::duplex(4_096);
+        let mut connection = FramedIo::new(server, TransportConfig::default());
+        let recent = Instant::now();
+        let expired = recent
+            .checked_sub(Duration::from_millis(60_001))
+            .expect("test clock supports a one-minute history");
+        let mut strikes = VecDeque::from([recent; 7]);
+        strikes.push_front(expired);
+        let mut rejected_frames = 8;
+
+        let outcome = reject_frame(
+            &mut connection,
+            &mut strikes,
+            0,
+            &mut rejected_frames,
+            "test rejection",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, None);
+        assert_eq!(strikes.len(), 8);
+        assert_eq!(strikes.front(), Some(&recent));
+        assert_eq!(rejected_frames, 9);
+
+        let outcome = reject_frame(
+            &mut connection,
+            &mut strikes,
+            0,
+            &mut rejected_frames,
+            "test rejection",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            Some(ServedConnection {
+                rounds: 0,
+                rejected_frames: 10,
+                termination: ConnectionTermination::RejectionBudgetExhausted,
+            }),
+        );
+    }
+}

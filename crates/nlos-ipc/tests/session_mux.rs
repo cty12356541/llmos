@@ -180,6 +180,55 @@ async fn serve_connection_closes_after_idle_timeout_and_fail_closed_is_observabl
 }
 
 #[tokio::test]
+async fn serve_connection_fails_closed_on_partial_header_or_body() {
+    use tokio::io::AsyncWriteExt;
+
+    let fragments: &[&[u8]] = &[&[0, 0], &[0, 0, 0, 4, 0x08]];
+    for fragment in fragments {
+        for disconnect in [false, true] {
+            let (mut client, server_stream) = duplex(4_096);
+            let server = tokio::spawn(serve_connection(
+                server_stream,
+                fast_config(4_096),
+                PeerIdentity::InMemory,
+                &Allow,
+                Duration::from_secs(30),
+                |_| -> std::future::Ready<Result<OutboundResponse, IpcError>> {
+                    panic!("partial frame reached the handler")
+                },
+            ));
+            client.write_all(fragment).await.unwrap();
+            let outcome = if disconnect {
+                drop(client);
+                server.await.unwrap()
+            } else {
+                let outcome = server.await.unwrap();
+                drop(client);
+                outcome
+            };
+
+            if disconnect {
+                assert!(
+                    matches!(
+                        &outcome,
+                        Err(IpcError::Io {
+                            operation: IoOperation::Read,
+                            source,
+                        }) if source.kind() == ErrorKind::UnexpectedEof
+                    ),
+                    "truncated frame after client close: {outcome:?}"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Err(IpcError::Timeout(IoOperation::Read))),
+                    "incomplete frame hits the frame read budget: {outcome:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn serve_connection_rejects_zero_idle_timeout() {
     let (_client_stream, server_stream) = duplex(4_096);
     let config = fast_config(4_096);
@@ -317,11 +366,11 @@ async fn serve_connection_forwarded_mismatch_fails_closed_mid_connection() {
 }
 
 // ---------------------------------------------------------------------------
-// Authenticated multi-round serving over a real Unix socket (mirrors the
-// handshake_transport.rs harness: a genuine IdentityAuthority, deterministic
-// nonce source, and the platform authenticated_connect client).
+// Authenticated multi-round serving over the host's local IPC transport:
+// a genuine IdentityAuthority, deterministic nonce source, and the platform
+// authenticated_connect client.
 // ---------------------------------------------------------------------------
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod authenticated_session {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
@@ -332,9 +381,16 @@ mod authenticated_session {
     use nlos_ipc::handshake::transport::{
         authenticated_connect, authenticated_serve_connection, endpoint_channel_binding,
     };
-    use nlos_ipc::unix::UnixListenerAdapter;
+    #[cfg(unix)]
+    use nlos_ipc::unix::UnixListenerAdapter as PlatformListener;
+    #[cfg(windows)]
+    use nlos_ipc::windows::NamedPipeListenerAdapter as PlatformListener;
     use nlos_types::IdempotencyKey;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use tokio::net::UnixStream as ServerStream;
+    #[cfg(windows)]
+    use tokio::net::windows::named_pipe::NamedPipeServer as ServerStream;
 
     const NONCE: [u8; 32] = [0x5D; 32];
 
@@ -362,12 +418,30 @@ mod authenticated_session {
         }
     }
 
-    fn short_socket(label: &str) -> PathBuf {
+    fn endpoint_path(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("nlos-sm-{label}-{}-{nanos}", std::process::id()))
+        let name = format!("nlos-sm-{label}-{}-{nanos}", std::process::id());
+        #[cfg(unix)]
+        {
+            std::env::temp_dir().join(name)
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(format!(r"\\.\pipe\{name}"))
+        }
+    }
+
+    #[cfg(unix)]
+    fn bind(path: &Path, _: TransportConfig) -> PlatformListener {
+        PlatformListener::bind(path).unwrap()
+    }
+
+    #[cfg(windows)]
+    fn bind(path: &Path, config: TransportConfig) -> PlatformListener {
+        PlatformListener::bind(path, 2, config).unwrap()
     }
 
     fn bootstrap(
@@ -400,23 +474,23 @@ mod authenticated_session {
     }
 
     async fn accept(
-        listener: &UnixListenerAdapter,
+        listener: &mut PlatformListener,
         config: TransportConfig,
-    ) -> (tokio::net::UnixStream, PeerIdentity) {
+    ) -> (ServerStream, PeerIdentity) {
         listener.accept(config).await.unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_serve_connection_serves_multiple_rounds_and_threads_principal() {
-        let path = short_socket("chain");
+        let path = endpoint_path("chain");
         let (_root, identity, key, principal) = bootstrap(0x41);
         let nonces = HandshakeNonceRegistry::new(8).unwrap();
         let binding_bytes = endpoint_channel_binding(&path).to_vec();
-        let listener = UnixListenerAdapter::bind(&path).unwrap();
         let config = fast_config(4_096);
+        let mut listener = bind(&path, config);
 
         let server = tokio::spawn(async move {
-            let (stream, peer) = accept(&listener, config).await;
+            let (stream, peer) = accept(&mut listener, config).await;
             let mut issued = 0_u8;
             authenticated_serve_connection(
                 stream,
@@ -475,20 +549,21 @@ mod authenticated_session {
                 termination: ConnectionTermination::ClientClosed,
             }
         );
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_serve_connection_retires_on_idle_timeout() {
-        let path = short_socket("idle");
+        let path = endpoint_path("idle");
         let (_root, identity, key, principal) = bootstrap(0x42);
         let nonces = HandshakeNonceRegistry::new(8).unwrap();
         let binding_bytes = endpoint_channel_binding(&path).to_vec();
-        let listener = UnixListenerAdapter::bind(&path).unwrap();
         let config = fast_config(4_096);
+        let mut listener = bind(&path, config);
 
         let server = tokio::spawn(async move {
-            let (stream, peer) = accept(&listener, config).await;
+            let (stream, peer) = accept(&mut listener, config).await;
             authenticated_serve_connection(
                 stream,
                 peer,
@@ -540,6 +615,7 @@ mod authenticated_session {
                 termination: ConnectionTermination::IdleExpired,
             }
         );
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -694,6 +770,7 @@ mod rejection_suite {
 
     #[tokio::test]
     async fn rejection_budget_disconnects_past_eight_strikes_in_window() {
+        assert_eq!(nlos_ipc::FRAME_REJECTION_WINDOW, Duration::from_secs(60));
         let (mut client_stream, server_stream) = duplex(256 * 1024);
         let config = fast_config(4_096);
         let server = tokio::spawn(serve_connection(

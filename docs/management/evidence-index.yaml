@@ -1241,3 +1241,13 @@
   scope: "外部常驻双脑应用 qq-agent TTS 语音管线联调上报：OutboundReply.voice_uri base64 富媒体载荷逼近/超过 SABI v1.0 冻结 ChannelControl 单帧 64 KiB 上界（crates/nlos-schema/src/lib.rs:58，ADR-0014 / W73 L-002 冻结契约），协议层无大载荷分帧重组原语，应用侧被迫落盘+回灌过渡；llmos 受理侧双侧权威锚点核验登记（超限帧未独立复现，保守评 POC）；2026-11-02 维护者裁定 RULED_INTO_W82_B（并入 W82-B 车道，绝对安全为设计宗旨，选项 B Capability 引用传递为默认优先路线），实现仍零代码零 claims 预支"
   assurance: POC
   date: "2026-11-02"
+
+# ---------------------------------------------------------------------------
+# Stage E W82 first-wave scoped verification
+# ---------------------------------------------------------------------------
+- id: w82-a-verify-20261116
+  path: docs/evidence/stage-e/w82-a-verify-20261116.md
+  title: "W82-A 真实 IPC 会话复验"
+  scope: "Windows 候选真实 Named Pipe 明文与认证各千轮、独立同连接五通道交错、clock 写事务计数、半帧与拒帧窗口和连接隔离的定向验证；Linux/macOS 真实 Unix socket 回执仅适用已合并基线，候选三平台门待验证"
+  assurance: H4
+  date: "2026-11-16"

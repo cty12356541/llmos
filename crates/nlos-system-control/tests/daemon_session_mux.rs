@@ -52,13 +52,21 @@ impl Drop for TempRoot {
 
 /// Endpoint path in the host OS form (short Unix socket path / local pipe
 /// name), mirroring the `daemon_assembly` helpers.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn temp_path(label: &str, suffix: &str) -> PathBuf {
     let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "nlos-w82a-{label}-{suffix}-{}-{sequence}.sock",
-        std::process::id(),
-    ))
+    let name = format!(
+        "nlos-w82a-{label}-{suffix}-{}-{sequence}",
+        std::process::id()
+    );
+    #[cfg(unix)]
+    {
+        std::env::temp_dir().join(format!("{name}.sock"))
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!(r"\\.\pipe\{name}"))
+    }
 }
 
 /// Envelope-level failure projection: asserts the frozen failure-envelope
@@ -735,18 +743,20 @@ mod dispatch_suite {
 // clock WAL write-transaction accounting against a single-shot baseline,
 // and principal-bound wait mutations over a real handshake.
 //
-// Unix-gated like the daemon_assembly round-trips (filesystem sockets and
-// the Unix-only plain connect client); the Windows lane keeps its existing
-// binary smoke — the multi-round wire bytes are platform-neutral.
+// Each platform runs the same assertions through the production daemon
+// endpoint loops: Unix domain sockets or Windows named pipes.
 // ---------------------------------------------------------------------------
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod socket_suite {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
 
     use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, KeyPurpose};
     use nlos_ipc::handshake::transport::authenticated_connect;
+    #[cfg(unix)]
     use nlos_ipc::unix::connect;
+    #[cfg(windows)]
+    use nlos_ipc::windows::connect;
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::negotiate_service_response;
     use nlos_schema::{
@@ -763,6 +773,10 @@ mod socket_suite {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
+    #[cfg(unix)]
+    use tokio::net::UnixStream as ClientStream;
+    #[cfg(windows)]
+    use tokio::net::windows::named_pipe::NamedPipeClient as ClientStream;
     use tokio::task::JoinHandle;
 
     struct DaemonHarness {
@@ -874,7 +888,7 @@ mod socket_suite {
         out
     }
 
-    async fn plain_client(socket: &Path) -> LocalRpcClient<tokio::net::UnixStream> {
+    async fn plain_client(socket: &Path) -> LocalRpcClient<ClientStream> {
         try_plain_client(socket).await.expect("plain connect")
     }
 
@@ -884,7 +898,7 @@ mod socket_suite {
     /// rejection.
     async fn try_plain_client(
         socket: &Path,
-    ) -> Result<LocalRpcClient<tokio::net::UnixStream>, nlos_ipc::IpcError> {
+    ) -> Result<LocalRpcClient<ClientStream>, nlos_ipc::IpcError> {
         let config = TransportConfig::default();
         let (stream, _) = connect(socket, config).await?;
         Ok(LocalRpcClient::new(stream, config))
@@ -894,7 +908,7 @@ mod socket_suite {
         socket: &Path,
         principal: PrincipalId,
         key: &SigningKey,
-    ) -> LocalRpcClient<tokio::net::UnixStream> {
+    ) -> LocalRpcClient<ClientStream> {
         let config = TransportConfig::default();
         let framed = authenticated_connect(socket, config, principal, |digest: &[u8; 32]| {
             Ok(key.sign(digest).to_bytes())
@@ -934,7 +948,7 @@ mod socket_suite {
     /// is a decodable typed response (envelope-level failures like the
     /// unknown-operation probe are still successful exchanges — the gate is
     /// zero DISCONNECTIONS, not zero typed failures).
-    async fn five_service_round(client: &LocalRpcClient<tokio::net::UnixStream>, sequence: u16) {
+    async fn five_service_round(client: &LocalRpcClient<ClientStream>, sequence: u16) {
         match sequence % 5 {
             0 => {
                 let response = client
@@ -1668,7 +1682,10 @@ mod socket_suite {
     /// the cap and frees the slot when a resident session ends.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn session_budget_closes_newcomers_above_the_cap_and_frees_on_release() {
+        #[cfg(unix)]
         const BUDGET: usize = 64;
+        #[cfg(windows)]
+        const BUDGET: usize = 63; // The kernel's 64th pipe instance is reserved for listening.
         let (harness, _root) = start("cap", Duration::from_secs(30), None, false, true);
 
         // Hold the full budget as resident silent connections (each parks in
@@ -1679,20 +1696,24 @@ mod socket_suite {
             // macOS; each holder retries briefly (the budget is not yet
             // full, so every retry must eventually be admitted).
             let mut client = None;
-            for attempt in 0..10 {
-                if let Ok(admitted) = try_plain_client(&harness.plain_socket).await {
+            for _ in 0..10 {
+                if let Ok(admitted) = try_plain_client(&harness.plain_socket).await
+                    && admitted
+                        .exchange_validated(unique_health_request(0))
+                        .await
+                        .is_ok()
+                {
                     client = Some(admitted);
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                let _ = attempt;
             }
             holders.push(client.unwrap_or_else(|| {
                 panic!("holder {index} never admitted despite budget headroom")
             }));
         }
-        // The 65th connects at the kernel layer, then is closed fail-closed;
-        // the rejection may surface at connect or at the first exchange.
+        // The newcomer above the resident cap may connect at the kernel
+        // layer, but it cannot complete an exchange.
         let started = Instant::now();
         let rejection = if let Ok(newcomer) = try_plain_client(&harness.plain_socket).await {
             newcomer
@@ -1741,8 +1762,9 @@ mod socket_suite {
     /// SAME connection keeps serving the next normal exchange.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn daemon_endpoint_rejects_over_limit_frame_and_keeps_serving() {
-        use nlos_schema::{MAX_ENVELOPE_BYTES, decode_exchange_response};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use nlos_ipc::{FramedIo, IoOperation, IpcError};
+        use nlos_schema::MAX_ENVELOPE_BYTES;
+        use tokio::io::AsyncWriteExt;
 
         let (harness, _root) = start("d3", Duration::from_secs(30), None, false, true);
         let config = TransportConfig::default();
@@ -1767,49 +1789,65 @@ mod socket_suite {
             .unwrap();
         stream.flush().await.unwrap();
 
-        // The rejection is a decodable typed failure envelope.
-        let mut prefix = [0_u8; 4];
-        stream.read_exact(&mut prefix).await.unwrap();
-        let mut rejection = vec![0_u8; u32::from_be_bytes(prefix) as usize];
-        stream.read_exact(&mut rejection).await.unwrap();
-        let response = decode_exchange_response(&rejection).unwrap();
-        let envelope::CommonContext::ResponseContext(context) =
-            response.envelope().common_context.as_ref().unwrap()
-        else {
-            panic!("rejection carries a response context");
-        };
-        let failure = context.failure.as_ref().expect("typed failure");
-        assert_eq!(failure.code, i32::from(SabiErrorCode::InvalidArgument));
-        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        let mut first = FramedIo::new(stream, config);
+        assert_frame_rejection(&mut first).await;
 
-        // The SAME connection serves a normal system_control exchange next.
-        let health = build_request_envelope(&ControlCommand::InspectHealth).unwrap();
-        let wire = nlos_schema::encode_exchange_request(&nlos_schema::sabi::v1::ExchangeRequest {
-            envelope: Some(health),
-        })
-        .unwrap();
-        stream
-            .write_all(&u32::try_from(wire.len()).unwrap().to_be_bytes())
+        // This connection remains usable after the rejection.
+        let health = unique_health_request(1);
+        first
+            .send(&nlos_schema::encode_exchange_request(&health).unwrap())
             .await
             .unwrap();
-        stream.write_all(&wire).await.unwrap();
-        stream.flush().await.unwrap();
-        let mut prefix = [0_u8; 4];
-        stream.read_exact(&mut prefix).await.unwrap();
-        let mut served = vec![0_u8; u32::from_be_bytes(prefix) as usize];
-        stream.read_exact(&mut served).await.unwrap();
-        let response = decode_exchange_response(&served).unwrap();
+        let served = first.receive().await.unwrap();
+        let response = nlos_schema::decode_exchange_response(&served).unwrap();
         let envelope::CommonContext::ResponseContext(context) =
             response.envelope().common_context.as_ref().unwrap()
         else {
             panic!("normal round response context");
         };
+        assert!(context.failure.is_none());
+
+        // The over-limit frame and seven malformed bodies consume this
+        // connection's eight-strike budget together.
+        for _ in 0..7 {
+            first.send(&[0x0F; 8]).await.unwrap();
+            assert_frame_rejection(&mut first).await;
+        }
+        let (other, _) = connect(&harness.plain_socket, config).await.unwrap();
+        let mut other = FramedIo::new(other, config);
+        // A second connection from the same process starts with its own budget.
+        other.send(&[0x0F; 8]).await.unwrap();
+        assert_frame_rejection(&mut other).await;
+
+        first.send(&[0x0F; 8]).await.unwrap();
+        let ninth = first.receive().await;
         assert!(
-            context.failure.is_none(),
-            "normal round after rejection succeeds: {:?}",
-            context.failure
+            matches!(
+                ninth,
+                Err(IpcError::Io {
+                    operation: IoOperation::Read,
+                    ..
+                })
+            ),
+            "ninth rejection closes only the affected connection: {ninth:?}"
         );
-        drop(stream);
+
+        let other = LocalRpcClient::new(other.into_inner(), config);
+        let response = other
+            .exchange_validated(unique_health_request(2))
+            .await
+            .unwrap();
+        assert_eq!(response.envelope().request_id, unique_health_id(2));
         harness.stop();
+    }
+
+    async fn assert_frame_rejection(client: &mut nlos_ipc::FramedIo<ClientStream>) {
+        let rejection = client.receive().await.unwrap();
+        let response = nlos_schema::decode_exchange_response(&rejection).unwrap();
+        assert_eq!(
+            failure_of(response.envelope()),
+            (SabiErrorCode::InvalidArgument, RetryDirective::DoNotRetry)
+        );
+        assert_eq!(response.envelope().request_id, vec![0; 16]);
     }
 }
