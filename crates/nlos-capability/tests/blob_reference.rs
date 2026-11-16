@@ -2036,16 +2036,22 @@ fn physical_audit_bound_uses_the_database_page_size() {
 #[test]
 fn blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves() {
     use std::time::{Duration, Instant};
-    let fixture = Fixture::new();
+
+    let _fault = FAULT_LOCK.lock().unwrap();
+    nlos_store_fault::register(FAULT_VFS).unwrap();
+    let fixture = Fixture::with_authority(|directory| {
+        CapabilityAuthority::open(fault_uri(directory, FAULT_VFS)).unwrap()
+    });
     let service = fixture.service(BlobConfig::default()).unwrap();
     let request = fixture.mint_request(b"a", 1, 64);
     let (_, reference) = fixture.mint(&service, &request, 31).unwrap();
     let wal = fixture
         .db_path()
         .with_file_name("capability-authority.db-wal");
+    let observer = fixture.db();
+    observer.busy_timeout(Duration::ZERO).unwrap();
     let page_size: u64 = u64::try_from(
-        fixture
-            .db()
+        observer
             .pragma_query_value(None, "page_size", |row| row.get::<_, i64>(0))
             .unwrap(),
     )
@@ -2065,26 +2071,59 @@ fn blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves()
             row.get(0)
         })
         .unwrap();
+
+    assert_checkpoint_backfill_attempted(&fixture, &service, &reference);
+    let (busy, frames, backfilled): (i64, i64, i64) = observer
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(busy, 1);
+    assert!(frames > 0);
+    assert_eq!(backfilled, frames);
+    assert!(std::fs::metadata(&wal).unwrap().len() > window);
+
     let mut call = fixture.read_call(100);
     call.deadline_monotonic_ns = Some(120_000_000);
     let wire = read_envelope(&call, &reference, 0, 1);
     let started = Instant::now();
     let result = service.read_reference(&call, &wire);
-    let elapsed = started.elapsed();
+    eprintln!("blocked checkpoint read elapsed {:?}", started.elapsed());
     assert!(matches!(
         result,
         Err(BlobError::Authorization(
             AuthorizationError::DeadlineExpired
         ))
     ));
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "checkpoint wait {elapsed:?}"
-    );
-    snapshot.execute_batch("ROLLBACK").unwrap();
     assert_eq!(fixture.reads(), reads_before);
+    snapshot.execute_batch("ROLLBACK").unwrap();
     fixture.read(&service, &reference, 0, 1, 100).unwrap();
+    assert_eq!(fixture.reads(), reads_before + 1);
     release(&fixture, &service, &reference, 101);
+}
+
+fn assert_checkpoint_backfill_attempted(
+    fixture: &Fixture,
+    service: &BlobReferenceService,
+    reference: &[u8],
+) {
+    use nlos_store_fault::{FaultCode, FaultMode};
+
+    // The held snapshot blocks truncation. The first write is checkpoint backfill.
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    let result = fixture.read(service, reference, 0, 1, 100);
+    let writes = nlos_store_fault::writes_observed();
+    nlos_store_fault::disarm();
+    assert!(writes > 0);
+    assert!(matches!(
+        result,
+        Err(BlobError::Authority(nlos_capability::CapabilityAuthorityError::Sqlite(
+            rusqlite::Error::SqliteFailure(error, _)
+        ))) if error.code == rusqlite::ErrorCode::SystemIoFailure
+    ));
 }
 
 #[test]

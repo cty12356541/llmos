@@ -686,3 +686,28 @@ fn row_u64(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.busy_timeout(Duration::from_millis(250)).unwrap();
+
+        let result: Result<(), BlobError> = with_blob_writer_settings(&mut db, |writer| {
+            let busy_ms: i64 = writer
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                .unwrap();
+            assert_eq!(busy_ms, 0);
+            Err(BlobError::Busy)
+        });
+
+        assert!(matches!(result, Err(BlobError::Busy)));
+        let restored_ms: i64 = db
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(restored_ms, 250);
+    }
+}

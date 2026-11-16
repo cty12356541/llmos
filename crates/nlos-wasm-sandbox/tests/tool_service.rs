@@ -1066,8 +1066,8 @@ fn native_processes() -> Vec<(u32, u32)> {
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?.parse().ok()?;
-            let ppid = fields.next()?.parse().ok()?;
-            (!fields.next()?.starts_with('Z')).then_some((pid, ppid))
+            let parent_process_id = fields.next()?.parse().ok()?;
+            (!fields.next()?.starts_with('Z')).then_some((pid, parent_process_id))
         })
         .collect()
 }
@@ -1165,8 +1165,16 @@ fn real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog() {
     use sha2::{Digest, Sha256};
 
     let scratch = Scratch::new();
-    let artifact = scratch.artifact();
-    write_guest(&artifact, READ_ONLY, b"42", SPIN);
+    let fixture_path = scratch.artifact();
+    write_guest(&fixture_path, READ_ONLY, b"42", SPIN);
+    // Match the registry's parent resolution while leaving the guest leaf
+    // for the host to open without following links.
+    let artifact = fixture_path
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .join(fixture_path.file_name().unwrap());
     let digest = Sha256::digest(std::fs::read(&artifact).unwrap());
     let mut hex_digest = String::new();
     for byte in digest {
@@ -1174,7 +1182,7 @@ fn real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog() {
     }
     let host = HostProcessRequest::new(
         env!("CARGO_BIN_EXE_nlos-wasm-sandbox-host"),
-        artifact,
+        &artifact,
         SandboxProfile::deny_all()
             .with_fuel(u64::MAX)
             .with_epoch_deadline(30, 10),
@@ -1191,14 +1199,25 @@ fn real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog() {
     ]);
     let start = Instant::now();
     let output = command.output().unwrap();
-    assert_eq!(output.status.code(), Some(133));
+    let elapsed = start.elapsed();
+    let diagnostics = || {
+        format!(
+            "fixture path {fixture_path:?}, resolved path {artifact:?}, status {:?}, elapsed {elapsed:?}, stderr {:?}, stdout {:?}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(256)]),
+            String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(256)]),
+        )
+    };
+    assert_eq!(output.status.code(), Some(133), "{}", diagnostics());
     assert!(
         output
             .stderr
             .windows(15)
-            .any(|window| window == b"epoch-interrupt")
+            .any(|window| window == b"epoch-interrupt"),
+        "{}",
+        diagnostics()
     );
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(elapsed < Duration::from_secs(3), "{}", diagnostics());
 }
 
 #[test]

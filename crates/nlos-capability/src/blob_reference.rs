@@ -1048,12 +1048,16 @@ impl Timing {
     }
 
     pub fn pause(&self) -> Result<(), BlobError> {
-        let remaining = self.stop_elapsed.saturating_duration_since(Instant::now());
+        std::thread::sleep(self.retry_delay_at(Instant::now())?);
+        self.check_elapsed()
+    }
+
+    fn retry_delay_at(&self, now: Instant) -> Result<Duration, BlobError> {
+        let remaining = self.stop_elapsed.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(AuthorizationError::DeadlineExpired.into());
         }
-        std::thread::sleep(Duration::from_millis(1).min(remaining));
-        self.check_elapsed()
+        Ok(Duration::from_millis(1).min(remaining))
     }
 
     fn lock<'a, T>(&self, mutex: &'a Mutex<T>) -> Result<MutexGuard<'a, T>, BlobError> {
@@ -1064,6 +1068,34 @@ impl Timing {
                 Err(TryLockError::Poisoned(_)) => return Err(BlobError::Poisoned),
                 Err(TryLockError::WouldBlock) => self.pause()?,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_is_bounded_by_the_remaining_deadline() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(20);
+        let timing = Timing::local_only(deadline);
+        let final_budget = Duration::from_micros(250);
+        let near_deadline = deadline.checked_sub(final_budget).unwrap();
+
+        assert_eq!(
+            timing.retry_delay_at(start).unwrap(),
+            Duration::from_millis(1)
+        );
+        assert_eq!(timing.retry_delay_at(near_deadline).unwrap(), final_budget);
+        for expired in [deadline, deadline + final_budget] {
+            assert!(matches!(
+                timing.retry_delay_at(expired),
+                Err(BlobError::Authorization(
+                    AuthorizationError::DeadlineExpired
+                ))
+            ));
         }
     }
 }
