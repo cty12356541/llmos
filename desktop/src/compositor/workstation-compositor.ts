@@ -232,6 +232,7 @@ export type WorkstationShortcutAction =
   | "switch-layout"
   | "toggle-l2-inspector"
   | "toggle-command-palette"
+  | "toggle-spotlight"
   | "blocked";
 
 export interface WorkstationShortcutResult {
@@ -1636,6 +1637,25 @@ export class WorkstationCompositor {
     this.emitAndRefreshDom();
   }
 
+  public toggleExclusiveZ3Flyout(flyoutId: string, customRect?: WmRectPx): boolean {
+    if (this.isZ4BlockingInput()) {
+      return false;
+    }
+    const wasOpen = this.customZ3Flyouts.has(flyoutId);
+    this.launcherOpen = false;
+    this.customZ3Flyouts.clear();
+    if (!wasOpen) {
+      const wmSnap = this.windowManager.getSnapshot();
+      this.customZ3Flyouts.set(
+        flyoutId,
+        customRect ?? computeSystemFlyoutRect(wmSnap.viewportWidth, wmSnap.viewportHeight),
+      );
+    }
+    this.syncSystemOverlaysToWindowManager();
+    this.emitAndRefreshDom();
+    return !wasOpen;
+  }
+
   public launchApplication(
     request: LaunchApplicationRequest,
     options?: {
@@ -1957,6 +1977,12 @@ export class WorkstationCompositor {
       event.preventDefault?.();
       this.setCommandPaletteOpen(!this.commandPaletteOpen);
       return { handled: true, action: "toggle-command-palette" };
+    }
+
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && lowerKey === "k") {
+      event.preventDefault?.();
+      this.toggleExclusiveZ3Flyout("SPOTLIGHT_SEARCH");
+      return { handled: true, action: "toggle-spotlight" };
     }
 
     if (event.key === "F6") {
@@ -2528,12 +2554,12 @@ export class WorkstationCompositor {
       stage.appendChild(l2Wrap);
     }
 
-    // L3 Deep Diagnostic Inspector Host (hosts Stage B/C diagnostic views strictly in L3)
+    // L3 Deep Diagnostic Inspector Host (hosts Stage B/C diagnostic views strictly in L3 when explicitly provided)
     const l3Host = doc.createElement("section");
     l3Host.className = "nlos-l3-only nlos-l3-diagnostic-host";
     l3Host.setAttribute("data-nlos-slot", "l3-diagnostic-inspector");
     l3Host.setAttribute("aria-label", copy.l3HostTitle);
-    if (disclosure === "L3") {
+    if (disclosure === "L3" && this.l3DiagnosticElement !== null) {
       l3Host.hidden = false;
       l3Host.style.position = "absolute";
       l3Host.style.inset = "0";
@@ -2634,9 +2660,14 @@ export class WorkstationCompositor {
         onToggleTheme: (nextTheme) => {
           this.setTheme(nextTheme);
         },
+        onOpenConnectivityFlyout: () => {
+          this.toggleExclusiveZ3Flyout("CONNECTIVITY");
+        },
         onOpenNotifications: () => {
-          const isOpen = this.customZ3Flyouts.has("notifications");
-          this.setZ3FlyoutOpen("notifications", !isOpen);
+          this.toggleExclusiveZ3Flyout("NOTIFICATIONS");
+        },
+        onOpenControlCenter: () => {
+          this.toggleExclusiveZ3Flyout("CONTROL_CENTER");
         },
       },
     });
