@@ -1,0 +1,19 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.57s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b3\debug\deps\nlos_wasm_sandbox-72a9b610760c8ab0.exe)
+
+running 1 test
+
+thread 'tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion' (28496) panicked at crates\nlos-wasm-sandbox\src\tool_operation_store.rs:1053:9:
+recovery published a writer although the retained completion could not be synced
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... FAILED
+
+failures:
+
+failures:
+    tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p nlos-wasm-sandbox --lib`

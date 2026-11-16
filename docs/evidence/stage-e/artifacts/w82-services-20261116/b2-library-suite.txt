@@ -1,0 +1,68 @@
+   Compiling nlos-driver-llm-http v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b2-gateway\llmos\crates\nlos-driver-llm-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.32s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b2\debug\deps\nlos_driver_llm_http-edd01fd09d3c042a.exe)
+
+running 8 tests
+test http::tests::parses_valid_http_urls_and_rejects_https_or_crlf ... ok
+test tests::scaffold_crate_name_matches_manifest ... ok
+test json::tests::round_trips_utf8_escapes_surrogate_pairs_and_numbers ... ok
+test json::tests::rejects_lone_surrogates_control_chars_and_leading_zeros ... ok
+test llm_gateway::fault_tests::journal_refuses_a_second_writer_and_invalid_or_unbounded_replay ... ok
+test llm_gateway::fault_tests::provisioning_replays_both_transactions_and_activates_only_after_sync ... ok
+test llm_gateway::fault_tests::failed_append_and_failed_sync_do_not_acknowledge_admission ... ok
+test llm_gateway::fault_tests::exact_replay_across_all_chat_durable_boundaries ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running unittests src\bin\nlos-llm-pool-cli.rs (D:/llmos/target/w82-b2\debug\deps\nlos_llm_pool_cli-d554a5d8bea3daa2.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\gateway.rs (D:/llmos/target/w82-b2\debug\deps\gateway-204db6084248cbfd.exe)
+
+running 19 tests
+test advisory_rate_is_serialized_across_sessions_and_uses_server_window ... ok
+test authority_ancestor_shrink_after_dispatch_rejects_child_settlement ... ok
+test missing_prices_zero_output_and_overflow_reject_before_tcp ... ok
+test actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp ... ok
+test all_wire_methods_use_canonical_codec_and_reject_header_substitution ... ok
+test failover_tracks_transport_attempts_separately_from_one_logical_call ... ok
+test four_methods_recover_and_keep_advisory_out_of_the_hard_budget ... ok
+test active_child_and_global_binding_limits_do_not_discard_expired_history ... ok
+test actual_encoded_payload_limits_accept_exact_boundary_and_reject_one_more_byte ... ok
+test concurrency_limits_apply_across_accounts_and_release_after_cancellation_deadline ... ok
+test no_policy_clock_failure_and_wrong_scope_fail_without_network ... ok
+test revocation_after_tcp_denies_result_but_preserves_exact_settlement ... ok
+test quote_checks_each_dimension_before_any_tcp_attempt ... ok
+test settlement_rejects_over_quote_and_preserves_authority_envelope_failure ... ok
+test subtree_gate_serializes_parent_siblings_and_grandchild_with_live_tcp ... ok
+test durable_capacity_rejects_before_effect_and_preserves_terminal_space ... ok
+test substitute_policy_grant_or_revoke_after_sync_cannot_emit_tcp ... ok
+test provider_failures_are_durable_and_expose_no_raw_secret_or_result ... ok
+test concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+
+     Running tests\keypool_and_budget_gate.rs (D:/llmos/target/w82-b2\debug\deps\keypool_and_budget_gate-4725fd55c5c63510.exe)
+
+running 9 tests
+test glm_keypool_v2_config_derivation_and_credential_redaction ... ok
+test pool_status_probe_parses_chunked_transfer_and_redacts_individual_key_labels ... ok
+test discover_local_keypool_four_tier_priority_order ... ok
+test compile_nl_intent_extracts_fenced_json_and_escalates_destructive_queries ... ok
+test execute_metered_chat_charges_sqlite_resource_authority_and_fails_closed_when_exhausted ... ok
+test compile_nl_intent_recovers_or_fails_safe_on_cot_truncated_empty_content ... ok
+test direct_keypool_scheduler_sticky_affinity_and_429_cooldown_failover ... ok
+test cli_binary_executes_metered_chat_end_to_end_with_redacted_output ... ok
+test inclusive_reasoning_tokens_conserves_total_and_cli_reports_cot_truncation ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+   Doc-tests nlos_driver_llm_http
+
+running 1 test
+test crates\nlos-driver-llm-http\src\llm_gateway.rs - llm_gateway::Gateway (line 338) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s

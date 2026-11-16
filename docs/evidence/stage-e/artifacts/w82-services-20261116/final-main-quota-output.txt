@@ -1,0 +1,8 @@
+
+running 2 tests
+shared_host_quota_global=1 per_principal=4 extra_host_wrote_marker=false
+shared_host_quota_global=16 per_principal=1 extra_host_wrote_marker=false
+test shared_writer_limits_active_hosts_globally_across_instances ... ok
+test shared_writer_limits_active_hosts_per_principal_across_instances ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.22s

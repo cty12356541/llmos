@@ -1,0 +1,31 @@
+{
+  "task": "W82-SERVICE-FINAL-FIX",
+  "finding": "F1",
+  "git_base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+  "previous_B3_source_package_sha256": "a674132c1584e63bf8d6d5cf0ed5436b7ad42bc4f681af5f31d7a63a6fdb9095",
+  "delta_sha256": "da12ea1d452f1874388c09b0af73541a88951da01051444b7c6642535b5ddd3e",
+  "B3_source_set_manifest_sha256": "3d8bfbc80bc0e9d10c19cbeb34d976e0477fea366b0701091f9f34e9a924de9c",
+  "paths": [
+    {
+      "path": "crates/nlos-wasm-sandbox/src/tool_operation_store.rs",
+      "before_raw_sha256": "2612ec1067e408837e945a32875cf74305dee83a42c465c9dcfacfe72cd7bc99",
+      "before_lf_sha256": "16e017b3ffa7640e22a08c8475e15a899f2df9f439fe8e2e61d20998d0be51f6",
+      "after_raw_sha256": "d96f6fbfd33e6ec1a2497dabcbba344fe35f3e9c6e15805bf462f027c37d6000",
+      "after_lf_sha256": "d96f6fbfd33e6ec1a2497dabcbba344fe35f3e9c6e15805bf462f027c37d6000"
+    },
+    {
+      "path": "crates/nlos-wasm-sandbox/src/tool_service.rs",
+      "before_raw_sha256": "d68a94dc9531845793db3f59e0335a09cb417f3369cbd87d05397d69931a2e4d",
+      "before_lf_sha256": "d68a94dc9531845793db3f59e0335a09cb417f3369cbd87d05397d69931a2e4d",
+      "after_raw_sha256": "796041c0282c7d050dc32237736c4ed09cafb31bd82c0d1d9008be9d5959a4f3",
+      "after_lf_sha256": "796041c0282c7d050dc32237736c4ed09cafb31bd82c0d1d9008be9d5959a4f3"
+    },
+    {
+      "path": "crates/nlos-wasm-sandbox/tests/tool_service.rs",
+      "before_raw_sha256": "f04356643acc511154edc70738dffc1eff325398427c758de3e692e220042ecf",
+      "before_lf_sha256": "f04356643acc511154edc70738dffc1eff325398427c758de3e692e220042ecf",
+      "after_raw_sha256": "833e706c709b5973450d641ccd3ea3faf3f363e03c4c9065e4db32cfb857c002",
+      "after_lf_sha256": "833e706c709b5973450d641ccd3ea3faf3f363e03c4c9065e4db32cfb857c002"
+    }
+  ]
+}

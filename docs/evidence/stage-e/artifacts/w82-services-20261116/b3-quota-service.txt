@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 25 tests
+test forged_common_bindings_and_invalid_inputs_fail_before_guest ... ok
+test grant_for_a_different_target_cannot_admit_a_host ... ok
+test cancel_before_durable_dispatch_prevents_host_from_running ... ok
+test actual_load_refuses_artifact_replaced_after_authorization_hash ... ok
+test complete_catalog_encoding_rejects_an_oversize_directory ... ok
+test failed_durable_observation_stops_host_without_claiming_cancellation ... ok
+test framed_guest_stderr_does_not_replace_the_host_report ... ok
+test every_named_entry_rechecks_policy_and_trusted_clock ... ok
+test service_harness_child ... ok
+test default_quota_caps_by_principal_and_globally_then_releases_permits ... ok
+test complete_result_encoding_obeys_exact_wire_boundary ... ok
+test cold_catalog_occupies_shared_quota_and_releases_it_on_failure ... ok
+test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+test shared_writer_rejects_conflicting_config_without_rebinding ... ok
+test shared_writer_cancel_and_completion_keep_one_terminal_receipt ... ok
+test shared_writer_cancellation_reaches_the_executing_instance ... ok
+test real_guest_catalog_and_durable_result_replay_after_reopen ... ok
+test catalog_rejects_invalid_effects_extensions_and_unregistered_tools ... ok
+test shared_writer_limits_active_hosts_globally_across_instances ... ok
+test shared_writer_limits_active_hosts_per_principal_across_instances ... ok
+test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok
+test measured_spawn_and_run ... ok
+test independent_stdout_stderr_wire_and_write_boundaries ... ok
+test deadline_and_unchanged_or_unavailable_observations_preserve_unknown ... ok
+test orphan_host_terminates_after_service_harness_is_killed ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.58s

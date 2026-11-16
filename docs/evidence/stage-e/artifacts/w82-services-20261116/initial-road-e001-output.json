@@ -1,0 +1,104 @@
+{
+  "gate_id": "ROAD-E-001",
+  "wave_task": "W81-E7A",
+  "status": "PASS",
+  "host_upgrade_transition": "N-1 (epoch=1) -> N (epoch=2)",
+  "sealed_baseline_file_count": 16,
+  "frozen_nlos_pkg_count": 8,
+  "zero_recompile_verified": true,
+  "drifted_files": [],
+  "pre_seal_errors": [],
+  "post_seal_errors": [],
+  "manifest_purity_violations": [],
+  "cargo_gate": {
+    "command": "cargo test --manifest-path tests/stage_e_road_e001_upgrade_gate/Cargo.toml",
+    "returncode": 0,
+    "elapsed_ms": 158906,
+    "suites_seen": 4,
+    "passed_tests": 6,
+    "failed_tests": 0,
+    "ignored_tests": 0
+  },
+  "frozen_packages": [
+    {
+      "sample": "knowledge-observatory-app",
+      "kind": "application",
+      "version": "v1.0.0",
+      "path": "examples/ecosystem-apps/knowledge-observatory-app/sealed/knowledge-observatory-app.v1.0.0.nlos-pkg",
+      "pre_sha256": "690c4e296bf3b0bedd56b17592064c04e3eac8defcf14d4d1e988e0daf4602d5",
+      "post_sha256": "690c4e296bf3b0bedd56b17592064c04e3eac8defcf14d4d1e988e0daf4602d5",
+      "bytes": 2538,
+      "unchanged": true
+    },
+    {
+      "sample": "knowledge-observatory-app",
+      "kind": "application",
+      "version": "v1.1.0",
+      "path": "examples/ecosystem-apps/knowledge-observatory-app/sealed/knowledge-observatory-app.v1.1.0.nlos-pkg",
+      "pre_sha256": "0bc978a23cc62571503bdd939aef6be76f692b5f2d61e26bb227cb0398191985",
+      "post_sha256": "0bc978a23cc62571503bdd939aef6be76f692b5f2d61e26bb227cb0398191985",
+      "bytes": 2828,
+      "unchanged": true
+    },
+    {
+      "sample": "field-survey-app",
+      "kind": "application",
+      "version": "v1.0.0",
+      "path": "examples/ecosystem-apps/field-survey-app/sealed/field-survey-app.v1.0.0.nlos-pkg",
+      "pre_sha256": "4e529d61239bec8bf289993fd7294991207842fc77620ed7cefa0f19f9d1c4eb",
+      "post_sha256": "4e529d61239bec8bf289993fd7294991207842fc77620ed7cefa0f19f9d1c4eb",
+      "bytes": 2341,
+      "unchanged": true
+    },
+    {
+      "sample": "field-survey-app",
+      "kind": "application",
+      "version": "v1.1.0",
+      "path": "examples/ecosystem-apps/field-survey-app/sealed/field-survey-app.v1.1.0.nlos-pkg",
+      "pre_sha256": "59f219d130fd1845c9d307e6e2e799ca11dbf8e1fe3d05b5f663e16d292111c2",
+      "post_sha256": "59f219d130fd1845c9d307e6e2e799ca11dbf8e1fe3d05b5f663e16d292111c2",
+      "bytes": 2618,
+      "unchanged": true
+    },
+    {
+      "sample": "mcp-bridge-driver",
+      "kind": "driver",
+      "version": "v1.0.0",
+      "path": "examples/ecosystem-drivers/mcp-bridge-driver/sealed/mcp-bridge-driver.v1.0.0.nlos-pkg",
+      "pre_sha256": "6bff8ec8aeaff6d478eabbb6dbca97e062660fb711b719ff13ec9c67ec1fe83d",
+      "post_sha256": "6bff8ec8aeaff6d478eabbb6dbca97e062660fb711b719ff13ec9c67ec1fe83d",
+      "bytes": 2327,
+      "unchanged": true
+    },
+    {
+      "sample": "mcp-bridge-driver",
+      "kind": "driver",
+      "version": "v1.1.0",
+      "path": "examples/ecosystem-drivers/mcp-bridge-driver/sealed/mcp-bridge-driver.v1.1.0.nlos-pkg",
+      "pre_sha256": "9a6ec0ebb328a5064b8781a7996f87cffb64dd35b1e6acf2fab8c52881fa525b",
+      "post_sha256": "9a6ec0ebb328a5064b8781a7996f87cffb64dd35b1e6acf2fab8c52881fa525b",
+      "bytes": 2778,
+      "unchanged": true
+    },
+    {
+      "sample": "openai-compat-driver",
+      "kind": "driver",
+      "version": "v1.0.0",
+      "path": "examples/ecosystem-drivers/openai-compat-driver/sealed/openai-compat-driver.v1.0.0.nlos-pkg",
+      "pre_sha256": "db0d93d156dd07f6efc937b891dfc97bf9b363aeb0c28081382d22e1e68be0e1",
+      "post_sha256": "db0d93d156dd07f6efc937b891dfc97bf9b363aeb0c28081382d22e1e68be0e1",
+      "bytes": 2080,
+      "unchanged": true
+    },
+    {
+      "sample": "openai-compat-driver",
+      "kind": "driver",
+      "version": "v1.1.0",
+      "path": "examples/ecosystem-drivers/openai-compat-driver/sealed/openai-compat-driver.v1.1.0.nlos-pkg",
+      "pre_sha256": "0467b105904b8b013524c880eef32d33d1fc7fe3f13a661dd6fadfb41940de09",
+      "post_sha256": "0467b105904b8b013524c880eef32d33d1fc7fe3f13a661dd6fadfb41940de09",
+      "bytes": 2413,
+      "unchanged": true
+    }
+  ]
+}

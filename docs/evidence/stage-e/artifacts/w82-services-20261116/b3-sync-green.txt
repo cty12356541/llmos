@@ -1,0 +1,8 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.63s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b3\debug\deps\nlos_wasm_sandbox-72a9b610760c8ab0.exe)
+
+running 1 test
+test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.00s

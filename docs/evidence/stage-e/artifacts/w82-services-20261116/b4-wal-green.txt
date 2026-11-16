@@ -1,0 +1,11 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-blob-wal-check\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.87s
+     Running tests\blob_wal_recovery.rs (D:/llmos/target/w82-b4-wal\debug\deps\blob_wal_recovery-5d32e0a6334e0571.exe)
+
+running 1 test
+Blob read COMMIT: rc=10, xWrite calls=4, page bytes=4096, ACKed through frame 23 / byte 94792 (exclusive), one complete uncommitted frame, next frame header only, first missing page starts at byte 98936, checksum probe flips byte 94880
+test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+exit=0

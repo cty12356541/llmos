@@ -9,11 +9,18 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate self as nlos_driver_llm_http;
+
 pub mod error;
+mod gateway_pricing;
+mod gateway_state;
 pub mod http;
 pub mod intent;
 pub mod json;
 pub mod keypool;
+pub mod llm_gateway;
+mod reservation_journal;
 pub mod shim;
 
 /// Canonical Cargo package identifier for the HTTP LLM provider driver crate.

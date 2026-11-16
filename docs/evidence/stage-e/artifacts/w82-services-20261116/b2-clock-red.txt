@@ -1,0 +1,30 @@
+   Compiling nlos-driver-llm-http v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b2-gateway\llmos\crates\nlos-driver-llm-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.28s
+     Running tests\gateway.rs (D:/llmos/target/w82-b2\debug\deps\gateway-204db6084248cbfd.exe)
+
+running 3 tests
+test concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query ... FAILED
+test actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp ... FAILED
+test no_policy_clock_failure_and_wrong_scope_fail_without_network ... ok
+
+failures:
+
+---- concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query stdout ----
+
+thread 'concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query' (30444) panicked at crates\nlos-driver-llm-http\tests\gateway.rs:1446:35:
+called `Result::unwrap()` on an `Err` value: Authorization(TimeUnavailable)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp stdout ----
+
+thread 'actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp' (30968) panicked at crates\nlos-driver-llm-http\tests\gateway.rs:1502:14:
+called `Result::unwrap()` on an `Err` value: Authorization(TimeUnavailable)
+
+
+failures:
+    actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp
+    concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p nlos-driver-llm-http --test gateway`

@@ -12,6 +12,8 @@ name = "nlos_wasm_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+cap-fs-ext.workspace = true
+cap-std.workspace = true
 nlos-capability = { path = "../nlos-capability" }
 nlos-schema = { path = "../nlos-schema" }
 nlos-types = { path = "../nlos-types" }

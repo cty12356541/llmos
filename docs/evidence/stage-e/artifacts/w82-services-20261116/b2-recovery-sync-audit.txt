@@ -1,0 +1,20 @@
+# W82-B2 / Attempt 20261116-2 — 恢复同步相似风险窄审
+
+**结论：PASS / 已有同步保护，无新增 P1/P2，不需要因此开启 B2 修复。**
+
+只读追踪已审 fix1 工作树的 Journal::open → Gateway::load/recover → 首个 replay/ACK，核对“完整 terminal 帧写入但 sync 失败，重开仅凭完整字节就返回持久结果”的具体风险。未重复其他 B2 功能审查、未运行 suite、未改候选、未派子 Agent。
+
+## 已有保护路径
+
+1. `crates/nlos-driver-llm-http/src/reservation_journal.rs:165–172`：可选截去合法 torn tail 后，执行 seek，随后**无条件** `file.sync_all()`。它并不位于 `if used.bytes < file_len` 内；即使文件结尾是完整且校验合法的 Settle/Reject/其他 terminal 帧、完全不需要截断，也必须先成功通过恢复同步屏障。同步失败在 172 行映射为 `GatewayError::Durability` 并返回，不会走到 180 行 `Ok(Self { ... })`。
+2. `crates/nlos-driver-llm-http/src/llm_gateway.rs:461–466`：解析回调只把事件应用到本次 load 的局部 State。该 State 虽在同步前构建，但尚未对调用方发布。Journal::open 返回成功后才构造 Gateway；`490–493` 又要求 recover 成功，最后才返回 Gateway。因此完整 terminal 帧不会在恢复同步屏障之前进入可调用的结果缓存。
+3. 原实例中的 append 同样有保护：`reservation_journal.rs:256–271` 在写完 header/body/checksum 后同步；`247–249` 遇到写入或同步错误会 poison 并返回失败。`llm_gateway.rs:391–397` 只有 journal append 成功后才 apply 内存状态；`496–499` 拒绝继续读取 poisoned journal。没有依靠原实例在失败后继续发布结果的旁路。
+4. 对仍需恢复推进的 intent，`llm_gateway.rs:1388–1401` 的 recover 进入原 finish_settlement 或 append 路径。Settle 在 `1352` 经同一 journal append/sync 后才完成；`Gateway::load` 不会在该恢复失败时返回可用对象。对于已经完整恢复成 terminal 的状态，虽然 recover 无需新增写入，前述 Journal::open 无条件同步已足够，无须依赖“碰巧写入下一条记录”。
+5. 首个受保护 chat replay 在 `llm_gateway.rs:1024–1045` 经过可用 journal/账户检查、恢复和当前授权后调用 chat_reply。可取得 Gateway 的时间本身已晚于上述恢复同步屏障；本次风险没有穿过该路径。
+
+## 证据及边界
+
+- journal SHA-256 `860ead89e2aa440e1ca6786736cb48651b22aeb18225f990d72a9dcb416d09da`，与首轮完整审查和 fix1 清单相同；这道屏障不是本次临时补丁。
+- llm_gateway SHA-256 `f03569bfebfa225e82b85139e41d2875ddc3d81903d0d73f0774c2a0f143bddf`；gateway_fault_tests SHA-256 `01c9597f891684741c9d81b3acd73b55e9217aa2ca6fc65c71a54bc7f3f974cf`，均与已审 fix1 清单一致。
+- 既有 `gateway_fault_tests.rs:203–231` 实际覆盖 append 写完整帧后注入 SyncFailure、旧对象 poison 和重开；该注入位于 Prepare。本窄审没有把它写成“terminal 同步失败后再令恢复 sync 失败”的专门动态测试。这里对所有完整 terminal 的保护结论来自无条件恢复同步和对象发布顺序的直接代码追踪。
+- 未验证真实断电或新增 Windows 目录项持久性；既有文件 sync 与目录项 sync、平台实跑等边界继续保留。B3 的独立缺陷不自动转移成 B2 缺陷，也不改变 B2 fix1 的 PASS 或其他车道状态。

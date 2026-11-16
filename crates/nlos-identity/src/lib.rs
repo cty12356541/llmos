@@ -960,6 +960,21 @@ impl IdentityAuthority {
             .ok_or(IdentityAuthorityError::KeyNotFound(key_id))
     }
 
+    /// Returns a principal's current durable key binding, including its
+    /// revocation and validity fields. Callers enforce their own use policy.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown principal, corrupt binding, or storage failure.
+    pub fn inspect_current_principal_binding(
+        &self,
+        principal_id: PrincipalId,
+    ) -> Result<IdentityBinding, IdentityAuthorityError> {
+        let connection = self.lock()?;
+        load_current_binding_by_principal(&connection, principal_id)?
+            .ok_or(IdentityAuthorityError::PrincipalNotFound(principal_id))
+    }
+
     /// Reads the immutable Principal/key state recorded by an exact identity
     /// snapshot, even after the current snapshot advances.
     ///
@@ -1591,7 +1606,7 @@ fn load_current_binding_by_principal(
     connection: &Connection,
     principal_id: PrincipalId,
 ) -> Result<Option<IdentityBinding>, IdentityAuthorityError> {
-    let key_id = match connection.query_row(
+    let key_id = match connection.query_one(
         "SELECT key_id FROM key_heads WHERE principal_id=?1",
         [principal_id.as_bytes().as_slice()],
         |row| row.get::<_, Vec<u8>>(0),

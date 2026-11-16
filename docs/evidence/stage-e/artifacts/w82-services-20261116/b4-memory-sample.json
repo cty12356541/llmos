@@ -1,0 +1,7 @@
+{
+  "exit_code": 0,
+  "samples": 321,
+  "max_working_set_bytes": 9277440,
+  "max_private_bytes": 3051520,
+  "kernel_peak_working_set_bytes": 9969664
+}

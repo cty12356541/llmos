@@ -15,7 +15,7 @@
 //! * **Filesystem**: the preopen set defaults to empty. Granted preopens are
 //!   enforced by a double fence: a lexical fence
 //!   ([`normalize_guest_path`] rejects absolute paths, backslashes, and any
-//!   `..` escaping the mount) plus a canonicalization fence (`realpath`
+//!   `..` escaping the mount) plus a rooted directory fence (`realpath`
 //!   containment under the canonicalized host root rejects symlink
 //!   escapes). Read-only grants deny every write-intent open with
 //!   `ENOTCAPABLE`.
@@ -34,15 +34,20 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::OpenOptions;
 use std::io::{Read, Seek, Write};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_std::{
+    ambient_authority,
+    fs::{Dir, File, OpenOptions},
+};
 use wasmtime::{Caller, Extern, Linker, Memory};
 
 use crate::isolate::PageLimiter;
 use crate::profile::{PreopenGrant, SandboxProfile};
+use crate::tool_host_protocol::{ToolHostLimits, write_stderr_frame};
 
 /// WASI preview 1 errno values used by this surface.
 pub(crate) mod errno {
@@ -153,6 +158,7 @@ impl GuestIoSink for VecIoSink {
 pub(crate) struct StdioSink {
     /// Total guest stdout bytes emitted (report metric).
     pub guest_stdout_len: u64,
+    framed: bool,
 }
 
 impl Default for StdioSink {
@@ -167,6 +173,16 @@ impl StdioSink {
     pub(crate) fn new() -> Self {
         Self {
             guest_stdout_len: 0,
+            framed: false,
+        }
+    }
+}
+
+impl StdioSink {
+    pub(crate) fn tool() -> Self {
+        Self {
+            framed: true,
+            ..Self::new()
         }
     }
 }
@@ -174,6 +190,9 @@ impl StdioSink {
 impl GuestIoSink for StdioSink {
     fn write_guest(&mut self, fd: u32, bytes: &[u8]) -> std::io::Result<()> {
         if fd == 2 {
+            if self.framed {
+                return write_stderr_frame(std::io::stderr().lock(), bytes, false);
+            }
             return std::io::stderr().write_all(bytes);
         }
         self.guest_stdout_len = self
@@ -193,7 +212,7 @@ enum FdEntry {
     /// A preopen grant occupying its fixed descriptor.
     Preopen { grant_index: usize },
     /// A regular file opened through `path_open`.
-    File { file: std::fs::File, writable: bool },
+    File { file: File, writable: bool },
     /// A directory opened through `path_open` (read-only view, no handle).
     Directory,
 }
@@ -204,7 +223,11 @@ pub(crate) struct GuestState {
     /// Linear-memory page limiter (layer-2 hard cap).
     pub limiter: PageLimiter,
     args: Vec<String>,
-    preopens: Vec<PreopenGrant>,
+    preopens: Vec<RootedPreopen>,
+    limits: Option<ToolHostLimits>,
+    bytes_written: [u64; 3],
+    limit_violation: Option<GuestLimit>,
+    creation_attempts_remaining: usize,
     fds: BTreeMap<u32, FdEntry>,
     next_fd: u32,
     sink: Box<dyn GuestIoSink>,
@@ -213,22 +236,34 @@ pub(crate) struct GuestState {
 
 impl GuestState {
     /// Builds the deny-by-default state from a profile.
-    pub(crate) fn new(profile: &SandboxProfile, sink: Box<dyn GuestIoSink>) -> Self {
+    pub(crate) fn new(
+        profile: &SandboxProfile,
+        sink: Box<dyn GuestIoSink>,
+    ) -> std::io::Result<Self> {
+        let preopens = profile
+            .preopens()
+            .iter()
+            .map(RootedPreopen::open)
+            .collect::<Result<Vec<_>, _>>()?;
         let mut fds = BTreeMap::new();
         let mut next_fd = 3;
         for grant_index in 0..profile.preopens().len() {
             fds.insert(next_fd, FdEntry::Preopen { grant_index });
             next_fd += 1;
         }
-        Self {
-            limiter: PageLimiter::new(profile.max_memory_pages()),
+        Ok(Self {
+            limiter: PageLimiter::new(profile.max_memory_pages(), profile.tool_limits().is_some()),
             args: profile.guest_args().to_vec(),
-            preopens: profile.preopens().to_vec(),
+            preopens,
+            limits: profile.tool_limits(),
+            bytes_written: [0; 3],
+            limit_violation: None,
+            creation_attempts_remaining: 4096,
             fds,
             next_fd,
             sink,
             monotonic_origin: Instant::now(),
-        }
+        })
     }
 
     /// Consumes and returns the boxed I/O sink (for result inspection).
@@ -236,11 +271,28 @@ impl GuestState {
         self.sink
     }
 
-    fn preopen_grant_for_fd(&self, fd: u32) -> Option<&PreopenGrant> {
+    fn preopen_grant_for_fd(&self, fd: u32) -> Option<&RootedPreopen> {
         match self.fds.get(&fd) {
             Some(FdEntry::Preopen { grant_index }) => self.preopens.get(*grant_index),
             _ => None,
         }
+    }
+
+    fn charge_write(&mut self, fd: u32, bytes: u64) -> Result<(), GuestLimit> {
+        let Some(limits) = self.limits else {
+            return Ok(());
+        };
+        let (slot, limit, failure) = match fd {
+            1 => (0, limits.stdout as u64, GuestLimit::Stdout),
+            2 => (1, limits.stderr as u64, GuestLimit::Stderr),
+            _ => (2, limits.file_write, GuestLimit::FileWrite),
+        };
+        let spent = self.bytes_written[slot].checked_add(bytes).ok_or(failure)?;
+        if spent > limit {
+            return Err(failure);
+        }
+        self.bytes_written[slot] = spent;
+        Ok(())
     }
 
     fn close_fd(&mut self, fd: u32) -> bool {
@@ -262,6 +314,131 @@ impl GuestState {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestLimit {
+    Stdout,
+    Stderr,
+    FileWrite,
+}
+
+impl GuestLimit {
+    pub(crate) fn token(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout-limit",
+            Self::Stderr => "stderr-limit",
+            Self::FileWrite => "file-write-limit",
+        }
+    }
+}
+
+impl fmt::Display for GuestLimit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.token())
+    }
+}
+
+impl Error for GuestLimit {}
+
+struct RootedPreopen {
+    grant: PreopenGrant,
+    root: Dir,
+}
+
+impl RootedPreopen {
+    fn open(grant: &PreopenGrant) -> std::io::Result<Self> {
+        Ok(Self {
+            grant: grant.clone(),
+            root: open_root(grant.host_root())?,
+        })
+    }
+
+    fn open_entry(
+        &self,
+        components: &[String],
+        write: bool,
+        oflags: i32,
+        fd_flags: i32,
+    ) -> Result<FdEntry, i32> {
+        let create = (oflags & oflags::CREAT) != 0;
+        let truncate = (oflags & oflags::TRUNC) != 0;
+        let append = (fd_flags & fd_flags::APPEND) != 0;
+        let directory = (oflags & oflags::DIRECTORY) != 0;
+        let Some((leaf, parents)) = components.split_last() else {
+            return if write {
+                Err(errno::ISDIR)
+            } else {
+                Ok(FdEntry::Directory)
+            };
+        };
+        let mut parent = self.root.try_clone().map_err(|e| io_errno(&e))?;
+        for component in parents {
+            parent = parent
+                .open_dir_nofollow(component)
+                .map_err(|_| errno::NOTCAPABLE)?;
+        }
+        match parent.symlink_metadata(leaf) {
+            Ok(metadata) if metadata.is_symlink() => return Err(errno::NOTCAPABLE),
+            Ok(metadata) if metadata.is_dir() => {
+                if write {
+                    return Err(errno::ISDIR);
+                }
+                parent
+                    .open_dir_nofollow(leaf)
+                    .map_err(|_| errno::NOTCAPABLE)?;
+                return Ok(FdEntry::Directory);
+            }
+            Ok(metadata) if !metadata.is_file() => return Err(errno::NOTCAPABLE),
+            Ok(_) => {}
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_errno(&error)),
+        }
+        if directory {
+            return Err(errno::NOTDIR);
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(!write)
+            .write(write)
+            .create(create)
+            .append(append)
+            .follow(FollowSymlinks::No);
+        let file = parent
+            .open_with(leaf, &options)
+            .map_err(|_| errno::NOTCAPABLE)?;
+        let metadata = file.metadata().map_err(|e| io_errno(&e))?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(errno::NOTCAPABLE);
+        }
+        if truncate {
+            file.set_len(0).map_err(|e| io_errno(&e))?;
+        }
+        Ok(FdEntry::File {
+            file,
+            writable: write,
+        })
+    }
+}
+
+pub(crate) fn open_root(path: &Path) -> std::io::Result<Dir> {
+    let mut components = path.components().peekable();
+    let mut anchor = PathBuf::new();
+    if matches!(components.peek(), Some(Component::Prefix(_))) {
+        anchor.push(components.next().expect("matched prefix"));
+    }
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    anchor.push(std::path::MAIN_SEPARATOR_STR);
+    let mut directory = Dir::open_ambient_dir(anchor, ambient_authority())?;
+    for component in components {
+        let Component::Normal(component) = component else {
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        };
+        directory = directory.open_dir_nofollow(component)?;
+    }
+    Ok(directory)
 }
 
 /// Lexically normalizes a guest-relative path against the `/` separator.
@@ -293,6 +470,7 @@ pub(crate) fn normalize_guest_path(guest_path: &str) -> Result<Vec<String>, i32>
                     return Err(errno::NOTCAPABLE);
                 }
             }
+            other if other.contains(':') => return Err(errno::NOTCAPABLE),
             other => stack.push(other.to_string()),
         }
     }
@@ -401,6 +579,66 @@ fn read_iovs(
 
 fn iov_ptr_as_i32(ptr: u32) -> Result<i32, i32> {
     i32::try_from(ptr).map_err(|_| errno::INVAL)
+}
+
+fn fd_write(
+    caller: &mut Caller<'_, GuestState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    nwritten_ptr: i32,
+) -> i32 {
+    let Some(memory) = memory_of(caller) else {
+        return errno::FAULT;
+    };
+    let iovs = match read_iovs(caller, &memory, iovs_ptr, iovs_len) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Ok(fd) = u32::try_from(fd) else {
+        return errno::BADF;
+    };
+    let mut written: u32 = 0;
+    let file_writable = match fd {
+        1 | 2 => true,
+        _ => match caller.data().fds.get(&fd) {
+            Some(FdEntry::File { writable, .. }) => *writable,
+            _ => return errno::BADF,
+        },
+    };
+    if !file_writable {
+        return errno::BADF;
+    }
+    let bytes = iovs.iter().map(|&(_, len)| u64::from(len)).sum();
+    if let Err(failure) = caller.data_mut().charge_write(fd, bytes) {
+        caller.data_mut().limit_violation = Some(failure);
+        return errno::IO;
+    }
+    for (ptr, len) in iovs {
+        let ptr_i32 = match iov_ptr_as_i32(ptr) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let Ok(len_i32) = i32::try_from(len) else {
+            return errno::INVAL;
+        };
+        let bytes = match read_bytes(caller, &memory, ptr_i32, len_i32) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
+        let outcome = match fd {
+            1 | 2 => caller.data_mut().sink.write_guest(fd, &bytes),
+            _ => match caller.data_mut().fds.get_mut(&fd) {
+                Some(FdEntry::File { file, .. }) => file.write_all(&bytes),
+                _ => return errno::BADF,
+            },
+        };
+        if outcome.is_err() {
+            return errno::IO;
+        }
+        written = written.saturating_add(len);
+    }
+    write_u32(caller, &memory, nwritten_ptr, written)
 }
 
 /// Registers the whitelisted `wasi_snapshot_preview1` imports.
@@ -546,53 +784,12 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
          iovs_ptr: i32,
          iovs_len: i32,
          nwritten_ptr: i32|
-         -> i32 {
-            let Some(memory) = memory_of(&mut caller) else {
-                return errno::FAULT;
-            };
-            let iovs = match read_iovs(&mut caller, &memory, iovs_ptr, iovs_len) {
-                Ok(v) => v,
-                Err(e) => return e,
-            };
-            let Ok(fd) = u32::try_from(fd) else {
-                return errno::BADF;
-            };
-            let mut written: u32 = 0;
-            let file_writable = match fd {
-                1 | 2 => true,
-                _ => match caller.data().fds.get(&fd) {
-                    Some(FdEntry::File { writable, .. }) => *writable,
-                    _ => return errno::BADF,
-                },
-            };
-            if !file_writable {
-                return errno::BADF;
+         -> Result<i32, wasmtime::Error> {
+            let result = fd_write(&mut caller, fd, iovs_ptr, iovs_len, nwritten_ptr);
+            match caller.data_mut().limit_violation.take() {
+                Some(failure) => Err(wasmtime::Error::new(failure)),
+                None => Ok(result),
             }
-            for (ptr, len) in iovs {
-                let ptr_i32 = match iov_ptr_as_i32(ptr) {
-                    Ok(p) => p,
-                    Err(e) => return e,
-                };
-                let Ok(len_i32) = i32::try_from(len) else {
-                    return errno::INVAL;
-                };
-                let bytes = match read_bytes(&mut caller, &memory, ptr_i32, len_i32) {
-                    Ok(b) => b,
-                    Err(e) => return e,
-                };
-                let outcome = match fd {
-                    1 | 2 => caller.data_mut().sink.write_guest(fd, &bytes),
-                    _ => match caller.data_mut().fds.get_mut(&fd) {
-                        Some(FdEntry::File { file, .. }) => file.write_all(&bytes),
-                        _ => return errno::BADF,
-                    },
-                };
-                if outcome.is_err() {
-                    return errno::IO;
-                }
-                written = written.saturating_add(len);
-            }
-            write_u32(&mut caller, &memory, nwritten_ptr, written)
         },
     )?;
     linker.func_wrap(
@@ -703,9 +900,11 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
                 2 => SeekFrom::End(offset),
                 _ => return errno::INVAL,
             };
+            let bounded = caller.data().limits.is_some();
             let seek_result = {
                 let entry = caller.data_mut().fds.get_mut(&fd);
                 match entry {
+                    Some(FdEntry::File { writable: true, .. }) if bounded => Err(errno::NOTCAPABLE),
                     Some(FdEntry::File { file, .. }) => file.seek(seek).map_err(|e| io_errno(&e)),
                     Some(_) => Err(errno::ISDIR),
                     None => Err(errno::BADF),
@@ -730,7 +929,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
             let Some(grant) = caller.data().preopen_grant_for_fd(fd) else {
                 return errno::BADF;
             };
-            let name_len = u32::try_from(grant.guest_dir().len()).unwrap_or(u32::MAX);
+            let name_len = u32::try_from(grant.grant.guest_dir().len()).unwrap_or(u32::MAX);
             // prestat layout: u32 tag (0 = directory preopen), u32 name_len.
             let e1 = write_u32(&mut caller, &memory, prestat_ptr, 0);
             if e1 != errno::SUCCESS {
@@ -754,17 +953,17 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
             let Ok(fd) = u32::try_from(fd) else {
                 return errno::BADF;
             };
-            let Some(grant) = caller.data().preopen_grant_for_fd(fd).cloned() else {
+            let Some(grant) = caller.data().preopen_grant_for_fd(fd) else {
                 return errno::BADF;
             };
-            let name = grant.guest_dir().as_bytes();
+            let name = grant.grant.guest_dir().as_bytes().to_vec();
             let Ok(buf_len) = u64::try_from(path_len) else {
                 return errno::INVAL;
             };
             if buf_len < u64::try_from(name.len()).unwrap_or(u64::MAX) {
                 return errno::NAMETOOLONG;
             }
-            write_bytes(&mut caller, &memory, path_ptr, name)
+            write_bytes(&mut caller, &memory, path_ptr, &name)
         },
     )?;
     linker.func_wrap(
@@ -787,9 +986,6 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
             let Ok(dirfd) = u32::try_from(dirfd) else {
                 return errno::BADF;
             };
-            let Some(grant) = caller.data().preopen_grant_for_fd(dirfd).cloned() else {
-                return errno::BADF;
-            };
             let raw_path = match read_bytes(&mut caller, &memory, path_ptr, path_len) {
                 Ok(p) => p,
                 Err(e) => return e,
@@ -804,81 +1000,33 @@ pub(crate) fn add_to_linker(linker: &mut Linker<GuestState>) -> wasmtime::Result
             let write_intent = (rights_base & RIGHTS_WRITE_MASK) != 0
                 || (oflags & (oflags::CREAT | oflags::TRUNC)) != 0
                 || (fd_flags & fd_flags::APPEND) != 0;
-            if write_intent && !grant.allow_write() {
+            let state = caller.data_mut();
+            let bounded = state.limits.is_some();
+            let truncate = (oflags & oflags::TRUNC) != 0;
+            if bounded && truncate {
                 return errno::NOTCAPABLE;
             }
-            let root = grant.host_root().to_path_buf();
-            let target: PathBuf = if components.is_empty() {
-                root.clone()
-            } else {
-                root.join(components.join("/"))
+            if bounded && (oflags & oflags::CREAT) != 0 {
+                let Some(remaining) = state.creation_attempts_remaining.checked_sub(1) else {
+                    return errno::MFILE;
+                };
+                state.creation_attempts_remaining = remaining;
+            }
+            let Some(grant) = state.preopen_grant_for_fd(dirfd) else {
+                return errno::BADF;
             };
-            let opened_file = if write_intent {
-                if components.is_empty() {
-                    return errno::ISDIR;
-                }
-                let parent = target.parent().unwrap_or(&root).to_path_buf();
-                let canonical_parent = match std::fs::canonicalize(&parent) {
-                    Ok(p) => p,
-                    Err(e) => return io_errno(&e),
-                };
-                if !canonical_parent.starts_with(&root) {
-                    return errno::NOTCAPABLE;
-                }
-                let Some(file_name) = target.file_name() else {
-                    return errno::INVAL;
-                };
-                let final_path = canonical_parent.join(file_name);
-                let mut options = OpenOptions::new();
-                options.write(true);
-                if (oflags & oflags::CREAT) != 0 {
-                    options.create(true);
-                }
-                if (oflags & oflags::TRUNC) != 0 {
-                    options.truncate(true);
-                }
-                if (fd_flags & fd_flags::APPEND) != 0 {
-                    options.append(true);
-                }
-                match options.open(&final_path) {
-                    Ok(file) => file,
-                    Err(e) => return io_errno(&e),
-                }
-            } else {
-                let canonical = match std::fs::canonicalize(&target) {
-                    Ok(p) => p,
-                    Err(e) => return io_errno(&e),
-                };
-                if !canonical.starts_with(&root) {
-                    return errno::NOTCAPABLE;
-                }
-                if canonical.is_dir() {
-                    let fd = match caller.data_mut().alloc_fd() {
-                        Ok(fd) => fd,
-                        Err(e) => return e,
-                    };
-                    caller.data_mut().fds.insert(fd, FdEntry::Directory);
-                    return write_u32(&mut caller, &memory, opened_fd_ptr, fd);
-                }
-                if (oflags & oflags::DIRECTORY) != 0 {
-                    return errno::NOTDIR;
-                }
-                match std::fs::File::open(&canonical) {
-                    Ok(file) => file,
-                    Err(e) => return io_errno(&e),
-                }
+            if write_intent && !grant.grant.allow_write() {
+                return errno::NOTCAPABLE;
+            }
+            let entry = match grant.open_entry(&components, write_intent, oflags, fd_flags) {
+                Ok(entry) => entry,
+                Err(errno) => return errno,
             };
             let fd = match caller.data_mut().alloc_fd() {
                 Ok(fd) => fd,
-                Err(e) => return e,
+                Err(errno) => return errno,
             };
-            caller.data_mut().fds.insert(
-                fd,
-                FdEntry::File {
-                    file: opened_file,
-                    writable: write_intent,
-                },
-            );
+            caller.data_mut().fds.insert(fd, entry);
             write_u32(&mut caller, &memory, opened_fd_ptr, fd)
         },
     )?;

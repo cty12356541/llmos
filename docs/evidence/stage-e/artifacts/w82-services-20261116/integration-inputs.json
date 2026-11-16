@@ -1,0 +1,37 @@
+[
+  {
+    "task": "B2",
+    "patch": "b2-logs/b2-review-fix1.diff",
+    "sha256": "0f83fd6e583cb5093678cd469c50d2113a6d810d554460ee8d46dc35c04b82e8",
+    "review": "b2-fix1-review.md",
+    "state": "accepted"
+  },
+  {
+    "task": "B3",
+    "patch": "b3-durability-review.diff",
+    "sha256": "a674132c1584e63bf8d6d5cf0ed5436b7ad42bc4f681af5f31d7a63a6fdb9095",
+    "review": "b3-durability-independent-review.md",
+    "state": "accepted"
+  },
+  {
+    "task": "B4",
+    "patch": "b4-logs/fix2-review.diff",
+    "sha256": "848fda20ffafa14e2223ba15d9843d3062bfc7fa5ff65a1ee955d6f75f9bd12c",
+    "review": "b4-fix2-review.md",
+    "state": "accepted; fmt pointer closed"
+  },
+  {
+    "task": "SERVICES-CI",
+    "patch": "ci-review.diff",
+    "sha256": "dd8dacbb883ca4021ebf97ebf53aa2b28820ed5a660dbb16c456dbd114093c33",
+    "review": "ci-independent-review.md",
+    "state": "accepted"
+  },
+  {
+    "task": "B4-WAL",
+    "state": "accepted",
+    "patch": "b4-wal-logs/review.diff",
+    "sha256": "d209908f53f1d8bcbb269b79ed4a9fab1ccabb3da28ea457d25ec02711e5ce7b",
+    "review": "b4-wal-independent-review.md"
+  }
+]

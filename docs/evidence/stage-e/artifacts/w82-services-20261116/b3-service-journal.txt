@@ -1,0 +1,39 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running tests\tool_journal.rs (D:/llmos/target/w82-b3\debug\deps\tool_journal-e0857050cd0612f9.exe)
+
+running 6 tests
+test crash_fixture_child ... ok
+test concurrent_begin_returns_one_dispatchable_receipt_and_cas_rejects_late_completion ... ok
+test reopen_reconciles_each_unfinished_state_and_preserves_original_completed_result ... ok
+test torn_tail_can_be_repaired_but_middle_corruption_and_bad_sequences_fail_closed ... ok
+test watermark_refuses_admission_but_reserves_a_large_complete_result ... ok
+test subprocess_loss_recovers_at_each_durable_transaction_boundary ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 21 tests
+test forged_common_bindings_and_invalid_inputs_fail_before_guest ... ok
+test grant_for_a_different_target_cannot_admit_a_host ... ok
+test cancel_before_durable_dispatch_prevents_host_from_running ... ok
+test actual_load_refuses_artifact_replaced_after_authorization_hash ... ok
+test complete_catalog_encoding_rejects_an_oversize_directory ... ok
+test framed_guest_stderr_does_not_replace_the_host_report ... ok
+test failed_durable_observation_stops_host_without_claiming_cancellation ... ok
+test every_named_entry_rechecks_policy_and_trusted_clock ... ok
+test service_harness_child ... ok
+test complete_result_encoding_obeys_exact_wire_boundary ... ok
+test default_quota_caps_by_principal_and_globally_then_releases_permits ... ok
+test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+test shared_writer_cancellation_reaches_the_executing_instance ... ok
+test shared_writer_cancel_and_completion_keep_one_terminal_receipt ... ok
+test real_guest_catalog_and_durable_result_replay_after_reopen ... ok
+test catalog_rejects_invalid_effects_extensions_and_unregistered_tools ... ok
+test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok
+test measured_spawn_and_run ... ok
+test independent_stdout_stderr_wire_and_write_boundaries ... ok
+test deadline_and_unchanged_or_unavailable_observations_preserve_unknown ... ok
+test orphan_host_terminates_after_service_harness_is_killed ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.63s

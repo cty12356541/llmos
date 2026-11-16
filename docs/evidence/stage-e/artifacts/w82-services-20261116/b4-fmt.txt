@@ -1,0 +1,4 @@
+command: cargo fmt -p nlos-capability -- --check
+worktree: C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos
+exit_code: 0
+output_lines: 0

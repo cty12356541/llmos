@@ -98,8 +98,8 @@ The 2026-11-16 first wave was tested at `4fc70be1` on `main`. Stages A–D have 
 | **E** | [Compatibility and ecosystem](docs/management/stage-e-progress.md) | `IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF` |
 
 - **Stage E:** All eight engineering packages (`E0`–`E7`) are `DONE` with `H4` / `H7` evidence; [ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) is `VERIFIED`. [W81](docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md) accepted technical gates 1–5 within its baseline. Formal stage exit and the long-term SABI v1.0 freeze require maintainer sign-off.
-- **W82 application integration:** `IN_PROGRESS / PARTIALLY_MERGED`. IPC session multiplexing passed acceptance on Linux, macOS, and Windows, bringing W82 to `1/5` lanes complete. The shared call contract and dependency preparation are scoped to the service libraries. The three channel implementations, worker authorization and revocation, full SDK clients, and `qq-agent` end-to-end acceptance remain open. [W82 progress](docs/management/stage-e-progress.md#2026-11-16-服务库前置)
-- **Evidence:** The [current progress and evidence snapshot](docs/management/stage-e-progress.md#2026-11-16-服务库前置) records 169 claims, 210 evidence entries, and 17 risks, with no `H8` claims or evidence. See the [residual risk register](docs/management/exit-unknown-risks.md) for limits including physical power-loss tests, cross-host scale, and native installer signing and notarization.
+- **W82 application integration:** `IN_PROGRESS / PARTIALLY_MERGED`. IPC acceptance brought W82 to `1/5` lanes complete. Three service library candidates passed implementation checks and independent review. Native CI, worker authority, SDK clients, and `qq-agent` end-to-end acceptance remain open. [W82 progress](docs/management/stage-e-progress.md#2026-11-16-三服务库验证)
+- **Evidence:** The [current progress and evidence snapshot](docs/management/stage-e-progress.md#2026-11-16-三服务库验证) records 169 claims, 213 evidence entries, and 17 risks, with no `H8` claims or evidence. See the [residual risk register](docs/management/exit-unknown-risks.md) for limits including physical power-loss tests, cross-host scale, and native installer signing and notarization.
 - **Next:** Implement the services against the reviewed contracts, and verify Worker authority binding and restart. The SDK and end-to-end integration follow their acceptance gates. [NLOS delivery plan](docs/management/nlos-goal-delivery-plan.md)
 
 ---
@@ -143,7 +143,7 @@ docs/
   discussions/       36 design discussion documents (index + 35 numbered topics)
   management/
     adrs/            27 Architecture Decision Records (ADR-0001..0027, plus template)
-    evidence-index.yaml  210 evidence entries, including 21 for Stage E
+    evidence-index.yaml  213 evidence entries, including 24 for Stage E
     claims.yaml      169 machine-readable claims (ledger-schema v1.3: 71 Stage B + 35 Stage C + 10 Stage D + 53 Stage E)
 sdk/                 Python · TypeScript · Go · C# SABI SDKs
 schema/              Protobuf + CDDL schemas + golden wire test vectors

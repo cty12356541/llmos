@@ -1,0 +1,9 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 1 test
+shared_writer_cancel_to_reaped_terminal_ms=13
+test shared_writer_cancellation_reaches_the_executing_instance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.09s

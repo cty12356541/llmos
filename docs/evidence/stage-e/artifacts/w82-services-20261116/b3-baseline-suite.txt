@@ -1,0 +1,127 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.35s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b3\debug\deps\nlos_wasm_sandbox-72a9b610760c8ab0.exe)
+
+running 44 tests
+test error::tests::host_outcome_tokens_round_trip ... ok
+test error::tests::trap_kind_tokens_are_stable ... ok
+test error::tests::sanitize_detail_keeps_report_line_single_line_and_bounded ... ok
+test host_bin::tests::audit_env_mode_reports_the_real_environment_count_in_process ... ok
+test host_bin::tests::unknown_flag_is_rejected_as_bad_arguments ... ok
+test host_bin::tests::missing_guest_flag_is_rejected ... ok
+test host_bin::tests::unreadable_guest_artifact_reports_guest_read_failed ... ok
+test host_bin::tests::profile_invalid_reports_typed_exit ... ok
+test isolate::tests::invalid_wat_is_rejected_at_compile ... ok
+test isolate::tests::declared_memory_over_cap_is_rejected_at_instantiation ... ok
+test isolate::tests::guest_trap_unreachable_is_typed ... ok
+test isolate::tests::guest_environment_is_empty_and_wild_environ_get_is_safe ... ok
+test isolate::tests::fuel_exhaustion_is_typed_out_of_fuel ... ok
+test isolate::tests::absent_socket_import_rejects_instantiation ... ok
+test host_bin::tests::full_argv_round_trip_runs_a_minimal_guest_to_completion ... ok
+test isolate::tests::guest_stdout_is_captured_by_the_sink ... ok
+test isolate::tests::memory_grow_beyond_page_cap_observes_minus_one ... ok
+test isolate::tests::deny_all_profile_has_no_preopen_fds_path_open_returns_badf ... ok
+test isolate::tests::guest_arguments_are_exactly_the_declared_argv ... ok
+test isolate::tests::memory_grow_within_page_cap_succeeds ... ok
+test process::tests::report_line_parses_round_trip ... ok
+test process::tests::built_command_carries_explicit_argv_and_empty_environment ... ok
+test profile::tests::memory_pages_outside_one_to_65536_are_rejected ... ok
+test profile::tests::guest_args_with_nul_are_rejected ... ok
+test profile::tests::preopen_guest_dir_names_are_strictly_guest_absolute ... ok
+test profile::tests::deny_all_defaults_grant_nothing ... ok
+test isolate::tests::fuel_consumption_is_deterministic_across_identical_runs ... ok
+test isolate::tests::missing_entrypoint_is_a_typed_error ... ok
+test profile::tests::preopen_host_root_must_be_existing_directory ... ok
+test profile::tests::epoch_deadline_without_ticker_interval_is_rejected ... ok
+test isolate::tests::proc_exit_maps_to_exited_with_requested_code ... ok
+test profile::tests::zero_fuel_is_rejected_fail_closed ... ok
+test tool_json::tests::caps_container_depth ... ok
+test isolate::tests::wrong_entrypoint_signature_is_a_typed_error ... ok
+test tool_json::tests::rejects_duplicate_decoded_member_names_and_invalid_unicode ... ok
+test wasi_allowlist::tests::lexical_fence_permits_in_mount_relative_paths ... ok
+test wasi_allowlist::tests::errno_constants_match_wasi_preview1_numbering ... ok
+test wasi_allowlist::tests::guest_exited_display_mentions_code ... ok
+test isolate::tests::readonly_preopen_denies_write_intent_open ... ok
+test tool_operation_store::tests::os_append_failure_prevents_receipt_and_poisons_this_writer ... ok
+test isolate::tests::writable_preopen_allows_create_and_write ... ok
+test wasi_allowlist::tests::lexical_fence_rejects_absolute_and_escape_paths ... ok
+test isolate::tests::preopen_grant_allows_in_mount_read_and_fences_traversal ... ok
+test isolate::tests::epoch_deadline_interrupts_before_fuel_backstop ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src\bin\nlos-wasm-sandbox-host.rs (D:/llmos/target/w82-b3\debug\deps\nlos_wasm_sandbox_host-0f43ee1c25383bbf.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\escape_matrix.rs (D:/llmos/target/w82-b3\debug\deps\escape_matrix-68606b84a789bc43.exe)
+
+running 15 tests
+test isolated_child_inherits_zero_host_environment_variables ... ok
+test in_whitelist_read_succeeds_with_exact_bytes ... ok
+test guest_stdout_flows_through_isolated_child_pipe ... ok
+test guest_argv_is_exactly_the_declared_explicit_arguments ... ok
+test preopen_parent_replacement_does_not_retarget_the_grant ... ok
+test fuel_exhaustion_terminates_guest_deterministically ... ok
+test wasi_layer_environment_is_empty_for_isolated_child ... ok
+test writable_grant_refuses_an_aliased_file ... ok
+test preopen_discovery_reports_grant_and_default_is_badf ... ok
+test epoch_deadline_interrupts_before_fuel_exhaustion ... ok
+test memory_over_allocation_is_terminated_by_store_limiter ... ok
+test path_traversal_and_absolute_escapes_are_denied_with_notcapable ... ok
+test socket_import_is_absent_and_rejects_instantiation ... ok
+test readonly_grant_denies_writes_and_write_grant_lands_bytes ... ok
+test wall_clock_deadline_hard_kills_unbounded_guest ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+     Running tests\tool_journal.rs (D:/llmos/target/w82-b3\debug\deps\tool_journal-e0857050cd0612f9.exe)
+
+running 6 tests
+test crash_fixture_child ... ok
+test concurrent_begin_returns_one_dispatchable_receipt_and_cas_rejects_late_completion ... ok
+test torn_tail_can_be_repaired_but_middle_corruption_and_bad_sequences_fail_closed ... ok
+test reopen_reconciles_each_unfinished_state_and_preserves_original_completed_result ... ok
+test watermark_refuses_admission_but_reserves_a_large_complete_result ... ok
+test subprocess_loss_recovers_at_each_durable_transaction_boundary ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests\tool_pipes.rs (D:/llmos/target/w82-b3\debug\deps\tool_pipes-b84f96c72cbc43cc.exe)
+
+running 1 test
+test drains_both_child_pipes_while_waiting ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 18 tests
+test grant_for_a_different_target_cannot_admit_a_host ... ok
+test forged_common_bindings_and_invalid_inputs_fail_before_guest ... ok
+test cancel_before_durable_dispatch_prevents_host_from_running ... ok
+test actual_load_refuses_artifact_replaced_after_authorization_hash ... ok
+test complete_catalog_encoding_rejects_an_oversize_directory ... ok
+test framed_guest_stderr_does_not_replace_the_host_report ... ok
+test service_harness_child ... ok
+test every_named_entry_rechecks_policy_and_trusted_clock ... ok
+test catalog_rejects_invalid_effects_extensions_and_unregistered_tools ... ok
+test default_quota_caps_by_principal_and_globally_then_releases_permits ... ok
+test complete_result_encoding_obeys_exact_wire_boundary ... ok
+test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+test real_guest_catalog_and_durable_result_replay_after_reopen ... ok
+test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok
+test measured_spawn_and_run ... ok
+test independent_stdout_stderr_wire_and_write_boundaries ... ok
+test deadline_and_unchanged_or_unavailable_observations_preserve_unknown ... ok
+test orphan_host_terminates_after_service_harness_is_killed ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.60s
+
+   Doc-tests nlos_wasm_sandbox
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

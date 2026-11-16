@@ -1,0 +1,19 @@
+    Checking rand_core v0.10.1
+   Compiling curve25519-dalek v5.0.0
+    Checking nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking nlos-store-fault v0.1.0 (D:\llmos\crates\nlos-store-fault)
+    Checking crypto-common v0.2.2
+    Checking signature v3.0.0
+    Checking ed25519 v3.0.0
+    Checking digest v0.11.3
+    Checking sha2 v0.11.1
+    Checking nlos-store v0.1.0 (D:\llmos\crates\nlos-store)
+    Checking nlos-resource v0.1.0 (D:\llmos\crates\nlos-resource)
+    Checking ed25519-dalek v3.0.0
+    Checking nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking nlos-ipc v0.1.0 (D:\llmos\crates\nlos-ipc)
+    Checking nlos-driver-mock v0.1.0 (D:\llmos\crates\nlos-driver-mock)
+    Checking nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Checking nlos-driver-llm-http v0.1.0 (D:\llmos\crates\nlos-driver-llm-http)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.80s

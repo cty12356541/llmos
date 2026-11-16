@@ -122,6 +122,13 @@ jobs:
         if: runner.os == 'Linux' && github.event_name == 'pull_request'
         run: npx --no-install buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'
 
+      # Keep the workspace gates running when a native probe fails. The final
+      # evidence gate below checks this step's unmodified outcome.
+      - name: Collect W82 native service evidence
+        id: w82_service_evidence
+        continue-on-error: true
+        run: python scripts/verify_w82_service_evidence.py "$RUNNER_TEMP/w82-service-evidence"
+
       # B6-2（W28-F）：Windows 实机 platform kill 复验锚点。cargo test --workspace
       # 已隐式覆盖本目标，但独立具名步骤让 windows-latest 腿的 run 日志里出现
       # platform_kill 测试组，供证据文件回填精确 run 链接；置于 Test workspace
@@ -151,6 +158,20 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo fmt --manifest-path tests/stage_e_road_e001_upgrade_gate/Cargo.toml -p stage-e-road-e001-upgrade-gate -- --check
+
+      - name: Upload W82 native service evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w82-service-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w82-service-evidence
+          if-no-files-found: warn
+
+      - name: Require W82 native service evidence
+        if: ${{ always() && steps.w82_service_evidence.outcome == 'failure' }}
+        run: |
+          echo 'W82 native service evidence failed. See the probe logs and artifact.' >&2
+          exit 1
 
   # F2（next-phase-plan §7）：desktop 面进矩阵——TS 类型检查 + src-tauri
   # dev-fixture 全量测试与 clippy。边界如实登记：①Tauri GUI 打包

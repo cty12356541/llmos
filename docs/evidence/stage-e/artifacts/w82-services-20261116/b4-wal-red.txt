@@ -1,0 +1,19 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-blob-wal-check\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.88s
+     Running tests\blob_wal_recovery.rs (D:/llmos/target/w82-b4-wal\debug\deps\blob_wal_recovery-5d32e0a6334e0571.exe)
+
+running 1 test
+
+thread 'failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix' (30316) panicked at crates\nlos-capability\tests\blob_wal_recovery.rs:652:24:
+a torn commit must never ACK the read: BlobReply { payload_bytes: 69, receipt_id: ReceiptId(cf9e8eeeee11a1b88d0536aa9e3867a7) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... FAILED
+
+failures:
+
+failures:
+    failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p nlos-capability --test blob_wal_recovery`

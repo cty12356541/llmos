@@ -1,0 +1,35 @@
+# W82-B3-DURABILITY 独立增量审查
+
+Task `W82-B3-DURABILITY` / Attempt `20261116-2`，2026-11-16。
+
+**Spec compliance：PASS。Code quality：Approved。本增量未发现需修复的 P1/P2 或其他 actionable finding。** 恢复时缺少同步屏障的实际问题已关闭；这不是重新审查已接受的跨 service 取消 fix1，也不代表 W82-B 全平台/集成验收完成。
+
+## 输入、范围与 CAS
+
+- 候选目录 `C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos`，实核 HEAD `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，staged 集合为空。没有改动候选源或旧档案。
+- 完整读取 [b3-report.md 的 W82-B3-DURABILITY](b3-report.md:47) 和三文件 delta，检查 `tool_operation_store.rs` 的 open/restore、append/poison、receipt/CAS 和恢复状态影响面。未重读整个 20 文件 patch，未重跑 full suite。
+- delta SHA-256 实核 `fb824172dcee37d97344ac4a7d4ed130ce170363aeed7db23cf8ed033707bce5`；完整 patch SHA-256 实核 `a674132c1584e63bf8d6d5cf0ed5436b7ad42bc4f681af5f31d7a63a6fdb9095`。
+- `b3-durability-logs/candidate.sha256` SHA-256 实核 `9cdafbfbde3248ecc80d1024cd4ef64d5557b29286183b87afc7b9dd792bd9af`。按该清单的**原始文件字节**计算，20/20 一致。与 fix1 清单比较，文件集合不变，仅 `src/tool_operation_store.rs`、`tests/tool_journal.rs`、B3 Evidence 三项摘要变化；fix1 清单本身仍为 `852af67a70522538033f1e73eff26bb8ce5fd7adfdfff54513f098cda58ff96a`。
+- 两份 patch 的 `git apply --reverse --check --whitespace=error-all` 均退出 0；`git diff --check` 退出 0。以上是 reviewer 本次实际执行的身份/适用性核对，不是复跑产品测试。
+
+## 逐项结论
+
+1. **完整写入后同步失败不得 ACK：ADDRESSED。** [append](C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos/crates/nlos-wasm-sandbox/src/tool_operation_store.rs:543) 仍先执行真实 journal `write_all`，随后才执行同步；任一步错误立即置 `poisoned` 并返回 `Durability`。`bytes/revision/hash` 和成功 receipt 只在同步成功之后更新；公开 find/begin/query/advance 通过既有 lock 检查拒绝使用 poisoned writer。测试确认文件长度确实增长，同时 complete、query 和同键 begin 均不成功。
+
+2. **完整页缓存帧重开前的同步屏障：ADDRESSED。** [restore](C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos/crates/nlos-wasm-sandbox/src/tool_operation_store.rs:566) 先解析完整有效前缀、按原规则拒绝损坏/非法序列，并在合法未完整尾部执行截断，随后定位有效末端并无条件 `sync_file()`。该屏障覆盖“全部记录可解析且已有完整终态、无需追加恢复记录”的旧漏路，也覆盖截断结果。屏障失败沿 `restore_writer` 返回错误，构造中的 journal 被丢弃；没有可对外查询的 writer 或未同步 receipt 发布。成功后才追加必要的恢复终态，追加仍走正常同步路径。[公开 open](C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos/crates/nlos-wasm-sandbox/src/tool_operation_store.rs:307) 没有绕过这一顺序。
+
+3. **retained / lost completion 恢复语义：ADDRESSED。** 完整完成帧保留时，具名回归先证明恢复同步失败拒绝发布，再正常打开并复用同一操作及完整结果；异摘要冲突，终态不可再次获得 dispatch。完成帧被夹具显式裁去时，先前成功同步的 dispatch 保留，恢复追加 `EffectUnknown(HostLost)` 与原 before 摘要；原键保持 Existing，不能重新 dispatch。没有因完成 ACK 丢失而声称未执行或启动第二次副作用。新增 checksum 完整的重复帧测试验证既有 revision/hash 链拒绝重复历史为 `Corrupt`。
+
+4. **故障注入真实性与范围：ADDRESSED。** `sync_failure_handle` 及句柄替换分支仅 `cfg(test)` 存在；[生产同步分支](C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos/crates/nlos-wasm-sandbox/src/tool_operation_store.rs:558) 总是对实际 journal 文件执行 `sync_all`。夹具没有短路 append 或直接伪造 Err，而是在真实写入完成后，让同步使用实际会报错的 OS 句柄。Windows 只读文件句柄的 `sync_all` 实际返回 `PermissionDenied / OS 5`；这是同步错误分支验证，不是存储设备掉电实验。Unix 匿名管道读端分支尚待 Linux/macOS native CI，不在本机成功范围内。
+
+5. **新错误、锁及范围扩张：未发现。** open 被拆为私有 `open_file` / `restore_writer`，原单 writer 文件排他锁继续贯穿恢复及存活期；屏障失败时不返回 store。没有新增共享回调、外部锁顺序、公开 API、权限、依赖或 wire 变更。取消执行者/host 控制、终态竞争代码未改。额外一次恢复同步是本次耐久发布条件，不声称能硬中断 kernel I/O。
+
+## 已核验日志与限制
+
+直接读到 owner 的 `red-reopen-sync.log/.exit`：旧恢复发布 writer 的确定性断言失败，退出 101；`green-reopen-sync.log/.exit`：同一具名测试 1/1，退出 0。Windows OS 5 日志与源测试一致。
+
+`unit-journal-final.log` 为库单测 46/46、journal 7/7，包含 retained/lost completion、真实 append 错误、重复帧、五个硬杀边界及既有尾恢复；`service-reopen-final.log` 为真实 guest 目录/结果重开重放 1/1。相关 `.exit` 均为 0；严格 Clippy 日志及退出码为 0，crate fmt、diff check 退出码为 0。这些测试由实施方执行，本 reviewer 检查日志与实现对应关系，没有冒称独立复跑。
+
+真实电源失效、Windows 新建目录项的断电持久性以及 Unix 故障夹具原生执行继续未验证。本次证据可以关闭 B3 的同步失败与恢复发布屏障补验，不能扩写为物理断电保证、三平台完成或 daemon/SDK/INT 已接线。
+
+本次唯一写入为本报告；未暂存、提交、推送，未修改候选、ledger、claims 或其他审查档案。

@@ -1,0 +1,254 @@
+{
+  "suites": [
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_capability-d1a4a0e78619de2a.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_open.rs (target\\debug\\deps\\blob_open-ddd10f5c5e3dbcfd.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_reference.rs (target\\debug\\deps\\blob_reference-ae4a5d89e2213d22.exe)",
+      "passed": 40,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_wal_recovery.rs (target\\debug\\deps\\blob_wal_recovery-f6cc6073e94ac7b5.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\call_limit_ledger.rs (target\\debug\\deps\\call_limit_ledger-57ecee1770d28be6.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\capability_authority.rs (target\\debug\\deps\\capability_authority-c729ba7dcb6b202b.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\capability_fault_injection.rs (target\\debug\\deps\\capability_fault_injection-f489c25c29448059.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\namespace_hierarchy.rs (target\\debug\\deps\\namespace_hierarchy-7a922daaf243617c.exe)",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\service_call_context.rs (target\\debug\\deps\\service_call_context-d3401c87d7fb0113.exe)",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\signed_commands.rs (target\\debug\\deps\\signed_commands-897f229d1be374f4.exe)",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_driver_llm_http-35822a8ae26f99e9.exe)",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-llm-pool-cli.rs (target\\debug\\deps\\nlos_llm_pool_cli-c979d7fc80ad8f29.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\gateway.rs (target\\debug\\deps\\gateway-64b980593ea36864.exe)",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\keypool_and_budget_gate.rs (target\\debug\\deps\\keypool_and_budget_gate-9a292cbdea01f511.exe)",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_identity-f8334aa645fb2155.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\identity_authority.rs (target\\debug\\deps\\identity_authority-73cab7741b1c6b69.exe)",
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\identity_rotation_fault_injection.rs (target\\debug\\deps\\identity_rotation_fault_injection-15c620009f9de395.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\principal_lookup.rs (target\\debug\\deps\\principal_lookup-0cae80baa7e3e3f3.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_wasm_sandbox-83f7dd221f842fc5.exe)",
+      "passed": 46,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-wasm-sandbox-host.rs (target\\debug\\deps\\nlos_wasm_sandbox_host-1c41f1411a205417.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\escape_matrix.rs (target\\debug\\deps\\escape_matrix-e7170e87b864aebe.exe)",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_journal.rs (target\\debug\\deps\\tool_journal-591faaba33420ad6.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_pipes.rs (target\\debug\\deps\\tool_pipes-1f46c4c24f34d36b.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_service.rs (target\\debug\\deps\\tool_service-ff58e43b0f6ae50a.exe)",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_capability",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_driver_llm_http",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_identity",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_wasm_sandbox",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  ],
+  "package_summaries": {
+    "nlos-capability": {
+      "passed": 93,
+      "failed": 0,
+      "ignored": 2
+    },
+    "nlos-driver-llm-http": {
+      "passed": 37,
+      "failed": 0,
+      "ignored": 0
+    },
+    "nlos-identity": {
+      "passed": 34,
+      "failed": 0,
+      "ignored": 0
+    },
+    "nlos-wasm-sandbox": {
+      "passed": 91,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "ignored_names": [
+    "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege",
+    "test bounded_blob_buffers_peak_probe ... ignored, run in isolation to measure process memory under the maximum file and block sizes"
+  ]
+}

@@ -432,3 +432,14 @@ schema兼容验证和编码边界证据见 [W82-B-CONTRACT](../evidence/stage-e/
 - **D5 安全首次打开与签名**。B4 采用修复版 `cap-std` / `cap-fs-ext` `4.0.3`。可信 workspace resolver 交付已打开的授权根，按相对组件逐步打开目录与末级文件、拒绝跟随链接并核验已打开对象，沿用所得文件句柄计算摘要和读取。按文本路径先 canonicalize 再 open 无法封住首次打开竞态。初期适用受管理的本机工作区，根及挂载由宿主控制，目录被移动时已授权对象仍由句柄标识。真正的 `SignedMintCommand` 与 `SignedReleaseCommand` 为库级 sidecar，按当前 IdentityAuthority 密钥验签并绑定主体、对象、来源能力及完整约束。读块绑定当前授权的接收者，release 限当前授权的 issuer 或 holder。daemon 的签名输送、托管密钥策略、slot、受信根解析及服务接线归 INT。[cap 修复版本](https://rustsec.org/advisories/RUSTSEC-2026-0482.html)
 
 执行时记录有效配置与各项上界。D8 要有账户/子树、在途调用、持久记录和结果的界。D9 要有限制活跃宿主、参数、两路输出、文件写量以及持久 reconcile 的预留。D5 保留 §5.5 的双编码界，并为文件、摘要清单、每主体与全局 fd、并发、速率和 TTL 设限。持久日志触及水位时拒绝新的工作，并为已受理工作保留终态写入和对账空间。默认值可在有限上界与拒绝语义内收紧，最终实效值归各车道 Evidence。新权限、协议变更或更高保障承诺应另行处置。
+
+## 16. 2026-11-16 三服务库验收边界
+
+库验收包括 B1 契约、共享合同和依赖、B2/B3/B4 的正负例、持久恢复、独立审查、有效配置及 TCB/DoS 边界、最终树和三平台具名取证。A 与 B 完成后可开启 SDK，真实 slot/权威身份、custody、可信 workspace resolver、账户及 child-session 绑定、Operation/Wait、Blob 大参数 materializer 和 qq-agent 落盘过渡验收归 INT。完整外部升级回归归系统验收。[汇总门](./nlos-goal-delivery-plan.md#w82-b-services-acceptance三服务库汇总验收)
+
+- **D8**。恢复有效日志前缀后须完成同步才发布可读写的 Gateway。影子准入为 OBSERVED，真实 provider 可能在错误或不明窗口计费。预算配置、在途、记录空间与终态余量见 B2 实效。
+- **D9**。同一日志 writer 下跨实例取消须到达实际执行宿主。恢复有效前缀后，成功同步才发布可重放终态。p50/p95 50 ms 作为评估未来常驻宿主的数据，不做 CI 的耗时通过条件。受信宿主仍负责注册来源和继承句柄边界。
+- **D5**。审计余量按实际 SQLite 页、现有 DB/WAL 和所有活令牌剩余 read/release 预留，计入事务瞬态写入。可控 fd、取时和 SQLite 等待遵守请求期限。首次可信取时用本地 100 ms 候样界，受信同步回调与内核调用仍需有界返回。受控 WAL 写故障、尾撕裂和未确认帧校验损坏可验证 ACK 与恢复前缀，物理断电与真实设备缓存语义另验。原生首次打开覆盖须单列 Windows 真实 symlink、Linux `openat2` 正常与 ENOSYS fallback、macOS 原生及平台特殊对象拒绝。
+- 库接口的稳定配置与验证范围由 Evidence 记录。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
+
+**D9 配额归属**。同一 authority 通过可信 adapter 转发同一个 `Arc<ToolHostQuota>`。默认由 journal writer 持有，冷目录与 invoke 共用全局和每主体计数。只在首个成功构造绑定限额，writer 生存期内的后续配置冲突返回 `ConflictingHostLimits`。当前界适用于同进程共享 authority，系统级跨进程配额与孤儿窗口由各自宿主接线和边界验证。[B3 配额证据](../evidence/stage-e/w82-b3-tool-service-20261116.md#同一-authority-的共享宿主配额)

@@ -1,0 +1,54 @@
+# W82-B4 / Attempt 20261116-2 — Fix 1 scoped复审
+
+**Verdict：需一次局部修复后复审。** 原 F1/P1 和 F2/P2 均为 **ADDRESSED**；Fix 1 新增一个已复现的并发取时 P2，记为 **F3 / NEW FIX BREAKAGE**。Spec compliance 与 Code quality 暂不通过，阻断范围限于 F3，不重开已裁定的 Blob 合同或原完整审查。
+
+## 审阅身份和范围
+
+- 工作树 `C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos`，base/HEAD仍为`cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，index为空。
+- 已完整阅读`b4-report.md` Fix 1推导和命令、6路径`b4-logs/fix1.delta`，实测SHA-256为`f61189563280735a0595d9d558551f464286ce14a341c85158d31b10dcebb185`。完整`fix1-review.diff`只核对身份，SHA为`7b9ac02795f5e660ab898a4e7ada451a049a755b1cc811823d794685becae1d4`，未重复阅读原全量补丁。
+- 当前10个Rust文件LF-normalized摘要与`fix1-code-receipt.json`全部一致。冻结service_call与Cargo.lock Git blob分别保持`72d8053faabf6f465e5f042f2f75c135d7fc4ade`、`c3928b59dfb83b2eff4365983c36dfdf0a2c587d`。旧DDL和Identity delta无Fix 1扩写。
+- 对照`fix1-capability-full.txt`：87 unit/integration +1 doc、Blob36pass；fd 20.2811ms、SQLite20.083ms；默认4096reads+release=1651968B，1KiB页70reads+release=109320B。未重跑原套件。仅对下面新风险运行1项外侧focused probe，原37项全filtered。
+
+## F1/P1 — ADDRESSED：物理审计与控制余量
+
+`blob_ledger.rs:73–124, 255–364`不再把1024B receipt估算当作物理增量保证。逐次写入同时核对实际主文件、逻辑page_count、WAL及新事务峰值；mint另为历史行和所有在期未撤销token的完整剩余read/release承诺预留。5MB原反例在resolver前拒绝，默认配置完整4096次读和release成功；1KiB页紧配置正例与跨issuer第二份预留拒绝也已具名。
+
+本次具体核查了推导而非只接受测量：
+
+- v3实际为3个Blob表及10个索引；mint单行触及表+5索引、read表+3索引、release更少。每行13个结构页包含表叶/内部、最多5个索引页及各自溢出、表overflow舍入；逻辑负载额外两倍留界，历史又在主文件baseline计入，属于偏保守模型。
+- 已查看锁定`libsqlite3-sys-0.38.2/sqlite3/sqlite3.c` owning source：`BTCURSOR_MAX_DEPTH=20`（72600）、`NB=3`（80653）、`apNew[NB+2]`（81400）；`balance_nonroot`的注释和实现允许每层增减一或两个siblings，符合当前2页allocation项。父页、freelist、root、overflow和counter页在突发预算中另计。
+- `MAX_SECTOR_SIZE=0x10000`（60020），page/frame/header padding已计入。pragma cache_spill关闭映射`SPILLFLAG_OFF`；pagerStress在该标志下不spill（64226–64245），支持每事务dirty-frame上界的前提。512–65536页与非auto-vacuum配置受代码约束，不默许指针图流量。
+- WAL超过64frame窗口时，在事务外且SQLite busy等待禁用时TRUNCATE；busy释放authority mutex并按剩余deadline重试。checkpoint忙测试保持无新增read，快照退出原key重试成功。`with_blob_writer_settings`在action返回成功或错误时均尝试恢复旧cache_spill和busy_timeout；两个restore在传播第一个restore错误前均已执行。未发现失败路径把新宽松设置留给既有Capability调用。
+
+因此原F1反例及其根因已处理。此判断仍限定为候选明示的受管SQLite profile与本服务自身写入，不将保守软件预留扩大为OS磁盘quota、外部writer任意增长或断电恢复证明。未提出改旧DDL、删除审计或扩展产品架构。
+
+## F2/P2 — ADDRESSED：直接受控等待和pin发布
+
+`blob_reference.rs:1033–1051`按剩余本地Instant deadline获取fd、registry、quota和mint bookkeeping mutex；`blob_ledger.rs:200–266`通过新增crate-private authority try_lock与SQLite零busy timeout，定时重试connection、BEGIN IMMEDIATE、checkpoint。原两个20ms反例现约20ms拒绝且无额外账本副作用。已经进入kernel的同步I/O以及受信回调自身执行时间，仍按此前披露边界处理，不混为原可控锁队列问题。
+
+pending pin影响面也已核对：
+
+- `PendingPin::register`只短暂持registry锁，放锁后才进入DB等待；未commit时token不可查询，因此不会仅凭pending fd读出内容。
+- DB commit后release可删pin；`PendingPin::commit`只设置guard状态，没有重新插入pin，因此不会把并发release删除的pin复活。
+- action/commit失败时guard移除pending pin，局部Arc随后释放permit；active_global=1的原键重试和mint-delivery期间release测试覆盖这两条路径。
+- policy、resolver和clock回调仍在authority DB锁外，未引入authority回调重入环形死锁。以下F3是单独的取时发布竞态。
+
+## F3/P2 — NEW FIX BREAKAGE：正常并发取时被误判为时钟回退
+
+**位置：`crates/nlos-capability/src/blob_reference.rs:773–784`，尤其774–775。** Fix 1将`(self.clock)()`从`last_time` mutex内移到锁外。两个实际递增的wall/monotonic样本可以因线程调度以反序取得锁；较早采样值晚发布时，会被当前高水位比较误判成`Authorization(TimeUnavailable)`。这不是宿主时钟真正回退，也不是权限拒绝。
+
+**确定性复现：** 首个调用读取合法样本`(wall=100ms, monotonic=100000000ns)`后暂挂；第二个调用读取`(101ms,101000000ns)`并完成`maintain()`；恢复首个调用。实际结果为较新调用`Ok(0)`，较早调用`Err(Authorization(TimeUnavailable))`。两个真实时钟域均单调，仅回调返回/发布先后受调度影响。`maintain()`直接覆盖同一个time helper；mint/read/release也使用它，因此修复影响正常并发服务调用，而不只影响维护API。
+
+**影响：** 正常多读并发会出现伪造的“时钟不可用”拒绝，原静态clock夹具没有暴露该路径。不能以“保守fail-closed”视作符合并发合同。
+
+**最小修复：** 用独立且符合调用deadline的取时串行边界，使`clock采样 → 双域校验 → 成对发布last_time`成为同一次有序操作；保持authority DB锁外回调，不在registry/fd等无关全局锁内包裹clock。begin尚未获得首次时间样本的阶段也须有明确有界/失败语义，不能恢复成无限mutex等待。真实wall或monotonic回退、clock返回错误仍拒绝，而且失败样本不能推进另一个域。增加正常并发逆序调度、真实单域回退及取时锁争用deadline的目标回归。不得用clamp/max把真实回退伪装成正常时间；继续保留clock/policy不递归调用同一服务的约束。这里只要求修复现有clock helper，不改变冻结service_call或时钟公共接口，也不再修改已通过的存储预留模型。
+
+**证据：** `b4-review-probes/fix1_clock_probe.rs`，SHA-256`2bfa5f8f95157586a007f44084d6286da404dbf5692768da14a837392d7ad9df`；`fix1-clock-result.txt`。命令`fix1_clock_probe.exe --exact review_fix1_concurrent_clock_samples_must_not_look_like_rollback --nocapture`：退出101，1failed/37filtered，0.05秒。外侧探针include当前夹具并链接已编译Fix 1 rlib；未改候选、Cargo、index或HEAD。
+
+## 其他项状态
+
+- **ADDRESSED（验收证据补齐）：** 独立per-recipient与跨主体global read并发、跨issuer global mint rate、同recipient跨issuer active pin限额、跨主体相同原始key隔离已增加具名测试，日志通过。没有再沿用原审查对此的缺口结论。
+- **OUT OF SCOPE / 仍待相应门：** Linux/macOS native、强制fallback、Windows leaf symlink权限、Unix设备/FIFO/socket的native执行、endpoint hook、Blob专属断电/torn-WAL及INT生产接线。Unix新字符设备用例当前只入树，Windows日志没有将其计入通过。此轮不重新要求B4完成无关车道。
+- **NOT ADDRESSED：** 原F1/F2没有未处理项；当前唯一新增修复阻断是F3。既有完整审查中其余无finding结论保持，不重复套件，不重新裁定65408/65536、recipient或旧boot失效合同。
+
+建议原owner只处理F3并给精确Fix 2 delta/hash与受影响目标回归；随后复审该影响面。当前报告不授权canonical晋升，也不把本地87项通过冒充跨平台或生产验收。

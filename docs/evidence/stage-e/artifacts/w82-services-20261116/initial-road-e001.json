@@ -1,0 +1,22 @@
+{
+  "gate_id": "ROAD-E-001",
+  "wave_task": "W81-E7A",
+  "status": "PASS",
+  "host_upgrade_transition": "N-1 (epoch=1) -> N (epoch=2)",
+  "sealed_baseline_file_count": 16,
+  "frozen_nlos_pkg_count": 8,
+  "zero_recompile_verified": true,
+  "drifted_files": [],
+  "pre_seal_errors": [],
+  "post_seal_errors": [],
+  "manifest_purity_violations": [],
+  "cargo_gate": {
+    "command": "cargo test --manifest-path tests/stage_e_road_e001_upgrade_gate/Cargo.toml",
+    "returncode": 0,
+    "elapsed_ms": 158906,
+    "suites_seen": 4,
+    "passed_tests": 6,
+    "failed_tests": 0,
+    "ignored_tests": 0
+  }
+}

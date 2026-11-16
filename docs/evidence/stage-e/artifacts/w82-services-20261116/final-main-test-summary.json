@@ -1,0 +1,77 @@
+{
+  "summary": {
+    "passed": 95,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 0
+  },
+  "suites": [
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_wasm_sandbox-72a9b610760c8ab0.exe)",
+      "passed": 46,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-wasm-sandbox-host.rs (target\\debug\\deps\\nlos_wasm_sandbox_host-0f43ee1c25383bbf.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\escape_matrix.rs (target\\debug\\deps\\escape_matrix-68606b84a789bc43.exe)",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_journal.rs (target\\debug\\deps\\tool_journal-e0857050cd0612f9.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_pipes.rs (target\\debug\\deps\\tool_pipes-b84f96c72cbc43cc.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_service.rs (target\\debug\\deps\\tool_service-606c0567d8f9a4ec.exe)",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_wasm_sandbox",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  ],
+  "quota_observations": [
+    "shared_host_quota_global=1 per_principal=4 extra_host_wrote_marker=false",
+    "shared_host_quota_global=16 per_principal=1 extra_host_wrote_marker=false"
+  ],
+  "latency": {
+    "raw": "platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=23.81 p95_ms=48.77",
+    "p50_ms": 23.81,
+    "p95_ms": 48.77,
+    "samples": 20
+  }
+}

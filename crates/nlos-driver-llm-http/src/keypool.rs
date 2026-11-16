@@ -805,6 +805,13 @@ impl DirectKeyPoolScheduler {
         disposition
     }
 
+    pub(crate) fn contains_credential(&self, text: &str) -> bool {
+        self.config.slots.iter().any(|slot| {
+            let credential = slot.credential.expose_secret();
+            !credential.is_empty() && text.contains(credential)
+        })
+    }
+
     /// Executes a `POST` JSON request against `endpoint_url` with automatic
     /// multi-key failover across healthy slots on `429`, `401`, `403`, or `5xx`.
     ///
@@ -818,10 +825,35 @@ impl DirectKeyPoolScheduler {
         json_body: &[u8],
         now_ms: u64,
     ) -> Result<DirectPoolHttpOutcome, LlmDriverError> {
-        let mut tried_indices = Vec::with_capacity(self.config.slots.len());
+        self.post_json_with_attempt_control(
+            http_client,
+            endpoint_url,
+            session_id,
+            json_body,
+            now_ms,
+            self.config.slots.len(),
+            |_| Ok((now_ms, None)),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn post_json_with_attempt_control(
+        &self,
+        http_client: &HttpClient,
+        endpoint_url: &str,
+        session_id: Option<&str>,
+        json_body: &[u8],
+        mut now_ms: u64,
+        maximum_attempts: usize,
+        mut authorize: impl FnMut(usize) -> Result<(u64, Option<std::time::Duration>), LlmDriverError>
+        + Send,
+    ) -> Result<DirectPoolHttpOutcome, LlmDriverError> {
+        let ceiling = self.config.slots.len().min(maximum_attempts);
+        let mut tried_indices = Vec::with_capacity(ceiling);
         let mut last_error: Option<LlmDriverError> = None;
 
-        while tried_indices.len() < self.config.slots.len() {
+        while tried_indices.len() < ceiling {
             let selected = match self.select_slot(session_id, now_ms, &tried_indices) {
                 Ok(slot) => slot,
                 Err(unavail_err) => {
@@ -844,8 +876,10 @@ impl DirectKeyPoolScheduler {
                 headers.push(("x-pool-session", sid));
             }
 
+            let (fresh_ms, deadline) = authorize(tried_indices.len())?;
+            now_ms = fresh_ms;
             match http_client
-                .post_json(endpoint_url, &headers, json_body)
+                .post_json_with_deadline(endpoint_url, &headers, json_body, deadline)
                 .await
             {
                 Ok(resp) if (200..300).contains(&resp.status_code) => {

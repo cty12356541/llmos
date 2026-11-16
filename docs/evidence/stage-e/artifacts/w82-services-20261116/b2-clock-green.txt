@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling nlos-driver-llm-http v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b2-gateway\llmos\crates\nlos-driver-llm-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.29s
+     Running tests\gateway.rs (D:/llmos/target/w82-b2\debug\deps\gateway-204db6084248cbfd.exe)
+
+running 3 tests
+test actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp ... ok
+test no_policy_clock_failure_and_wrong_scope_fail_without_network ... ok
+test concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 1.05s

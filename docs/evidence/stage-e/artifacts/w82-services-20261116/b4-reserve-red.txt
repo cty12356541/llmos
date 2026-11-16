@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 1 test
+
+thread 'audit_bytes_cover_the_full_admitted_sqlite_read_and_release_tail' (30148) panicked at crates\nlos-capability\tests\blob_reference.rs:1816:13:
+admitted budget stranded at read 2454: AuditFull; release=Err(AuditFull)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test audit_bytes_cover_the_full_admitted_sqlite_read_and_release_tail ... FAILED
+
+failures:
+
+failures:
+    audit_bytes_cover_the_full_admitted_sqlite_read_and_release_tail
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 3.04s
+
+error: test failed, to rerun pass `-p nlos-capability --test blob_reference`

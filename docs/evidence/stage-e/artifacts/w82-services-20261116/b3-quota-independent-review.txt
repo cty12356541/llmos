@@ -1,0 +1,37 @@
+# W82-SERVICE-FINAL-FIX-REVIEW / Attempt 20261116-quota
+
+**Delta PASS：Spec PASS；Quality PASS。原 F1（P2）ADDRESSED；没有新增阻断。** 本结论只关闭前次 [final-source review](services-final-source-review.md) 的共享 host 配额缺口，其余已接受结论及未完成验收门保持，不代表整车道或远端 CI 已完成。
+
+## 审查绑定与方法
+
+- 候选树 `C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos`；HEAD `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，index 为空。
+- 完整读取三文件 [delta](final-quota.delta.diff)，SHA-256 **`da12ea1d452f1874388c09b0af73541a88951da01051444b7c6642535b5ddd3e`**。
+- [路径/CAS 清单](final-quota.paths.json) SHA-256 `57aa28ea9d9d6b56088172c9c2c2dd6a8bee35cdbdb87f5ef5575ba9bd8c8fb7`；开头及报告写入前再次核对包与候选三文件 raw SHA-256，3/3 全等、无漂移。19 项 B3 source 摘要清单本身的 SHA-256 `3d8bfbc80bc0e9d10c19cbeb34d976e0477fea366b0701091f9f34e9a924de9c` 与交付记录相符；未将本次扩大为 19 文件重审。
+- 独立执行候选树 `git apply --reverse --check <final-quota.delta.diff>`，exit 0；只检查、不应用。
+- 阅读 [实施回执末节](b3-report.md)和 `b3-final-quota-logs` 已有原始日志/退出码。没有创建新探针、重跑 suite 或访问外部系统；未修改产品、canonical、index、HEAD。仅写本报告。
+
+三文件候选 raw SHA-256：
+
+- `crates/nlos-wasm-sandbox/src/tool_operation_store.rs`：`d96f6fbfd33e6ec1a2497dabcbba344fe35f3e9c6e15805bf462f027c37d6000`
+- `crates/nlos-wasm-sandbox/src/tool_service.rs`：`796041c0282c7d050dc32237736c4ed09cafb31bd82c0d1d9008be9d5959a4f3`
+- `crates/nlos-wasm-sandbox/tests/tool_service.rs`：`833e706c709b5973450d641ccd3ea3faf3f363e03c4c9065e4db32cfb857c002`
+
+## F1 与新增风险复核
+
+**共享计数：ADDRESSED。** `JournalToolOperationStore` 持有唯一 `Arc<ToolHostQuota>`；`host_quota()` 返回该 Arc 的 clone，可信转发 adapter 明确必须转发同一 allocation，测试的 SharedWriter 照此实现。服务不再建立独立 ActiveHosts，而从 store 获取配额。global 和 per-principal 的检查及两项计数增加位于同一个 mutex 临界区，没有检查后再单独增加的并发窗口。满额返回 `NoHostPermit`，拒绝路径不增加计数。
+
+**构造参数：PASS。** `OnceLock<(usize, usize)>` 原子绑定精确的 global/per-principal 二元组；相同配置可共享，任意不匹配均返回 `ConflictingHostLimits` 且不修改原绑定。bind 位于 host、limits、registry/profile 等原有校验之后，随后直接构造成功结果，因此常规校验失败不会提前固定配置。配额由 writer 持有，关联服务全部销毁后仍不重绑。并发构造只有同一个 OnceLock 绑定点，不会形成两个并存的有效配置。
+
+**实际 spawn 与释放：PASS。** 冷 catalog 和 invoke 均在各自原 permit 位置取得同一个共享配额；热 catalog 不启动 host，不占新增额度。permit 保持为词法作用域内 RAII guard，原执行/取消/错误返回路径不被改写；guard drop 在同一 mutex 下减少总数和主体数，主体归零即移除。调用返回错误或被取消完成后释放，无新增手工释放分支、二次释放或失败漏计路径。已满时的失败不会提前写入新的 operation；回收后的同 key 可重新获准，已有跨实例取消语义保持。
+
+**权限范围与配置边界：PASS。** 接受的合同明确是同一进程、同一 store authority 的共享配额；trusted adapter 必须转发原 Arc。该实现没有承诺跨 boot/孤儿 host 的操作系统级全局配额，也不以每实例配置重新解释原 F1。默认 16/4 未放宽，schema/wire 权限没有变化。新 trait 方法是显式的可信 adapter 合同，不能把违反该合同、自建另一 Arc 的 adapter 当成默认实现支持的合法路径。
+
+## 既有回归证据核对
+
+- [红日志](b3-final-quota-logs/red-shared-host-quota.log)及 exit：两项跨实例用例均失败，exit 101；global=1/per-principal=4 与 global=16/per-principal=1 都实际执行了第二 guest 并写 marker。该失败对应旧计数缺陷。
+- [最终绿日志](b3-final-quota-logs/green-shared-host-quota-final.log)及 exit：2/2，通过、exit 0；两种配置 `extra_host_wrote_marker=false`。源码分别使用不同主体验证 global、相同主体验证 principal；同时检查满额 cold list 与 invoke 为 typed quota、拒绝调用无 journal 记录。首调用通过另一实例取消并 join 后，冷目录和原 key 调用均成功。principal case 另验证不同主体仍可执行，避免错误地把 principal 限额变为全局封锁。
+- [最终 service 日志](b3-final-quota-logs/service-final.log)：25/25、exit 0，包含 `cold_catalog_occupies_shared_quota_and_releases_it_on_failure`、`shared_writer_rejects_conflicting_config_without_rebinding` 与既有跨实例取消/终态竞争。cold catalog 用最终授权屏障确定已持有配额，再检查另一实例被拒；放行后的真实 host 产生 InvalidCatalog，随后 peer 可成功执行。配置用例覆盖校验失败不绑定、收紧/放宽冲突、匹配配置及服务销毁后配置保留。
+- [crate 日志](b3-final-quota-logs/wasm-final.log)：46 unit + 16 escape runner reported + 7 journal + 1 pipes + 25 service，exit 0。实施者说明之后只改测试变量名，随后最终 service 25 项再次通过；未将早一轮全套测试冒称为最终文本的重新全跑。Windows symlink 1314 的既有覆盖边界保持。
+- [Clippy](b3-final-quota-logs/clippy-final.log)和对应 exit 为 0；crate fmt 的 exit 为 0，git diff 检查 exit 为 0。fmt 为无输出成功回执，未虚构额外 stdout 日志。
+
+**后续实际门：** 可将此三文件 delta 集成主树，按既定计划执行受影响增量验证与最终文档接受门。主树最终源码 hash、三平台 native CI 和 Windows 有权限叶软链接等仍需由后续真实回执关闭。本次未重复审查 B2/B4 或将其已有结论撤回，也未新增范围外要求。

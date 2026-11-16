@@ -1,0 +1,201 @@
+{
+  "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+  "run_scope": "Final main-tree targeted integration after the three-path quota fix; original four-package test was not rerun.",
+  "source_manifest_sha256": "e66a4a8b7780b2518498127679a47c799de3bfc95021bf756984782f9df17278",
+  "source_review_patch_sha256": "29059c8c3e2ff7fe08fa5b3e36e67b0613806e894555fc84be2aff6d3d28af13",
+  "commands": {
+    "sandbox-test": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T09:05:22.363+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:06:25.217+00:00",
+      "duration_seconds": 62.844,
+      "capture_sha256": "4be6343c6d15acf8ae546ea18288173f90cc7a5c1ca8540adeeab76e4727b9f2"
+    },
+    "quota-shared": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "tool_service",
+        "shared_writer_limits_active_hosts_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T09:06:25.219+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:06:26.814+00:00",
+      "duration_seconds": 1.61,
+      "capture_sha256": "afd5c811a4fda49f9cb146ec6aba07bb88c29ce27a4d43dc15a02e5172ab8bc1"
+    },
+    "latency": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "tool_service",
+        "measured_spawn_and_run",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T09:06:26.814+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:06:27.803+00:00",
+      "duration_seconds": 0.984,
+      "capture_sha256": "94a15469c6102f84746ab36f05092b402767591a1d61dc9ae856ea8e44bb9ab1"
+    },
+    "sandbox-clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T09:06:27.804+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:06:45.454+00:00",
+      "duration_seconds": 17.641,
+      "capture_sha256": "f67658fadac19ccf98bb38f53dd2a12b4e976041c2e4d0d076e17dc5a5537e01"
+    },
+    "sandbox-msrv": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "check",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--all-targets"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target\\w82-service-deps"
+      },
+      "started_utc": "2026-11-16T09:06:45.454+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:07:19.040+00:00",
+      "duration_seconds": 33.593,
+      "capture_sha256": "316f81070135d0706150b4728e1667136ad5dd102e14735896f326bc107e590a"
+    },
+    "workspace-fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T09:05:22.761+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:05:28.470+00:00",
+      "duration_seconds": 5.719,
+      "capture_sha256": "10e3fe469c71201e732abda70337622f3ed842053380cf15933a834ac36e6c3b"
+    },
+    "reverse-complete": {
+      "command": [
+        "git",
+        "apply",
+        "--reverse",
+        "--check",
+        "--whitespace=error-all",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\services-final-source-review.diff"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T09:05:13.358+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:05:13.390+00:00",
+      "duration_seconds": 0.031,
+      "capture_sha256": "7fa185ce485f133bc7f94de37881d267638c0f540f97a1d7e802a7a8e232f8f8"
+    },
+    "reverse-delta": {
+      "command": [
+        "git",
+        "apply",
+        "--reverse",
+        "--check",
+        "--whitespace=error-all",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\final-quota.delta.diff"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T09:05:13.391+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:05:13.416+00:00",
+      "duration_seconds": 0.031,
+      "capture_sha256": "05f20e51a49e60284ffe7b4a31ed956577894b2937415609c9425de8d566526c"
+    },
+    "git-diff-check": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T09:07:40.223+00:00",
+      "exit": 0,
+      "finished_utc": "2026-11-16T09:07:41.605+00:00",
+      "duration_seconds": 1.375,
+      "capture_sha256": "668f05a266c708623cf7195b8a50f7fa61b64ccf90b749234aaaafc1c768ffd2"
+    }
+  }
+}

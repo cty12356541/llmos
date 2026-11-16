@@ -1,0 +1,54 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 41 tests
+test bounded_blob_buffers_peak_probe ... ignored, run in isolation to measure process memory under the maximum file and block sizes
+test audit_bytes_cover_the_full_admitted_sqlite_read_and_release_tail ... ok
+test blob_sql_ledger_blocks_immutable_row_edits_replace_and_state_rollback ... ok
+test expiry_between_io_and_receipt_closes_the_pin_on_maintenance ... ok
+test identical_raw_keys_are_independent_across_authenticated_subjects ... ok
+test global_mint_rate_counts_different_issuers ... ok
+test audit_reservation_blocks_new_mint_but_covers_admitted_reads_and_release ... ok
+test ancestor_revocation_after_file_io_prevents_read_receipt ... ok
+first clock sample lock contention: elapsed=100.075ms, waiting=Err(Authorization(TimeUnavailable))
+established clock lock contention: deadline=80ms elapsed=80.477ms result=Err(Authorization(DeadlineExpired))
+test cold_clock_lock_contention_fails_with_a_bounded_time_unavailable ... ok
+test established_request_deadline_bounds_queued_clock_sampling ... ok
+test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok
+test identity_revocation_and_clock_failures_stop_reads_including_exact_replays ... ok
+test manifest_corruption_cannot_turn_into_a_read_or_charge ... ok
+test independently_enforces_per_recipient_read_concurrency ... ok
+test manifest_and_file_bounds_reject_before_resolving_the_path ... ok
+monotonic clock overlap: newer_first=false, earlier=Ok(0), later=Ok(0)
+test mint_requires_a_valid_recipient_and_proof_for_current_process ... ok
+test mint_signature_binds_file_fields_and_explicit_recipient ... ok
+test clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused ... ok
+test independently_enforces_global_read_concurrency_across_recipients ... ok
+test mint_signature_binds_workspace_source_key_and_command_time ... ok
+test io_faults_roll_back_mint_read_and_release_and_recover_exact_idempotency ... ok
+test max_reads_linearizes_concurrent_distinct_keys_and_closes_the_pin ... ok
+test maximal_chunk_is_bounded_and_canonical_and_eof_does_not_charge ... ok
+test same_key_replay_concurrent_and_reconnect_share_one_receipt_and_authorization ... ok
+test quota_and_rate_limits_apply_across_new_sessions ... ok
+test recipient_pin_quota_counts_distinct_issuers ... ok
+test pinned_file_survives_path_replacement_and_detects_changes_to_the_original_object ... ok
+test release_between_io_and_receipt_blocks_the_chunk_and_future_replay ... ok
+test writer_lease_child_probe ... ok
+test release_is_signed_for_issuer_or_recipient_and_replay_rechecks_current_policy ... ok
+test release_during_mint_delivery_cannot_leave_a_published_pin ... ok
+test single_domain_clock_regressions_and_callback_errors_leave_both_watermarks_intact ... ok
+test restart_fences_old_tokens_and_replays_mint_without_even_resolving_path ... ok
+test v3_schema_migration_is_atomic_on_schema_error_and_preserves_prior_history ... ok
+test signed_sender_mint_roundtrips_wav_bytes_to_its_explicit_recipient ... ok
+test untrusted_wire_actor_digest_and_task_context_are_rejected ... ok
+test writer_lease_is_exclusive_across_processes ... ok
+audit tail: 70 durable reads and release; DB+WAL=109320 bytes, cap=3000000
+test physical_audit_bound_uses_the_database_page_size ... ok
+fd contention: deadline=20ms elapsed=21.4906ms result=Err(Authorization(DeadlineExpired))
+test short_deadline_bounds_wait_for_the_descriptor_mutex ... ok
+SQLite contention: deadline=20ms elapsed=23.1476ms result=Err(Authorization(DeadlineExpired))
+test short_deadline_bounds_wait_for_the_sqlite_writer ... ok
+audit tail: 4096 durable reads and release; DB+WAL=1651968 bytes, cap=536870912
+test audit_checkpoint_and_terminal_reserve_support_the_maximum_paid_reads ... ok
+
+test result: ok. 40 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 7.42s

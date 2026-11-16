@@ -122,7 +122,8 @@ flowchart LR
 **Owner**：B integrator + Astra 契约审查，机械复验 Sol。**blocked-by**：B1 合并树；**blocks**：公共子门阻塞 B2/B3/B4；Blob 子门仅阻塞 B4 和 D/INT 的相关能力，B82-SDK 汇总仍要求 B 完整验收。
 **R/W**：R=已裁定 D1–D11、三新 proto、SDK/daemon 消费点；W=B 原有 schema/gen/注册表/黄金与 conformance 写集、设计冲突记录、Evidence；共享变更由此唯一 owner 集成。
 - [x] 复核已合并 B1。维护者 2026-11-16 补充裁定见[设计 §5.5](./w82-b-design-draft.md#55-2026-11-16-补充裁定blob-可实施契约)：应用消息只传引用，Blob 服务逐块鉴权并返回对齐块或末尾短块；有效块上限 65,408 字节，完整编码载荷上限 65,536 字节；显式接收者绑定认证身份；重启后旧令牌失效，禁止按旧路径重开。字段、Rust 编码双界与边界向量见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
-- [ ] 明确 daemon slot→权威 CapabilityId、Blob reference ID 与持有者/接收者授权、重启后 fd/令牌恢复或失效、chunk 有效长度和资源上界；只持 URI/根 ID 不得获得授权。输出为精确接口清单、正负向向量与 B2/B3/B4/INT 消费签认。
+- [x] 明确库运行合同并在候选中消费。Blob reference ID 与 holder/recipient 授权分离，重启令牌失效，chunk 与资源界有正负例。共享调用绑定和侧带证明按服务接口注入。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
+- [ ] INT 验收真实 daemon slot 到权威 CapabilityId、身份/签名输送、真实 workspace resolver 和重启接线。裸 URI 与根 ID 均无授权。该项由系统集成工作包签认。
 - [x] 候选执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:typecheck`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`，保存工作树回执。
 - [x] B1 公共 schema/codec 和 Blob 契约子门通过独立审查。运行时共享调用合同与依赖预锁另由服务库前置工作项验收。
 - [x] 提交至 `4fc70be1` 后，原 `npm run schema:check-generated` 退出 0，24 个生成文件与提交基线一致。见[阶段 E 首波回执](./stage-e-progress.md#2026-11-16-首波执行)。
@@ -150,16 +151,26 @@ flowchart LR
 **Owner**：沙箱实现 Sol、安全/取消审查 Astra。**blocked-by**：服务库公共前置与已预锁 sha2。**blocks**：B 汇总、D、INT。大参数的真实引用联动归 INT。
 **R/W**：R=`tool_sandbox.proto`、D9、Operation/Wait 契约；W=`crates/nlos-wasm-sandbox/**` 与 Evidence。输入已授权工具/参数，输出 `list_tools/invoke_tool` 服务库及可替换的持久 `ToolOperationStore`。
 - [ ] 正向：工具目录按 Wasm digest 缓存、per-call 独立宿主、结果可持久重放。失败：持久 dispatch 前取消、运行中 EffectUnknown、完成与取消竞态、deadline 和 journal 崩溃恢复。安全：未知工具与路径/网络逃逸拒绝，stdout 256 KiB、有界 stderr、逐调用写入 8 MiB，非零 epoch 下孤儿自灭。
-- [ ] 执行 `cargo test -p nlos-wasm-sandbox` 与 `cargo test -p nlos-wasm-sandbox --test escape_matrix`；补齐 daemon 被杀后孤儿终止、同键冲突/不确定不盲重做和逐调用资源测试；记录三平台 spawn+run 分位耗时。
+- [ ] 执行 `cargo test -p nlos-wasm-sandbox` 与 `cargo test -p nlos-wasm-sandbox --test escape_matrix`；补齐真实服务角色进程被杀后孤儿终止、同键冲突/不确定不盲重做和逐调用资源测试；记录三平台 spawn+run 分位耗时。
 - [ ] Evidence 复用既有逃逸矩阵并追加新增攻击面；MCP 外部 server 桥仍归 DriverProvider，不借此扩大 WASI 导入或给未沙箱原生程序 strict 声明。
 
 ### W82-B-4：Capability 约束的大载荷引用
 
 **Owner**：能力实现 Sol，授权/TOCTOU/DoS 审查 Astra。**blocked-by**：服务库公共前置及 Blob schema/codec 子门。**blocks**：B 汇总、D、INT。
-**R/W**：R=`blob_reference.proto`、D5 及[设计 §12](./w82-b-design-draft.md#12-l-015-选项-b-的-tcb-增量分析与内存dos-有界性安全论证必备件)、Capability 签名/吊销；W=`crates/nlos-capability/**` 与 Evidence，schema 变更只提给 B integrator。输入受控工作区文件和主体，输出 mint/read/release 库及 additive 令牌表。
+**R/W**：R=`blob_reference.proto`、D5 及[设计 §12](./w82-b-design-draft.md#12-l-015-选项-b-的-tcb-增量分析与内存dos-有界性安全论证必备件)、Capability 签名/吊销；W=`crates/nlos-capability/**` 与 Evidence，schema 变更只提给 B integrator。输入受控工作区文件和主体，输出 mint/read/release 库及 additive 令牌表。IdentityAuthority 当前 principal 查询已由独占增量适配并审查。
 - [ ] 正向：真实双主体授权传递、签名 mint/release、摘要/长度/分块校验、release/TTL 收敛。失败：中途吊销、过期、读次耗尽、进程重启/文件变更。安全：三平台从已授权根安全首次打开并验证替换竞态，覆盖 mint 后换靶、读间改写、越界与跨主体读取、并发 mint/read 耗尽。
 - [ ] 执行 `cargo test -p nlos-capability`；在既有 DDL/故障套件加入令牌表保护、fd 钉住/块校验、真实授权接收者与未授权主体对照；边界测试使用完整编码长度，不能只断言 chunk 长度。
 - [ ] Evidence 给出 TCB 增量、连接/令牌/fd/内存上界实测及永久审计行增长限制；qq-agent 落盘过渡退役由 INT 真测，库内 WAV 往返不冒充外部退役。
+
+### W82-B-SERVICES-ACCEPTANCE：三服务库汇总验收
+
+**Owner**：单一 integrator，独立审查 Astra。**blocked-by**：B1、公共前置、B2/B3/B4 库正负例与持久/安全、TCB 和资源边界证据。**blocks**：W82-B DONE 与 B82-SDK。
+
+- [x] 三服务候选与首轮修复经独立审查。B3 关闭取消与同步恢复专项，B4 关闭预留、截止时间、并发取时及受控 WAL 提交尾部专项。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
+- [x] 跨实例配额修复通过隔离复验与独立增量审查。冷目录和 invoke 共用 authority 配额，首个成功构造固定限额，后续冲突拒绝。[B3 配额证据](../evidence/stage-e/w82-b3-tool-service-20261116.md#同一-authority-的共享宿主配额)
+- [x] 主树本机完成初验四包 tests/Clippy/MSRV、六锁和供应链，配额修复后三条沙箱变更受影响复验通过，含全 workspace fmt。初验和后修复的结果分别绑定源快照。[主树回执](./stage-e-progress.md#2026-11-16-三服务库验证)
+- [ ] 同源码 SHA 核验原生三平台和具名门，包含 B3 latency/escape、Windows 实际 symlink，以及 Linux 正常 `openat2` 与实际注入 ENOSYS 的 fallback。按原始日志处理 skip、权限不足和失败。
+- [ ] 本包全部门通过后提交治理回执，更新 W82-B 台账为 DONE。A+B 使 B82-SDK 可开。真实 daemon 权威接线、SDK 客户端、Worker 联动和外部 Dogfood 在后续工作包验收。
 
 ### W82-D-SDK：Python/TypeScript 完整窄腰与干净安装
 

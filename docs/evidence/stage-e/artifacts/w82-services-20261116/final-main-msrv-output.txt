@@ -1,0 +1,22 @@
+    Checking windows-sys v0.61.2
+    Checking bytes v1.12.1
+    Checking nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+    Checking prost v0.14.4
+    Checking nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking winapi-util v0.1.11
+    Checking cap-primitives v4.0.3
+    Checking tempfile v3.27.0
+    Checking termcolor v1.4.1
+    Checking wasmtime-internal-jit-icache-coherence v50.0.1
+    Checking wasmprinter v0.261.0
+    Checking cap-std v4.0.3
+    Checking cap-fs-ext v4.0.3
+    Checking wasmtime-environ v50.0.1
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking wasmtime-internal-unwinder v50.0.1
+    Checking wasmtime-internal-cache v50.0.1
+    Checking wasmtime-internal-fiber v50.0.1
+    Checking wasmtime-internal-cranelift v50.0.1
+    Checking wasmtime v50.0.1
+    Checking nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.85s

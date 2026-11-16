@@ -1,0 +1,47 @@
+# W82-SERVICES FINAL SOURCE INTEGRATION REVIEW / Attempt 20261116-2
+
+结论：**Spec FAIL；Quality FAIL，1 项新 P2 阻断（F1）**。本次真实共享 writer/host 探针确认 B3 活跃 host 配额按服务实例分裂，不能满足已批准的 global/per-principal 上界。其余已接受局部审查结论保持；未发现第二项需要修复的集成问题。当前不得把本次 source gate 或 W82-B 标成完成。
+
+## 1. 快照与审查边界
+
+- 主树 `D:/llmos`，HEAD `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，未提交，暂存区为空。
+- [完整 source diff](services-source-review.diff)：SHA-256 `d3cd542c03a863cc0f57315a3d05fa3634b11ba0bea47d0fe0ff8b230370fa4c`。
+- [45 路径 manifest](services-source-manifest.json)：SHA-256 `7731f718a78af56ae17e64b1de964c39ef0d05c3b1c8e2850756219cf798074a`。
+- 开始及结束均核对 45/45 当前文件 raw SHA-256，零漂移；结束再次核对上述包 hash、HEAD、空 index。[结束 CAS](services-source-review-probes/source-review-cas-end.json)。文档 owner 并行修改的 Evidence/管理对象不在本次 CAS 或接受范围内。
+- 5 份局部接受包均核对所报 SHA。每个源路径与相应 owner 的已接受内容逐一对比，45/45 在 LF 归一化后相同；其中 36 个工作副本存在 CRLF 字节差异，故不声称 owner/main raw bytes 全等。最终主树原始字节由本次 manifest 单独绑定。
+- 按当前 progress Rulings、[B 接受映射](b-acceptance-map.md)、[整合输入](integration-inputs.json)以及各局部独立审查/修复回执审查合流契约；复用已经完成的局部逐行审查，重点检查跨 crate、共享 writer/权限/恢复/资源和 CI 连接。未再跑完整 suite，未改源码、index、HEAD、canonical、用户脏文件，未派子 Agent。
+
+## 2. F1 — [P2] 同一 writer 的活跃 host 配额可通过多个服务实例绕过
+
+**位置：** `crates/nlos-wasm-sandbox/src/tool_service.rs:281` 每次构造新的 `active: Mutex::default()`；字段在 `:240`，实际配额判断与增加在 `:452–468`（尤其 `:458–459`），仅检查 `self.active`。
+
+**要求与触发条件：** [B3 brief](b3-brief.md) 第 68、88 行要求 global 16 / 每 principal 4 的活跃 host 上限，满额返回 typed quota、不无界排队。一个真实 `JournalToolOperationStore` 可经既有合法 `SharedWriter` adapter 被多个 `ToolSandboxService` 共用；此前共享 writer 的跨实例取消审查和修复已明确接受这一构造，不能假定未声明的服务单例。两个服务使用相同限额、相同 principal、不同 operation key，各自在本地计数为零时获准 spawn，因此同一 writer/服务域的 global 和 principal 配额均可突破。默认配置下随实例数量增加会成倍扩大可同时启动的 host 数，破坏本次 TCB/DoS 必需界限；持久 journal 条目水位不限制这个瞬时并发数。
+
+**真实复现：** 外侧探针 [shared_host_budget.rs](services-source-review-probes/shared_host_budget.rs) include 当前 main 的真实 service 测试 fixture，链接当前 main 已构建的 wasm/capability/schema/types rlib，执行真实 `nlos-wasm-sandbox-host.exe`。使用一个真实 journal、两个独立 workspace/服务实例、相同 principal、不同 key；先完成两边 catalog warmup，再让第一个写出 marker 并持续运行，启动第二个。分别缩小 global 或 principal 上限以低成本复现，未通过增大原默认限额制造场景：
+
+- `global=1 / per_principal=4`：两个真实 guest marker，两个调用线程均 active，两条 operation 均为 `Dispatched`。
+- `global=16 / per_principal=1`：同样两个真实 guest marker、两个 active、两条 `Dispatched`。
+- 每个 case 在断言前通过各自服务执行 cancel 并 join 两个调用；四个清理结果均 `EffectUnknown { reason: Cancelled, ... }`。随后回归断言失败，**exit 101，1 failed / 21 filtered，0.21 s**。
+
+[完整运行日志](services-source-review-probes/shared-host-budget.log) · [命令/退出码/探针摘要](services-source-review-probes/shared-host-budget-result.json) · [最终编译命令](services-source-review-probes/compile-final-command.json) · [最终编译日志](services-source-review-probes/compile-final.log)。探针源码 SHA-256 为 `4029659f53e551d50bd0ba4332bdcf45faeea04a22ae4720204e14b989b86a1a`。首次外侧链接尝试因选择了不匹配的 nlos_types 编译产物退出 1，随后改用当前被链接服务依赖的同一产物，最终编译退出 0；未修改候选，也不把首次链接错误列为候选缺陷。
+
+**最小必要修复：** 将活跃 host 的 admission/释放归入共享且唯一的执行配额域，使同一真实 writer 经所有合法 adapter/服务实例均不能重置 global/per-principal 计数；cold catalog 与 invoke 等实际 spawn 入口均须使用该配额。保持 typed quota、RAII 释放和既有跨实例取消语义；不能仅把文档改为“每实例上限”、依赖未声明单例，或放宽界限。具体 API 方案由原 owner 选择。
+
+**缺少的回归门：** 分别覆盖同一 writer 的两个服务实例 global=1 与 per-principal=1，第二个实际调用在第一 host 存活时不得执行 guest；拒绝路径不泄漏 permit，第一调用取消/reap 后第二实例可重新获得配额。应保留既有共享 writer 取消、单实例限额、catalog/invoke 和错误释放门。该项由一个原 owner 修复波次处理后做 scoped delta 审查和受影响主树复验。
+
+## 3. 其余集成检查结论
+
+1. **冻结契约与依赖。** `nlos-capability/src/service_call.rs` 当前/HEAD blob 同为 `72d8053faabf6f465e5f042f2f75c135d7fc4ade`；`nlos-resource/src/lib.rs` 同为 `678119caa380390c62147804ea6c1036527644b7`。公共上下文、旧 MeteredBudgetContext 外形未因合流修改。本波无 schema/proto/generated 漂移。根与 ROAD 两份锁的增量只将已预锁的 cap-std/cap-fs-ext 接入 wasm sandbox 依赖，无版本、校验和或其他包升级；未引入依赖环。
+2. **Identity 与 capability migration。** readonly 当前 principal binding 查询保留明确撤销/有效期/用途检查；重复当前 head 由 query_one 变为腐败拒绝，不把歧义绑定授权。capability schema v3 的 v0/v1/v2 升级路径均包含新增迁移，既有授权表语义未被覆盖。局部精确绑定与默认拒绝结果保持，不将 wire caller/session/handle 提示当认证。
+3. **每入口授权与受信 embedding。** B2/B3/B4 所用 context 仍由受信 embedding 提供，授权依赖独立 authorizer 与新时间；不宣称 wire 字段即身份认证。B3 materializer、workspace resolver 等 seam 的受信边界，以及 B4 Identity/Capability 与实际 Blob bytes 的检查路径没有在合流中被快捷绕过。该结论不等于 daemon custody、SDK、三服务端到端材料化或 INT 已实现。
+4. **恢复、取消与 ACK。** 复用 [B2 recovery sync audit](b2-recovery-sync-audit.md)：journal open 在发布之前无条件 sync，完整但上次 sync 失败的帧不会绕过恢复屏障。复用 [B3 durability review](b3-durability-independent-review.md)：恢复前缀/截尾后同步再发布；共享 writer 的跨实例取消修复仍保留。复用 [B4 WAL review](b4-wal-independent-review.md)：真实 VFS 写错误和未提交 WAL 尾对 ACK 前缀的保守恢复。它们不是物理断电证明，也不新增 physical-power-loss 接受门。未发现新的恢复接口不匹配。
+5. **时钟和 bounded controls。** B2 fix1 与 B4 fix2 的序列化取时/高水位修复未因合流丢失；B4 DB 控制路径的 deadline、cache_spill/busy_timeout 恢复保留。B2 OBSERVED/D8 shadow 只承诺库层保守记账，不扩大为 trueReservation 或外部费用 STRICT 保证。F1 是此处唯一新增的已证实共享资源缺口。
+6. **CI 与实际测试连接。** [CI 独立审查](ci-independent-review.md) 接受的 helper/workflow 未漂移，实际最终测试目标/marker 对应；失败 collector 的 outcome 经 enforce 传播、always 上传保留，旧步骤未被改写。Linux 正常 openat2 与实际 ENOSYS 注入、Windows 真实叶软链接、20 样本 latency 的门仍区分真实运行与合成 fixture；50 ms 没有被引入为新 fail threshold。
+
+## 4. 已完成验证与仍未关闭的门
+
+已读取 [主树集成验证](services-integration-report.md)及命令 JSON 回执：四包 **255 pass / 0 fail / 2 ignored**；Clippy、根 `cargo fmt --all -- --check`、MSRV 1.97.1 检查均 exit 0；供应链 3/3、六锁解析、ROAD 6 项/16 文件/8 冻结包均通过。它们绑定上述封存 45 文件快照，不能替代缺少的跨实例配额测试，也不能预支 F1 修复后的验证结果。
+
+本机 Windows helper **exit 1**，工具和 Blob 叶软链接因 OS 1314 未建立，明确保留 native gate；工具 latency 的真实 20 样本通过是局部测量，不消除软链接失败。仍需最终修复源码复验、最终 canonical 文档审查和最终提交 SHA 的三平台原生 CI（包括 Linux openat2/ENOSYS、Windows 真实软链接等）。这些是已有门；不将本地权限缺失新增为源码 finding，也不把未来远端 CI 写成已绿。
+
+当前 **source acceptance 阻断于 F1**。待其 scoped 修复审查和受影响增量验证通过后，才可关闭本 source gate；整车道接受仍由已有 B acceptance map 的其余门决定。没有因为当前源码审查引入 daemon/SDK/INT、真实断电等范围外的隐藏要求，W82 现有正式状态保持不变。

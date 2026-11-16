@@ -1683,6 +1683,8 @@ dependencies = [
 name = "nlos-wasm-sandbox"
 version = "0.1.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "nlos-capability",
  "nlos-schema",
  "nlos-types",

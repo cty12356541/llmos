@@ -1,0 +1,26 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.60s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 2 tests
+fd contention: deadline=20ms elapsed=252.1018ms result=Err(Authorization(DeadlineExpired))
+
+thread 'short_deadline_bounds_wait_for_the_descriptor_mutex' (32656) panicked at crates\nlos-capability\tests\blob_reference.rs:1856:9:
+assertion failed: elapsed < Duration::from_millis(200)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test short_deadline_bounds_wait_for_the_descriptor_mutex ... FAILED
+SQLite contention: deadline=20ms elapsed=265.9488ms result=Err(Authorization(DeadlineExpired))
+
+thread 'short_deadline_bounds_wait_for_the_sqlite_writer' (38944) panicked at crates\nlos-capability\tests\blob_reference.rs:1891:9:
+assertion failed: elapsed < Duration::from_millis(200)
+test short_deadline_bounds_wait_for_the_sqlite_writer ... FAILED
+
+failures:
+
+failures:
+    short_deadline_bounds_wait_for_the_descriptor_mutex
+    short_deadline_bounds_wait_for_the_sqlite_writer
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.34s
+
+error: test failed, to rerun pass `-p nlos-capability --test blob_reference`

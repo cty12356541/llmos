@@ -1,0 +1,45 @@
+# W82-B3 Fixround 1 独立增量复审
+
+Task W82-B3 / Attempt 20261116-2，沿用原独立 reviewer。结论：**原 P1 ADDRESSED；修复范围 Spec PASS；质量 Approved**。原完整审查与本次增量复审合并后，没有尚未解决的代码阻断 finding。该结论不是三平台验收、集成 DONE、Stage 退出、提交或发布声明。
+
+## 冻结输入与 CAS
+
+- 候选树 `C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos`，HEAD 仍为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。
+- 完整读取 `b3-report.md` 的 Fixround 1 和四文件 delta；未重新展开原完整 patch，原审查证据仍见 `b3-independent-review.md`。
+- `b3-fix1-delta.diff` SHA-256 实核：`f898cd347b1306fb5680226673e745aa5b5125ce5461be5528062b1cdd5461ea`。
+- `b3-fix1-review.diff` 完整候选 SHA-256 实核：`1aee5f2e5e7ca894fc30ae8173cc08412d63190b78c29ce6f3cbba1440d74459`。本报告为 `b3-fix1-review.md`，与该 patch 是两个独立文件。
+- `b3-fix1-logs/candidate.sha256` 清单 SHA-256 实核：`852af67a70522538033f1e73eff26bb8ce5fd7adfdfff54513f098cda58ff96a`；逐文件核验 **20/20** 一致。与初版清单比较，文件集合相同，仅 `src/tool_process.rs`、`src/tool_service.rs`、`tests/tool_service.rs` 和 B3 Evidence 四文件变化。
+- 对 delta 和完整 fix1 patch 分别执行 `git apply --reverse --check`，均退出 0。候选未发生未审漂移；没有应用 patch、修改源码或 index。
+
+## 原 finding 处置
+
+**P1 跨服务共享 writer 的取消只写 journal、不终止 host：ADDRESSED。**
+
+`tool_service.rs:705` 的 `observe_dispatch` 读取同一 operation handle 的持久状态，只允许原 Dispatched receipt 继续运行；CancelRequested 转为取消，其它状态或读取错误使执行停止。该观察在 `tool_service.rs:668` 的最后 clock/policy 授权之前执行，避免新增 store 读取等待直接老化最终授权快照；同时作为 callback 交给真实 host 等待循环。
+
+`tool_process.rs:67` 的 callback 位于 child mutex 临界区之外。另一服务实例持久提交 CancelRequested 后，执行 owner 在下一次正常返回的观察中调用本地 `cancel`，终止并 reap 自己拥有的同一 child。这里没有让另一服务伪造 ChildControl，也没有引入第二执行。`CancelRequested` 返回值明确表示已持久受理；唯一终态仍由 executor 的既有 receipt CAS 收敛为 EffectUnknown，符合取消请求不等于无副作用的语义。
+
+新增真实共享 journal/host 回归覆盖：跨实例取消、stale generation 拒绝、两实例同 key 不再 spawn。已查阅 `green-shared-cancel-final.log`：测试通过，单次 cancel 到回收和持久终态为 **13 ms**；原 500 ms 红例保留，不能将该实测改称固定最坏上界。
+
+**NOT ADDRESSED 项：无。**
+
+## 修复引入的错误、锁与时序检查
+
+**New fix breakage：未发现。**
+
+- 新增持久查询不持 child mutex；查询返回后才取得 child 控制锁执行 kill/reap，未引入 store/child 的反向嵌套锁序。现有本实例 cancel 仍可直接到达 child。
+- 已 dispatch 后发生跨实例取消与 spawn 交错时，executor 的观察/原有 finish CAS 保持保守 EffectUnknown；没有回退成 CancelledBeforeEffect。完成先提交或取消先提交仍由持久 revision 竞争决定，late completion 不覆盖终态。
+- host 已退出时 wait 可以先返回退出状态，但完成持久化仍经过原 CAS；新增完成前 barrier 测试覆盖取消先提交，另一次调用覆盖完成先提交。
+- 持久查询错误映射为 typed StoreError，并通过本地 cancel 先停止 host；随后尝试保存 EffectUnknown(HostLost)。查询/写入仍不可用时保留 durable dispatch/cancel fence，不能据此猜测无效果；恢复语义未被改写。新增读失败测试覆盖真实 host 停止和可写情况下的 HostLost 墓碑。
+- catalogue 使用无状态观察 callback，保持原执行/授权/输出限制。HostStop 错误映射变更没有将 pipe/guest/deadline 失败变成成功，也未吞掉持久观察错误。
+- 20 ms 是每次正常查询返回后到下一次观察的配置间隔。可替换存储若阻塞，实际观察延迟仍受其 I/O 与 OS 调度影响；代码、Fixround 1 回执及 Evidence 已说明该限制。本复审不声称任意 adapter 具有 20 ms 的强取消 SLA。
+
+## 范围与验证回执
+
+**Out of scope changes：无。** 四文件差异均用于同一 P1 的执行控制、针对性测试和 Evidence，未改公共 store trait、共享调用合同、依赖、schema、daemon 或 ledger。
+
+本轮没有新增或重跑全套测试。除上述 focused 日志外，已查阅 `service-journal-final.log` 的服务测试结果；结合 integrator 已确认的日志，实施方报告服务 **21/21**、journal **6/6**、严格 Clippy、crate fmt、diff check 通过。该测试结果归实施方实际运行，不能写成 reviewer 独立重跑。reviewer 自己运行的是 patch/hash/逐文件 CAS 核对，均通过。
+
+初版披露的 Windows symlink 1314、Linux/macOS 原生执行、三平台完整性能矩阵、专门 fsync/断电验证、daemon/OperationControl/WaitControl/SQLite/Blob materializer/SDK 等后续门保持原状态。没有利用本次局部修复扩大任何实现或保障声明。
+
+本复审唯一写入为本报告。未改变候选、原始初版/fix1 档案、ledger 或其他工作；未暂存、提交、推送。可以将此 **Approved** 作为 fix1 候选的独立审查门输入，后续最终树集成与平台门仍由 integrator 执行。

@@ -98,8 +98,8 @@ Tauri 2 桌面（[ADR-0025](docs/management/adrs/0025-stage-d-hybrid-desktop-com
 | **E** | [兼容制度与生态规模化](docs/management/stage-e-progress.md) | `IN_PROGRESS / READY_FOR_MAINTAINER_SIGNOFF` |
 
 - **阶段 E：** `E0`–`E7` 共 8 个工程包均为 `DONE`，保障等级为 `H4` / `H7`；[ADR-0027](docs/management/adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已 `VERIFIED`。[W81 终审](docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md)确认技术门禁 1–5 在评审基线内满足。正式退出与 SABI v1.0 长期冻结仍待维护者签字。
-- **W82 应用接入：** `IN_PROGRESS / PARTIALLY_MERGED`。IPC 会话复用已通过 Linux、macOS 和 Windows 验收，W82 完成 `1/5` 车道。共享调用合同与依赖预锁属于服务库前置。三个新通道的实现、Worker 授权与吊销联动、完整 SDK 客户端及 `qq-agent` 端到端验收仍待完成。[W82 进度](docs/management/stage-e-progress.md#2026-11-16-服务库前置)
-- **证据边界：** [权威进度与证据快照](docs/management/stage-e-progress.md#2026-11-16-服务库前置)登记 169 条声明、210 条证据、17 项风险，`H8` 声明与证据均为 0。[残余风险清单](docs/management/exit-unknown-risks.md)记录物理掉电、跨主机规模及原生安装器签名公证等边界。
+- **W82 应用接入：** `IN_PROGRESS / PARTIALLY_MERGED`。IPC 已验收，W82 完成 `1/5` 车道。三服务库候选通过实施验证与独立审查，原生 CI、Worker 权威、SDK 和 `qq-agent` 端到端验收仍待完成。[W82 进度](docs/management/stage-e-progress.md#2026-11-16-三服务库验证)
+- **证据边界：** [权威进度与证据快照](docs/management/stage-e-progress.md#2026-11-16-三服务库验证)登记 169 条声明、213 条证据、17 项风险，`H8` 声明与证据均为 0。[残余风险清单](docs/management/exit-unknown-risks.md)记录物理掉电、跨主机规模及原生安装器签名公证等边界。
 - **下一步：** 按已审契约实现服务，验收 Worker 权威绑定与重启。SDK 与端到端集成按各自依赖推进。[NLOS 总任务计划书](docs/management/nlos-goal-delivery-plan.md)
 
 ---
@@ -143,7 +143,7 @@ docs/
   discussions/       36 份设计讨论文档（总索引 + 35 篇专题讨论）
   management/
     adrs/            27 份架构决策记录（ADR-0001..0027，另含模板）
-    evidence-index.yaml  210 条证据索引，含阶段 E 的 21 条
+    evidence-index.yaml  213 条证据索引，含阶段 E 的 24 条
     claims.yaml      169 条机器可读声明（ledger-schema v1.3：71 条 Stage B + 35 条 Stage C + 10 条 Stage D + 53 条 Stage E）
 sdk/                 Python · TypeScript · Go · C# 四语言 SABI SDK
 schema/              Protobuf + CDDL 契约定义 + 黄金线协议测试向量

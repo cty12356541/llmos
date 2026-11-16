@@ -1,0 +1,15 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.06s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 5 tests
+test single_domain_clock_regressions_and_callback_errors_leave_both_watermarks_intact ... ok
+test identity_revocation_and_clock_failures_stop_reads_including_exact_replays ... ok
+first clock sample lock contention: elapsed=100.194ms, waiting=Err(Authorization(TimeUnavailable))
+established clock lock contention: deadline=80ms elapsed=80.5768ms result=Err(Authorization(DeadlineExpired))
+test cold_clock_lock_contention_fails_with_a_bounded_time_unavailable ... ok
+test established_request_deadline_bounds_queued_clock_sampling ... ok
+monotonic clock overlap: newer_first=false, earlier=Ok(0), later=Ok(0)
+test clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.32s

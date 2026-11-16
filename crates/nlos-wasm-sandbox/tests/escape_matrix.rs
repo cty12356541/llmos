@@ -531,3 +531,99 @@ fn wall_clock_deadline_hard_kills_unbounded_guest() {
         "kill must be prompt, took {elapsed:?}"
     );
 }
+
+#[cfg(any(unix, windows))]
+#[test]
+fn writable_grant_refuses_a_symbolic_link_as_file() {
+    let grant_dir = ScratchDir::new("symlink-grant");
+    let outside_dir = ScratchDir::new("symlink-target");
+    let outside = outside_dir.path().join("sentinel.txt");
+    std::fs::write(&outside, b"unchanged").unwrap();
+    let link = grant_dir.path().join("link.txt");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        println!("escape_preopen_leaf=unix_symlink");
+    }
+    #[cfg(windows)]
+    match std::os::windows::fs::symlink_file(&outside, &link) {
+        Ok(()) => println!("escape_preopen_leaf=windows_symlink"),
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            println!("escape_preopen_leaf=windows_symlink_unavailable os_error=1314");
+            return;
+        }
+        Err(error) => panic!("creating the symlink fixture failed: {error}"),
+    }
+    assert_alias_denied(&grant_dir, &outside);
+}
+
+#[test]
+fn writable_grant_refuses_a_hard_link_as_file() {
+    let grant_dir = ScratchDir::new("hardlink-grant");
+    let outside_dir = ScratchDir::new("hardlink-target");
+    let outside = outside_dir.path().join("sentinel.txt");
+    std::fs::write(&outside, b"unchanged").unwrap();
+    let link = grant_dir.path().join("link.txt");
+    std::fs::hard_link(&outside, &link).unwrap();
+    println!("escape_preopen_leaf=hard_link");
+    assert_alias_denied(&grant_dir, &outside);
+}
+
+fn assert_alias_denied(grant_dir: &ScratchDir, outside: &std::path::Path) {
+    let profile = SandboxProfile::deny_all()
+        .with_preopen(PreopenGrant::new("/workspace", grant_dir.path(), true).unwrap());
+    let wat = r#"(module
+        (import "wasi_snapshot_preview1" "path_open"
+            (func $open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 16) "link.txt")
+        (func (export "main") (result i32)
+            (call $open (i32.const 3) (i32.const 0) (i32.const 16) (i32.const 8)
+                (i32.const 0) (i64.const 64) (i64.const 0) (i32.const 0) (i32.const 0))))"#;
+    let result = run_wat_via_child(grant_dir, "aliased-file", wat, profile);
+    assert_eq!(expect_completed_code(&result), 76);
+    assert_eq!(std::fs::read(outside).unwrap(), b"unchanged");
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn preopen_parent_replacement_does_not_retarget_the_grant() {
+    let scratch = ScratchDir::new("replaced-parent");
+    let original_parent = scratch.path().join("parent");
+    let moved_parent = scratch.path().join("moved");
+    let replacement = scratch.path().join("replacement");
+    std::fs::create_dir_all(original_parent.join("root")).unwrap();
+    std::fs::create_dir_all(replacement.join("root")).unwrap();
+    let grant = PreopenGrant::new("/workspace", &original_parent.join("root"), true).unwrap();
+    std::fs::rename(&original_parent, &moved_parent).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&replacement, &original_parent).unwrap();
+    #[cfg(windows)]
+    assert!(
+        std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&original_parent)
+            .arg(&replacement)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    #[cfg(unix)]
+    println!("escape_preopen_parent=unix_symlink");
+    #[cfg(windows)]
+    println!("escape_preopen_parent=ntfs_junction");
+    let profile = SandboxProfile::deny_all().with_preopen(grant);
+    let result = run_wat_via_child(
+        &scratch,
+        "moved",
+        r#"(module (func (export "main") (result i32) (i32.const 0)))"#,
+        profile,
+    );
+    assert_eq!(result.report.unwrap().outcome, HostOutcome::HostError);
+    #[cfg(windows)]
+    std::fs::remove_dir(original_parent).unwrap();
+    #[cfg(unix)]
+    std::fs::remove_file(original_parent).unwrap();
+}

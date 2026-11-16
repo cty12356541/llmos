@@ -48,3 +48,10 @@ mod wasi_allowlist;
 
 pub use error::{HostOutcome, HostReport, SandboxError, TrapKind};
 pub use profile::{PreopenGrant, SandboxProfile};
+
+mod tool_host_protocol;
+mod tool_json;
+pub mod tool_operation_store;
+mod tool_process;
+mod tool_reconcile;
+pub mod tool_service;

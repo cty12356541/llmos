@@ -236,6 +236,23 @@ impl HttpClient {
         Self::new(timeout, DEFAULT_MAX_HTTP_BODY_BYTES)
     }
 
+    pub(crate) fn with_body_ceiling(&self, ceiling: usize) -> Self {
+        Self::new(self.timeout, self.max_body_bytes.min(ceiling))
+    }
+
+    pub(crate) async fn post_json_with_deadline(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        remaining: Option<Duration>,
+    ) -> Result<HttpResponse, LlmDriverError> {
+        let timeout = remaining.map_or(self.timeout, |value| value.min(self.timeout));
+        Self::new(timeout, self.max_body_bytes)
+            .post_json(url, headers, body)
+            .await
+    }
+
     /// Configured per-request timeout.
     #[must_use]
     pub const fn timeout(&self) -> Duration {

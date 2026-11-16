@@ -1,0 +1,19 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.27s
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 1 test
+
+thread 'shared_writer_cancellation_reaches_the_executing_instance' (2944) panicked at crates\nlos-wasm-sandbox\tests\tool_service.rs:1418:14:
+shared durable cancellation did not reach the running host within 500 ms: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test shared_writer_cancellation_reaches_the_executing_instance ... FAILED
+
+failures:
+
+failures:
+    shared_writer_cancellation_reaches_the_executing_instance
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 1.34s
+
+error: test failed, to rerun pass `-p nlos-wasm-sandbox --test tool_service`

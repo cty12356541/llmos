@@ -1,0 +1,38 @@
+# W82-SERVICES-CI / Attempt 20261116-2 独立审查
+
+**Spec compliance：PASS。Task quality：PASS。无已确认的 P1/P2 阻断。**
+
+结论适用于 workflow/helper/test 三路径候选，可随已接受的 B2/B3/B4 整合进入原生 CI 验证；不表示三个服务、syscall 路径或 Windows 软链接已在远端通过。没有改源码、canonical 或 ledger，没有派子 Agent，也没有重跑完整 suite。
+
+## 输入与 CAS
+
+读取单一需求 `service-ci-brief.md`、`ci-report.md`、完整三文件 290 行新增 diff，以及补充的精确验证日志。工作树 HEAD 实查为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。
+
+开始与结束的 `ci-review.diff` SHA-256 均为 `dd8dacbb883ca4021ebf97ebf53aa2b28820ed5a660dbb16c456dbd114093c33`；两份新 Python 文件与 patch 的完整新增文本一致。当前文件在审查期间未漂移：
+
+- `.github/workflows/rust-cross-platform.yml`：`776d088da8438401de56eca7c8165246e77a6fb4573c1bc5fd77cf0138556c35`
+- `scripts/verify_w82_service_evidence.py`：`87851aba6ee7b634c70a201393514750dc9832a4eb940f4d107598450252d146`
+- `scripts/test_verify_w82_service_evidence.py`：`98336b5b788f67012196cfadc029816c95858c4f49c830c62022742099679c98`
+
+## 审查重点
+
+1. **失败传播与旧门。** Helper 每条命令保留 argv/实际退出码及原始合并日志；启动失败记录 returncode=null，失败或 skipped 均将最终退出码置为 1，独立探针仍继续。workflow 在 workspace 前采集，`continue-on-error: true` 只让后续旧门继续；最后 `always()` 条件检查原始 outcome==failure 并 exit 1，而非读取已转换的 success conclusion。该区别与 [GitHub steps context 官方定义](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context) 一致。前置普通步骤失败造成采集未运行时，作业已由该前置失败变红，不会因此成为绿色。
+2. **原有配置保持。** 独立移除三个新增 step 后，workflow 与 HEAD 逐字文本相同（统一换行比较）；既有 job、矩阵、平台条件、workspace tests/Clippy、MSRV 1.97 all-targets check、fmt、阈值、timeout 和 workload 均未改。没有新增路径过滤或跳过旧检查。
+3. **上传与归属。** Artifact 上传使用 `always()`，目录与 helper 的 RUNNER_TEMP 输出一致；名称绑定 OS、GitHub SHA、run ID、attempt。Helper 同时记录 checkout HEAD，并在 GITHUB_SHA 存在时要求相等，保存 runner 白名单元数据及 rustc/cargo 版本。旧步骤后续失败不取消已收集证据的上传机会；runner 强制中断仍属于运行时结果，不能预先承诺上传成功。
+4. **Linux 原生与 fallback。** Cargo JSON 只接受指定 manifest、blob_open integration-test target、唯一 executable，避免 glob 选错旧二进制。正常及注入模式执行同一完整测试 exe，两者均检查关键真实测试通过。正常 trace 必须出现含 RESOLVE_BENEATH 的 openat2 非负返回；注入 trace 必须出现实际 syscall 行、ENOSYS 与 `(INJECTED)`，普通 ENOSYS 或 metadata 不足以过门。`-ff` 分离线程日志，模式与 [strace 官方注入输出](https://strace.io/#perform-a-syscall-fault-injection) 一致。缺 tracer 或缺 exe 标 skipped 并令总门失败，没有伪造 fallback 覆盖。
+5. **Windows 实际夹具。** B3 的 windows_symlink marker 使用词边界，windows_symlink_unavailable 不匹配；父 junction 与 hardlink marker 另外要求。B4 使用明确 `--exact --ignored` 调用平台忽略测试，还要求该确切测试 ok、link-leaf swaps>0、exterior_or_unexpected=0。定向读取当前 B3/B4 测试名与 marker 输出位置确认兼容；未重复审查服务实现，也没有本机权限/开发者模式修改。
+6. **latency。** 三平台实际 measurement 入口、macOS 平台名称转换、warm catalog、20 samples、invoke+spawn+run+durable_result、p50/p95 记录要求与当前 B3 输出一致；没有把 50ms 或合成 fixture 的 65.50/123.45ms 设成失败阈值，也未引入 persistent host。
+
+## 已核对的本地验证
+
+初版回执缺少精确日志路径的问题已由 owner 补齐，不遗留阻断。原未独立留盘这一事实没有被掩盖：Python/结构核验各最小复跑一次，Windows fixture 保留为历史终端摘录。
+
+- `ci-logs/python-53-verification.log`：53 项、OK、exit=0；其中三项新增 helper 测试覆盖失败后继续、Windows 软链接不可用不能过门、普通 ENOSYS 与 injected ENOSYS 的区分。负例中预期的 failed 文本不被当作 suite 失败。
+- `ci-logs/workflow-cas-verification.log`：YAML/AST、旧 step 不变、HEAD、patch hash、正反向应用、diff-check、空 index，exit=0。审查另独立核对原 workflow 文本和候选身份。
+- `ci-logs/windows-cargo-fixture-terminal-excerpt.log`：明确标为原工具 chunk 3291f4 的**合成 Cargo/libtest fixture 终端摘录**，非本次重新运行 Rust，也非三个服务原生证据。它只支持命令构造、ignored/exact 选择、统计记录接受及 Cargo JSON 解析等 helper 行为。
+
+## 必须保留的验收门
+
+整合后的最终源码 SHA 仍须实际运行三平台矩阵：服务 crate/identity 全套及 Clippy、MSRV check、三平台 20-sample latency、真实 B3 escape/Windows symlink、B4 Windows ignored symlink、Linux 正常 openat2 和强制 ENOSYS fallback。还须核对实际 artifacts、逐命令 exit/skipped 和最终失败传播；不能用本地 53 项 Python 或合成 trace/fixture 代替这些门。
+
+若既有 workspace 步骤提前失败，后续未执行项仍必须如实列 pending，不能从 helper 局部绿推断全套服务绿。此 CI 候选 PASS 不改变 W82-B/Stage E/daemon/SDK 的验收状态，也不覆盖 B3/B4 当前独立修复结论。

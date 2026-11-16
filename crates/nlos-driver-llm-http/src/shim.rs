@@ -550,6 +550,72 @@ impl LlmEnforcementShim {
         })
     }
 
+    pub(crate) fn contains_provider_credential(&self, text: &str) -> bool {
+        match &self.backend {
+            ShimBackend::LocalGateway(config) => {
+                !config.egress_key.is_empty() && text.contains(config.egress_key.expose_secret())
+            }
+            ShimBackend::InProcessPool { scheduler, .. } => scheduler.contains_credential(text),
+        }
+    }
+
+    pub(crate) async fn dispatch_gateway_chat(
+        &self,
+        requested_model: &str,
+        req: &LlmChatRequest,
+        scope_session: &str,
+        now_ms: u64,
+        maximum_attempts: u8,
+        mut authorize: impl FnMut(usize) -> Result<(u64, Option<std::time::Duration>), LlmDriverError>
+        + Send,
+    ) -> Result<crate::http::HttpResponse, LlmDriverError> {
+        let payload = encode_chat_request_json(requested_model, req)?;
+        let endpoint = format!(
+            "{}/chat/completions",
+            self.openai_base_url().trim_end_matches('/')
+        );
+        let client = self.http_client.with_body_ceiling(512 * 1024);
+        match &self.backend {
+            ShimBackend::LocalGateway(cfg) => {
+                let mut headers = vec![
+                    ("Accept", "application/json"),
+                    ("x-pool-session", scope_session),
+                ];
+                let auth;
+                if !cfg.egress_key.is_empty() {
+                    auth = format!("Bearer {}", cfg.egress_key.expose_secret());
+                    headers.push(("Authorization", auth.as_str()));
+                }
+                let (_, timeout) = authorize(1)?;
+                let response = client
+                    .post_json_with_deadline(&endpoint, &headers, &payload, timeout)
+                    .await?;
+                if !(200..300).contains(&response.status_code) {
+                    return Err(LlmDriverError::UpstreamHttpStatus {
+                        status_code: response.status_code,
+                        retry_after_secs: response.retry_after_secs(),
+                        summary: String::new(),
+                    });
+                }
+                Ok(response)
+            }
+            ShimBackend::InProcessPool { scheduler, .. } => {
+                let outcome = scheduler
+                    .post_json_with_attempt_control(
+                        &client,
+                        &endpoint,
+                        Some(scope_session),
+                        &payload,
+                        now_ms,
+                        usize::from(maximum_attempts),
+                        authorize,
+                    )
+                    .await?;
+                Ok(outcome.response)
+            }
+        }
+    }
+
     async fn dispatch_chat_http(
         &self,
         payload_bytes: &[u8],
@@ -697,6 +763,16 @@ fn extract_chat_completion_fields(
     requested_model: &str,
     req: &LlmChatRequest,
 ) -> Result<(String, String, Option<String>, LlmTokenUsage), LlmDriverError> {
+    let (resolved_model, content, reasoning_content) =
+        extract_chat_text_fields(root, requested_model)?;
+    let usage = extract_or_estimate_usage(root, req, &content, reasoning_content.as_deref());
+    Ok((resolved_model, content, reasoning_content, usage))
+}
+
+pub(crate) fn extract_chat_text_fields(
+    root: &JsonValue,
+    requested_model: &str,
+) -> Result<(String, String, Option<String>), LlmDriverError> {
     let resolved_model = root
         .get("model")
         .and_then(JsonValue::as_str)
@@ -728,8 +804,7 @@ fn extract_chat_completion_fields(
         }
     };
 
-    let usage = extract_or_estimate_usage(root, req, &content, reasoning_content.as_deref());
-    Ok((resolved_model, content, reasoning_content, usage))
+    Ok((resolved_model, content, reasoning_content))
 }
 
 fn extract_or_estimate_usage(

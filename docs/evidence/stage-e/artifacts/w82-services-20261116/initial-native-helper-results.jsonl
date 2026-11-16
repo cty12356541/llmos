@@ -1,0 +1,17 @@
+{"label": "source-sha", "status": "passed", "command": ["git", "rev-parse", "HEAD"], "returncode": 0, "log": "source-sha.log"}
+{"label": "rustc-version", "status": "passed", "command": ["rustc", "--version", "--verbose"], "returncode": 0, "log": "rustc-version.log"}
+{"label": "cargo-version", "status": "passed", "command": ["cargo", "--version", "--verbose"], "returncode": 0, "log": "cargo-version.log"}
+{"label": "tool-latency", "status": "passed", "command": ["cargo", "test", "--locked", "-p", "nlos-wasm-sandbox", "--test", "tool_service", "measured_spawn_and_run", "--", "--exact", "--nocapture"], "returncode": 0, "log": "tool-latency.log"}
+{"label": "tool-latency:measured_spawn_and_run", "status": "passed", "detail": "Expected a passing native test result for measured_spawn_and_run"}
+{"label": "tool-latency-sample", "status": "passed", "detail": "platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=23.63 p95_ms=33.13"}
+{"label": "tool-escape-matrix", "status": "passed", "command": ["cargo", "test", "--locked", "-p", "nlos-wasm-sandbox", "--test", "escape_matrix", "--", "--nocapture"], "returncode": 0, "log": "tool-escape-matrix.log"}
+{"label": "escape_preopen_leaf=windows_symlink", "status": "failed", "detail": "Missing native escape fixture marker: escape_preopen_leaf=windows_symlink"}
+{"label": "escape_preopen_leaf=hard_link", "status": "passed", "detail": "Missing native escape fixture marker: escape_preopen_leaf=hard_link"}
+{"label": "escape_preopen_parent=ntfs_junction", "status": "passed", "detail": "Missing native escape fixture marker: escape_preopen_parent=ntfs_junction"}
+{"label": "blob-open-native", "status": "passed", "command": ["cargo", "test", "--locked", "-p", "nlos-capability", "--test", "blob_open", "--", "--nocapture"], "returncode": 0, "log": "blob-open-native.log"}
+{"label": "blob-open-native:opens_only_a_single_link_regular_file_under_the_held_directory", "status": "passed", "detail": "Expected a passing native test result for opens_only_a_single_link_regular_file_under_the_held_directory"}
+{"label": "blob-open-native:repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel", "status": "passed", "detail": "Expected a passing native test result for repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel"}
+{"label": "blob-open-native:repeated_first_open_junction_parent_swaps_do_not_escape", "status": "passed", "detail": "Expected a passing native test result for repeated_first_open_junction_parent_swaps_do_not_escape"}
+{"label": "blob-open-windows-symlink-leaf", "status": "failed", "command": ["cargo", "test", "--locked", "-p", "nlos-capability", "--test", "blob_open", "repeated_first_open_symlink_leaf_swaps_do_not_escape", "--", "--exact", "--ignored", "--nocapture"], "returncode": 101, "log": "blob-open-windows-symlink-leaf.log"}
+{"label": "blob-open-windows-symlink-leaf:repeated_first_open_symlink_leaf_swaps_do_not_escape", "status": "failed", "detail": "Expected a passing native test result for repeated_first_open_symlink_leaf_swaps_do_not_escape"}
+{"label": "blob-open-windows-symlink-swaps", "status": "failed", "detail": "Missing a successful Windows leaf symlink swap record"}

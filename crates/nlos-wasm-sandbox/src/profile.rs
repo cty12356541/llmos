@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::ProfileInvalid;
+use crate::tool_host_protocol::ToolHostLimits;
 
 /// Hard ceiling of a wasm32 linear memory in 64 KiB pages (4 GiB).
 pub const MAX_WASM_MEMORY_PAGES: u64 = 65_536;
@@ -46,36 +47,42 @@ impl PreopenGrant {
         host_root: &Path,
         allow_write: bool,
     ) -> Result<Self, ProfileInvalid> {
-        if guest_dir.is_empty() || !guest_dir.starts_with('/') {
-            return Err(ProfileInvalid::PreopenGuestDirNotAbsolute {
-                guest_dir: guest_dir.to_string(),
-            });
-        }
-        if guest_dir.ends_with('/') || guest_dir.contains('\\') || guest_dir.contains('\0') {
-            return Err(ProfileInvalid::PreopenGuestDirUnsafeComponent {
-                guest_dir: guest_dir.to_string(),
-            });
-        }
-        for component in guest_dir.split('/').skip(1) {
-            if component.is_empty() || component == "." || component == ".." {
-                return Err(ProfileInvalid::PreopenGuestDirUnsafeComponent {
-                    guest_dir: guest_dir.to_string(),
-                });
-            }
-        }
         let canonical_root = std::fs::canonicalize(host_root).map_err(|_| {
             ProfileInvalid::PreopenHostRootInvalid {
                 host_root: host_root.to_path_buf(),
             }
         })?;
-        if !canonical_root.is_dir() {
-            return Err(ProfileInvalid::PreopenHostRootInvalid {
-                host_root: host_root.to_path_buf(),
+        Self::from_host_plan(guest_dir, canonical_root, allow_write)
+    }
+
+    // The trusted parent already resolved the grant. A second canonicalize
+    // could silently follow a replacement alias installed after that check.
+    pub(crate) fn from_host_plan(
+        guest_dir: &str,
+        host_root: PathBuf,
+        allow_write: bool,
+    ) -> Result<Self, ProfileInvalid> {
+        if !guest_dir.starts_with('/') {
+            return Err(ProfileInvalid::PreopenGuestDirNotAbsolute {
+                guest_dir: guest_dir.to_owned(),
             });
         }
+        if guest_dir.contains(['\\', '\0'])
+            || guest_dir
+                .split('/')
+                .skip(1)
+                .any(|component| matches!(component, "" | "." | ".."))
+        {
+            return Err(ProfileInvalid::PreopenGuestDirUnsafeComponent {
+                guest_dir: guest_dir.to_owned(),
+            });
+        }
+        if !host_root.is_absolute() || !host_root.is_dir() {
+            return Err(ProfileInvalid::PreopenHostRootInvalid { host_root });
+        }
         Ok(Self {
-            guest_dir: guest_dir.to_string(),
-            host_root: canonical_root,
+            guest_dir: guest_dir.to_owned(),
+            host_root,
             allow_write,
         })
     }
@@ -112,6 +119,7 @@ pub struct SandboxProfile {
     epoch_tick_interval_ms: u64,
     preopens: Vec<PreopenGrant>,
     guest_args: Vec<String>,
+    tool_limits: Option<ToolHostLimits>,
 }
 
 impl Default for SandboxProfile {
@@ -140,7 +148,17 @@ impl SandboxProfile {
             epoch_tick_interval_ms: 0,
             preopens: Vec::new(),
             guest_args: Vec::new(),
+            tool_limits: None,
         }
+    }
+
+    pub(crate) fn with_tool_limits(mut self, limits: ToolHostLimits) -> Self {
+        self.tool_limits = Some(limits);
+        self
+    }
+
+    pub(crate) fn tool_limits(&self) -> Option<ToolHostLimits> {
+        self.tool_limits
     }
 
     /// Sets the deterministic CPU fuel quota (must be `>= 1`).

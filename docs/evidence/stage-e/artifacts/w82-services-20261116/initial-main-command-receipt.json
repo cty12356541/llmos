@@ -1,0 +1,311 @@
+{
+  "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+  "run_scope": "Initial integrated source, before any followup review fixes.",
+  "source_manifest_sha256": "f6c82338080b8f21dcab29fe0f5229a497a8b481692bb5d4120e648ff65b317d",
+  "source_review_patch_sha256": "d3cd542c03a863cc0f57315a3d05fa3634b11ba0bea47d0fe0ff8b230370fa4c",
+  "commands": {
+    "affected-test": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-driver-llm-http",
+        "-p",
+        "nlos-wasm-sandbox",
+        "-p",
+        "nlos-capability",
+        "-p",
+        "nlos-identity"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T08:38:48.770+00:00",
+      "finished_utc": "2026-11-16T08:41:09.096+00:00",
+      "duration_seconds": 140.328,
+      "exit": 0,
+      "capture_sha256": "90c11a123a0166d0447b9ba37fedbe562a1e25b9993eb6f9db724941568a62de"
+    },
+    "affected-clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "nlos-driver-llm-http",
+        "-p",
+        "nlos-wasm-sandbox",
+        "-p",
+        "nlos-capability",
+        "-p",
+        "nlos-identity",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T08:41:09.097+00:00",
+      "finished_utc": "2026-11-16T08:41:51.682+00:00",
+      "duration_seconds": 42.578,
+      "exit": 0,
+      "capture_sha256": "2aeb882949528f6324dd602a05ff57b6d0f73a82bd1e11e0dcd2980b79cceb56"
+    },
+    "msrv-check": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "check",
+        "--locked",
+        "-p",
+        "nlos-driver-llm-http",
+        "-p",
+        "nlos-wasm-sandbox",
+        "-p",
+        "nlos-capability",
+        "-p",
+        "nlos-identity",
+        "--all-targets"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target\\w82-service-deps"
+      },
+      "started_utc": "2026-11-16T08:41:51.683+00:00",
+      "finished_utc": "2026-11-16T08:42:10.853+00:00",
+      "duration_seconds": 19.172,
+      "exit": 0,
+      "capture_sha256": "d3dce1fd678cd1800fb59ac55cfc4c776e5eee65d7e7a0fc4c79176e08f20875"
+    },
+    "workspace-fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:38:49.439+00:00",
+      "finished_utc": "2026-11-16T08:38:56.609+00:00",
+      "duration_seconds": 7.156,
+      "exit": 0,
+      "capture_sha256": "cf6602f5f45e4f46c3cbb337d288da8c894b88a6e9cbda952a23faebb99a79b4"
+    },
+    "supply-chain": {
+      "command": [
+        "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/conformance/schema",
+        "-p",
+        "test_lockfile_supply_chain_gate.py",
+        "-v"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:38:56.609+00:00",
+      "finished_utc": "2026-11-16T08:38:56.749+00:00",
+      "duration_seconds": 0.14,
+      "exit": 0,
+      "capture_sha256": "ba05e4ed617ed371259cc1ff2d190a4623400ae885e0d7d658b7555e3edca97e"
+    },
+    "metadata-root": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:38:56.750+00:00",
+      "finished_utc": "2026-11-16T08:38:58.794+00:00",
+      "duration_seconds": 2.047,
+      "exit": 0,
+      "capture_sha256": "dbf255dfd99d1eb5b9d906df0aaabf049c6716087cecce075c3c574e742108a3"
+    },
+    "metadata-desktop": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:38:58.935+00:00",
+      "finished_utc": "2026-11-16T08:39:22.754+00:00",
+      "duration_seconds": 23.828,
+      "exit": 0,
+      "capture_sha256": "4c74159c9a3704725a746862110771a7c1156816bf88e4fdf1265c53d394847b"
+    },
+    "metadata-road": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "tests/stage_e_road_e001_upgrade_gate/Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:39:22.887+00:00",
+      "finished_utc": "2026-11-16T08:39:25.471+00:00",
+      "duration_seconds": 2.594,
+      "exit": 0,
+      "capture_sha256": "d5ca323c079b36aa8c4624737763e79b284b616e085cd690184c8b66b00992dd"
+    },
+    "metadata-ecosystem-apps": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "examples/ecosystem-apps/Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:39:25.472+00:00",
+      "finished_utc": "2026-11-16T08:39:25.762+00:00",
+      "duration_seconds": 0.281,
+      "exit": 0,
+      "capture_sha256": "6651511980edec0287471038f1ea2dde06bbb8e2674f94668e6145fca30ee5ff"
+    },
+    "metadata-sample-app": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "examples/sample-app/Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:39:25.763+00:00",
+      "finished_utc": "2026-11-16T08:39:26.068+00:00",
+      "duration_seconds": 0.313,
+      "exit": 0,
+      "capture_sha256": "5e339863a7356de75527742e11eb56870034f954e932f4b3478d6eb387f44341"
+    },
+    "metadata-starter-assistant-app": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "examples/starter-assistant-app/Cargo.toml"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1"
+      },
+      "started_utc": "2026-11-16T08:39:26.068+00:00",
+      "finished_utc": "2026-11-16T08:39:26.553+00:00",
+      "duration_seconds": 0.484,
+      "exit": 0,
+      "capture_sha256": "51917944c5ca101360319aff0e0bcde41e8d4d12c4850b8c24c37baf37b70e0b"
+    },
+    "road-e001": {
+      "command": [
+        "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "scripts/run_road_e001_upgrade_matrix.py",
+        "--json"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T08:42:10.855+00:00",
+      "finished_utc": "2026-11-16T08:44:49.892+00:00",
+      "duration_seconds": 159.047,
+      "exit": 0,
+      "capture_sha256": "ae48c4f73657a43aaeb12a8568fc6716e504b873b523197a0000d5603acbf93b"
+    },
+    "native-ci-helper": {
+      "command": [
+        "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "scripts/verify_w82_service_evidence.py",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\services-integration-logs\\native-ci-helper"
+      ],
+      "cwd": "D:\\llmos",
+      "env": {
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONUTF8": "1",
+        "CARGO_TARGET_DIR": "D:\\llmos\\target"
+      },
+      "started_utc": "2026-11-16T08:44:49.892+00:00",
+      "finished_utc": "2026-11-16T08:45:42.784+00:00",
+      "duration_seconds": 52.89,
+      "exit": 1,
+      "capture_sha256": "451298674be29f1b870f4ae83800b7717e3f8a4bc83b6e4ef0756f4210641eea"
+    }
+  }
+}

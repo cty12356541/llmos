@@ -1,0 +1,22 @@
+   Compiling nlos-driver-llm-http v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b2-gateway\llmos\crates\nlos-driver-llm-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.99s
+     Running tests\gateway.rs (D:/llmos/target/w82-b2\debug\deps\gateway-204db6084248cbfd.exe)
+
+running 1 test
+test authority_ancestor_shrink_after_dispatch_rejects_child_settlement ... FAILED
+
+failures:
+
+---- authority_ancestor_shrink_after_dispatch_rejects_child_settlement stdout ----
+
+thread 'authority_ancestor_shrink_after_dispatch_rejects_child_settlement' (9804) panicked at crates\nlos-driver-llm-http\tests\gateway.rs:1307:35:
+called `Result::unwrap_err()` on an `Ok` value: ChatReply { operation: OperationId(e66c1a76f09fe06e92c0999fdb327895), receipt: ReceiptId(efd39eb88e0738d77b38b16125fc4c56), .. }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    authority_ancestor_shrink_after_dispatch_rejects_child_settlement
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p nlos-driver-llm-http --test gateway`

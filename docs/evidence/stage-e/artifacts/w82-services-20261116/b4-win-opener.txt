@@ -1,0 +1,17 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests\blob_open.rs (D:/llmos/target/w82-b4\debug\deps\blob_open-6f553f0af1e055a6.exe)
+
+running 5 tests
+test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege
+test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok
+test opens_only_a_single_link_regular_file_under_the_held_directory ... ok
+junction: swaps=130 inside=814 safe_rejection=1234 exterior_or_unexpected=0
+test repeated_first_open_junction_parent_swaps_do_not_escape ... ok
+replacement: swaps=512 inside=489 safe_rejection=1559 exterior_or_unexpected=0
+test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.92s

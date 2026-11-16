@@ -1,0 +1,30 @@
+    Checking nlos-types v0.1.0 (D:\llmos\crates\nlos-types)
+    Checking windows_x86_64_msvc v0.52.6
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking io-lifetimes v2.0.4
+    Checking windows-targets v0.52.6
+    Checking windows-sys v0.52.0
+    Checking io-lifetimes v3.0.1
+    Checking ipnet v2.12.2
+    Checking ambient-authority v0.0.2
+    Checking maybe-owned v0.3.4
+    Checking fs-set-times v0.20.3
+    Checking io-extras v0.19.0
+    Checking winx v0.36.4
+    Checking nlos-clock v0.1.0 (D:\llmos\crates\nlos-clock)
+    Checking nlos-store-fault v0.1.0 (D:\llmos\crates\nlos-store-fault)
+    Checking cap-primitives v4.0.3
+    Checking nlos-runtime v0.1.0 (D:\llmos\crates\nlos-runtime)
+    Checking nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+    Checking tokio v1.54.1
+    Checking cap-std v4.0.3
+    Checking nlos-operation v0.1.0 (D:\llmos\crates\nlos-operation)
+    Checking cap-fs-ext v4.0.3
+    Checking nlos-store v0.1.0 (D:\llmos\crates\nlos-store)
+    Checking nlos-resource v0.1.0 (D:\llmos\crates\nlos-resource)
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking nlos-ipc v0.1.0 (D:\llmos\crates\nlos-ipc)
+    Checking nlos-driver-mock v0.1.0 (D:\llmos\crates\nlos-driver-mock)
+    Checking nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Checking nlos-driver-llm-http v0.1.0 (D:\llmos\crates\nlos-driver-llm-http)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 42.40s

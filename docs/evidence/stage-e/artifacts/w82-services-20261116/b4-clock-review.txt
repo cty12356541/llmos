@@ -1,0 +1,31 @@
+# W82-B4 / Attempt 20261116-2 — Fix 2 scoped复审
+
+**Verdict：PASS（仅F3及Fix 2影响面）。F3/P2：ADDRESSED。** 未发现本增量引入的新代码问题。F1/P1和F2/P2保持已关闭，不重审已通过的存储模型；这不是跨平台、独立WAL任务或生产接线的完成声明。
+
+## 候选身份与CAS
+
+- 工作树`C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos`，base/HEAD仍为`cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，index为空。
+- 三文件`b4-logs/fix2.delta`已完整阅读，SHA-256实测`7c0f8f622ecf5cf669d2c3563663cb0820c188eda2100353702b579a95daee9f`。完整候选`fix2-review.diff`只核对身份，SHA为`848fda20ffafa14e2223ba15d9843d3062bfc7fa5ff65a1ee955d6f75f9bd12c`，未重读全量补丁。
+- 当前10个Rust文件LF-normalized摘要逐项与`fix2-code-receipt.json`一致；除本次`blob_reference.rs`及其测试外，其余8个Rust文件与Fix 1相同。冻结service_call和Cargo.lock Git blob分别仍为`72d8053faabf6f465e5f042f2f75c135d7fc4ade`和`c3928b59dfb83b2eff4365983c36dfdf0a2c587d`。
+- 读取Fix 2回执、完整增量及取时/Timing的必要邻近源码；没有改动候选、Cargo、index或HEAD，没有派下属、重跑整套测试或追加无具体风险的探针。
+
+## F3 — ADDRESSED
+
+`crates/nlos-capability/src/blob_reference.rs:778–792`先按Timing取得独立last_time锁，然后执行clock回调、检查本地截止时间、同时校验wall和monotonic，最后单次写入`Some(now)`。因此正常较早采样不能再被较晚采样越过并先发布。
+
+回调错误、本地候样超时、超界wall或任一域真实回退都在paired publication之前返回，既不会单独推进另一个域，也没有clamp/max掩盖真回退。既有Timing传入同一取时helper；等待使用其原本地截止点，没有每次采样重新发放时间预算。clock仍位于authority DB锁外；继续依赖已声明的clock/policy不递归进入同一服务约束。
+
+`begin`在取得首次可信样本前使用本地100ms候样边界，失败映射为TimeUnavailable；首样本后检查原host deadline，并从原started计算本地截止点，不因候样延长预算。维护使用5秒本地候样边界。该工程默认已由integrator接受：**100ms仅约束首次取时锁等待/候样的失败边界，不是所有服务请求的100ms SLA，也不代表可以硬中断受信同步回调或kernel I/O。** Evidence对这些边界表述准确。
+
+## 相关回归与fixture影响
+
+- `fix2-clock-green.txt`：5/5通过；暂停较早合法样本时`newer_first=false`、两调用均`Ok(0)`。真实wall回退、monotonic回退及回调错误分别拒绝，随后较低但仍高于最后合法pair的样本通过，验证失败样本未污染任一高水位。
+- 同日志：首次锁争用100.194ms返回TimeUnavailable；已有80ms截止点的读80.5768ms返回DeadlineExpired且零read receipt。完整Blob套件中的对应值为100.075ms和80.477ms，均与源代码约束一致。
+- `release_during_mint_delivery_cannot_leave_a_published_pin`的夹具调整没有改成顺序释放：仍先确认mint已durable且阻塞于响应取时，随后另线程启动release，确认其未完成后才放行clock，最后验证Released和active_global=1容量回收。串行取时要求release排队属于预期；未发现pin发布/回收语义在此增量退化。
+- `fix2-blob-suite.txt`实际为40pass/1ignored、7.42秒，包含上述并发release及原F1/F2回归。`fix2-clippy.txt`显示all-targets检查成功。这里是核对已执行日志，未声称reviewer重新运行这些测试。
+
+## 回执与out-of-scope
+
+- **回执指针待补：** `b4-report.md`列出的`b4-logs/fix2-fmt.txt`在本次读取时不存在，已告知integrator。源报告声称fmt退出0，但本reviewer未从该指定文件独立核对；请补正确日志或修正指针。此项是证据归档问题，不构成已发现的F3代码缺陷，也不要求重跑完整套件。
+- **OUT OF SCOPE：** B4-WAL独立树test-only任务、Linux/macOS和fallback、Windows symlink权限、完整Capability/Identity/MSRV重新执行、隔离内存复测及daemon/SDK/qq-agent生产闭环，均保留各自验收状态。本轮不继承其他SHA的通过、不将未运行项标成通过。
+- **NOT ADDRESSED：** 本轮F3无残留代码finding。Fix 2局部Spec compliance与Code quality均通过；候选最终集成、独立WAL证据和跨平台屏障仍由integrator处理。

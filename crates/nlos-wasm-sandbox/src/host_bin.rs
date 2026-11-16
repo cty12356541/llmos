@@ -18,10 +18,16 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use crate::error::{SandboxError, sanitize_detail};
 use crate::isolate::{GuestOutcome, run_guest};
 use crate::profile::{PreopenGrant, SandboxProfile};
+use crate::tool_host_protocol::{
+    MAX_WALL_MS, ToolHostLimits, parse_digest, read_artifact, write_stderr_frame,
+};
 use crate::wasi_allowlist::StdioSink;
 
 /// Child exit code for malformed argv.
@@ -62,6 +68,69 @@ struct ParsedPreopen {
 }
 
 /// The fully parsed host argv.
+struct ToolPlan {
+    digest: [u8; 32],
+    limits: ToolHostLimits,
+    wall_ms: u64,
+}
+
+#[derive(Default)]
+struct ToolPlanArgs {
+    digest: Option<[u8; 32]>,
+    limits: Option<ToolHostLimits>,
+    wall_ms: Option<u64>,
+}
+
+impl ToolPlanArgs {
+    fn set(&mut self, flag: &str, value: &str) -> Result<(), String> {
+        match flag {
+            "--tool-digest" if self.digest.is_none() => {
+                self.digest = Some(parse_digest(value).ok_or("bad tool digest")?);
+            }
+            "--tool-limits" if self.limits.is_none() => {
+                let mut parts = value.split(',');
+                let mut next = || parts.next().ok_or("missing tool limit");
+                let limits = ToolHostLimits {
+                    stdout: next()?.parse().map_err(|_| "bad stdout limit")?,
+                    stderr: next()?.parse().map_err(|_| "bad stderr limit")?,
+                    file_write: next()?.parse().map_err(|_| "bad file write limit")?,
+                };
+                if parts.next().is_some() {
+                    return Err("extra tool limits".into());
+                }
+                self.limits = Some(limits);
+            }
+            "--tool-wall-ms" if self.wall_ms.is_none() => {
+                self.wall_ms = Some(value.parse().map_err(|_| "bad tool wall limit")?);
+            }
+            _ => return Err("duplicate tool flag".into()),
+        }
+        Ok(())
+    }
+
+    fn finish(self, ticks: u64, interval_ms: u64) -> Result<Option<ToolPlan>, String> {
+        match (self.digest, self.limits, self.wall_ms) {
+            (None, None, None) => Ok(None),
+            (Some(digest), Some(limits), Some(wall_ms))
+                if limits.valid()
+                    && (1..=MAX_WALL_MS).contains(&wall_ms)
+                    && ticks > 0
+                    && interval_ms > 0
+                    && ticks
+                        .checked_mul(interval_ms)
+                        .is_some_and(|epoch_ms| epoch_ms <= MAX_WALL_MS) =>
+            {
+                Ok(Some(ToolPlan {
+                    digest,
+                    limits,
+                    wall_ms,
+                }))
+            }
+            _ => Err("invalid tool process plan".into()),
+        }
+    }
+}
+
 struct HostRunPlan {
     wasm_path: PathBuf,
     entrypoint: String,
@@ -71,6 +140,7 @@ struct HostRunPlan {
     epoch_interval_ms: u64,
     preopens: Vec<ParsedPreopen>,
     guest_args: Vec<String>,
+    tool: Option<ToolPlan>,
 }
 
 /// Returns the UTF-8 string value immediately after position `index`.
@@ -126,6 +196,7 @@ fn parse_argv(argv: &[OsString]) -> Result<HostRunPlan, String> {
     let mut preopens: Vec<ParsedPreopen> = Vec::new();
     let mut guest_args: Vec<String> = Vec::new();
 
+    let mut tool_args = ToolPlanArgs::default();
     let mut index = 0;
     while index < argv.len() {
         let flag = argv[index].to_str().unwrap_or_default().to_string();
@@ -161,6 +232,10 @@ fn parse_argv(argv: &[OsString]) -> Result<HostRunPlan, String> {
                 let preopen = parse_preopen(argv, &mut index)?;
                 preopens.push(preopen);
             }
+            "--tool-digest" | "--tool-limits" | "--tool-wall-ms" => {
+                tool_args.set(&flag, &value_after(argv, index, &flag)?)?;
+                index += 2;
+            }
             "--arg" => {
                 guest_args.push(value_after(argv, index, "--arg")?);
                 index += 2;
@@ -177,6 +252,7 @@ fn parse_argv(argv: &[OsString]) -> Result<HostRunPlan, String> {
     if epoch_ticks > 0 && epoch_interval_ms == 0 {
         return Err("--epoch-ticks requires --epoch-interval-ms".to_string());
     }
+    let tool = tool_args.finish(epoch_ticks, epoch_interval_ms)?;
     Ok(HostRunPlan {
         wasm_path,
         entrypoint,
@@ -186,6 +262,7 @@ fn parse_argv(argv: &[OsString]) -> Result<HostRunPlan, String> {
         epoch_interval_ms,
         preopens,
         guest_args,
+        tool,
     })
 }
 
@@ -197,11 +274,18 @@ fn plan_to_profile(plan: &HostRunPlan) -> Result<SandboxProfile, SandboxError> {
         profile = profile.with_epoch_deadline(plan.epoch_ticks, plan.epoch_interval_ms);
     }
     for preopen in &plan.preopens {
-        let grant = PreopenGrant::new(&preopen.guest_dir, &preopen.host_root, preopen.allow_write)
-            .map_err(SandboxError::Profile)?;
+        let grant = PreopenGrant::from_host_plan(
+            &preopen.guest_dir,
+            preopen.host_root.clone(),
+            preopen.allow_write,
+        )
+        .map_err(SandboxError::Profile)?;
         profile = profile.with_preopen(grant);
     }
     profile = profile.with_guest_args(plan.guest_args.clone());
+    if let Some(tool) = &plan.tool {
+        profile = profile.with_tool_limits(tool.limits);
+    }
     profile.validate().map_err(SandboxError::Profile)?;
     Ok(profile)
 }
@@ -210,7 +294,7 @@ fn plan_to_profile(plan: &HostRunPlan) -> Result<SandboxProfile, SandboxError> {
 /// process exit code. Reads the environment only in audit mode.
 #[must_use]
 pub fn host_main(argv: &[OsString]) -> i32 {
-    if argv.iter().any(|a| a == "--self-audit-env") {
+    if argv.len() == 1 && argv[0] == "--self-audit-env" {
         // The only code path that reads the environment: counting it to
         // attest that the orchestrating parent passed an empty one.
         let count = std::env::vars_os().count();
@@ -231,6 +315,10 @@ pub fn host_main(argv: &[OsString]) -> i32 {
             return EXIT_BAD_ARGUMENTS;
         }
     };
+
+    if let Some(tool) = &plan.tool {
+        return run_tool_plan(&plan, tool);
+    }
 
     let profile = match plan_to_profile(&plan) {
         Ok(profile) => profile,
@@ -284,6 +372,10 @@ pub fn host_main(argv: &[OsString]) -> i32 {
                     emit_report("guest-exit", i64::from(code), "proc-exit", stdout_len);
                     code
                 }
+                GuestOutcome::Limit(limit) => {
+                    emit_report("trap", 0, limit.token(), stdout_len);
+                    EXIT_TRAPPED
+                }
                 GuestOutcome::Trapped { kind } => {
                     emit_report("trap", 0, &kind.report_token(), stdout_len);
                     EXIT_TRAPPED
@@ -302,6 +394,88 @@ pub fn host_main(argv: &[OsString]) -> i32 {
                 0,
             );
             EXIT_HOST_ERROR
+        }
+    }
+}
+
+pub(crate) const EXIT_TOOL_WATCHDOG: i32 = 71;
+
+fn emit_tool_report(outcome: &str, code: i32, detail: &str, stdout_len: u64) {
+    let line = format!(
+        "NLOS-HOST-R1 outcome={outcome} code={code} detail={detail} guest_stdout_len={stdout_len}"
+    );
+    let _ = write_stderr_frame(std::io::stderr().lock(), line.as_bytes(), true);
+}
+
+fn run_tool_plan(plan: &HostRunPlan, tool: &ToolPlan) -> i32 {
+    // Wasmtime's epoch interrupts guest code. This watchdog also bounds host
+    // compilation and any synchronous WASI call when the parent disappears.
+    let hard_limit = Duration::from_millis(tool.wall_ms + 250);
+    if std::thread::Builder::new()
+        .spawn(move || {
+            std::thread::sleep(hard_limit);
+            std::process::exit(EXIT_TOOL_WATCHDOG);
+        })
+        .is_err()
+    {
+        return EXIT_HOST_ERROR;
+    }
+    let Ok(profile) = plan_to_profile(plan) else {
+        emit_tool_report("host-error", EXIT_PROFILE_INVALID, "profile-invalid", 0);
+        return EXIT_PROFILE_INVALID;
+    };
+    let Ok(bytes) = read_artifact(&plan.wasm_path) else {
+        emit_tool_report("host-error", EXIT_GUEST_READ_FAILED, "guest-read-failed", 0);
+        return EXIT_GUEST_READ_FAILED;
+    };
+    if Sha256::digest(&bytes).as_slice() != tool.digest {
+        emit_tool_report("host-error", EXIT_GUEST_READ_FAILED, "artifact-changed", 0);
+        return EXIT_GUEST_READ_FAILED;
+    }
+    let (outcome, mut sink) = match run_guest(
+        &profile,
+        &bytes,
+        &plan.entrypoint,
+        Box::new(StdioSink::tool()),
+    ) {
+        Ok(pair) => pair,
+        Err(error) => {
+            emit_tool_report(
+                "host-error",
+                EXIT_HOST_ERROR,
+                sandbox_error_token(&error),
+                0,
+            );
+            return EXIT_HOST_ERROR;
+        }
+    };
+    let stdout_len = sink
+        .as_any()
+        .downcast_mut::<StdioSink>()
+        .map_or(0, |sink| sink.guest_stdout_len);
+    match outcome {
+        GuestOutcome::Completed { code, .. } => {
+            emit_tool_report("completed", code, "entrypoint-returned", stdout_len);
+            0
+        }
+        GuestOutcome::Exited { code, .. } => {
+            emit_tool_report("guest-exit", code, "proc-exit", stdout_len);
+            code
+        }
+        GuestOutcome::Limit(limit) => {
+            emit_tool_report("trap", 0, limit.token(), stdout_len);
+            EXIT_TRAPPED
+        }
+        GuestOutcome::Trapped { kind } => {
+            // Error text can include guest bytes and paths. Tool mode emits
+            // a fixed vocabulary over its private process protocol.
+            let detail = match kind {
+                crate::TrapKind::EpochInterrupt => "epoch-interrupt",
+                crate::TrapKind::OutOfFuel => "out-of-fuel",
+                _ => "guest-trap",
+            };
+            emit_tool_report("trap", 0, detail, stdout_len);
+            EXIT_TRAPPED
         }
     }
 }

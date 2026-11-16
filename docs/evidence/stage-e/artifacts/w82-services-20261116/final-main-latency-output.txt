@@ -1,0 +1,6 @@
+
+running 1 test
+platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=23.81 p95_ms=48.77
+test measured_spawn_and_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.61s

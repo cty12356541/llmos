@@ -1,0 +1,26 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.16s
+     Running tests\escape_matrix.rs (D:/llmos/target/w82-b3\debug\deps\escape_matrix-68606b84a789bc43.exe)
+
+running 16 tests
+test socket_import_is_absent_and_rejects_instantiation ... ok
+test guest_stdout_flows_through_isolated_child_pipe ... ok
+test guest_argv_is_exactly_the_declared_explicit_arguments ... ok
+escape_preopen_leaf=hard_link
+test isolated_child_inherits_zero_host_environment_variables ... ok
+escape_preopen_leaf=windows_symlink_unavailable os_error=1314
+test writable_grant_refuses_a_symbolic_link_as_file ... ok
+escape_preopen_parent=ntfs_junction
+test in_whitelist_read_succeeds_with_exact_bytes ... ok
+test epoch_deadline_interrupts_before_fuel_exhaustion ... ok
+test fuel_exhaustion_terminates_guest_deterministically ... ok
+test memory_over_allocation_is_terminated_by_store_limiter ... ok
+test wasi_layer_environment_is_empty_for_isolated_child ... ok
+test writable_grant_refuses_a_hard_link_as_file ... ok
+test preopen_discovery_reports_grant_and_default_is_badf ... ok
+test readonly_grant_denies_writes_and_write_grant_lands_bytes ... ok
+test preopen_parent_replacement_does_not_retarget_the_grant ... ok
+test path_traversal_and_absolute_escapes_are_denied_with_notcapable ... ok
+test wall_clock_deadline_hard_kills_unbounded_guest ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s

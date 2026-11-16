@@ -28,7 +28,7 @@ use wasmtime::{Config, Engine, Module, ResourceLimiter, Store, Trap};
 
 use crate::error::{SandboxError, TrapKind, sanitize_detail};
 use crate::profile::{SandboxProfile, WASM_PAGE_BYTES};
-use crate::wasi_allowlist::{GuestExited, GuestIoSink, GuestState, add_to_linker};
+use crate::wasi_allowlist::{GuestExited, GuestIoSink, GuestLimit, GuestState, add_to_linker};
 
 /// Hard cap on table elements per store (deny-by-default hardening).
 const MAX_TABLE_ELEMENTS: usize = 1024;
@@ -44,14 +44,16 @@ const MAX_MEMORIES: usize = 2;
 #[derive(Debug)]
 pub(crate) struct PageLimiter {
     max_memory_bytes: usize,
+    maximum_memories: usize,
 }
 
 impl PageLimiter {
     /// Creates a limiter allowing at most `max_pages` 64 KiB pages.
-    pub(crate) fn new(max_pages: u64) -> Self {
+    pub(crate) fn new(max_pages: u64, tool: bool) -> Self {
         let max_bytes = max_pages.saturating_mul(WASM_PAGE_BYTES);
         Self {
             max_memory_bytes: usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            maximum_memories: if tool { 1 } else { MAX_MEMORIES },
         }
     }
 }
@@ -84,7 +86,7 @@ impl ResourceLimiter for PageLimiter {
     }
 
     fn memories(&self) -> usize {
-        MAX_MEMORIES
+        self.maximum_memories
     }
 }
 
@@ -101,8 +103,10 @@ impl EpochTicker {
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
-                engine.increment_epoch();
-                std::thread::sleep(interval);
+                std::thread::park_timeout(interval);
+                if !thread_stop.load(Ordering::Relaxed) {
+                    engine.increment_epoch();
+                }
             }
             // One final increment so a deadline that became due during the
             // last sleep is still observed.
@@ -119,6 +123,7 @@ impl Drop for EpochTicker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
             let _unused = handle.join();
         }
     }
@@ -141,6 +146,7 @@ pub(crate) enum GuestOutcome {
         /// Fuel remaining after the run.
         fuel_remaining: Option<u64>,
     },
+    Limit(GuestLimit),
     /// The engine terminated the guest; see [`TrapKind`].
     Trapped {
         /// Classified trap kind.
@@ -149,6 +155,9 @@ pub(crate) enum GuestOutcome {
 }
 
 fn classify_call_error(error: &wasmtime::Error) -> Option<GuestOutcome> {
+    if let Some(limit) = error.downcast_ref::<GuestLimit>() {
+        return Some(GuestOutcome::Limit(*limit));
+    }
     if let Some(exit) = error.downcast_ref::<GuestExited>() {
         return Some(GuestOutcome::Exited {
             code: exit.code,
@@ -199,7 +208,22 @@ pub(crate) fn run_guest(
             detail: sanitize_detail(&e.to_string()),
         })?;
 
-    let mut store = Store::new(&engine, GuestState::new(profile, sink));
+    let mut store = Store::new(&engine, GuestState::new(profile, sink)?);
+    if profile.tool_limits().is_some() {
+        let Some(export) = module.get_export(entrypoint) else {
+            return Err(SandboxError::EntrypointMissing {
+                name: entrypoint.into(),
+            });
+        };
+        if !matches!(export, wasmtime::ExternType::Func(signature)
+            if signature.params().len() == 0 && signature.results().len() == 1
+                && matches!(signature.results().next(), Some(wasmtime::ValType::I32)))
+        {
+            return Err(SandboxError::EntrypointSignatureInvalid {
+                name: entrypoint.into(),
+            });
+        }
+    }
     store
         .set_fuel(profile.fuel())
         .map_err(|e| SandboxError::GuestEngineFailure {
@@ -226,11 +250,22 @@ pub(crate) fn run_guest(
         None
     };
 
-    let instance = linker.instantiate(&mut store, &module).map_err(|e| {
-        SandboxError::GuestInstantiationRejected {
-            detail: sanitize_detail(&e.to_string()),
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(instance) => instance,
+        Err(error) if profile.tool_limits().is_some() => {
+            if let Some(outcome) = classify_call_error(&error) {
+                return Ok((outcome, store.into_data().into_sink()));
+            }
+            return Err(SandboxError::GuestInstantiationRejected {
+                detail: "tool-instantiation".into(),
+            });
         }
-    })?;
+        Err(error) => {
+            return Err(SandboxError::GuestInstantiationRejected {
+                detail: sanitize_detail(&error.to_string()),
+            });
+        }
+    };
     let Some(raw_func) = instance.get_func(&mut store, entrypoint) else {
         return Err(SandboxError::EntrypointMissing {
             name: entrypoint.to_string(),
@@ -254,7 +289,7 @@ pub(crate) fn run_guest(
                 code,
                 fuel_remaining,
             },
-            Some(GuestOutcome::Trapped { kind }) => GuestOutcome::Trapped { kind },
+            Some(outcome) => outcome,
             _ => GuestOutcome::Trapped {
                 kind: TrapKind::Other {
                     detail: sanitize_detail(&error.to_string()),

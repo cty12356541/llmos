@@ -1,0 +1,145 @@
+source-sha: ["git", "rev-parse", "HEAD"]
+cdb0d10d0a68c7d23b04081bc0031942cbb2b893
+source-sha: passed
+rustc-version: ["rustc", "--version", "--verbose"]
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-pc-windows-msvc
+release: 1.99.0
+LLVM version: 23.1.1
+rustc-version: passed
+cargo-version: ["cargo", "--version", "--verbose"]
+cargo 1.99.0 (5f94df478 2026-08-27)
+release: 1.99.0
+commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e
+commit-date: 2026-08-27
+host: x86_64-pc-windows-msvc
+libgit2: 1.9.6 (sys:0.21.0 vendored)
+libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:Schannel)
+os: Windows 10.0.28000 (Windows 11 Professional) [64-bit]
+cargo-version: passed
+tool-latency: ["cargo", "test", "--locked", "-p", "nlos-wasm-sandbox", "--test", "tool_service", "measured_spawn_and_run", "--", "--exact", "--nocapture"]
+   Compiling windows-sys v0.61.2
+   Compiling bytes v1.12.1
+   Compiling nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+   Compiling prost v0.14.4
+   Compiling prost-types v0.14.4
+   Compiling winapi-util v0.1.11
+   Compiling cap-primitives v4.0.3
+   Compiling termcolor v1.4.1
+   Compiling prost-build v0.14.4
+   Compiling wasmprinter v0.261.0
+   Compiling cap-std v4.0.3
+   Compiling wasmtime-internal-jit-icache-coherence v50.0.1
+   Compiling cap-fs-ext v4.0.3
+   Compiling tempfile v3.27.0
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+   Compiling wasmtime-environ v50.0.1
+   Compiling nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+   Compiling wasmtime-internal-unwinder v50.0.1
+   Compiling wasmtime-internal-fiber v50.0.1
+   Compiling wasmtime-internal-cache v50.0.1
+   Compiling wasmtime-internal-cranelift v50.0.1
+   Compiling wasmtime v50.0.1
+   Compiling nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.89s
+     Running tests\tool_service.rs (target\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 1 test
+platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=23.63 p95_ms=33.13
+test measured_spawn_and_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.67s
+
+tool-latency: passed
+tool-latency:measured_spawn_and_run: passed
+tool-latency-sample: passed
+tool-escape-matrix: ["cargo", "test", "--locked", "-p", "nlos-wasm-sandbox", "--test", "escape_matrix", "--", "--nocapture"]
+   Compiling nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.87s
+     Running tests\escape_matrix.rs (target\debug\deps\escape_matrix-68606b84a789bc43.exe)
+
+running 16 tests
+test guest_argv_is_exactly_the_declared_explicit_arguments ... ok
+test guest_stdout_flows_through_isolated_child_pipe ... ok
+test isolated_child_inherits_zero_host_environment_variables ... ok
+escape_preopen_leaf=hard_link
+test socket_import_is_absent_and_rejects_instantiation ... ok
+escape_preopen_leaf=windows_symlink_unavailable os_error=1314
+test writable_grant_refuses_a_symbolic_link_as_file ... ok
+test in_whitelist_read_succeeds_with_exact_bytes ... ok
+test memory_over_allocation_is_terminated_by_store_limiter ... ok
+test epoch_deadline_interrupts_before_fuel_exhaustion ... ok
+escape_preopen_parent=ntfs_junction
+test fuel_exhaustion_terminates_guest_deterministically ... ok
+test wasi_layer_environment_is_empty_for_isolated_child ... ok
+test writable_grant_refuses_a_hard_link_as_file ... ok
+test readonly_grant_denies_writes_and_write_grant_lands_bytes ... ok
+test preopen_discovery_reports_grant_and_default_is_badf ... ok
+test preopen_parent_replacement_does_not_retarget_the_grant ... ok
+test path_traversal_and_absolute_escapes_are_denied_with_notcapable ... ok
+test wall_clock_deadline_hard_kills_unbounded_guest ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+tool-escape-matrix: passed
+escape_preopen_leaf=windows_symlink: failed
+Missing native escape fixture marker: escape_preopen_leaf=windows_symlink
+escape_preopen_leaf=hard_link: passed
+escape_preopen_parent=ntfs_junction: passed
+blob-open-native: ["cargo", "test", "--locked", "-p", "nlos-capability", "--test", "blob_open", "--", "--nocapture"]
+   Compiling prost v0.14.4
+   Compiling windows-sys v0.61.2
+   Compiling nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+   Compiling prost-types v0.14.4
+   Compiling nlos-store-fault v0.1.0 (D:\llmos\crates\nlos-store-fault)
+   Compiling prost-build v0.14.4
+   Compiling cap-primitives v4.0.3
+   Compiling cap-std v4.0.3
+   Compiling cap-fs-ext v4.0.3
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+   Compiling nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.17s
+     Running tests\blob_open.rs (target\debug\deps\blob_open-6f553f0af1e055a6.exe)
+
+running 5 tests
+test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege
+test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok
+test opens_only_a_single_link_regular_file_under_the_held_directory ... ok
+junction: swaps=154 inside=608 safe_rejection=1440 exterior_or_unexpected=0
+test repeated_first_open_junction_parent_swaps_do_not_escape ... ok
+replacement: swaps=512 inside=488 safe_rejection=1560 exterior_or_unexpected=0
+test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.99s
+
+blob-open-native: passed
+blob-open-native:opens_only_a_single_link_regular_file_under_the_held_directory: passed
+blob-open-native:repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel: passed
+blob-open-native:repeated_first_open_junction_parent_swaps_do_not_escape: passed
+blob-open-windows-symlink-leaf: ["cargo", "test", "--locked", "-p", "nlos-capability", "--test", "blob_open", "repeated_first_open_symlink_leaf_swaps_do_not_escape", "--", "--exact", "--ignored", "--nocapture"]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running tests\blob_open.rs (target\debug\deps\blob_open-6f553f0af1e055a6.exe)
+
+running 1 test
+
+thread 'repeated_first_open_symlink_leaf_swaps_do_not_escape' (29060) panicked at crates\nlos-capability\tests\blob_open.rs:308:77:
+called `Result::unwrap()` on an `Err` value: Os { code: 1314, kind: Uncategorized, message: "客户端没有所需的特权。" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test repeated_first_open_symlink_leaf_swaps_do_not_escape ... FAILED
+
+failures:
+
+failures:
+    repeated_first_open_symlink_leaf_swaps_do_not_escape
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nlos-capability --test blob_open`
+blob-open-windows-symlink-leaf: failed
+blob-open-windows-symlink-leaf:repeated_first_open_symlink_leaf_swaps_do_not_escape: failed
+Expected a passing native test result for repeated_first_open_symlink_leaf_swaps_do_not_escape
+blob-open-windows-symlink-swaps: failed
+Missing a successful Windows leaf symlink swap record

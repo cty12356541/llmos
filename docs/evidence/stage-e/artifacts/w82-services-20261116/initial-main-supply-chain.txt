@@ -1,0 +1,8 @@
+test_rejects_floating_versions_missing_checksums_and_missing_sri_integrity (test_lockfile_supply_chain_gate.LockfileSupplyChainConformanceGateTests.test_rejects_floating_versions_missing_checksums_and_missing_sri_integrity) ... ok
+test_root_and_desktop_npm_manifests_and_lockfiles_are_pinned_and_sri_verified (test_lockfile_supply_chain_gate.LockfileSupplyChainConformanceGateTests.test_root_and_desktop_npm_manifests_and_lockfiles_are_pinned_and_sri_verified) ... ok
+test_root_and_workspace_cargo_manifests_and_lockfile_are_pinned_and_checksummed (test_lockfile_supply_chain_gate.LockfileSupplyChainConformanceGateTests.test_root_and_workspace_cargo_manifests_and_lockfile_are_pinned_and_checksummed) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.029s
+
+OK

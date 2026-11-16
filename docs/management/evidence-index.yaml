@@ -1275,3 +1275,21 @@
   scope: "共享调用合同的默认拒绝、绑定/句柄/时间校验及 Rust 编译失败测试，修复版 cap 4.0.3 与三服务依赖预锁、六份锁/MSRV/供应链检查。范围限库合同和依赖，真实策略、opener 安全及三服务运行另行验收"
   assurance: H4
   date: "2026-11-16"
+- id: w82-b2-llm-gateway-20261116
+  path: docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
+  title: "W82-B2 受控 LLM 五维预算网关库验证"
+  scope: "五维影子预留、持久结算与受控环回 HTTP 的正负例，子会话 sidecar 与并发取时修复。范围限 OBSERVED 库证据，真实 provider H5 与系统接线另行验收"
+  assurance: H4
+  date: "2026-11-16"
+- id: w82-b3-tool-service-20261116
+  path: docs/evidence/stage-e/w82-b3-tool-service-20261116.md
+  title: "W82-B3 沙箱工具服务与持久 Operation 验证"
+  scope: "单调用真实宿主、有界输出与写入、取消/孤儿回收、受控同步失败恢复及共享 writer 配额回归。记录 Windows 本机 symlink 权限缺口与原生专项验收入口"
+  assurance: H4
+  date: "2026-11-16"
+- id: w82-b4-blob-service-20261116
+  path: docs/evidence/stage-e/w82-b4-blob-service-20261116.md
+  title: "W82-B4 签名 Blob 引用服务库验证"
+  scope: "双主体签名、根句柄首次打开、逐块当前授权与钉住句柄、SQLite WAL 写失败及撕裂尾部恢复。范围限受管理本机库路径，真实系统接线与原生专项另行验收"
+  assurance: H4
+  date: "2026-11-16"

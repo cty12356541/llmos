@@ -42,8 +42,9 @@
 //! terminal last resort of `ADR-0015` decision 1 — and the outcome is
 //! reported with [`HostProcessOutcome::timed_out_and_killed`].
 
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::error::{HostOutcome, HostReport, SandboxError};
@@ -228,22 +229,37 @@ pub fn run_isolated_host(
     let mut child = build_isolated_host_command(request)?
         .spawn()
         .map_err(SandboxError::HostIo)?;
-    let start = Instant::now();
-    let mut timed_out_and_killed = false;
-    if let Some(deadline) = deadline {
-        loop {
-            if child.try_wait().map_err(SandboxError::HostIo)?.is_some() {
-                break;
-            }
-            if start.elapsed() >= deadline {
-                child.kill().map_err(SandboxError::HostIo)?;
-                timed_out_and_killed = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = stop_and_reap(&mut child);
+        return Err(SandboxError::HostIo(io::Error::other("missing host pipes")));
+    };
+    let (status, stdout, stderr, timed_out_and_killed) = std::thread::scope(|scope| {
+        let out = std::thread::Builder::new().spawn_scoped(scope, || read_pipe(stdout));
+        let err = std::thread::Builder::new().spawn_scoped(scope, || read_pipe(stderr));
+        if out.is_err() || err.is_err() {
+            let _ = stop_and_reap(&mut child);
+            return Err(io::Error::other("starting host pipe readers failed"));
         }
-    }
-    let output = child.wait_with_output().map_err(SandboxError::HostIo)?;
+        let wait = wait_with_deadline(&mut child, deadline);
+        if wait.is_err() {
+            let _ = stop_and_reap(&mut child);
+        }
+        let (status, killed) = wait?;
+        Ok::<_, io::Error>((
+            status,
+            out?.join()
+                .map_err(|_| io::Error::other("stdout reader failed"))??,
+            err?.join()
+                .map_err(|_| io::Error::other("stderr reader failed"))??,
+            killed,
+        ))
+    })
+    .map_err(SandboxError::HostIo)?;
+    let output = std::process::Output {
+        status,
+        stdout,
+        stderr,
+    };
     let report = HostReport::parse(&String::from_utf8_lossy(&output.stderr));
     if report.is_none() && !timed_out_and_killed {
         let tail = crate::error::sanitize_detail(&String::from_utf8_lossy(&output.stderr));
@@ -256,6 +272,38 @@ pub fn run_isolated_host(
         stderr: output.stderr,
         report,
     })
+}
+
+fn wait_with_deadline(
+    child: &mut Child,
+    deadline: Option<Duration>,
+) -> io::Result<(ExitStatus, bool)> {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok((status, false));
+        }
+        if deadline.is_some_and(|deadline| start.elapsed() >= deadline) {
+            return stop_and_reap(child).map(|status| (status, true));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+pub(crate) fn stop_and_reap(child: &mut Child) -> io::Result<ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    if let Err(error) = child.kill() {
+        return child.try_wait()?.ok_or(error);
+    }
+    child.wait()
+}
+
+fn read_pipe(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 impl HostReport {

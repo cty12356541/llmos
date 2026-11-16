@@ -1,0 +1,30 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.00s
+     Running tests\tool_service.rs (D:/llmos/target/w82-b3\debug\deps\tool_service-606c0567d8f9a4ec.exe)
+
+running 2 tests
+shared_host_quota_global=1 per_principal=4 extra_host_wrote_marker=true
+
+thread 'shared_writer_limits_active_hosts_globally_across_instances' (15616) panicked at crates\nlos-wasm-sandbox\tests\tool_service.rs:1678:5:
+assertion `left == right` failed
+  left: Ok(ToolOperation { handle: ToolOperationHandle { id: OperationId(631e0c08353040bc6d8c218b2fb0a884), generation: Generation(1) }, key: ToolOperationKey { owner: ToolOwner { principal: PrincipalId(02020202020202020202020202020202), application: ApplicationId(02020202020202020202020202020202), namespace: NamespaceId(08080808080808080808080808080808) }, registration: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], key: IdempotencyKey(02020202020202020202020202020202) }, request_digest: [235, 167, 130, 119, 157, 15, 82, 127, 167, 84, 198, 181, 188, 148, 210, 236, 186, 250, 93, 20, 154, 244, 33, 213, 195, 240, 123, 65, 58, 216, 188, 109], spec: ToolOperationSpec { origin: RuntimeCaller { principal: PrincipalId(02020202020202020202020202020202), application: ApplicationId(02020202020202020202020202020202), process: ProcessId(03030303030303030303030303030303), process_generation: Generation(1), session: SessionId(04040404040404040404040404040404) }, wasm_digest: [174, 5, 153, 235, 180, 192, 193, 90, 247, 45, 207, 107, 237, 5, 62, 11, 20, 69, 224, 205, 226, 137, 208, 38, 40, 100, 8, 229, 156, 104, 189, 179], registry_generation: Generation(1) }, state: Completed(DurableToolResult { bytes: 31, .. }), receipt: ToolReceipt { revision: 5, digest: [105, 79, 139, 98, 50, 76, 208, 108, 69, 72, 151, 250, 249, 193, 45, 107, 227, 71, 71, 121, 99, 227, 40, 48, 185, 126, 218, 140, 109, 223, 44, 172] }, directory_before: Some([245, 199, 178, 165, 112, 234, 212, 87, 75, 249, 241, 232, 94, 167, 195, 218, 19, 159, 54, 56, 120, 193, 222, 57, 185, 203, 121, 68, 12, 128, 152, 96]) })
+ right: Err(NoHostPermit)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test shared_writer_limits_active_hosts_globally_across_instances ... FAILED
+shared_host_quota_global=16 per_principal=1 extra_host_wrote_marker=true
+
+thread 'shared_writer_limits_active_hosts_per_principal_across_instances' (30116) panicked at crates\nlos-wasm-sandbox\tests\tool_service.rs:1678:5:
+assertion `left == right` failed
+  left: Ok(ToolOperation { handle: ToolOperationHandle { id: OperationId(04d9b06e346d0ad5693eb7087da0851f), generation: Generation(1) }, key: ToolOperationKey { owner: ToolOwner { principal: PrincipalId(01010101010101010101010101010101), application: ApplicationId(02020202020202020202020202020202), namespace: NamespaceId(08080808080808080808080808080808) }, registration: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], key: IdempotencyKey(02020202020202020202020202020202) }, request_digest: [235, 167, 130, 119, 157, 15, 82, 127, 167, 84, 198, 181, 188, 148, 210, 236, 186, 250, 93, 20, 154, 244, 33, 213, 195, 240, 123, 65, 58, 216, 188, 109], spec: ToolOperationSpec { origin: RuntimeCaller { principal: PrincipalId(01010101010101010101010101010101), application: ApplicationId(02020202020202020202020202020202), process: ProcessId(03030303030303030303030303030303), process_generation: Generation(1), session: SessionId(04040404040404040404040404040404) }, wasm_digest: [174, 5, 153, 235, 180, 192, 193, 90, 247, 45, 207, 107, 237, 5, 62, 11, 20, 69, 224, 205, 226, 137, 208, 38, 40, 100, 8, 229, 156, 104, 189, 179], registry_generation: Generation(1) }, state: Completed(DurableToolResult { bytes: 31, .. }), receipt: ToolReceipt { revision: 5, digest: [243, 7, 58, 240, 216, 128, 121, 222, 193, 21, 190, 40, 139, 78, 170, 222, 248, 254, 96, 201, 45, 94, 67, 2, 163, 142, 8, 188, 41, 53, 231, 85] }, directory_before: Some([245, 199, 178, 165, 112, 234, 212, 87, 75, 249, 241, 232, 94, 167, 195, 218, 19, 159, 54, 56, 120, 193, 222, 57, 185, 203, 121, 68, 12, 128, 152, 96]) })
+ right: Err(NoHostPermit)
+test shared_writer_limits_active_hosts_per_principal_across_instances ... FAILED
+
+failures:
+
+failures:
+    shared_writer_limits_active_hosts_globally_across_instances
+    shared_writer_limits_active_hosts_per_principal_across_instances
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.30s
+
+error: test failed, to rerun pass `-p nlos-wasm-sandbox --test tool_service`

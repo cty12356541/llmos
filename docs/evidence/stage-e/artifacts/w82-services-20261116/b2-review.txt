@@ -1,0 +1,34 @@
+# W82-B2 / Attempt 20261116-2 — Fix 1 独立复审
+
+**原 P2：ADDRESSED。Spec compliance：PASS。Task quality：PASS。New fix breakage：无新增 P1/P2。**
+
+本结论仅复核原唯一 P2 的三路径修复 delta、对应回归和 Evidence 追加；原 `b2-independent-review.md` 其余检查结论及验收边界保持。原报告的 FAIL 是修复前历史结论，当前修复候选可进入主树集成验收。本审查没有修改候选、运行测试、审查 B3/B4，或晋升 canonical/ledger。
+
+## 原问题及修复判定
+
+原 `llm_gateway.rs:503–508` 在 callback 与原子高水位发布之间允许正常并发采样交错，从而误报回退。当前 `crates/nlos-driver-llm-http/src/llm_gateway.rs:502–515` 先获取独立 `Mutex<ServiceTime>`，在同一锁内完成 callback、wall/monotonic 两域回退比较和成对更新。较晚的调用无法越过正在采样的较早调用发布高水位，原交错被消除。
+
+callback 错误、锁 poison 或任一时钟域真实回退仍返回 TimeUnavailable；不合格样本不会只推进其中一个域。该锁独立于 Store，函数返回前释放；授权即使已经持有 Store，也没有重复获取 Store。deadline 与授权规则未放宽，也没有加入重试或延长业务 timeout。现有 callback 非重入约定继续适用。
+
+**ADDRESSED。**
+
+## 回归与证据
+
+- 新 `concurrent_increasing_clock_samples_do_not_invalidate_an_authorized_query` 通过 channel 暂停第一次采样并启动第二个查询，使用有界等待后释放；最终验证两个合法查询均取得同一完整余额。原实现的红测日志确实出现第一个查询的 TimeUnavailable，修复后该测试通过。
+- 新 `actual_clock_regressions_callback_errors_and_expired_deadlines_emit_no_tcp` 覆盖墙钟回退、mono 回退、拒绝样本不污染墙钟高水位、callback 错误、deadline 等于当前 mono、权限拒绝和零 TCP。它也在原实现红测中揭示非原子双域发布问题。
+- 独立读取 `fix1-red.log`：1 通过、两项新增回归失败，均为非预期 TimeUnavailable；`fix1-green.log`：同一 clock 筛选 3/3 通过。未声称本 reviewer 重新执行测试。
+- 独立读取 `fix1-test.log`：8 库 + 19 gateway + 9 legacy + 1 compile-fail = 37/37；`fix1-clippy.log`、`fix1-msrv.log` 为成功完成；`fix1-style-status.txt` 的 crate fmt、diff-check 均为 0。Evidence 保留首轮 35 项历史并追加本轮 37 项，没有覆盖或混用历史结果。
+
+测试和修复未引入新的阻断。整个 B2 原完整审查无需重复。
+
+## 身份与 CAS
+
+- 工作树 HEAD 实查仍为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。
+- 原完整 diff SHA-256：`2acc054fe17c1c4d817ef0b11074665fcfc7c2f861040717a06fd449752abb27`，保留不变。
+- 本次 delta SHA-256：`f7c28e01642dfd8c7a2b0eb4a43e61970f4ebdc2326f1aa4fd860c09cde92df8`。
+- 新完整 diff SHA-256：`0f83fd6e583cb5093678cd469c50d2113a6d810d554460ee8d46dc35c04b82e8`。仅校验其身份，未重新展开审查完整 patch。
+- 当前 13/13 实际文件与 `candidate-files-fix1.sha256` 一致；对比原清单仅 `llm_gateway.rs`、`tests/gateway.rs` 和指定 B2 Evidence 三路径改变，另 10 路径字节完全相同。新清单 SHA-256 为 `8ae85adbb30aa75ae34510bba7306fa58a48f23fed87a15bf54258317600ea4a`。
+
+## Out of scope / 保留门
+
+主树短路径全仓 fmt、整合检查和后续跨平台/CI 仍需按既定流程完成。D8 继续是 OBSERVED/shadow；独立 Windows 目录项持久性、真实断电/外部 provider、daemon 身份/slot/child/revocation/Operation 连线、SDK 和外部消费者仍不属于此库级修复的已验收内容。本 PASS 不能据以宣称 W82-B 整车道 DONE。

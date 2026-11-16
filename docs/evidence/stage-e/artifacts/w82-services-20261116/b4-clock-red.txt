@@ -1,0 +1,36 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.40s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 5 tests
+monotonic clock overlap: newer_first=true, earlier=Err(Authorization(TimeUnavailable)), later=Ok(0)
+
+thread 'clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused' (40692) panicked at crates\nlos-capability\tests\blob_reference.rs:2291:9:
+an earlier legal sample must not look like rollback
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+first clock sample lock contention: elapsed=151.8µs, waiting=Err(NotFound)
+
+thread 'cold_clock_lock_contention_fails_with_a_bounded_time_unavailable' (32096) panicked at crates\nlos-capability\tests\blob_reference.rs:2356:9:
+assertion failed: matches!(waiting,
+    Err(BlobError::Authorization(AuthorizationError::TimeUnavailable)))
+test single_domain_clock_regressions_and_callback_errors_leave_both_watermarks_intact ... ok
+test cold_clock_lock_contention_fails_with_a_bounded_time_unavailable ... FAILED
+test clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused ... FAILED
+established clock lock contention: deadline=80ms elapsed=1.4664ms result=Ok(BlobReply { payload_bytes: 66, receipt_id: ReceiptId(1cc1182b3ccef8ca069f37754ad90cd5) })
+
+thread 'established_request_deadline_bounds_queued_clock_sampling' (38272) panicked at crates\nlos-capability\tests\blob_reference.rs:2388:9:
+assertion failed: matches!(result,
+    Err(BlobError::Authorization(AuthorizationError::DeadlineExpired)))
+test established_request_deadline_bounds_queued_clock_sampling ... FAILED
+test identity_revocation_and_clock_failures_stop_reads_including_exact_replays ... ok
+
+failures:
+
+failures:
+    clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused
+    cold_clock_lock_contention_fails_with_a_bounded_time_unavailable
+    established_request_deadline_bounds_queued_clock_sampling
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `-p nlos-capability --test blob_reference`

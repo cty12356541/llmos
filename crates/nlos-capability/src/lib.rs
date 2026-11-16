@@ -3,6 +3,10 @@
 //! Capability IDs are authority records, not caller assertions. Every use is
 //! checked against the current generation and the complete ancestor chain.
 
+mod blob_ledger;
+mod blob_model;
+mod blob_open;
+pub mod blob_reference;
 pub mod custody;
 mod model;
 mod namespace;
@@ -13,7 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU64;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use nlos_identity::{
@@ -42,7 +46,7 @@ pub use model::{
     SignedIssueRootCapabilityRequest, SignedRevokeCapabilityRequest,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Domain separator for signed Capability command messages. Every field is
 /// fixed-width big-endian with presence tags, so the framing stays canonical
@@ -228,8 +232,13 @@ impl CapabilityAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
             }
-            1 => schema::migrate_v2(&mut connection)?,
+            1 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(CapabilityAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -712,6 +721,14 @@ impl CapabilityAuthority {
         self.connection
             .lock()
             .map_err(|_| CapabilityAuthorityError::LockPoisoned)
+    }
+
+    fn try_lock(&self) -> Result<Option<MutexGuard<'_, Connection>>, CapabilityAuthorityError> {
+        match self.connection.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(_)) => Err(CapabilityAuthorityError::LockPoisoned),
+        }
     }
 }
 

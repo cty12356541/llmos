@@ -1,0 +1,11 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.19s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 2 tests
+SQLite contention: deadline=20ms elapsed=20.1386ms result=Err(Authorization(DeadlineExpired))
+fd contention: deadline=20ms elapsed=20.2783ms result=Err(Authorization(DeadlineExpired))
+test short_deadline_bounds_wait_for_the_descriptor_mutex ... ok
+test short_deadline_bounds_wait_for_the_sqlite_writer ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.33s
