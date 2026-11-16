@@ -343,8 +343,28 @@ pub struct JournalToolOperationStore {
     host_quota: Arc<ToolHostQuota>,
 }
 
-struct Journal {
+struct LockedJournalFile {
     file: File,
+    #[cfg(unix)]
+    owner_pid: u32,
+}
+
+impl Drop for LockedJournalFile {
+    fn drop(&mut self) {
+        // A forked copy may close its own descriptor without releasing
+        // the lock owned by the original process.
+        #[cfg(unix)]
+        if self.owner_pid != std::process::id() {
+            return;
+        }
+        // Passive copies can outlive the writer, so release before close.
+        // A successor must acquire its own lock even if unlock fails.
+        let _ = self.file.unlock();
+    }
+}
+
+struct Journal {
+    locked_file: LockedJournalFile,
     limits: ToolJournalLimits,
     keys: HashMap<ToolOperationKey, OperationId>,
     ops: HashMap<OperationId, ToolOperation>,
@@ -353,6 +373,8 @@ struct Journal {
     bytes: u64,
     pending: u64,
     poisoned: bool,
+    #[cfg(test)]
+    append_failure_handle: Option<File>,
     #[cfg(test)]
     sync_failure_handle: Option<File>,
 }
@@ -381,11 +403,15 @@ impl JournalToolOperationStore {
             options.mode(0o600);
         }
         let file = options.open(path).map_err(|_| StoreError::Durability)?;
-        match file.try_lock() {
-            Ok(()) => {}
+        let locked_file = match file.try_lock() {
+            Ok(()) => LockedJournalFile {
+                file,
+                #[cfg(unix)]
+                owner_pid: std::process::id(),
+            },
             Err(std::fs::TryLockError::WouldBlock) => return Err(StoreError::Busy),
             Err(std::fs::TryLockError::Error(_)) => return Err(StoreError::Durability),
-        }
+        };
         #[cfg(unix)]
         File::open(
             path.parent()
@@ -395,7 +421,7 @@ impl JournalToolOperationStore {
         .and_then(|directory| directory.sync_all())
         .map_err(|_| StoreError::Durability)?;
         Ok(Journal {
-            file,
+            locked_file,
             limits,
             keys: HashMap::new(),
             ops: HashMap::new(),
@@ -404,6 +430,8 @@ impl JournalToolOperationStore {
             bytes: 0,
             pending: 0,
             poisoned: false,
+            #[cfg(test)]
+            append_failure_handle: None,
             #[cfg(test)]
             sync_failure_handle: None,
         })
@@ -606,8 +634,10 @@ impl Journal {
         frame.extend_from_slice(body);
         let digest = frame_digest(&frame);
         frame.extend_from_slice(&digest);
-        if self
-            .file
+        let sink = &mut self.locked_file.file;
+        #[cfg(test)]
+        let sink = self.append_failure_handle.as_mut().unwrap_or(sink);
+        if sink
             .write_all(&frame)
             .and_then(|()| self.sync_file())
             .is_err()
@@ -626,11 +656,12 @@ impl Journal {
         if let Some(handle) = &self.sync_failure_handle {
             return handle.sync_all();
         }
-        self.file.sync_all()
+        self.locked_file.file.sync_all()
     }
 
     fn restore(&mut self) -> Result<(), StoreError> {
         let length = self
+            .locked_file
             .file
             .metadata()
             .map_err(|_| StoreError::Durability)?
@@ -640,13 +671,15 @@ impl Journal {
         }
         while self.bytes < length {
             if !self.restore_frame(length)? {
-                self.file
+                self.locked_file
+                    .file
                     .set_len(self.bytes)
                     .map_err(|_| StoreError::Durability)?;
                 break;
             }
         }
-        self.file
+        self.locked_file
+            .file
             .seek(SeekFrom::Start(self.bytes))
             .map_err(|_| StoreError::Durability)?;
         // A complete frame can survive a failed sync. Make the recovered
@@ -685,7 +718,8 @@ impl Journal {
         let mut header = [0; HEADER];
         let read_len =
             usize::try_from(remaining.min(HEADER as u64)).map_err(|_| StoreError::Corrupt)?;
-        self.file
+        self.locked_file
+            .file
             .read_exact(&mut header[..read_len])
             .map_err(|_| StoreError::Durability)?;
         if header[..read_len.min(4)] != b"NTO1"[..read_len.min(4)] {
@@ -715,7 +749,8 @@ impl Journal {
         }
         let mut frame = vec![0; frame_len];
         frame[..HEADER].copy_from_slice(&header);
-        self.file
+        self.locked_file
+            .file
             .read_exact(&mut frame[HEADER..])
             .map_err(|_| StoreError::Durability)?;
         let checksum_at = frame_len - CHECKSUM;
@@ -1005,6 +1040,38 @@ mod tests {
         (key, spec)
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn last_journal_owner_releases_writer_lock_with_passive_clone_alive() {
+        let path =
+            std::env::temp_dir().join(format!("nlos-journal-owner-release-{}", std::process::id()));
+        let open = || JournalToolOperationStore::open(&path, ToolJournalLimits::default());
+        let first = Arc::new(open().unwrap());
+        let passive = first
+            .inner
+            .lock()
+            .unwrap()
+            .locked_file
+            .file
+            .try_clone()
+            .unwrap();
+        let last = Arc::clone(&first);
+
+        drop(first);
+        assert!(matches!(open(), Err(StoreError::Busy)));
+        drop(last);
+        let successor = open().unwrap_or_else(|error| {
+            panic!("successor could not lock after final writer drop with a passive clone alive: {error:?}")
+        });
+        drop(passive);
+        assert!(matches!(open(), Err(StoreError::Busy)));
+        drop(successor);
+
+        let final_writer = open().unwrap();
+        drop(final_writer);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn os_append_failure_prevents_receipt_and_poisons_this_writer() {
         let path =
@@ -1012,7 +1079,7 @@ mod tests {
         std::fs::write(&path, []).unwrap();
         let store = JournalToolOperationStore::open(&path, ToolJournalLimits::default()).unwrap();
         let read_only = File::open(&path).unwrap();
-        store.inner.lock().unwrap().file = read_only;
+        store.inner.lock().unwrap().append_failure_handle = Some(read_only);
 
         let (key, spec) = identity();
         assert_eq!(store.begin(key, [9; 32], spec), Err(StoreError::Durability));
@@ -1117,6 +1184,7 @@ mod tests {
         let path = fixture.path();
         let mut writer =
             JournalToolOperationStore::open_file(&path, ToolJournalLimits::default()).unwrap();
+        let passive = writer.locked_file.file.try_clone().unwrap();
         writer.sync_failure_handle = Some(real_sync_failure_handle(&path));
         assert!(
             matches!(
@@ -1126,7 +1194,9 @@ mod tests {
             "recovery published a writer although the retained completion could not be synced",
         );
 
-        let reopened = JournalToolOperationStore::open(path, ToolJournalLimits::default()).unwrap();
+        let reopened = JournalToolOperationStore::open(path, ToolJournalLimits::default())
+            .expect("failed recovery must release the acquired writer lock");
+        drop(passive);
         let completed = reopened.query(fixture.dispatch.handle).unwrap();
         assert_eq!(completed.state, fixture.result);
         let op = &fixture.dispatch;

@@ -2,6 +2,7 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -56,8 +57,56 @@ impl Capacity {
     }
 }
 
-pub(crate) struct Journal {
+struct WriterLock {
     file: File,
+    #[cfg(unix)]
+    owner_pid: u32,
+}
+
+impl WriterLock {
+    fn acquire(file: File) -> Result<Self, GatewayError> {
+        file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => GatewayError::WriterBusy,
+            TryLockError::Error(_) => GatewayError::Durability,
+        })?;
+        Ok(Self {
+            file,
+            #[cfg(unix)]
+            owner_pid: std::process::id(),
+        })
+    }
+}
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        // A forked copy of this guard did not acquire the parent's lock.
+        #[cfg(unix)]
+        if self.owner_pid != std::process::id() {
+            return;
+        }
+
+        // Release before File closes, even if a passive descriptor is still
+        // alive. A subsequent writer must still acquire the OS lock.
+        let _ = self.file.unlock();
+    }
+}
+
+impl Deref for WriterLock {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+
+impl DerefMut for WriterLock {
+    fn deref_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+
+pub(crate) struct Journal {
+    file: WriterLock,
     used: Capacity,
     checkpoint: [u8; 32],
     poisoned: bool,
@@ -92,13 +141,10 @@ impl Journal {
             // In particular, exclude FILE_SHARE_DELETE while this handle is live.
             options.share_mode(0x0000_0003);
         }
-        let mut file = options
+        let file = options
             .open(root.join(NAME))
             .map_err(|_| GatewayError::Durability)?;
-        file.try_lock().map_err(|error| match error {
-            TryLockError::WouldBlock => GatewayError::WriterBusy,
-            TryLockError::Error(_) => GatewayError::Durability,
-        })?;
+        let mut file = WriterLock::acquire(file)?;
 
         let file_len = file.metadata().map_err(|_| GatewayError::Durability)?.len();
         if file_len > maximum.bytes {
@@ -298,4 +344,99 @@ fn record_hash(header: &[u8], body: &[u8]) -> [u8; 32] {
     hash.update(header);
     hash.update(body);
     hash.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const LIMIT: Capacity = Capacity::new(4096, 16);
+    const RECORD: &[u8] = b"committed";
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let pid = std::process::id();
+            let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("nlos-b2-journal-lock-{pid}-{now}-{seq}"));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0.join(NAME));
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    fn open_existing(root: &Path) -> Result<Journal, GatewayError> {
+        Journal::open(root, false, LIMIT, |body| {
+            assert_eq!(body, RECORD);
+            Ok(())
+        })
+    }
+
+    fn create_writer(root: &Path) -> Journal {
+        let mut writer = Journal::open(root, true, LIMIT, |_| Ok(())).unwrap();
+        writer.append(RECORD, Capacity::ZERO, None, LIMIT).unwrap();
+        writer
+    }
+
+    #[test]
+    fn journal_owner_releases_lock_while_a_passive_file_clone_is_alive() {
+        let scratch = Scratch::new();
+        let first = Arc::new(Mutex::new(create_writer(&scratch.0)));
+        let passive = first.lock().unwrap().file.try_clone().unwrap();
+        let last_owner = first.clone();
+        assert!(matches!(
+            open_existing(&scratch.0),
+            Err(GatewayError::WriterBusy)
+        ));
+        drop(first);
+        assert!(matches!(
+            open_existing(&scratch.0),
+            Err(GatewayError::WriterBusy)
+        ));
+
+        drop(last_owner);
+        let second = open_existing(&scratch.0)
+            .expect("last writer must release its lock with a passive file clone alive");
+        drop(passive);
+        assert!(matches!(
+            open_existing(&scratch.0),
+            Err(GatewayError::WriterBusy)
+        ));
+
+        drop(second);
+        drop(open_existing(&scratch.0).unwrap());
+    }
+
+    #[test]
+    fn journal_owner_releases_acquired_lock_when_recovery_fails() {
+        let scratch = Scratch::new();
+        drop(create_writer(&scratch.0));
+
+        let failed = Journal::open(&scratch.0, false, LIMIT, |body| {
+            assert_eq!(body, RECORD);
+            assert!(matches!(
+                open_existing(&scratch.0),
+                Err(GatewayError::WriterBusy)
+            ));
+            Err(GatewayError::Durability)
+        });
+        assert!(matches!(failed, Err(GatewayError::Durability)));
+        drop(open_existing(&scratch.0).unwrap());
+    }
 }

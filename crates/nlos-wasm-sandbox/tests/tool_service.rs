@@ -320,7 +320,26 @@ fn real_guest_catalog_and_durable_result_replay_after_reopen() {
     write_guest(scratch.artifact(), READ_ONLY, b"42", SIMPLE);
     let runtime = call(1, 1);
     let request = invoke(&runtime, "test", "{}");
-    let sandbox = normal(&scratch);
+    let open_sandbox = |stage| {
+        let journal = scratch.journal();
+        let store = JournalToolOperationStore::open(&journal, ToolJournalLimits::default())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "journal {stage} failed for PID {} in fixture {:?} at {journal:?}: {error:?}",
+                    std::process::id(),
+                    scratch.0,
+                )
+            });
+        service_with_store(
+            &scratch,
+            SandboxProfile::deny_all(),
+            ToolServiceLimits::default(),
+            clock(),
+            Arc::new(Policy(approve)),
+            Box::new(store),
+        )
+    };
+    let sandbox = open_sandbox("initial open");
     let first_list = sandbox
         .list_tools(ROUTE, &runtime, &list(&runtime))
         .unwrap();
@@ -336,7 +355,7 @@ fn real_guest_catalog_and_durable_result_replay_after_reopen() {
     );
     drop(sandbox);
 
-    let reopened = normal(&scratch);
+    let reopened = open_sandbox("reopen after dropping writer");
     let mut reconnected = runtime.clone();
     reconnected.caller.session = SessionId::from_bytes([88; 16]);
     let replayed = reopened
