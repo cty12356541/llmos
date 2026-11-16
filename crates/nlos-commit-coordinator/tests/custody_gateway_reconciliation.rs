@@ -426,14 +426,14 @@ fn custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolat
         rig.gateway.key_id()
     };
 
-    // CapabilityAuthority SQLite schema version MUST remain untouched at 2, while
-    // signing-key-custody.db uses WAL + FULL and never stores plaintext seed bytes.
+    // CapabilityAuthority::open installs v3 for the additive Blob ledger.
+    // Opening and using the separate custody vault must leave that version intact.
     let cap_conn =
         Connection::open(root.path().join("capability-authority.db")).expect("open cap db");
     let cap_ver: i64 = cap_conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .expect("cap user_version");
-    assert_eq!(cap_ver, 2);
+    assert_eq!(cap_ver, 3);
 
     let custody_conn =
         Connection::open(root.path().join("signing-key-custody.db")).expect("open custody db");
