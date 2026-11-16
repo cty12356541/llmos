@@ -7,6 +7,7 @@ pub mod custody;
 mod model;
 mod namespace;
 mod schema;
+pub mod service_call;
 
 use std::error::Error;
 use std::fmt;

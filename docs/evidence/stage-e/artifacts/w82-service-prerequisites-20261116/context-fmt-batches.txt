@@ -1,0 +1,11 @@
+Workspace packages: 45, local path dependencies outside workspace root: 0
+cargo fmt -p nlos-application -p nlos-artifact -p nlos-canonical -p nlos-capability -p nlos-cell -p nlos-certify -p nlos-channel -p nlos-clock -p nlos-commit-coordinator -p nlos-compat-shim -- --check
+exit: 0
+cargo fmt -p nlos-consensus -p nlos-driver-llm-http -p nlos-driver-mock -p nlos-identity -p nlos-ipc -p nlos-lease -p nlos-migrate -p nlos-net -p nlos-notify -p nlos-operation -- --check
+exit: 0
+cargo fmt -p nlos-outbox -p nlos-package -p nlos-plan -p nlos-process -p nlos-publisher-trust -p nlos-resource -p nlos-runtime -p nlos-runtime-tokio -p nlos-schema -p nlos-search -- --check
+exit: 0
+cargo fmt -p nlos-semantic -p nlos-service-directory -p nlos-slice-k -p nlos-store -p nlos-store-fault -p nlos-store-registry -p nlos-system-control -p nlos-takeover-control -p nlos-task -p nlos-topic -- --check
+exit: 0
+cargo fmt -p nlos-types -p nlos-up -p nlos-wait -p nlos-wait-control -p nlos-wasm-sandbox -- --check
+exit: 0

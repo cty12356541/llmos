@@ -1,5 +1,11 @@
 # 阶段 E 权威进度单（兼容制度与生态规模化）
 
+## 2026-11-16 服务库前置
+
+- **执行基线**。`main` 与远端在 `4d097056e3ebd57e130d9303e02e23433fc9d1ba` 对齐。该文档基线的常规 push CI 为 9 项通过、2 类规模作业按触发条件跳过，Pages 部署 `7808180932` 成功并核验 HTTP 200。完整规模证据仍绑定下节的 `4fc70be1`，Ubuntu 原吞吐反例的根因仍待取证。[基线 CI 43749009011](https://github.com/cty12356541/llmos/actions/runs/43749009011) · [基线 Pages 43749009018](https://github.com/cty12356541/llmos/actions/runs/43749009018)
+- **公共调用合同与依赖预锁**。两项前置均通过独立审查。主树 Windows capability 47 项测试及 1 项编译失败文档测试、Clippy 和全仓 fmt 通过，三个 crate 的 MSRV 编译、六份锁解析及供应链检查通过。B2/B3/B4 在前置门后以互斥写集并行，安全首次打开和签名能力归 B4 实现验证，真实策略及挂载归 INT。集成版本的远端三平台 CI 仍待执行。[前置 Evidence](../evidence/stage-e/w82-service-prerequisites-20261116.md) · [实施收口](./w82-b-design-draft.md#15-2026-11-16-第二波服务库实施收口)
+- **验收状态**。W82 为 `IN_PROGRESS / PARTIALLY_MERGED`，A 已 `DONE`，整车道 `1/5`。B 服务与 C 权威绑定、重启待验收，SDK 与 INT 受各自屏障约束。阶段 E 为 `NOT EXITED`，维护者签字仍待。机器台账为 169 条声明、210 份证据（阶段 E 21 份）及 17 项风险，`H8` 声明与证据均为 0。[依赖与派发](./nlos-goal-delivery-plan.md#w82-b-service-prerequisites服务库公共前置)
+
 ## 2026-11-16 首波执行
 
 维护者已授权开始执行 [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)。`W82-START-20261116 / Attempt 1` 在 `main = origin/main = 6415600db5c165a828108709a3dc57602169abaf` 上核对基线；A 复验、C 诊断、B 契约复核使用独立工作树与 Attempt `20261116-1` 并行。阶段 E 状态、W82 整车道完成数和保障等级不因派发改变。

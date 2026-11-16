@@ -39,9 +39,14 @@
 ```mermaid
 flowchart LR
   A[W82-A 现有实现复验] --> SDK[B82-SDK]
-  BC[W82-B 公共契约及 B1 复验] --> B2[B-2 LLM 网关]
-  BC --> B3[B-3 工具服务]
+  BC[W82-B 公共契约及 B1 复验] --> CTX[共享调用合同]
+  BC --> DEP[依赖预锁]
   BC --> BLOB[Blob 契约裁定子门]
+  CTX --> PRE[服务库前置验收]
+  DEP --> PRE
+  PRE --> B2[B-2 LLM 网关]
+  PRE --> B3[B-3 工具服务]
+  PRE --> B4[B-4 Blob 原语]
   BLOB --> B4[B-4 Blob 原语]
   B2 --> BG[W82-B 汇总验收]
   B3 --> BG
@@ -78,9 +83,9 @@ flowchart LR
 ```
 
 - **首批并行**：A 复验、C 失败诊断、B 契约/B1 复核；槽位允许时 DEL-BASE 与签名/硬件/维护者资源调查可独立开展。现有三条旧派发工作树仅作追溯，重新核对 revision 后创建新 Attempt。
-- **B 内下一波**：公共契约/B1 屏障通过后 B2/B3 可并行，Blob 歧义只阻塞 B4 及 D/INT 中依赖 Blob 的部分，不牵连无关服务。Blob 子门通过后 B4 加入并行，三者独占 driver/sandbox/capability；B3 先验小参数路径，大参数引用真实联动留 INT，接口变化重过受影响屏障。
+- **B 内下一波**：公共契约/B1 及 Blob schema 子门已通过。共享调用合同和依赖预锁独立验证，由 integrator 合流并通过前置验收后，B2/B3/B4 各自独占 driver/sandbox/capability 并行。安全首次打开属于 B4 的具名验收。B3 先验小参数路径，大参数引用联动留 INT，接口变化重过受影响屏障。[服务库前置](#w82-b-service-prerequisites服务库公共前置)
 - **Windows 规模验证**：`CI-WINDOWS-SCALE-BARRIER` 独立修正 Regime B 探针的准备屏障，并在隔离 Windows runner 复验。该取证与 C 的 Unix Worker 原定时门分别跟踪，可与契约及服务库工作并行。
-- **共享对象收口**：`schema/**`、`gen/**`、`crates/nlos-schema/**`、跨语言注册表/conformance 仅由 B integrator 按原 W82 归属集成；根 Cargo 清单/锁文件仍由 INT 独占，B 提交变更请求。Capability 仅 B4 写；daemon 会话槽位/撤销分派仅 INT 在 A 验收后写。
+- **共享对象收口**：`schema/**`、`gen/**`、`crates/nlos-schema/**`、跨语言注册表/conformance 仅由 B integrator 按原 W82 归属集成。根、各 crate 和受影响独立工作区 Cargo 清单及锁由 integrator 串行处理。共享调用合同冻结后由各服务消费，B4 只写 capability 的 Blob 部分。daemon 会话槽位与撤销分派仅由 INT 在 A 验收后写。
 - **既有屏障不变**：`B82-SDK = A + B` 验收；D 前置件复验可先行，D 主体在屏障后执行。`B82-INT = C + D` 验收；INT 再完成 C 吊销联动、三服务和真实消费者。
 - 每个依赖子图独立过屏障。某车道失败仅阻塞依赖者；无关只读审计/外部资源准备继续。父 Agent 负责派发、审查、汇总，最终 canonical 由一个 integrator 更新。
 
@@ -119,33 +124,40 @@ flowchart LR
 - [x] 复核已合并 B1。维护者 2026-11-16 补充裁定见[设计 §5.5](./w82-b-design-draft.md#55-2026-11-16-补充裁定blob-可实施契约)：应用消息只传引用，Blob 服务逐块鉴权并返回对齐块或末尾短块；有效块上限 65,408 字节，完整编码载荷上限 65,536 字节；显式接收者绑定认证身份；重启后旧令牌失效，禁止按旧路径重开。字段、Rust 编码双界与边界向量见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
 - [ ] 明确 daemon slot→权威 CapabilityId、Blob reference ID 与持有者/接收者授权、重启后 fd/令牌恢复或失效、chunk 有效长度和资源上界；只持 URI/根 ID 不得获得授权。输出为精确接口清单、正负向向量与 B2/B3/B4/INT 消费签认。
 - [x] 候选执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:typecheck`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`，保存工作树回执。
-- [x] 公共库前置门和 Blob schema/codec 子门通过独立审查。B2/B3 可使用显式可信上下文与授权器开发服务库，B4 可按已裁定契约开发 Blob 服务。
+- [x] B1 公共 schema/codec 和 Blob 契约子门通过独立审查。运行时共享调用合同与依赖预锁另由服务库前置工作项验收。
 - [x] 提交至 `4fc70be1` 后，原 `npm run schema:check-generated` 退出 0，24 个生成文件与提交基线一致。见[阶段 E 首波回执](./stage-e-progress.md#2026-11-16-首波执行)。
 - [x] 以新增 proto 前的可达提交 `6e9f0a9f^` 和候选树执行真实双版本 `sabi_compat_diff.py`，保存输入、JSON 与 digest，并通过黄金不可变检查。两次差异对照与制品见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
 - [x] `4fc70be1` 在三平台运行 `sdk/go` 的 `go test ./... -count=1` 均通过，根目录的 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj` 各 30/30。已合并 B1 的结果随历史基线保留。[三平台契约回执](./stage-e-progress.md#2026-11-16-首波执行)
 
+### W82-B-SERVICE-PREREQUISITES：服务库公共前置
+
+**Owner**：公共合同与依赖准备 Sol，独立审查 Astra，根与受影响独立 workspace 锁由 integrator 串行合流。**blocked-by**：B-CONTRACT 的公共 schema/codec 子门。**blocks**：B2/B3/B4 开工。
+
+- [x] 共享调用合同通过独立审查和主树复验。默认拒绝，精确绑定调用身份、方法、目标、能力代际、摘要和时间。各服务自行取当前宿主时间并重新授权。
+- [x] 预锁修复版本 `cap-std` / `cap-fs-ext` 4.0.3 与服务所需的 crate 依赖。六份锁、主树三个目标 MSRV 编译与供应链检查通过，冻结制品核验一致。rooted opener 的本机安全测试归 B4。[前置 Evidence](../evidence/stage-e/w82-service-prerequisites-20261116.md)
+
 ### W82-B-2：受控 LLM 五维预算网关
 
-**Owner**：服务实现 Sol，预算/崩溃审查 Astra。**blocked-by**：B-CONTRACT 公共子门；**blocks**：B 汇总验收、D、INT。
+**Owner**：服务实现 Sol，预算/崩溃审查 Astra。**blocked-by**：服务库公共前置。**blocks**：B 汇总验收、D、INT。
 **R/W**：R=`llm_gateway.proto`、D4/D8、`nlos-resource`；W=`crates/nlos-driver-llm-http/**` 与本包 Evidence，零直接写 `nlos-resource`/schema/daemon。输入已认证上下文，输出四方法服务库、持久预留 journal、报价/衰减及咨询对账。
 - [ ] 正向：`llm_chat/query_budget/attenuate_budget/record_external_usage`；先持久预留、后发包、权威 consume 唯一硬扣，父子五维不变量；CJK/报价从服务端推导，外部自报只入咨询区。
-- [ ] 失败：并发准入、provider 超时/断流、consume 后崩溃、SETTLE_REJECTED、重放/同键异摘要；安全：不足零发包、跨主体账户不可用、咨询与子账户数量有界，原始凭据不出服务边界。
+- [ ] 失败：并发准入、provider 超时/断流、持久 settlement intent 后或 consume 后崩溃、SETTLE_REJECTED、重放/同键异摘要。安全：不足零发包、可信子会话绑定与账户 sidecar、咨询与子账户数量有界，原始凭据不出服务边界。
 - [ ] 执行 `cargo test -p nlos-driver-llm-http`，把上述情形加入该 crate 自动发现的具名测试；归档故障点、实际用量与 quote 差异、重放结果及三式断言。失败尝试 provider 真实计费和旁路调用限制必须保留。
 - [ ] 独立审查通过且服务库可被 INT 调用后进入 B 汇总；库级测试不冒充真实 provider H5 或整车道 DONE。
 
 ### W82-B-3：沙箱工具执行与持久 Operation
 
-**Owner**：沙箱实现 Sol、安全/取消审查 Astra。**blocked-by**：B-CONTRACT 公共子门与已预锁 sha2；**blocks**：B 汇总、D、INT；引用大参数子路径另依赖 Blob 子门。
+**Owner**：沙箱实现 Sol、安全/取消审查 Astra。**blocked-by**：服务库公共前置与已预锁 sha2。**blocks**：B 汇总、D、INT。大参数的真实引用联动归 INT。
 **R/W**：R=`tool_sandbox.proto`、D9、Operation/Wait 契约；W=`crates/nlos-wasm-sandbox/**` 与 Evidence。输入已授权工具/参数，输出 `list_tools/invoke_tool` 服务库及可替换的持久 `ToolOperationStore`。
-- [ ] 正向：工具目录按 Wasm digest 缓存、per-call 独立宿主、结果可重放；失败：取消前未执行/执行中 EffectUnknown/完成三态、deadline、journal 崩溃恢复；安全：未知工具拒绝、路径/网络逃逸拒绝、stdout 256 KiB 与逐调用写入 8 MiB 硬界、非零 epoch 下孤儿自灭。
+- [ ] 正向：工具目录按 Wasm digest 缓存、per-call 独立宿主、结果可持久重放。失败：持久 dispatch 前取消、运行中 EffectUnknown、完成与取消竞态、deadline 和 journal 崩溃恢复。安全：未知工具与路径/网络逃逸拒绝，stdout 256 KiB、有界 stderr、逐调用写入 8 MiB，非零 epoch 下孤儿自灭。
 - [ ] 执行 `cargo test -p nlos-wasm-sandbox` 与 `cargo test -p nlos-wasm-sandbox --test escape_matrix`；补齐 daemon 被杀后孤儿终止、同键冲突/不确定不盲重做和逐调用资源测试；记录三平台 spawn+run 分位耗时。
 - [ ] Evidence 复用既有逃逸矩阵并追加新增攻击面；MCP 外部 server 桥仍归 DriverProvider，不借此扩大 WASI 导入或给未沙箱原生程序 strict 声明。
 
 ### W82-B-4：Capability 约束的大载荷引用
 
-**Owner**：能力实现 Sol；授权/TOCTOU/DoS 审查 Astra。**blocked-by**：B-CONTRACT 明确三项歧义及恢复契约；**blocks**：B 汇总、D、INT。
+**Owner**：能力实现 Sol，授权/TOCTOU/DoS 审查 Astra。**blocked-by**：服务库公共前置及 Blob schema/codec 子门。**blocks**：B 汇总、D、INT。
 **R/W**：R=`blob_reference.proto`、D5 及[设计 §12](./w82-b-design-draft.md#12-l-015-选项-b-的-tcb-增量分析与内存dos-有界性安全论证必备件)、Capability 签名/吊销；W=`crates/nlos-capability/**` 与 Evidence，schema 变更只提给 B integrator。输入受控工作区文件和主体，输出 mint/read/release 库及 additive 令牌表。
-- [ ] 正向：真实双主体授权传递、摘要/长度/分块校验、release/TTL 收敛；失败：中途吊销、过期、读次耗尽、进程重启/文件变更；安全：日志泄漏 URI、伪造主体、越界路径、mint 后换靶、读间改写、跨主体读取、并发 mint/read 耗尽均 fail-closed。
+- [ ] 正向：真实双主体授权传递、签名 mint/release、摘要/长度/分块校验、release/TTL 收敛。失败：中途吊销、过期、读次耗尽、进程重启/文件变更。安全：三平台从已授权根安全首次打开并验证替换竞态，覆盖 mint 后换靶、读间改写、越界与跨主体读取、并发 mint/read 耗尽。
 - [ ] 执行 `cargo test -p nlos-capability`；在既有 DDL/故障套件加入令牌表保护、fd 钉住/块校验、真实授权接收者与未授权主体对照；边界测试使用完整编码长度，不能只断言 chunk 长度。
 - [ ] Evidence 给出 TCB 增量、连接/令牌/fd/内存上界实测及永久审计行增长限制；qq-agent 落盘过渡退役由 INT 真测，库内 WAV 往返不冒充外部退役。
 

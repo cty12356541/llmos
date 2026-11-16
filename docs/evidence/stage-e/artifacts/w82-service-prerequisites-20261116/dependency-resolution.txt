@@ -1,0 +1,12 @@
+root metadata exit=0
+root tree exit=0
+desktop metadata exit=0
+desktop tree exit=0
+road-e001 metadata exit=0
+road-e001 tree exit=0
+ecosystem-apps metadata exit=0
+ecosystem-apps tree exit=0
+sample-app metadata exit=0
+sample-app tree exit=0
+starter-assistant-app metadata exit=0
+starter-assistant-app tree exit=0

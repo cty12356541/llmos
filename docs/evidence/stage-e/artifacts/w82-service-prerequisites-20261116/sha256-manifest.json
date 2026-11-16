@@ -1,0 +1,118 @@
+{
+  "algorithm": "sha256",
+  "stored_text_encoding": "UTF-8",
+  "stored_line_endings": "LF",
+  "verification": "Hash the Git blob, or convert checkout text CRLF to LF first. For capture reconstruction, convert CRLF to LF and remove terminal empty lines, leaving one final LF. Capture fields describe original bytes.",
+  "files": {
+    "context-red.txt": {
+      "bytes": 2114,
+      "sha256": "51b79a6dce9ac57e88b7bc4883fd16c436130340d123c02aa7353e073c3d4439",
+      "capture": "context-red.log",
+      "capture_bytes": 2161,
+      "capture_sha256": "ebe949ecb5809dae4c806a0c4351222bf3ce7a307489290ea48952cb1e70fdbc"
+    },
+    "context-contract.txt": {
+      "bytes": 1313,
+      "sha256": "c5094a5dd2748cc842f5fe186b13e26abe7b24318e73544baf8d3cb1e483ec3c",
+      "capture": "context-targeted-final.log",
+      "capture_bytes": 1334,
+      "capture_sha256": "75d8d85f6ccd3c5c59f2c8948620d19243f6582a3ca852c551a5324c30b43a86"
+    },
+    "context-capability.txt": {
+      "bytes": 5423,
+      "sha256": "30790a5e69a36d01881ad6686634a5bbbfef50c74258c7eff4f89f8ad5e4c2a3",
+      "capture": "context-capability-final.log",
+      "capture_bytes": 5522,
+      "capture_sha256": "6958ce8ea69e1b386d91e53c10156dbdb9b94bbb0030d8d17fff11105fd4b929"
+    },
+    "context-clippy.txt": {
+      "bytes": 199,
+      "sha256": "58b98f73a3c41878501724d2429183118bbf44c50714f32c2833d251a190afb4",
+      "capture": "context-clippy-final.log",
+      "capture_bytes": 201,
+      "capture_sha256": "6350f78cfa9cdafffb7386f0f045f7d02523cc20c1b90b8412e3c5770be97197"
+    },
+    "context-fmt-batches.txt": {
+      "bytes": 1005,
+      "sha256": "fcf526409b5457c0ed1d2dc7a509eabedcbb01494036527045d07eb3fea57c30",
+      "capture": "context-fmt-batches.log",
+      "capture_bytes": 1016,
+      "capture_sha256": "dd19f0eb8a1f9c2961871e703ed05eefe47bbef034fc3493bcca4fa37a96fb06"
+    },
+    "dependency-resolution.txt": {
+      "bytes": 310,
+      "sha256": "e60d31d8b2e9fd0b52e798794959556f9dcb08236227d73ad159ed8e1931aa45",
+      "capture": "deps-logs/final-metadata-and-tree-status.txt",
+      "capture_bytes": 322,
+      "capture_sha256": "dc285447706db0cf433de9a66e0e61c96a85ef950a617f7d8633aebb3708ab7c"
+    },
+    "dependency-msrv-check.txt": {
+      "bytes": 9527,
+      "sha256": "3e40dac602f137d7992951d2289d87ebf05886e02faddf14bb86860f45a25dcf",
+      "capture": "deps-logs/root-check.log",
+      "capture_bytes": 9763,
+      "capture_sha256": "5a839f7c9a35ec6a95210872890f7b666c43d45b0ed741cb9357ded817fe25d2"
+    },
+    "sealed-product-sha256.json": {
+      "bytes": 2643,
+      "sha256": "cff24d8c72a14fa440526c2d57c519beedcc8361fbf30f23e8b387c78e2319be",
+      "capture": "deps-logs/frozen-after.json",
+      "capture_bytes": 2661,
+      "capture_sha256": "eb03dba7ae48d5f35a9edf58af830b08450ec64e0f0e5451149c27ca2c4cb33a"
+    },
+    "sample-app-baseline-locked.txt": {
+      "bytes": 325,
+      "sha256": "aa28777d5d18e278c5761f14b165f2d83231b9c28011af4008479ab11673e036",
+      "capture": "deps-logs/sample-app-baseline.locked.stderr.log",
+      "capture_bytes": 328,
+      "capture_sha256": "fd1a0e6ecd584b22768d71793e65d2f8b7f029ea214552d66b4a63e227446c50"
+    },
+    "lockfile-conformance.txt": {
+      "bytes": 101,
+      "sha256": "0e32cf5bb96fa1036cae2e27776843246962a6c3d05aa93be58a951c1c934bc2",
+      "capture": "deps-logs/conformance.log",
+      "capture_bytes": 106,
+      "capture_sha256": "79ffb81559702e34959667a6bfce9722d5bf9e3b3b283ee3e57380680f86c360"
+    },
+    "lock-audit.json": {
+      "bytes": 15767,
+      "sha256": "e07b80a639bbffc3681580f93871e1a69a37ba243c23e8e913c43742f138c1b3",
+      "capture": "deps-logs/lock-audit.json",
+      "capture_bytes": 16427,
+      "capture_sha256": "91d0b9bc94dc4d3405d375d9f4db1580f1655ccace75f98a337283f8c227141d"
+    },
+    "integrated-capability-test.txt": {
+      "bytes": 7422,
+      "sha256": "f4f4773af0ab782719812e99614223a45cff3774678ef30cc96cff714228c2d5",
+      "capture": "integration-logs/capability-test.log",
+      "capture_bytes": 7423,
+      "capture_sha256": "9bb351354ba847d14728906fe3c1b4b8abd836ce2a7af80749629610ad82ab03"
+    },
+    "integrated-capability-clippy.txt": {
+      "bytes": 1016,
+      "sha256": "60421388f6bf1175010b477b278b7ca787297f51c60cfd3d4522fbfc9d242483",
+      "capture": "integration-logs/capability-clippy.log",
+      "capture_bytes": 1016,
+      "capture_sha256": "60421388f6bf1175010b477b278b7ca787297f51c60cfd3d4522fbfc9d242483"
+    },
+    "integrated-three-target-msrv-check.txt": {
+      "bytes": 400,
+      "sha256": "854c6f620b85c0200bf96935bf929de6c19b8eb4bf509fac2a6b5e250f5143ca",
+      "capture": "integration-logs/three-target-msrv-check.log",
+      "capture_bytes": 400,
+      "capture_sha256": "854c6f620b85c0200bf96935bf929de6c19b8eb4bf509fac2a6b5e250f5143ca"
+    },
+    "integrated-supply-chain.txt": {
+      "bytes": 101,
+      "sha256": "407025646498b9111129de875a742255b81377325a39fbb39de4b826a11363b8",
+      "capture": "integration-logs/supply-chain.log",
+      "capture_bytes": 106,
+      "capture_sha256": "afb2696ec3d69f94ba2f9d72b5e667e775b7e1b990efbe6f5a1bc6e4c8c4b7da"
+    },
+    "integrated-command-receipt.json": {
+      "bytes": 2218,
+      "sha256": "33a2200e53430bbdf3ac09ddc4419d5c0a0cbbcbae2577e68f150e4998717a4a",
+      "source": "Main working-tree command metadata; see commands inside."
+    }
+  }
+}

@@ -1269,3 +1269,9 @@
   scope: "Worker READY 顺序诊断与确定性红绿验证、Windows 进程树回收、Ubuntu 22.04 局部 E2E 及集成代码在 Ubuntu 26.04.1 include-ignored 作业中的原失败用例复验（Worker E2E 5/5）。D7 根能力权威绑定、父退出重启与实际吊销联动待验"
   assurance: H4
   date: "2026-11-16"
+- id: w82-service-prerequisites-20261116
+  path: docs/evidence/stage-e/w82-service-prerequisites-20261116.md
+  title: "W82-B 服务库前置验证"
+  scope: "共享调用合同的默认拒绝、绑定/句柄/时间校验及 Rust 编译失败测试，修复版 cap 4.0.3 与三服务依赖预锁、六份锁/MSRV/供应链检查。范围限库合同和依赖，真实策略、opener 安全及三服务运行另行验收"
+  assurance: H4
+  date: "2026-11-16"

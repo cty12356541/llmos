@@ -64,6 +64,8 @@ all = "warn"
 pedantic = "warn"
 
 [workspace.dependencies]
+cap-fs-ext = "=4.0.3"
+cap-std = "=4.0.3"
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 minicbor = { version = "2.3.1", default-features = false, features = ["std"] }

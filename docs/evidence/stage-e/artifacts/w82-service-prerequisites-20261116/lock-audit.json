@@ -1,0 +1,660 @@
+{
+  "Cargo.lock": {
+    "git_baseline_package_count": 288,
+    "corrected_baseline_package_count": 288,
+    "candidate_package_count": 300,
+    "baseline_repair_additions": [],
+    "baseline_repair_removals": [],
+    "baseline_repair_edges": {},
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "ipnet@2.12.2",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "ed25519-dalek",
+          "nlos-identity",
+          "nlos-store-fault",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "ed25519-dalek",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-store-fault",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ]
+      },
+      "nlos-driver-llm-http@0.1.0": {
+        "old": [
+          "ed25519-dalek",
+          "nlos-clock",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-ipc",
+          "nlos-operation",
+          "nlos-resource",
+          "nlos-schema",
+          "nlos-store",
+          "nlos-types",
+          "sha2 0.11.1",
+          "tokio"
+        ],
+        "new": [
+          "ed25519-dalek",
+          "nlos-capability",
+          "nlos-clock",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-ipc",
+          "nlos-operation",
+          "nlos-resource",
+          "nlos-schema",
+          "nlos-store",
+          "nlos-types",
+          "sha2 0.11.1",
+          "tokio"
+        ]
+      },
+      "nlos-wasm-sandbox@0.1.0": {
+        "old": [
+          "sha2 0.11.1",
+          "wasmtime"
+        ],
+        "new": [
+          "nlos-capability",
+          "nlos-schema",
+          "nlos-types",
+          "sha2 0.11.1",
+          "wasmtime"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 255
+  },
+  "desktop/src-tauri/Cargo.lock": {
+    "git_baseline_package_count": 516,
+    "corrected_baseline_package_count": 516,
+    "candidate_package_count": 527,
+    "baseline_repair_additions": [],
+    "baseline_repair_removals": [],
+    "baseline_repair_edges": {},
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ]
+      },
+      "nlos-driver-llm-http@0.1.0": {
+        "old": [
+          "ed25519-dalek",
+          "nlos-clock",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-ipc",
+          "nlos-operation",
+          "nlos-resource",
+          "nlos-schema",
+          "nlos-store",
+          "nlos-types",
+          "sha2 0.11.1",
+          "tokio"
+        ],
+        "new": [
+          "ed25519-dalek",
+          "nlos-capability",
+          "nlos-clock",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-ipc",
+          "nlos-operation",
+          "nlos-resource",
+          "nlos-schema",
+          "nlos-store",
+          "nlos-types",
+          "sha2 0.11.1",
+          "tokio"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 498
+  },
+  "tests/stage_e_road_e001_upgrade_gate/Cargo.lock": {
+    "git_baseline_package_count": 285,
+    "corrected_baseline_package_count": 285,
+    "candidate_package_count": 297,
+    "baseline_repair_additions": [],
+    "baseline_repair_removals": [],
+    "baseline_repair_edges": {},
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "ipnet@2.12.2",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "rusqlite",
+          "sha2 0.11.1"
+        ]
+      },
+      "nlos-wasm-sandbox@0.1.0": {
+        "old": [
+          "wasmtime"
+        ],
+        "new": [
+          "nlos-capability",
+          "nlos-schema",
+          "nlos-types",
+          "sha2 0.11.1",
+          "wasmtime"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 253
+  },
+  "examples/ecosystem-apps/Cargo.lock": {
+    "git_baseline_package_count": 161,
+    "corrected_baseline_package_count": 161,
+    "candidate_package_count": 173,
+    "baseline_repair_additions": [],
+    "baseline_repair_removals": [],
+    "baseline_repair_edges": {},
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "ipnet@2.12.2",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 132
+  },
+  "examples/sample-app/Cargo.lock": {
+    "git_baseline_package_count": 133,
+    "corrected_baseline_package_count": 154,
+    "candidate_package_count": 166,
+    "baseline_repair_additions": [
+      "getrandom@0.2.17",
+      "minicbor@2.3.1",
+      "nlos-consensus@0.1.0",
+      "nlos-net@0.1.0",
+      "nlos-takeover-control@0.1.0",
+      "protoc-bin-vendored@3.3.0",
+      "protoc-bin-vendored-linux-aarch_64@3.3.0",
+      "protoc-bin-vendored-linux-ppcle_64@3.3.0",
+      "protoc-bin-vendored-linux-s390_64@3.3.0",
+      "protoc-bin-vendored-linux-x86_32@3.3.0",
+      "protoc-bin-vendored-linux-x86_64@3.3.0",
+      "protoc-bin-vendored-macos-aarch_64@3.3.0",
+      "protoc-bin-vendored-macos-x86_64@3.3.0",
+      "protoc-bin-vendored-win32@3.3.0",
+      "ring@0.17.14",
+      "rustls@0.23.46",
+      "rustls-pki-types@1.16.0",
+      "rustls-webpki@0.103.17",
+      "sha2@0.11.1",
+      "tokio-rustls@0.26.6",
+      "untrusted@0.9.0",
+      "windows-sys@0.52.0",
+      "windows-targets@0.52.6",
+      "windows_aarch64_gnullvm@0.52.6",
+      "windows_aarch64_msvc@0.52.6",
+      "windows_i686_gnu@0.52.6",
+      "windows_i686_gnullvm@0.52.6",
+      "windows_i686_msvc@0.52.6",
+      "windows_x86_64_gnu@0.52.6",
+      "windows_x86_64_gnullvm@0.52.6",
+      "windows_x86_64_msvc@0.52.6",
+      "zeroize@1.9.1"
+    ],
+    "baseline_repair_removals": [
+      "minicbor@2.3.0",
+      "protoc-bin-vendored@3.2.0",
+      "protoc-bin-vendored-linux-aarch_64@3.2.0",
+      "protoc-bin-vendored-linux-ppcle_64@3.2.0",
+      "protoc-bin-vendored-linux-s390_64@3.2.0",
+      "protoc-bin-vendored-linux-x86_32@3.2.0",
+      "protoc-bin-vendored-linux-x86_64@3.2.0",
+      "protoc-bin-vendored-macos-aarch_64@3.2.0",
+      "protoc-bin-vendored-macos-x86_64@3.2.0",
+      "protoc-bin-vendored-win32@3.2.0",
+      "sha2@0.11.0"
+    ],
+    "baseline_repair_edges": {
+      "errno@0.3.14": {
+        "old": [
+          "libc",
+          "windows-sys"
+        ],
+        "new": [
+          "libc",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "mio@1.2.3": {
+        "old": [
+          "libc",
+          "wasi",
+          "windows-sys"
+        ],
+        "new": [
+          "libc",
+          "wasi",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "nlos-artifact@0.1.0": {
+        "old": [
+          "ed25519-dalek",
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2",
+          "windows-sys"
+        ],
+        "new": [
+          "ed25519-dalek",
+          "nlos-capability",
+          "nlos-cell",
+          "nlos-identity",
+          "nlos-net",
+          "nlos-types",
+          "rusqlite",
+          "sha2",
+          "tokio",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "nlos-ipc@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "sha2",
+          "tokio",
+          "windows-sys"
+        ],
+        "new": [
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "sha2",
+          "tokio",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "nlos-lease@0.1.0": {
+        "old": [
+          "nlos-cell",
+          "nlos-types",
+          "rusqlite"
+        ],
+        "new": [
+          "ed25519-dalek",
+          "minicbor",
+          "nlos-capability",
+          "nlos-cell",
+          "nlos-clock",
+          "nlos-identity",
+          "nlos-net",
+          "nlos-types",
+          "rusqlite",
+          "sha2",
+          "tokio"
+        ]
+      },
+      "nlos-semantic@0.1.0": {
+        "old": [
+          "minicbor",
+          "nlos-canonical",
+          "nlos-capability",
+          "nlos-identity",
+          "nlos-process",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ],
+        "new": [
+          "minicbor",
+          "nlos-canonical",
+          "nlos-capability",
+          "nlos-cell",
+          "nlos-identity",
+          "nlos-net",
+          "nlos-process",
+          "nlos-types",
+          "rusqlite",
+          "sha2",
+          "tokio"
+        ]
+      },
+      "nlos-slice-k@0.1.0": {
+        "old": [
+          "ed25519-dalek",
+          "nlos-application",
+          "nlos-artifact",
+          "nlos-capability",
+          "nlos-cell",
+          "nlos-channel",
+          "nlos-clock",
+          "nlos-commit-coordinator",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-lease",
+          "nlos-notify",
+          "nlos-operation",
+          "nlos-outbox",
+          "nlos-plan",
+          "nlos-process",
+          "nlos-runtime",
+          "nlos-runtime-tokio",
+          "nlos-schema",
+          "nlos-search",
+          "nlos-semantic",
+          "nlos-store",
+          "nlos-system-control",
+          "nlos-task",
+          "nlos-topic",
+          "nlos-types",
+          "nlos-wait",
+          "sha2",
+          "tokio"
+        ],
+        "new": [
+          "ed25519-dalek",
+          "nlos-application",
+          "nlos-artifact",
+          "nlos-capability",
+          "nlos-cell",
+          "nlos-channel",
+          "nlos-clock",
+          "nlos-commit-coordinator",
+          "nlos-consensus",
+          "nlos-driver-mock",
+          "nlos-identity",
+          "nlos-lease",
+          "nlos-net",
+          "nlos-notify",
+          "nlos-operation",
+          "nlos-outbox",
+          "nlos-plan",
+          "nlos-process",
+          "nlos-runtime",
+          "nlos-runtime-tokio",
+          "nlos-schema",
+          "nlos-search",
+          "nlos-semantic",
+          "nlos-store",
+          "nlos-system-control",
+          "nlos-takeover-control",
+          "nlos-task",
+          "nlos-topic",
+          "nlos-types",
+          "nlos-wait",
+          "sha2",
+          "tokio"
+        ]
+      },
+      "rustix@1.1.5": {
+        "old": [
+          "bitflags",
+          "errno",
+          "libc",
+          "linux-raw-sys",
+          "windows-sys"
+        ],
+        "new": [
+          "bitflags",
+          "errno",
+          "libc",
+          "linux-raw-sys",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "socket2@0.6.5": {
+        "old": [
+          "libc",
+          "windows-sys"
+        ],
+        "new": [
+          "libc",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "tempfile@3.27.0": {
+        "old": [
+          "fastrand",
+          "once_cell",
+          "rustix",
+          "windows-sys"
+        ],
+        "new": [
+          "fastrand",
+          "once_cell",
+          "rustix",
+          "windows-sys 0.61.2"
+        ]
+      },
+      "tokio@1.53.1": {
+        "old": [
+          "bytes",
+          "libc",
+          "mio",
+          "pin-project-lite",
+          "socket2",
+          "tokio-macros",
+          "windows-sys"
+        ],
+        "new": [
+          "bytes",
+          "libc",
+          "mio",
+          "pin-project-lite",
+          "socket2",
+          "tokio-macros",
+          "windows-sys 0.61.2"
+        ]
+      }
+    },
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "ipnet@2.12.2",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 132
+  },
+  "examples/starter-assistant-app/Cargo.lock": {
+    "git_baseline_package_count": 154,
+    "corrected_baseline_package_count": 154,
+    "candidate_package_count": 166,
+    "baseline_repair_additions": [],
+    "baseline_repair_removals": [],
+    "baseline_repair_edges": {},
+    "prelock_additions": [
+      "ambient-authority@0.0.2",
+      "cap-fs-ext@4.0.3",
+      "cap-primitives@4.0.3",
+      "cap-std@4.0.3",
+      "fs-set-times@0.20.3",
+      "io-extras@0.19.0",
+      "io-lifetimes@2.0.4",
+      "io-lifetimes@3.0.1",
+      "ipnet@2.12.2",
+      "maybe-owned@0.3.4",
+      "rustix-linux-procfs@0.1.1",
+      "winx@0.36.4"
+    ],
+    "prelock_removals": [],
+    "prelock_edges": {
+      "nlos-capability@0.1.0": {
+        "old": [
+          "nlos-identity",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ],
+        "new": [
+          "cap-fs-ext",
+          "cap-std",
+          "nlos-identity",
+          "nlos-schema",
+          "nlos-types",
+          "rusqlite",
+          "sha2"
+        ]
+      }
+    },
+    "cap_fs_ext_resolved_features": [
+      "cap-std",
+      "default",
+      "std"
+    ],
+    "registry_conformance_count": 132
+  }
+}

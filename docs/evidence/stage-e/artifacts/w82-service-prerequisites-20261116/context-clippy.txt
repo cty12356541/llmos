@@ -1,0 +1,2 @@
+    Checking nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-capability)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.88s

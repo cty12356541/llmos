@@ -1,0 +1,47 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling shlex v2.0.1
+   Compiling typenum v1.20.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.4.0
+   Compiling hybrid-array v0.4.14
+   Compiling quote v1.0.47
+   Compiling pkg-config v0.3.33
+   Compiling vcpkg v0.2.15
+   Compiling unicode-ident v1.0.24
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling libsqlite3-sys v0.38.2
+   Compiling foldhash v0.2.0
+   Compiling curve25519-dalek v5.0.0
+   Compiling hashbrown v0.17.1
+   Compiling syn v2.0.119
+   Compiling digest v0.11.3
+   Compiling cpufeatures v0.3.0
+   Compiling cfg-if v1.0.4
+   Compiling hashlink v0.12.1
+   Compiling bitflags v2.13.1
+   Compiling subtle v2.6.1
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling smallvec v1.15.2
+   Compiling signature v3.0.0
+   Compiling fallible-iterator v0.3.0
+   Compiling ed25519 v3.0.0
+   Compiling sha2 v0.11.1
+   Compiling nlos-types v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-types)
+   Compiling rusqlite v0.40.2
+   Compiling nlos-store-fault v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-store-fault)
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling nlos-clock v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-clock)
+   Compiling ed25519-dalek v3.0.0
+   Compiling nlos-identity v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-identity)
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-capability)
+error[E0432]: unresolved import `nlos_capability::service_call`
+ --> crates\nlos-capability\tests\service_call_context.rs:4:22
+  |
+4 | use nlos_capability::service_call::{
+  |                      ^^^^^^^^^^^^ could not find `service_call` in `nlos_capability`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `nlos-capability` (test "service_call_context") due to 1 previous error

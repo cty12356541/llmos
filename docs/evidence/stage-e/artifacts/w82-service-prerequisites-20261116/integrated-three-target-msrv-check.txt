@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking nlos-driver-llm-http v0.1.0 (D:\llmos\crates\nlos-driver-llm-http)
+    Checking nlos-wasm-sandbox v0.1.0 (D:\llmos\crates\nlos-wasm-sandbox)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.15s

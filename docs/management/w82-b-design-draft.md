@@ -6,6 +6,8 @@
 >
 > **2026-11-16 补充裁定：维护者明确采用 Blob 推荐方案。应用消息只传引用；Blob 服务逐块鉴权返回字节，每块最多 65408 bytes 且完整编码载荷不超过 65536 bytes；新增显式接收者字段并绑定认证身份；重启后旧令牌失效，禁止按旧路径重开；读取限定对齐块及末尾短块。此补充替代下文旧“任何 SABI 帧不含字节”及原始64 KiB块措辞；未改变 D1–D11 编号。详见 §5.5 与 [本轮 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。**
 >
+> **第二波服务库实施采用[§15 的收口](#15-2026-11-16-第二波服务库实施收口)，与 §5.5 一起作为当前实施入口。**
+>
 > 日期:2026-11-08 · 基线:main `72c75e596` · 通道:W82-B-SABI-V11-THIN-WAIST
 > 权威依据:[stage-e-progress.md](stage-e-progress.md) §E.6.1.8、[E-DOGFOOD-001](../evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md)(L-015 裁定:选项 B 默认优先、选项 C 否决、选项 A 须附等强 TCB/DoS 论证)、ADR-0010/0014/0022/0027
 > 纪律:本文档为设计定稿,**零代码、零 claims.yaml 预支**(AGENTS.md 第 7 条);所有 file:line 锚点已于 2026-11-08 在 main `72c75e596` 全量核验(9 路并行勘察,346 次工具调用)。
@@ -419,3 +421,14 @@ schema兼容验证和编码边界证据见 [W82-B-CONTRACT](../evidence/stage-e/
 - WASI 白名单实际 **14 个导入**(`add_to_linker` 注册,[wasi_allowlist.rs:412-886](../../crates/nlos-wasm-sandbox/src/wasi_allowlist.rs)),非 13(证据文档自身括号列表就是 14 个名字,属上游文档笔误)。
 - **`voice_uri` 不是 ChannelControl 的 proto 字段**:它是 qq-agent 应用层 `OutboundReply` 消息的字段(E-DOGFOOD-001 §1),经 ChannelControl enqueue 的不透明 `bytes payload = 5`([channel_control.proto:88-98](../../schema/nlos/sabi/v1/channel_control.proto))传输——本文 §5.2 初稿曾误作「ChannelControl 既有 string 字段」,对抗复核已纠正;设计结论(ChannelControl 零字节改动)不变。
 - 其余简报锚点(manifest:9、version_matrix:343-344、compatibility:200/:297、epoch_v1_0_golden_corpus:49、step_c:387、CI:136-139、common.py:43、shim:131-138/:612-614/:633-664、resource 六原语行号、build.rs:9-14/:48-58、buf 钉版)**全部经 9 路勘察 + 5 路对抗复核核验零漂移**;复核另修正本文自身三处:capability 触发器计数口径(heads 行由其中 2 个触发器禁改删)、`adjudicate_schema_identity` 锚点(函数在 :83)、SDK 断言松绑面(四处实为六处,§10.2)。
+
+## 15. 2026-11-16 第二波服务库实施收口
+
+以下是本轮 integrator 在既有裁定内选定的实施约束。先交付共用调用合同及依赖预锁，B2、B3、B4 随后按互斥写集并行。验收以代码和 Evidence 为准。[依赖与工作包](./nlos-goal-delivery-plan.md#w82-b-service-prerequisites服务库公共前置)
+
+- **共享调用合同**。服务以独立可信宿主提供的 principal、application、process、generation、session 及已解析的能力句柄构造绑定。服务重算语义摘要，逐项核对调用和动作（方法、目标、代际、摘要、幂等键及期限）。注入的策略答复默认拒绝，接受时须精确回绑原动作、调用和呈现句柄。每次外部调用、Blob 新块及受保护结果重放前取得当前受信墙钟与同域单调时钟并重新授权，时钟不可用即拒绝。库结果只代表该次校验快照。拒绝未支持或未经运行时验证的 Task 绑定，真实身份与权利验证归 INT。
+- **D8 受控预算**。影子预留覆盖五维报价，权威 `consume_llm_tokens` 是唯一持久扣减。先保存原幂等域、键和摘要，再给内部操作分配标识；在触发 authority consume 前持久化准确用量、账户、操作、幂等键和价格版本。恢复复用同一个 settlement intent，可能已发包的未知结果保留不可盲重发记录。失败零权威扣减仍可能产生 provider 侧费用，此方案限可观察支出，真实外部费用的 STRICT 保证须另行验收。父自身与所有后代在同一账本写入者下消耗额度。衰减须接收可信 `ChildSessionBinding` 并将实际账户及父边界回传给宿主的 `ChildBudgetBinding`，wire 继续投影原字段。
+- **D9 工具执行**。使用持久 `ToolOperationStore` 记录调用者、原幂等键、摘要及终态，持久化唯一 dispatch fence 后才启动单调用宿主。只有能确认 fence 尚未消耗的取消才记 `CancelledBeforeEffect`。运行中 kill、截止或宿主丢失后，如无法确认效果，保持 `EffectUnknown`。旧键不能盲重启，目录摘要用于对账。完成与取消由唯一终态收敛。工具默认非零 epoch，stdout/stderr 并行有界读取，逐调用文件写入限额与完整 wire 编码界分别验证。OperationControl/WaitControl 的持久存储适配和挂载归 INT。
+- **D5 安全首次打开与签名**。B4 采用修复版 `cap-std` / `cap-fs-ext` `4.0.3`。可信 workspace resolver 交付已打开的授权根，按相对组件逐步打开目录与末级文件、拒绝跟随链接并核验已打开对象，沿用所得文件句柄计算摘要和读取。按文本路径先 canonicalize 再 open 无法封住首次打开竞态。初期适用受管理的本机工作区，根及挂载由宿主控制，目录被移动时已授权对象仍由句柄标识。真正的 `SignedMintCommand` 与 `SignedReleaseCommand` 为库级 sidecar，按当前 IdentityAuthority 密钥验签并绑定主体、对象、来源能力及完整约束。读块绑定当前授权的接收者，release 限当前授权的 issuer 或 holder。daemon 的签名输送、托管密钥策略、slot、受信根解析及服务接线归 INT。[cap 修复版本](https://rustsec.org/advisories/RUSTSEC-2026-0482.html)
+
+执行时记录有效配置与各项上界。D8 要有账户/子树、在途调用、持久记录和结果的界。D9 要有限制活跃宿主、参数、两路输出、文件写量以及持久 reconcile 的预留。D5 保留 §5.5 的双编码界，并为文件、摘要清单、每主体与全局 fd、并发、速率和 TTL 设限。持久日志触及水位时拒绝新的工作，并为已受理工作保留终态写入和对账空间。默认值可在有限上界与拒绝语义内收紧，最终实效值归各车道 Evidence。新权限、协议变更或更高保障承诺应另行处置。

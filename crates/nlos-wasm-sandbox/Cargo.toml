@@ -12,6 +12,9 @@ name = "nlos_wasm_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+nlos-capability = { path = "../nlos-capability" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-types = { path = "../nlos-types" }
 wasmtime = "50.0.1"
 # W80-0-SCAFFOLD 预锁 Wasmtime 供应链(阶段 E 唯一获批新增第三方依赖,RISK-E-04
 # 要求锁定 Wasmtime 版本);feature 组合由 W80-E6A 车道仅在本文件内调整,

@@ -1,0 +1,27 @@
+    Checking windows_x86_64_msvc v0.52.6
+   Compiling bytes v1.12.1
+   Compiling windows-link v0.2.1
+    Checking io-lifetimes v3.0.1
+    Checking windows-targets v0.52.6
+   Compiling windows-sys v0.61.2
+    Checking windows-sys v0.52.0
+    Checking io-lifetimes v2.0.4
+   Compiling prost v0.14.4
+   Compiling tempfile v3.27.0
+   Compiling prost-types v0.14.4
+    Checking ipnet v2.12.2
+    Checking maybe-owned v0.3.4
+    Checking fs-set-times v0.20.3
+    Checking io-extras v0.19.0
+    Checking winx v0.36.4
+    Checking ambient-authority v0.0.2
+    Checking curve25519-dalek v5.0.0
+    Checking cap-primitives v4.0.3
+   Compiling prost-build v0.14.4
+    Checking cap-std v4.0.3
+    Checking cap-fs-ext v4.0.3
+    Checking ed25519-dalek v3.0.0
+    Checking nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.44s

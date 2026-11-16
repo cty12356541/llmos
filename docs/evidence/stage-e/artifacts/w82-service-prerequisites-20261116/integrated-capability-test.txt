@@ -1,0 +1,155 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling anyhow v1.0.104
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling windows-link v0.2.1
+   Compiling syn v2.0.119
+   Compiling either v1.17.0
+   Compiling itertools v0.14.0
+   Compiling windows-targets v0.52.6
+   Compiling bytes v1.12.1
+   Compiling windows-sys v0.52.0
+   Compiling io-lifetimes v2.0.4
+   Compiling foldhash v0.1.5
+   Compiling prettyplease v0.2.37
+   Compiling equivalent v1.0.2
+   Compiling regex-syntax v0.8.11
+   Compiling io-lifetimes v3.0.1
+   Compiling hashbrown v0.17.1
+   Compiling indexmap v2.14.0
+   Compiling hashbrown v0.15.5
+   Compiling regex-automata v0.4.16
+   Compiling windows-sys v0.61.2
+   Compiling prost-derive v0.14.4
+   Compiling fixedbitset v0.5.7
+   Compiling once_cell v1.21.4
+   Compiling io-extras v0.19.0
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling regex v1.13.1
+   Compiling petgraph v0.8.3
+   Compiling prost v0.14.4
+   Compiling protoc-bin-vendored-linux-x86_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-s390_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.3.0
+   Compiling prost-types v0.14.4
+   Compiling log v0.4.33
+   Compiling heck v0.5.0
+   Compiling cap-primitives v4.0.3
+   Compiling protoc-bin-vendored-macos-x86_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.3.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.3.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.3.0
+   Compiling multimap v0.10.1
+   Compiling protoc-bin-vendored-win32 v3.3.0
+   Compiling protoc-bin-vendored v3.3.0
+   Compiling fs-set-times v0.20.3
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling prost-build v0.14.4
+   Compiling winx v0.36.4
+   Compiling ambient-authority v0.0.2
+   Compiling ipnet v2.12.2
+   Compiling maybe-owned v0.3.4
+   Compiling cap-std v4.0.3
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+   Compiling curve25519-dalek v5.0.0
+   Compiling cap-fs-ext v4.0.3
+   Compiling ed25519-dalek v3.0.0
+   Compiling nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+   Compiling nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.72s
+     Running unittests src\lib.rs (target/w82-service-context\debug\deps\nlos_capability-ebf53ff4a079fca7.exe)
+
+running 4 tests
+test namespace::tests::namespace_within_allows_equal_and_descendant ... ok
+test namespace::tests::prefix_len_trims_trailing_zeros ... ok
+test custody::tests::custody_vault_issues_adr0022_root_capability_without_exporting_private_key ... ok
+test custody::tests::rfc8032_engine_matches_ed25519_dalek_byte_for_byte ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.26s
+
+     Running tests\call_limit_ledger.rs (target/w82-service-context\debug\deps\call_limit_ledger-0ee63390f31d60e1.exe)
+
+running 7 tests
+test consumption_rows_are_ddl_protected ... ok
+test consume_enforces_semantic_admission_gates_without_spending ... ok
+test consume_decrements_and_exhaustion_rejects_typed_with_zero_partial_state ... ok
+test consume_replay_is_free_conflicts_fail_closed_and_restart_persists ... ok
+test unlimited_capability_never_exhausts_and_readback_is_none ... ok
+test concurrent_consumption_linearizes_under_quota ... ok
+test delegated_budget_is_independent_not_pooled_with_parent ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests\capability_authority.rs (target/w82-service-context\debug\deps\capability_authority-b121173c4cf1ecf9.exe)
+
+running 6 tests
+test capability_descriptors_versions_and_receipts_are_ddl_protected ... ok
+test root_issue_is_authority_bound_durable_and_exactly_replayable ... ok
+test direct_revocation_is_replayable_and_generation_fenced ... ok
+test ancestor_revocation_invalidates_descendants_after_restart ... ok
+test semantic_authorization_requires_verified_holder_scope_right_and_purpose ... ok
+test delegation_attenuates_every_mechanical_dimension ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests\capability_fault_injection.rs (target/w82-service-context\debug\deps\capability_fault_injection-e9522403f6f18e29.exe)
+
+running 4 tests
+test capability_power_loss_invisible_commit_converges_for_issue_and_consume ... ok
+test capability_precommit_enospc_fails_typed_zero_phantom_converges ... ok
+test capability_precommit_ioerr_fails_typed_zero_phantom_converges ... ok
+test capability_replay_storm_is_byte_equal_idempotent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests\namespace_hierarchy.rs (target/w82-service-context\debug\deps\namespace_hierarchy-b9c8915c9c6d9e60.exe)
+
+running 5 tests
+test authorize_and_consume_accept_requested_target_within_capability_subtree ... ok
+test delegate_narrows_namespace_target_within_parent_prefix ... ok
+test delegate_rejects_namespace_scope_amplification ... ok
+test narrowed_delegate_replays_across_restart ... ok
+test task_target_still_requires_exact_match ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\service_call_context.rs (target/w82-service-context\debug\deps\service_call_context-8fd89dad3e01c0f2.exe)
+
+running 12 tests
+test default_authorizer_denies_a_well_formed_call ... ok
+test all_methods_enforce_their_key_and_deadline_requirements ... ok
+test capability_sets_enforce_cardinality_and_exact_duplicate_identity ... ok
+test policy_cannot_substitute_any_caller_or_call_field ... ok
+test grants_select_the_exact_presented_handle_generation ... ok
+test supplied_deadlines_must_strictly_exceed_the_host_monotonic_time ... ok
+test policy_errors_are_preserved_without_exposing_call_data_in_display ... ok
+test policy_grants_must_select_a_presented_capability_before_window_validation ... ok
+test malformed_calls_fail_in_preflight_order_without_consulting_policy ... ok
+test successful_result_preserves_the_exact_authorized_binding_and_selected_handle ... ok
+test policy_cannot_substitute_any_action_or_target_field ... ok
+test grant_windows_use_wall_time_and_accept_both_endpoints ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\signed_commands.rs (target/w82-service-context\debug\deps\signed_commands-67ee2ee76fc09c9a.exe)
+
+running 9 tests
+test unknown_signer_principal_fails_closed ... ok
+test signature_over_wrong_message_rejects_with_zero_writes ... ok
+test replay_does_not_reverify_signature_after_key_revocation ... ok
+test revoked_key_fails_closed_after_registration ... ok
+test signed_issue_root_roundtrip_records_signer_principal ... ok
+test signed_revocation_roundtrip_records_signer ... ok
+test signed_delegate_roundtrip_records_delegator_as_issuer ... ok
+test delegate_and_revoke_signatures_bind_their_own_principals ... ok
+test tampered_signature_rejects_with_zero_durable_writes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+   Doc-tests nlos_capability
+
+running 1 test
+test crates\nlos-capability\src\service_call.rs - service_call::AuthorizedServiceCall (line 220) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s

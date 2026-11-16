@@ -1,0 +1,19 @@
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-service-context\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.68s
+     Running tests\service_call_context.rs (D:/llmos/target/w82-service-context\debug\deps\service_call_context-2e427c9c8510c853.exe)
+
+running 12 tests
+test all_methods_enforce_their_key_and_deadline_requirements ... ok
+test malformed_calls_fail_in_preflight_order_without_consulting_policy ... ok
+test capability_sets_enforce_cardinality_and_exact_duplicate_identity ... ok
+test grant_windows_use_wall_time_and_accept_both_endpoints ... ok
+test successful_result_preserves_the_exact_authorized_binding_and_selected_handle ... ok
+test default_authorizer_denies_a_well_formed_call ... ok
+test policy_cannot_substitute_any_action_or_target_field ... ok
+test policy_cannot_substitute_any_caller_or_call_field ... ok
+test policy_errors_are_preserved_without_exposing_call_data_in_display ... ok
+test policy_grants_must_select_a_presented_capability_before_window_validation ... ok
+test grants_select_the_exact_presented_handle_generation ... ok
+test supplied_deadlines_must_strictly_exceed_the_host_monotonic_time ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

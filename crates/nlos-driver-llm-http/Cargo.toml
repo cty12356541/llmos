@@ -13,6 +13,7 @@ path = "src/bin/nlos-llm-pool-cli.rs"
 
 [dependencies]
 ed25519-dalek.workspace = true
+nlos-capability = { path = "../nlos-capability" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }

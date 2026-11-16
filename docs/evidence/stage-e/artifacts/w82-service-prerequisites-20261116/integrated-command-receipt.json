@@ -1,0 +1,81 @@
+{
+  "base_revision": "4d097056e3ebd57e130d9303e02e23433fc9d1ba",
+  "working_tree": "D:/llmos",
+  "context_review_patch_sha256": "1f9d76e329f8a697bc553a077346eb2ef327c9edd4e09cbb4abac5ca64f378a1",
+  "dependency_review_patch_sha256": "2a92f1d20f444b1b9678a471fddb08f415eb7066b982d1a98028ad0d99db8765",
+  "commands": {
+    "capability-test": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-capability"
+      ],
+      "exit": 0,
+      "stdout_stderr_bytes": 7423,
+      "stdout_stderr_capture_sha256": "9bb351354ba847d14728906fe3c1b4b8abd836ce2a7af80749629610ad82ab03"
+    },
+    "capability-clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "stdout_stderr_bytes": 1016,
+      "stdout_stderr_capture_sha256": "60421388f6bf1175010b477b278b7ca787297f51c60cfd3d4522fbfc9d242483"
+    },
+    "fmt-workspace": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout_stderr_bytes": 0,
+      "stdout_stderr_capture_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "three-target-msrv-check": {
+      "command": [
+        "cargo",
+        "+1.97",
+        "check",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "-p",
+        "nlos-driver-llm-http",
+        "-p",
+        "nlos-wasm-sandbox"
+      ],
+      "exit": 0,
+      "stdout_stderr_bytes": 400,
+      "stdout_stderr_capture_sha256": "854c6f620b85c0200bf96935bf929de6c19b8eb4bf509fac2a6b5e250f5143ca"
+    },
+    "supply-chain": {
+      "command": [
+        "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/conformance/schema",
+        "-p",
+        "test_lockfile_supply_chain_gate.py"
+      ],
+      "exit": 0,
+      "stdout_stderr_bytes": 106,
+      "stdout_stderr_capture_sha256": "afb2696ec3d69f94ba2f9d72b5e667e775b7e1b990efbe6f5a1bc6e4c8c4b7da"
+    }
+  }
+}
