@@ -1,0 +1,28 @@
+# W82-JOURNAL-OWNER-SCOPED-REVIEW / B2 / Attempt 20261116
+
+**Spec PASS；Quality PASS，无新增阻断。** 本单文件 delta 修复已确认的最后逻辑 writer 释放与被动 File clone 寿命不一致问题，可合流后执行既定主树/Unix 门。原 B3 macOS 的首开/重开阶段和实际锁持有者仍 UNKNOWN，Windows 产品红绿不是原 macOS 现场复现。
+
+## CAS 与范围
+
+- [独立 delta](b2-ci-journal-owner-logs/b2-journal-owner.delta.diff) SHA-256 **`dfb3ecdc978dd0ef720dfae29e8c819fa71f3484c54879dd4577ce91c18cd12d`**。
+- 唯一路径 `crates/nlos-driver-llm-http/src/reservation_journal.rs`；before blob `d56c5c76af0ce68f1f27f3731b86a2eecb0dc0ca`，after blob **`2abd2a86a46a082027a57e1294bb1faf68e6f2fb`**；候选 raw SHA-256 **`dadb825431e3ce9187309255eede7bdaa5d723b3c8d085ce58c40eab0315abd4`**。
+- 候选树 `C:/Users/Administrator/.codex/worktrees/w82-b2-gateway/llmos`，HEAD 仍 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`、index 空；输入语义绑定主树 `533001483b440053e4c7333db445a7c2ff91baa2`，不把隔离树 HEAD 混写成该提交。
+- 完整读取本 delta、[报告](b2-ci-journal-owner-report.md)和关联日志；开始/结束包与候选 hash 无漂移，实际 after blob 相符，独立 reverse strict apply-check exit 0。另独立比较封存 before/red/after：red 生产部分等于 before，红绿测试模块逐字节相同。
+- 复用原 B2/恢复审查，仅审此增量；未重跑完整 suite、未改候选/主树源码或 index、未派子 Agent。
+
+## 正确性核查
+
+1. **获得锁后立即接管。** `WriterLock::acquire` 将原 `try_lock` 与 WriterBusy/Durability 映射原样保留；只有成功持锁才构造 guard。guard 紧接原 open 建立，早于 metadata、容量/记录验证、恢复 apply、文件同步及 Unix 目录同步，故所有后续 `?` 或错误 return 都有受控析构，非持锁错误不会执行 unlock。
+2. **最后逻辑 owner 才释放。** guard 是 Journal 的私有文件字段，无新增 Clone 或共享可变入口；Deref/DerefMut 仅让原 I/O 调用继续使用该 File。Arc owner 未归零时 Journal 不析构。最后 owner 销毁时显式 unlock 先于 File 字段自动 close，不再依赖被动 OS 引用都已关闭。
+3. **Unix PID 护栏正确。** 成功获得锁时记录 creator PID。fork 副本在其他 PID 执行析构时跳过显式 unlock，随后字段仍正常关闭，避免子副本主动解除原进程的共享锁。这一 cfg(unix) 分支仅做静态接受，尚无本轮 Unix 运行证据，也不声称做过 fork 实验。
+4. **后继 writer 与失败语义。** 新 writer 仍必须完成真实 try_lock；被动旧 File close 不拥有新打开对象的锁。Drop 忽略 unlock 的返回值，没有生成成功 ACK；如果底层释放失败，后续 open 仍会返回原 typed error，没有把 Busy 吞掉或重试。
+5. **持久语义保持。** 除文件私有 owner 类型和获得/释放动作，本 delta 未改变记录格式、校验、恢复回调、同步/截尾次序、容量、poison 或外部接口。没有解锁后仍执行 journal 写入的新增路径，没有 Busy sleep/retry。
+
+## 核对的回归证据
+
+- [Windows red](b2-ci-journal-owner-logs/before-fix-windows.log)：两项测试 **1 pass / 1 fail**，exit 101；失败为最后逻辑 owner drop 后、真实 passive File clone 仍活时重开得到 WriterBusy。不是“两项均红”。
+- [Windows green](b2-ci-journal-owner-logs/after-fix-windows.log)：2/2、exit 0。第一个测试覆盖两个 Arc owner 中非最后 drop 仍 Busy、最后 drop 后保留 passive clone 立即重开、关闭旧 clone 不误释放后继锁、后继销毁后可再开。全程无等待或概率重试。
+- 第二个回归验证恢复回调执行期间持续独占、失败返回后可恢复。该用例未在失败路径另持 passive clone；因此其日志只证明错误生命周期与独占性，所有取得锁后的分支被 guard 覆盖由源码结构验证，不夸大成逐个系统调用错误注入。
+- [crate-test.log](b2-ci-journal-owner-logs/crate-test.log)：10 lib + 19 gateway + 9 shim + 1 compile-fail doc，合计39/39；严格 [Clippy](b2-ci-journal-owner-logs/strict-clippy.log)、[MSRV 1.97](b2-ci-journal-owner-logs/msrv-check.log)和 [crate fmt 回执](b2-ci-journal-owner-logs/fmt-status.txt)成功。原独占/恢复/sync-failure 用例保留。
+
+**未关闭门：** 合流后的最终快照验证及 Linux/macOS 产品回归仍 pending；Windows clone 红绿已证明本产品缺口，不能替代 Unix PID 分支或原 macOS 故障现场。其余原 B2 已接受结论不变，本报告不晋升整车道状态。

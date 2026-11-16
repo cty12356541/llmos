@@ -1,0 +1,33 @@
+5331: 2026-11-16T09:55:32.5680730Z
+5332: 2026-11-16T09:55:32.5683680Z thread 'c_bench_cell_shard_worker_entry' (118113) panicked at crates/nlos-task/tests/c_bench_task_sharded_scale.rs:458:37:
+5333: 2026-11-16T09:55:32.5686240Z signal shard ready: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+5334: 2026-11-16T09:55:32.5688160Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+5335: 2026-11-16T09:55:32.5778240Z test c_bench_cell_shard_worker_entry ... FAILED
+5336: 2026-11-16T09:55:32.5779290Z
+5337: 2026-11-16T09:55:32.5779620Z failures:
+5338: 2026-11-16T09:55:32.5779940Z
+5339: 2026-11-16T09:55:32.5780220Z failures:
+5340: 2026-11-16T09:55:32.5781230Z     c_bench_cell_shard_worker_entry
+6448: 2026-11-16T09:59:12.8223260Z test real_guest_catalog_and_durable_result_replay_after_reopen ... ok
+6449: 2026-11-16T09:59:12.8456630Z test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... FAILED
+6450: 2026-11-16T09:59:12.9759260Z test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+6451: 2026-11-16T09:59:12.9760910Z test service_harness_child ... ok
+6452: 2026-11-16T09:59:13.1363280Z test shared_writer_cancel_and_completion_keep_one_terminal_receipt ... ok
+6453: 2026-11-16T09:59:13.3008240Z test shared_writer_cancellation_reaches_the_executing_instance ... ok
+6454: 2026-11-16T09:59:13.7629890Z test shared_writer_limits_active_hosts_globally_across_instances ... ok
+6463: 2026-11-16T09:59:17.5446180Z
+6464: 2026-11-16T09:59:17.5449320Z thread 'real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog' (132072) panicked at crates/nlos-wasm-sandbox/tests/tool_service.rs:1194:5:
+6465: 2026-11-16T09:59:17.5451640Z assertion `left == right` failed
+6466: 2026-11-16T09:59:17.5460320Z error: test failed, to rerun pass `-p nlos-wasm-sandbox --test tool_service`
+6467: 2026-11-16T09:59:17.5461710Z   left: Some(66)
+6468: 2026-11-16T09:59:17.5462910Z  right: Some(133)
+6469: 2026-11-16T09:59:17.5470800Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+6470: 2026-11-16T09:59:17.5471750Z
+6471: 2026-11-16T09:59:17.5471870Z
+6476: 2026-11-16T09:59:17.5478350Z
+6477: 2026-11-16T09:59:17.5670950Z ##[error]Process completed with exit code 101.
+6478: 2026-11-16T09:59:17.5964410Z ##[group]Run actions/upload-artifact@v7
+6479: 2026-11-16T09:59:17.5964760Z with:
+6480: 2026-11-16T09:59:17.5965200Z   name: w82-service-macos-latest-9cce6c77e8f29ea44a080c2adf26f2fc8c745fec-43841248536-1
+6481: 2026-11-16T09:59:17.5965730Z   path: /Users/runner/work/_temp/w82-service-evidence
+6482: 2026-11-16T09:59:17.5966040Z   if-no-files-found: warn

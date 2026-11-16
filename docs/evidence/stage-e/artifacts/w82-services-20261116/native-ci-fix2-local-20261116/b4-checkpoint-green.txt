@@ -1,0 +1,13 @@
+Workdir C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos
+CARGO_TARGET_DIR=D:/llmos/target/w82-b4
+Command cargo test --locked -p nlos-capability --test blob_reference blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves -- --exact --nocapture
+Exit 0
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.15s
+     Running tests\blob_reference.rs (D:/llmos/target/w82-b4\debug\deps\blob_reference-8e737d29fa32c5a8.exe)
+
+running 1 test
+blocked checkpoint read elapsed 20.053ms
+test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.12s

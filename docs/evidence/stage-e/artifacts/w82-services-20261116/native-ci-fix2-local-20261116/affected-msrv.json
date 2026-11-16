@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "+1.97",
+    "check",
+    "--locked",
+    "-p",
+    "nlos-capability",
+    "-p",
+    "nlos-wasm-sandbox",
+    "--all-targets"
+  ],
+  "cwd": "D:\\llmos",
+  "env": {
+    "CARGO_TERM_COLOR": "never",
+    "PYTHONUTF8": "1",
+    "CARGO_TARGET_DIR": "D:\\llmos\\target\\w82-service-deps"
+  },
+  "started_utc": "2026-11-16T10:20:59.410+00:00",
+  "exit": 0,
+  "finished_utc": "2026-11-16T10:21:03.389+00:00",
+  "duration_seconds": 3.985
+}

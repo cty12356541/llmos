@@ -2,7 +2,7 @@
 
 证据 ID `w82-b2-llm-gateway-20261116` · W82-B2 / Attempt 20261116-2 · 2026-11-16 · `H4`
 
-Windows 实施验证及独立审查通过。下列实测为隔离候选的对应结果。主树复验和三平台验证见[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。
+库级验收完成。源码 `2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的三平台完整复验与原生专项通过。以下按候选和 CI 轮次保留历史。最终范围见[本页最终回执](#最终三平台验收)与[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。
 
 ## 基线与写集
 
@@ -53,3 +53,25 @@ Windows x86_64 MSVC，默认 Rust 1.99.0，另以 Rust 1.97 校验最低版本�
 - `cargo test --locked -p nlos-driver-llm-http --test gateway clock` 修复前退出 101，正常并发采样和失败采样的成对发布两条新测试返回意外 `TimeUnavailable`。修复后同一命令退出 0，3/3，含真实回退、时钟回调失败、期限及权限拒绝零 TCP 的断言。
 - `cargo test --locked -p nlos-driver-llm-http` 修复后退出 0，8 库测试、19 gateway 集成、9 旧 shim 集成、1 compile-fail doctest，共 37 项通过。
 - 修复后默认 Clippy、Rust 1.97 all-targets 编译、crate fmt 与 Git diff 检查退出 0。本轮修复未重跑隔离工作树全仓格式和跨平台检查。增量独立复审通过。[并发取时修复前](artifacts/w82-services-20261116/b2-clock-red.txt) · [修复后](artifacts/w82-services-20261116/b2-clock-green.txt) · [祖先预算反例](artifacts/w82-services-20261116/b2-ancestor-red.txt) · [包测试](artifacts/w82-services-20261116/b2-library-suite.txt) · [独立复审](artifacts/w82-services-20261116/b2-review.txt)
+
+## 首轮远端验证与截断
+
+提交 `46075b71` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43838421256) 在三个 verify 的 workspace 测试中均先遇到协调器 custody 的 Capability schema 版本断言。B2 包位于失败目标之后，本轮未在远端运行四方法、TCP 子树和持久结算回归。首轮原生专项成功只记在其实际覆盖范围。[首轮作业摘要](artifacts/w82-services-20261116/native-ci-20261116/first-ci-summary.json) · [失败摘录](artifacts/w82-services-20261116/native-ci-20261116/first-ci-failure-excerpt.txt)
+
+## 第二轮具名回执
+
+`9cce6c77` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43841248536) 中，Ubuntu 与 macOS 的 workspace 日志均确认 B2 四方法、真实 TCP 与父子树预算、持久结算回归通过。Ubuntu 后续严格 Clippy 失败，macOS 后续工具 epoch 用例失败。Windows 在更早的 Blob checkpoint 测试耗时断言退出，未执行 B2 包。同一最终版本的三平台汇总验收仍待复验。[逐平台工作区结果](artifacts/w82-services-20261116/native-ci-fix1-20261116/ci-summary.json)
+
+## 第三轮具名回执
+
+`53300148` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43848357515) 三平台都通过 B2 四方法、真实 TCP 子树与持久结算的具名回归。Ubuntu 与 Windows 的完整 verify 通过。macOS 在 B3 工具持久重放用例的 journal `Busy` 停止，B 汇总门仍待最终同 SHA 复验。[具名回执](artifacts/w82-services-20261116/native-ci-fix2-20261116/ci-summary.json) · [macOS 作业](https://github.com/cty12356541/llmos/actions/runs/43848357515/job/133234216446)
+
+## Journal writer 释放修订
+
+`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的 B2 单路径修订经独立审查。私有 `WriterLock` 在真实 `File::try_lock` 成功后建立，贯穿恢复和文件及 Unix 目录同步。最后逻辑 writer 销毁时先显式 unlock 再 close；Unix 仅获锁 PID 可显式 unlock。下一 writer 仍单次真实 try-lock 并保留 Busy 与持久性错误。恢复、同步顺序及写入格式保持既有合同。[隔离回执](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b2-journal-owner-report.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b2-journal-owner-independent-review.txt)
+
+真实 Windows `File::try_clone()` 负例在最后逻辑 owner 已退出、被动副本仍存活时重开得到 `WriterBusy`，修订后可立即重开。仍有合法 owner 时保持排他，关闭旧副本不释放新 writer 的锁。恢复回调故障用例核验获锁后保持排他，错误返回时释放并可再次打开。主树 B2 39/39，含以上用例和编译失败文档测试。此处产品回执绑定 Windows，与原 macOS Busy 的现场分开记录。第四轮原生复验见下节。[红例](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b2-owner-red.txt) · [绿例](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b2-owner-green.txt) · [主树逐项统计](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/test-summary.json)
+
+## 最终三平台验收
+
+`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43857200084) 在 Ubuntu、macOS 和 Windows 的工作区中通过四方法、环回 TCP 子树、持久结算、被动文件副本的 writer 释放及恢复失败释放。Unix 正常析构经过获锁者 PID 路径。此回执使用受控 provider 与可信宿主夹具，已验保障为 OBSERVED 五维影子预算和 ResourceAuthority 持久扣减。真实 provider H5、STRICT 外部支出和系统权限接线待各自验证。[逐项回执](artifacts/w82-services-20261116/native-ci-fix3-20261116/ci-summary.json)

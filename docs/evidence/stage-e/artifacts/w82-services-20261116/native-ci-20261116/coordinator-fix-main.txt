@@ -1,0 +1,39 @@
+workdir: D:/llmos
+command: cargo test --locked -p nlos-commit-coordinator --test custody_gateway_reconciliation
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling windows-sys v0.61.2
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+   Compiling cap-primitives v4.0.3
+   Compiling mio v1.2.2
+   Compiling cap-std v4.0.3
+   Compiling socket2 v0.6.5
+   Compiling cap-fs-ext v4.0.3
+   Compiling tokio v1.54.1
+   Compiling nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+   Compiling tokio-rustls v0.26.6
+   Compiling nlos-net v0.1.0 (D:\llmos\crates\nlos-net)
+   Compiling nlos-semantic v0.1.0 (D:\llmos\crates\nlos-semantic)
+   Compiling nlos-artifact v0.1.0 (D:\llmos\crates\nlos-artifact)
+   Compiling nlos-task v0.1.0 (D:\llmos\crates\nlos-task)
+   Compiling nlos-commit-coordinator v0.1.0 (D:\llmos\crates\nlos-commit-coordinator)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.12s
+     Running tests\custody_gateway_reconciliation.rs (target\debug\deps\custody_gateway_reconciliation-eaa39135cb5c3e13.exe)
+
+running 10 tests
+test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... ok
+test custody_compromised_revocation_tombstone_refuses_signing_and_flags_post_compromise_proofs ... ok
+test custody_key_epoch_rotation_bars_old_signing_and_preserves_historical_verification ... ok
+test custody_signing_emits_strictly_monotonic_audit_seq_and_adr0022_root_capability ... ok
+test still_uncertain_quarantine_freezes_active_reservation_and_keeps_quarantined_funds_frozen ... ok
+test final_confirmed_no_effect_settles_zero_usage_and_rejects_nonzero_high_water ... ok
+test final_effect_closed_attestation_settles_quarantined_reservation_converges_task_and_replays_idempotently ... ok
+test provisional_gateway_attestation_projects_rebate_without_moving_funds_or_unfreezing ... ok
+test compromised_expired_rotated_wrong_gateway_and_stale_fence_attestations_fail_closed ... ok
+test supersession_conflicts_stale_versions_post_final_and_below_high_water_fail_closed ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
+
+exit_code: 0

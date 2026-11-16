@@ -1,0 +1,117 @@
+{
+  "algorithm": "sha256",
+  "verification": "Stored UTF-8 text omits any BOM, uses LF, trims line-ending spaces and terminal empty lines, and retains one final LF. The capture digest binds pre-normalization bytes. A selection field identifies excerpts and structured projections.",
+  "runtime_source_sha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+  "rust_ci_run": "43857200084",
+  "ci_report_capture_sha256": "9e638e20fdaccca26f838c98b983d8ab0af5eafa430bb714ac518ff9dccfaa89",
+  "ci_owner_capture_manifest_sha256": "7a38558b6c1956b593c9bc08e0b6b5f29cde585e16da849c97da95caa7b8bd7b",
+  "files": {
+    "ci-rest.json": {
+      "bytes": 12454,
+      "sha256": "af47ecd5bd17b0861a96d555dc3ee43f0592efd44c2c850211d391e8a6f8e7ed",
+      "capture": "services-native-ci-fix3/rust-run-rest.json",
+      "capture_bytes": 12453,
+      "capture_sha256": "4dd385b2ee847c3bb9fb77438cf25d2db9d77b10f89a5f7a1bac63a11bc10288"
+    },
+    "ci-summary.json": {
+      "bytes": 14724,
+      "sha256": "1a450fe2643bad92f603f3d1b6b991ae19d05e4ebb9182ba80cf65346d7cdd74",
+      "capture": "services-native-ci-fix3/final-summary.json",
+      "capture_bytes": 15081,
+      "capture_sha256": "4ebe70130403f5e1b7f123ab82fef6173f7f0655c498ca4ffae179103e930317"
+    },
+    "ci-jobs.json": {
+      "bytes": 46432,
+      "sha256": "950aaa5a3ba83ed100af8711a503340023fff8a8d632a8dde503cc4072b087f4",
+      "capture": "services-native-ci-fix3/rust-latest.json",
+      "capture_bytes": 47903,
+      "capture_sha256": "f3e4243f21e5f5a799e44c2e5ee02d59e0699fbc4e53d877c0adfc379807dddf"
+    },
+    "fix-scope-and-fuzz-filter.json": {
+      "bytes": 1457,
+      "sha256": "0c683899333567e24c8bf127a26a540db26e69d6a3bd743735c4853b7e4ccf0c",
+      "capture": "services-native-ci-fix3/fix-scope-and-fuzz-filter.json",
+      "capture_bytes": 1500,
+      "capture_sha256": "e2d149cc47b7ef6424af80f1f4c9f98765c3ddc9be886dbcb70f017944b086e2"
+    },
+    "artifact-list.json": {
+      "bytes": 2256,
+      "sha256": "ec4894d7db98e254cf84937f5b5f8e4d52515722eda49f7141da336c2e0bbda6",
+      "capture": "services-native-ci-fix3/rust-artifacts-20261116T120639070876Z.json",
+      "capture_bytes": 2255,
+      "capture_sha256": "ae2e10111f1287f55f6b62a0ed32e1c032b7ad353c09bc1f7d876e219d2defa3"
+    },
+    "pages-verified.json": {
+      "bytes": 478,
+      "sha256": "b087aa7e02aa110e8f0e55b1dfeea84c4d394c27e54ab9794897d0a999867769",
+      "capture": "services-native-ci-fix3/pages-confirmed.json",
+      "capture_bytes": 489,
+      "capture_sha256": "211a7e17b753537b32257ec9f6639d9fed985048727eff3035593b31e0947121"
+    },
+    "ubuntu-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "edd3a16f54f39eb6a4c5116a5457795f944efc00077f095a8de4f274b280b615",
+      "capture": "services-native-ci-fix3/artifact-1-ubuntu-latest-14221937390/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "adf1dd1ddbb4ad2d1cc11bb152832b728a5830f6fea27bf01c8a1699e691c03f"
+    },
+    "ubuntu-latest-audit.json": {
+      "bytes": 10729,
+      "sha256": "ae071250c855547dfef880010568c28f6ac5c3e48ee31c6aeb0a351197ded1f0",
+      "capture": "services-native-ci-fix3/artifact-1-ubuntu-latest-14221937390/ubuntu-latest-audit.json",
+      "capture_bytes": 11043,
+      "capture_sha256": "999028f247132f524725759297ddd80e4492b6df20f5a0b707c375699cc613c1"
+    },
+    "macos-artifact-receipt.json": {
+      "bytes": 1244,
+      "sha256": "4b1810ccfae0dbbb3bda434a2849d91aade318e5946a667e188b38d370fd0125",
+      "capture": "services-native-ci-fix3/artifact-1-macos-latest-14222534279/artifact-receipt.json",
+      "capture_bytes": 1273,
+      "capture_sha256": "8832df77e7855dbaacf2c310baa3c252acc2b1f93a539e53e1507c2e124fa583"
+    },
+    "macos-latest-audit.json": {
+      "bytes": 8140,
+      "sha256": "2d33ee0eaf488e1d32f2d80590e98faa812f2aa50c4104cd6bb4337c47cad4f9",
+      "capture": "services-native-ci-fix3/artifact-1-macos-latest-14222534279/macos-latest-audit.json",
+      "capture_bytes": 8378,
+      "capture_sha256": "121c7ce29728233260c82494f04080af0fb68bbd01d3af280ec4ce87b0e45183"
+    },
+    "windows-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "f6a20066ac0f06103ef01521a01be301c9bc6f2dcd994115417b7fc0ad5be807",
+      "capture": "services-native-ci-fix3/artifact-1-windows-latest-14224262853/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "ac6059584f77c781f273eecc4520b100b71bfdd87a4dc7bd4ac1610574ad3f6f"
+    },
+    "windows-latest-audit.json": {
+      "bytes": 8506,
+      "sha256": "71ea08cdc5b043aa490469ce3556bb16bbf8b3e3063c7953a067efc15f7ee3c2",
+      "capture": "services-native-ci-fix3/artifact-1-windows-latest-14224262853/windows-latest-audit.json",
+      "capture_bytes": 8764,
+      "capture_sha256": "be526b738950f4402e8de3836b1f2d9921cbbe361f78514b31b3afdae9fb9f5d"
+    },
+    "windows-leaf-symlink.txt": {
+      "bytes": 409,
+      "sha256": "69c56c0ff7beaa26310341264127d00e02f90aa9ea3c9c01f37232d14e06a745",
+      "capture": "services-native-ci-fix3/artifact-1-windows-latest-14224262853/data/blob-open-windows-symlink-leaf.log",
+      "capture_bytes": 410,
+      "capture_sha256": "ddf403bc985658412856035bc4fefdbaf0d4a4ed2f2f0d0d0e0330f8ea127ec8"
+    },
+    "cleanup-report.txt": {
+      "bytes": 2024,
+      "sha256": "1fdeb140d570263c9c78d66ba78a8a5f3da8e0129ea3c90fc6ec71fbeab74068",
+      "capture": "services-cleanup/services-cleanup-report.md",
+      "capture_bytes": 2138,
+      "capture_sha256": "2250af334a4baa2766929563fe9bfa0e23efba9ba449ac6bff40672cbd5668c9",
+      "selection": "Report body; workspace-only footer links omitted."
+    },
+    "cleanup-receipt.json": {
+      "bytes": 5680,
+      "sha256": "655c1ef19ea40a161d9651c5f0ab5696cc9db928d5930e6c8615a6eb6f3b6237",
+      "capture": "services-cleanup/cleanup-fix3-receipt.json",
+      "capture_bytes": 30245,
+      "capture_sha256": "fc3be280fba8e8cbd9417155d75b5921f817036633b5f22336d16cba8115b280",
+      "selection": "Selected machine fields: source, archive identities and counts, snapshot references, branch deletions, and preserved objects. Machine-local paths, user file digests, and detailed backup inventory are omitted."
+    }
+  }
+}

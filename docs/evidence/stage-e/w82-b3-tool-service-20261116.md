@@ -3,7 +3,7 @@
 
 证据 ID `w82-b3-tool-service-20261116` · W82-B3 / Attempt 20261116-2 · 2026-11-16 · `H4`
 
-Windows 初版、取消修复及恢复同步通过独立审查。终审发现跨实例配额问题，修复已通过本机验证、增量独立复审及受影响主树复验，原生三平台门待收。下列实测注明对应版本。主树复验和三平台验证见[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。 接单树为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。[补丁回执](artifacts/w82-services-20261116/integration-inputs.json) · [集成源码清单](artifacts/w82-services-20261116/services-source-manifest.json) · [制品摘要](artifacts/w82-services-20261116/sha256-manifest.json)
+库级验收完成。源码 `2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的三平台完整复验与原生专项通过。以下按候选和 CI 轮次保留历史。最终范围见[本页最终回执](#最终三平台验收)与[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。 接单树为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。[补丁回执](artifacts/w82-services-20261116/integration-inputs.json) · [集成源码清单](artifacts/w82-services-20261116/services-source-manifest.json) · [制品摘要](artifacts/w82-services-20261116/sha256-manifest.json)
 
 ## 运行边界
 
@@ -81,3 +81,39 @@ OperationControl、WaitControl、SQLite Operation 适配、生产 daemon 内的�
 Windows 隔离树 `cargo test --locked -p nlos-wasm-sandbox` 退出 0，共 95 项（46 库单测、16 逃逸矩阵框架通过、7 journal、1 双管道、25 服务）。Windows symlink 权限 1314 未覆盖沿用此前记录。随后仅改动新测试变量名，`cargo test --locked -p nlos-wasm-sandbox --test tool_service` 最终 25/25。all-targets Clippy（`-D warnings`）、crate fmt 及差异检查均退出 0。该记录属于隔离修复版本。独立复审确认原问题已关闭。主树后修复验证见下段。[增量独立复审](artifacts/w82-services-20261116/b3-quota-independent-review.txt)[全包结果](artifacts/w82-services-20261116/b3-quota-crate.txt) · [最终服务套件](artifacts/w82-services-20261116/b3-quota-service.txt) · [Clippy](artifacts/w82-services-20261116/b3-quota-clippy.txt) · [三路径摘要](artifacts/w82-services-20261116/b3-quota-source-delta.json) · [隔离源码清单](artifacts/w82-services-20261116/b3-quota-source-set.txt)
 
 最终 Windows 主树重跑沙箱包，95 项通过，新增的两个配额回归单独重跑 2/2。两个配额场景均无第二 guest 标记。默认 profile 的 20 个样本为 p50 23.81 ms、p95 48.77 ms，覆盖 invoke、spawn、run 和持久结果。严格 Clippy、Rust 1.97.1 all-targets check 及全工作区 fmt 均退出 0。初验的远端原生缺口仍在，包括 Windows symlink 1314 与 Linux/macOS 专项。修复后的 95 项单独绑定最后 45 路径源快照。[主树测试](artifacts/w82-services-20261116/final-main-test-output.txt) · [具名配额回归](artifacts/w82-services-20261116/final-main-quota-output.txt) · [延迟日志](artifacts/w82-services-20261116/final-main-latency-output.txt) · [命令回执](artifacts/w82-services-20261116/final-main-command-receipt.json)
+
+## 首轮原生专项
+
+`46075b71` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43838421256) 三平台已实际运行工具 escape 与 20 样本时延。Linux x86_64 的 p50/p95 为 26.29/29.62 ms，macOS aarch64 为 35.63/43.92 ms，Windows x86_64 为 38.27/40.78 ms。Linux/macOS 实际覆盖父/叶软链接及硬链接叶，Windows 覆盖真实软链接叶、硬链接叶和 NTFS junction。三个 verify 后续误差来自协调器的 Capability schema 断言，工作区内的跨实例配额与 Unix 同步故障具名回归尚未执行。[Linux](artifacts/w82-services-20261116/native-ci-20261116/first-ubuntu-latest-audit.json) · [macOS](artifacts/w82-services-20261116/native-ci-20261116/first-macos-latest-audit.json) · [Windows](artifacts/w82-services-20261116/native-ci-20261116/first-windows-latest-audit.json)
+
+## 第二轮原生专项与 epoch 负例
+
+`9cce6c77` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43841248536) 三平台工具专项再次通过，各 20 次采样。Ubuntu x86_64 的 p50/p95 为 28.61/31.24 ms，macOS arm64 为 40.46/51.82 ms，Windows x86_64 为 36.98/51.36 ms。后两平台 p95 高于 50 ms，继续作为常驻宿主的评估数据。Windows 实际覆盖叶软链接、硬链接和 NTFS junction。Ubuntu 与 macOS 的完整工作区日志均见两项 Unix 同步故障回归和两项共享配额回归通过，Windows 未运行该目标。[Ubuntu 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/ubuntu-latest-audit.json) · [macOS 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/macos-latest-audit.json) · [Windows 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/windows-latest-audit.json) · [工作区结果](artifacts/w82-services-20261116/native-ci-fix1-20261116/ci-summary.json)
+
+Ubuntu 工作区与 ROAD-E-001 通过，随后严格 Clippy 对 Unix 测试的 `pid`/`ppid` 报 `clippy::similar_names` 并退出 101。macOS 工具套件 24/25，`real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog` 收到 66、期望 133。该次 CI 未记录子进程 stderr 或实际临时路径。真实独立父目录别名探针在同一文件和正确摘要下得到 66/`guest-read-failed`；只规范化可信父目录再拼原叶名后得到 133/`epoch-interrupt`，耗时 0.485 秒。探针证实了测试夹具的路径缺口，原 macOS 的具体分支仍待实测。验收要求保留同叶不跟随、确切退出 133、epoch 报告及 3 秒界，并留失败诊断和父目录别名回归。[Ubuntu 失败摘录](artifacts/w82-services-20261116/native-ci-fix1-20261116/ubuntu-failure.txt) · [macOS 失败摘录](artifacts/w82-services-20261116/native-ci-fix1-20261116/macos-failure.txt) · [路径诊断](artifacts/w82-services-20261116/native-ci-fix1-20261116/b3-parent-alias-diagnosis.txt) · [实际探针](artifacts/w82-services-20261116/native-ci-fix1-20261116/b3-parent-alias-probe.json)
+
+## 复验修订与 Windows 主树回执
+
+测试修订进入 `533001483b440053e4c7333db445a7c2ff91baa2`。Unix `native_processes` 单纯将 `ppid` 的定义及使用改为 `parent_process_id`，保留 `ps` 列、解析与过滤。抽取原 helper 的本机静态 lint 退出 1，改后退出 0。独立审查核对了两版函数与真实 Ubuntu 诊断。[范围和本机回执](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-unix-lint-report.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-unix-lint-independent-review.txt) · [红例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-unix-lint-red.txt) · [绿例退出码](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-unix-lint-green-exit.txt)
+
+直接宿主测试现在规范化测试创建的可信父目录并拼回原叶名。宿主加载仍校验原叶不跟随链接、同一摘要、退出 133、epoch 报告与小于 3 秒的完成界。失败输出增加路径、能获得的子进程输出和耗时。同一真实 NTFS junction 用作 `TMP`/`TEMP` 时，原候选退出 101（宿主 66），修订后 1/1（宿主 133）。最终 Windows 主树的沙箱 95 项通过，真实 junction 的精确命令另跑 1/1，严格 Clippy、最低 Rust 版本与整仓 fmt 已核验。原 macOS job 的退出 66 缺少子进程诊断，具体分支仍未知。修订的原生矩阵待验。[范围和本机回执](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-epoch-report.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-epoch-independent-review.txt) · [别名红例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-epoch-alias-red.txt) · [绿例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b3-epoch-alias-green.txt) · [主树精确命令](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/epoch-exact-alias.json) · [两包统计](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/test-summary.json)
+
+## 第三轮原生专项与持久重放负例
+
+`53300148` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43848357515) 三平台工具专项均通过，各 20 次采样。Ubuntu x86_64 p50/p95 为 28.38/31.24 ms，macOS arm64 为 35.22/49.96 ms，Windows x86_64 为 40.04/60.89 ms。Windows p95 高于 50 ms，仍属常驻宿主的评估数据。三平台的实际软链接和硬链接探针通过，Windows 另有 NTFS junction。[Ubuntu](artifacts/w82-services-20261116/native-ci-fix2-20261116/ubuntu-latest-audit.json) · [macOS](artifacts/w82-services-20261116/native-ci-fix2-20261116/macos-latest-audit.json) · [Windows](artifacts/w82-services-20261116/native-ci-fix2-20261116/windows-latest-audit.json)
+
+Ubuntu 严格 Clippy 通过，macOS 的原 epoch 用例也通过，从真实进程检查确切退出 133、epoch 报告及 3 秒上界。上一次 macOS 退出 66 的子进程诊断仍缺失。第三轮 macOS `real_guest_catalog_and_durable_result_replay_after_reopen` 在共用的 `JournalToolOperationStore::open` helper 得到 `Busy`。日志未区分首开或重开，也未记录实际锁持有者或并行 spawn 时序。该项使工具套件 24 通过、1 失败、退出 101，后续 ROAD 和 Clippy 跳过。Ubuntu 与 Windows 的持久重放与完整 verify 通过。[逐项状态](artifacts/w82-services-20261116/native-ci-fix2-20261116/ci-summary.json) · [macOS 原始失败摘录](artifacts/w82-services-20261116/native-ci-fix2-20261116/macos-failure.txt) · [原作业](https://github.com/cty12356541/llmos/actions/runs/43848357515/job/133234216446)
+
+独立诊断在 Linux 受控条件下观测到共享打开对象的锁语义。父描述符关闭后，仍有被动副本时，新打开者无法加锁；父先显式解锁时，新打开者在旧副本仍存续期间可以独占，关闭旧副本后继续排斥第三个打开者。该实验的 shell 描述符无 CLOEXEC，覆盖文件锁生命周期。原 macOS 现场未在受控条件下复现，失败阶段和锁持有者仍未知。随后对产品修订做独立审查与本机复验，见下节。[Linux 控制回执](artifacts/w82-services-20261116/native-ci-fix2-20261116/journal-lock-control.json) · [原始输出](artifacts/w82-services-20261116/native-ci-fix2-20261116/journal-lock-control-output.txt)
+
+## Journal writer 释放修订与重开诊断
+
+`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的 B3 两路径修订经独立审查。私有 `LockedJournalFile` 仅在真实获锁后建立，作用域覆盖目录同步和恢复。最后逻辑 writer 显式 unlock 后 close；Unix guard 记获锁 PID，其他 PID 析构只关闭自身描述符。后继仍真实 try-lock，Busy 直接返回。重放用例保留真实 host 和持久结果断言，失败时标记 `initial open` 或 `reopen after dropping writer`，记录 PID、夹具根及 journal 路径。原 macOS 的具体阶段、锁持有者及是否碰到 spawn 窗口仍未知。[隔离回执](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b3-journal-owner-report.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b3-journal-owner-independent-review.txt)
+
+真实 Windows File clone 负例在最后 Arc 释放后仍 Busy，修订后被动副本存活时可立即重开。仍有合法 owner 时持续排他，关闭旧副本后新 writer 仍保持排他。恢复中的实际同步故障返回 `Durability`，被动 clone 存活时也可再次获得锁，随后恢复原持久输出。主树 B3 96/96，含两个同步故障和真实持久重放。该次 Windows 回执未执行 Unix PID 路径，第四轮原生复验见下节。[红例](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b3-owner-red.txt) · [绿例](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/b3-owner-green.txt) · [主树逐项统计](artifacts/w82-services-20261116/native-ci-fix3-local-20261116/test-summary.json)
+
+## 最终三平台验收
+
+`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43857200084) 三平台通过两个同步失败、两个共享配额、最后 writer 与被动 clone、epoch 和持久重放等具名门。Linux/macOS 执行了 Unix 的正常 owner PID 路径。macOS 原持久重放用例实测通过；旧失败的打开阶段、锁持有者及较早 epoch 退出 66 的子进程分支仍未知。此次 CI 未执行单独的异 PID 析构或 fork 探针。[逐项回执](artifacts/w82-services-20261116/native-ci-fix3-20261116/ci-summary.json) · [macOS 作业](https://github.com/cty12356541/llmos/actions/runs/43857200084/job/133264406159)
+
+原生专项各采样 20 次，按 p50/p95 计 Ubuntu 18.59/19.82 ms、macOS 49.00/72.50 ms、Windows 37.53/45.42 ms。macOS p95 高于 50 ms，作为常驻宿主的评估信号。三平台实际执行软链接和硬链接，Windows 另执行 NTFS junction。真实服务挂载及调用信任面归 INT。[Ubuntu](artifacts/w82-services-20261116/native-ci-fix3-20261116/ubuntu-latest-audit.json) · [macOS](artifacts/w82-services-20261116/native-ci-fix3-20261116/macos-latest-audit.json) · [Windows](artifacts/w82-services-20261116/native-ci-fix3-20261116/windows-latest-audit.json)

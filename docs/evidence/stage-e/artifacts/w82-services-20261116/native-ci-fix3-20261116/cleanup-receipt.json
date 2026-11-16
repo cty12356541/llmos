@@ -1,0 +1,166 @@
+{
+  "task": "W82-SERVICES-CLEANUP-EXECUTE-FIX3",
+  "final_source_commit": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+  "finished_at_utc": "2026-11-16T12:16:02.853154+00:00",
+  "native_archive_status": "verified",
+  "totals": {
+    "archived_worktrees": 4,
+    "tracked_modified": 19,
+    "untracked_nonignored": 29,
+    "ignored_count": 8,
+    "ignored_bytes": 159797,
+    "original_bytes_overlay_count": 16,
+    "original_bytes_overlay_bytes": 602973,
+    "branches_deleted": 2,
+    "protected_worktrees": 2,
+    "protected_branches": 2,
+    "protected_user_paths": 3
+  },
+  "archived_worktrees": [
+    {
+      "name": "w82-b2-gateway",
+      "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "branch": "codex/w82-b2-gateway",
+      "registry_removed": true,
+      "checkout_removed": true,
+      "snapshot_ref": "refs/codex/snapshots/3931dfd0a1cbd0f7455b63d4392ae1dffad4818f",
+      "snapshot_commit": "31f8d6e3d51cd653546e019f706d55eed05f79f1",
+      "snapshot_tree": "f8d1591f1d76e99b69f42c63afa3f2e825bc7fb9",
+      "counts": {
+        "tracked_modified": 4,
+        "untracked_nonignored": 9,
+        "ignored_count": 2,
+        "ignored_bytes": 28793,
+        "eol_exact_byte_copies": 0,
+        "snapshot_eol_normalized": 0
+      },
+      "archive_attachment_id": "01a1e444-3d6a-77b3-bfd6-6c01b99f37f8"
+    },
+    {
+      "name": "w82-b3-tools",
+      "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "branch": null,
+      "registry_removed": true,
+      "checkout_removed": true,
+      "snapshot_ref": "refs/codex/snapshots/3220ea3e5b6c3a0765e3c762048dbd68f67439bf",
+      "snapshot_commit": "e3d0ae0950a4f9164361eafed9f20962ca677ec2",
+      "snapshot_tree": "1660bfc07759503131643e1610aa4d348144e0b8",
+      "counts": {
+        "tracked_modified": 10,
+        "untracked_nonignored": 10,
+        "ignored_count": 2,
+        "ignored_bytes": 56869,
+        "eol_exact_byte_copies": 11,
+        "snapshot_eol_normalized": 11
+      },
+      "archive_attachment_id": "01a1e445-7c5f-71a0-82bd-fa2a023a7b02"
+    },
+    {
+      "name": "w82-b4-blob",
+      "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "branch": "codex/w82-b4-blob",
+      "registry_removed": true,
+      "checkout_removed": true,
+      "snapshot_ref": "refs/codex/snapshots/7c5e326036a71e731663a8eff3205098b69c5f84",
+      "snapshot_commit": "17cd7f6336a06af216c6825091dd22609657f00c",
+      "snapshot_tree": "84c29a6111bef719362e0f1ef94dbcfd46c2b49a",
+      "counts": {
+        "tracked_modified": 4,
+        "untracked_nonignored": 8,
+        "ignored_count": 2,
+        "ignored_bytes": 65029,
+        "eol_exact_byte_copies": 4,
+        "snapshot_eol_normalized": 4
+      },
+      "archive_attachment_id": "01a1e445-ec60-7492-8b10-6ae4a3bb1866"
+    },
+    {
+      "name": "w82-service-ci",
+      "base": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "branch": null,
+      "registry_removed": true,
+      "checkout_removed": true,
+      "snapshot_ref": "refs/codex/snapshots/38adc9f1da6fc1bf94a0165a0a711e3e4bb7cea6",
+      "snapshot_commit": "bca566b29f9f2b8db3b9fc0008af4db398481c54",
+      "snapshot_tree": "f152b596d8799a0ddf9f6c8d5daacdd923ef7708",
+      "counts": {
+        "tracked_modified": 1,
+        "untracked_nonignored": 2,
+        "ignored_count": 2,
+        "ignored_bytes": 9106,
+        "eol_exact_byte_copies": 1,
+        "snapshot_eol_normalized": 1
+      },
+      "archive_attachment_id": "01a1e446-0da7-7561-ada4-c2897ad78779"
+    }
+  ],
+  "local_branch_deletions": [
+    {
+      "branch": "codex/w82-b2-gateway",
+      "observed_tip": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "reflog_oids": [
+        "cdb0d10d0a68c7d23b04081bc0031942cbb2b893"
+      ],
+      "command": [
+        "git",
+        "branch",
+        "-d",
+        "--",
+        "codex/w82-b2-gateway"
+      ],
+      "exit_code": 0,
+      "deleted": true
+    },
+    {
+      "branch": "codex/w82-b4-blob",
+      "observed_tip": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893",
+      "reflog_oids": [
+        "cdb0d10d0a68c7d23b04081bc0031942cbb2b893"
+      ],
+      "command": [
+        "git",
+        "branch",
+        "-d",
+        "--",
+        "codex/w82-b4-blob"
+      ],
+      "exit_code": 0,
+      "deleted": true
+    }
+  ],
+  "preserved_branch_refs": [
+    {
+      "ref": "refs/heads/codex/scale-diagnostic-20261116",
+      "tip": "ff5951b26b3ba5e8713bcba7eb8887944c041931",
+      "oids_not_reachable_from_main": [
+        "ff5951b26b3ba5e8713bcba7eb8887944c041931"
+      ]
+    },
+    {
+      "ref": "refs/heads/fix/windows-portability-sync-dir-and-uri-guard",
+      "tip": "1083f1d6bffd726e6000ef455092ba01b963c92c",
+      "oids_not_reachable_from_main": [
+        "0e08d6fc1cb41228e9041af3bd66fc3d9f2d8add",
+        "3b67bb2f269718e8d30c867ff3271f20d7750e93",
+        "ecea65ff212f722d6dab4724dc8e69a5fe90b47a"
+      ]
+    }
+  ],
+  "preserved_worktrees": [
+    {
+      "name": "w82-blob-wal-check",
+      "head": "cdb0d10d0a68c7d23b04081bc0031942cbb2b893"
+    },
+    {
+      "name": "windows-scale-barrier",
+      "head": "6415600db5c165a828108709a3dc57602169abaf"
+    }
+  ],
+  "protected_user_files": 3,
+  "verification": [
+    "Ref and tree matched exact expected M/A path set relative to base; every blob rehashed.",
+    "Archived native attachment with new ID; linked checkout removed and Git worktree registration absent.",
+    "Ignored-file backups remain byte-identical to execution preflight; original bytes for Git-normalized EOL are available in explicit overlay.",
+    "Final main HEAD, three existing user dirty files and their index entries, two protected worktrees, and two protected branch tip/reflog digests verified before and after branch deletion."
+  ]
+}

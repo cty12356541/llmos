@@ -2,7 +2,7 @@
 
 证据 ID `w82-b4-blob-service-20261116` · W82-B4 / Attempt 20261116-2 · 2026-11-16 · `H4`
 
-Windows 实施验证及独立审查通过。下列实测为隔离候选的对应结果。主树复验和三平台验证见[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。
+库级验收完成。源码 `2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的三平台完整复验与原生专项通过。以下按候选和 CI 轮次保留历史。最终范围见[本页最终回执](#最终三平台验收)与[汇总门](../../management/stage-e-progress.md#2026-11-16-三服务库验证)。
 
 - 任务 `W82-B4 / Attempt 20261116-2`。窗口 2026-11-16，候选分支 `codex/w82-b4-blob`。原派发基线 `4d097056e3ebd57e130d9303e02e23433fc9d1ba`，实施基线与候选 HEAD 均为已合流前置 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，本轮结果在该 HEAD 的隔离工作树中。代码与测试补丁 SHA-256 为 `9bd91692fa0ddcc0cbcfadbc88a70aba2a97c599b75edd72f5fbaaad491af1dc`。该摘要对应初版候选，接受的两个 B4 补丁（实现 Fix 2 和 WAL 补验）另列于归档。[补丁回执](artifacts/w82-services-20261116/integration-inputs.json) · [集成源码清单](artifacts/w82-services-20261116/services-source-manifest.json) · [制品摘要](artifacts/w82-services-20261116/sha256-manifest.json)
 - 共享调用接口 Git blob 为 `72d8053faabf6f465e5f042f2f75c135d7fc4ade`，根锁 Git blob 为 `c3928b59dfb83b2eff4365983c36dfdf0a2c587d`。已预锁 `cap-std`、`cap-fs-ext`、`cap-primitives` 4.0.3，包含手工解析器修复。接口与依赖依据见[前置证据](w82-service-prerequisites-20261116.md)和[Blob 补充裁定](../../management/w82-b-design-draft.md#55-2026-11-16-补充裁定blob-可实施契约)。
@@ -64,3 +64,35 @@ Windows 实施验证及独立审查通过。下列实测为隔离候选的对应
 `blob_wal_recovery` 使用真实签名 Blob、SQLite WAL/FULL 与故障 VFS。在 COMMIT 第 4 次 `xWrite` 注入 `SQLITE_IOERR`（扩展码 10），此时有一帧完整未提交、下一帧只有头，调用返回错误且无成功回执。再用未确认帧的校验和破坏镜像作独立对照，已确认前缀保持原字节。故障点移至不可达位置时用例预期失败，证明返回成功会触发断言。恢复原测试后，Windows 具名目标通过 1/1。
 
 原库、撕裂 WAL 镜像及未提交帧损坏镜像均恢复 2 个令牌、1 条撤销、1 条已确认读和原审计快照，`integrity_check=ok`。故障读无回执或新增计数。重启 epoch 1→2，旧 mint/release 原键可返回原回执，旧读被拒，旧工作区文件已移除且未调用 resolver。此门覆盖真实提交写错误和受控镜像恢复。单独的 `xSync` 失败、硬断电与设备缓存保证仍无实测。测试增量和精确失败边界通过独立审核。[红色对照](artifacts/w82-services-20261116/b4-wal-red.txt) · [具名补验](artifacts/w82-services-20261116/b4-wal-green.txt) · [独立审核](artifacts/w82-services-20261116/b4-wal-review.txt)
+
+## 首轮远端专项与协调器版本断言
+
+`46075b71` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43838421256) 三平台均执行了 Blob 专项。Linux 正常 `openat2` 与强制 ENOSYS 回退各 7/7，trace 实测 `RESOLVE_BENEATH` 成功与 `(INJECTED)` 失败。macOS 7/7，包含 FIFO、socket、字符设备、父/叶软链接与硬链接替换。Windows opener 默认 4 通过、1 忽略，另显式跑叶软链接 1/1，512 次换入、0 次外侧或异常内容。三份 workspace 日志在 fail-fast 前均具名验证了签名接收者与受控 WAL 前缀恢复。[Linux](artifacts/w82-services-20261116/native-ci-20261116/first-ubuntu-latest-audit.json) · [macOS](artifacts/w82-services-20261116/native-ci-20261116/first-macos-latest-audit.json) · [Windows](artifacts/w82-services-20261116/native-ci-20261116/first-windows-latest-audit.json) · [日志摘要](artifacts/w82-services-20261116/native-ci-20261116/first-ci-summary.json)
+
+三个 workspace 作业均在同一 coordinator custody 用例失败。该测试开启 `CapabilityAuthority` 后要求其 schema 保持精确版本，但仍期望 2，实际为 v3。独立审查确认 v3 为 Blob 迁移后的权威版本，单文件修正只同步期望和注释，生产源及 custody 的断言范围保持。红例 exit 101，同目标修正后 1/1。Windows 主树协调器目标 10/10、Clippy 与包 fmt 均通过。测试提交 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec` 已推送，第二轮复验见下节。[CI 原失败](artifacts/w82-services-20261116/native-ci-20261116/first-ci-failure-excerpt.txt) · [本机红例](artifacts/w82-services-20261116/native-ci-20261116/coordinator-fix-red.txt) · [修复绿例](artifacts/w82-services-20261116/native-ci-20261116/coordinator-fix-green.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-20261116/coordinator-fix-review.txt) · [主树目标](artifacts/w82-services-20261116/native-ci-20261116/coordinator-fix-main.txt) · [提交回执](artifacts/w82-services-20261116/native-ci-20261116/coordinator-fix-commit.json)
+
+## 第二轮原生专项与 checkpoint 截止验证
+
+`9cce6c77` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43841248536) 再次取得三平台 Blob 原生专项。Ubuntu 正常 `openat2` 与实际注入 ENOSYS fallback 各 7/7。macOS 7/7，含 FIFO、socket 和字符设备的拒绝。Windows 叶软链接显式 1/1，512 次换入，外侧或异常读取 0 次；junction 和硬链接换入也无外侧或异常读取。Ubuntu、macOS 的工作区日志中，签名接收者与受控 WAL 前缀恢复通过。[Ubuntu 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/ubuntu-latest-audit.json) · [macOS 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/macos-latest-audit.json) · [Windows 专项](artifacts/w82-services-20261116/native-ci-fix1-20261116/windows-latest-audit.json) · [工作区结果](artifacts/w82-services-20261116/native-ci-fix1-20261116/ci-summary.json)
+
+Windows 的 `blob_reference` 目标共 39 通过、1 失败、1 忽略。持真实读快照的用例已匹配 20 ms 请求的 `DeadlineExpired`，旧的全调用 <200 ms 断言读到 411.9058 ms 后失败，后续零新增回执和释锁后同键恢复未执行。本机原用例 12 次及与 WAL 审计压力配对的 3 轮均通过，未复现该 CI 慢点。实际 SQLite 故障 VFS 在持快照时观察到 `TRUNCATE` 的同步回填写入；观察连接以 busy timeout 0 请求 checkpoint 后返回 `(busy=1, log=67, checkpointed=67)`，WAL 仍超窗。这证实回填可以先于锁忙返回。原 CI 缺少阶段时序，411.9058 ms 的具体来源未定位。[Windows 失败摘录](artifacts/w82-services-20261116/native-ci-fix1-20261116/windows-failure.txt) · [诊断](artifacts/w82-services-20261116/native-ci-fix1-20261116/b4-checkpoint-diagnosis.txt) · [实际 VFS 输出](artifacts/w82-services-20261116/native-ci-fix1-20261116/b4-checkpoint-vfs-probe.txt)
+
+截止时间验收保留同一真实读快照、同一 20 ms 预算、`DeadlineExpired`、零新增 read receipt 和释锁后的同键成功。将整次 wall-clock 耗时作诊断，确定性测试核验 SQLite 动作内 busy timeout 为 0、失败后恢复原 250 ms，以及重试按剩余预算收紧、到期停止。同步 SQLite/OS I/O 和线程调度可延长实际返回时间。此处记录合同与拟验收范围，修复后完整三平台门仍待。[D5 截止合同](../../management/w82-b-design-draft.md#16-2026-11-16-三服务库验收边界)
+
+## 截止修订与 Windows 主树复验
+
+`533001483b440053e4c7333db445a7c2ff91baa2` 的三条 Blob 路径经独立审查。私有 `retry_delay_at` 从 `Timing::pause` 等价提取，计算 `min(1 ms, 剩余时间)`；到期仍退出，sleep 后仍检查 deadline。整段调用 elapsed 留作诊断。真实读快照用例通过故障 VFS 观测回填，核验 20 ms 的 `DeadlineExpired`、持锁时零新增 read receipt、释锁后原键恰增 1 条并可签名 release。原 CI 的 411.9058 ms 仍缺分段时序。[实现与隔离回执](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-checkpoint-report.txt) · [独立审查](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-checkpoint-independent-review.txt) · [精确 checkpoint 绿例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-checkpoint-green.txt)
+
+隔离树的两条确定性变异均复现失败并在恢复后通过。把 SQLite 动作内的 busy timeout 改回 250 ms 使原应读到 0 的单测退出 101；正常候选在错误后恢复 250 ms。把退避时间硬设 1 ms 使剩余 250 µs 的断言退出 101；正常候选通过足额、缩短、恰好到期及过期检查。最终 Windows 主树 capability 共 95 通过、2 原有忽略，包含两条控制等待单测和 checkpoint。新版三平台整体验收仍待。[busy 变异红例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-busy-mutation-red.txt) · [恢复绿例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-busy-green.txt) · [retry 变异红例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-retry-mutation-red.txt) · [恢复绿例](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/b4-retry-green.txt) · [主树输出](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/affected-test-output.txt) · [主树统计](artifacts/w82-services-20261116/native-ci-fix2-local-20261116/test-summary.json)
+
+## 第三轮原生专项与截止复验
+
+`53300148` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43848357515) 三平台原生 opener 均通过。Ubuntu 正常 `openat2` 与 ENOSYS 注入各 7/7，正常 trace 11,427 次成功的 `RESOLVE_BENEATH`，回退 trace 出现 2 次实际注入。macOS 7/7，FIFO、socket 和字符设备拒绝通过，三种替换各 512 次、零越界。Windows 真实叶软链接显式 1/1，512 次替换、零外侧或异常读取，junction 父和硬链接叶也通过。[Ubuntu 专项](artifacts/w82-services-20261116/native-ci-fix2-20261116/ubuntu-latest-audit.json) · [macOS 专项](artifacts/w82-services-20261116/native-ci-fix2-20261116/macos-latest-audit.json) · [Windows 专项](artifacts/w82-services-20261116/native-ci-fix2-20261116/windows-latest-audit.json) · [Windows 软链接原始输出](artifacts/w82-services-20261116/native-ci-fix2-20261116/windows-leaf-symlink.txt)
+
+三平台工作区均通过签名接收者、受控 WAL 前缀、真实读快照 checkpoint 和两条受控等待用例。Windows 本轮验证了 20 ms 请求到期、持读锁期间零新增回执，释放后同键成功。上轮测得 411.9058 ms 的具体阶段仍未知，受控 WAL 覆盖范围仍为故障注入和前缀恢复。Ubuntu 与 Windows 的 ROAD-E-001 各 6/6、封存文件各 16/16、零重编译。macOS 的 ROAD/Clippy 因工具持久重放失败未执行。[逐项回执](artifacts/w82-services-20261116/native-ci-fix2-20261116/ci-summary.json)
+
+## 最终三平台验收
+
+`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 的 [Rust CI](https://github.com/cty12356541/llmos/actions/runs/43857200084) 三平台通过签名接收、受控 WAL 及 checkpoint 的三项等待回归。已授权根原生 opener 在 Ubuntu 正常 `openat2` 与 ENOSYS 回退各 7/7，记录 11,416 次成功的 `RESOLVE_BENEATH` 和 2 次实际 ENOSYS 注入。macOS 7/7，特殊对象拒绝、三种替换各 512 次且零越界。Windows 真实叶软链接单跑 1/1，512 次替换、零异常或外侧读取，junction 与硬链接均零越界。[Ubuntu](artifacts/w82-services-20261116/native-ci-fix3-20261116/ubuntu-latest-audit.json) · [macOS](artifacts/w82-services-20261116/native-ci-fix3-20261116/macos-latest-audit.json) · [Windows](artifacts/w82-services-20261116/native-ci-fix3-20261116/windows-latest-audit.json) · [真实叶软链接原始输出](artifacts/w82-services-20261116/native-ci-fix3-20261116/windows-leaf-symlink.txt)
+
+真实读者 checkpoint 验证 20 ms 到期、持锁零新增回执、释锁后同键恢复。截止约束库控制的等待，完整 OS 调用壁钟是诊断数据，旧 411.9058 ms 的实际慢阶段仍未知。三平台受控 WAL 注入和确认前缀恢复通过；物理断电、真实系统签名输送、工作区挂载和 qq-agent 落盘过渡退役各有后续验证。[逐项回执](artifacts/w82-services-20261116/native-ci-fix3-20261116/ci-summary.json)

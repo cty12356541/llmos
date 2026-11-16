@@ -1,0 +1,29 @@
+# W82-B4-CI-CHECKPOINT-TIMING / Attempt 20261116
+
+## 判定
+
+- Windows job `133210177429`，源码 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec`，托管 Runner Windows Server 2025 / 10.0.26100。运行 `cargo test --workspace`。日志 `services-native-ci-fix1/job-133210177429.api.log` 的 1428–1488 行记录 Blob 41 项，39 通过、1 失败、1 忽略，总计 86.55 秒。
+- 失败断言为 `blob_reference.rs:2080` 的整段 read API 调用耗时小于 200 ms，实测 411.9058 ms。该行之前的精确 `DeadlineExpired` 匹配成立。panic 跳过了后续零新增 read receipt 及释放 reader 后同键读取。归因到 runner 调度、SQLite 同步回填或读操作其他阶段中的任一个均需要 CI 阶段时序，该日志没有此证据。
+- 同一测试进程的 4,096 次 WAL/FULL 持久读取压力用例在故障时尚未完成，超过 60 秒才打印仍在运行，86 秒后成功。Windows 本机相同两个用例并发均约 5–6 秒完成。这是共享主机资源执行差异的证据，不能给 411.9058 ms 的起因定位。
+
+## 调用链与验证边界
+
+- 测试先把 WAL 填至大于 64 frame 窗口，通过另一连接保持已建立读快照。测试 wall=100 ms、mono=100,000,000 ns，两值稳定。请求可信 deadline 为 120,000,000 ns。生产 `begin` 映射为从调用开始附近计的 20 ms 本地 `Instant` 界。测试 stopwatch 覆盖解码、时钟、authority/identity、文件及格式读、SQLite 写前和 checkpoint 等完整链。
+- `blob_ledger.rs` 的 `with_blob_writer_settings` 将 SQLite busy timeout 置零，关闭 cache spill，并在 action 结果后恢复原配置。高水位 `trim_wal` 首先执行 SQLite `TRUNCATE` checkpoint，busy 则恢复配置、释放 authority mutex，再按 `Timing::pause` 剩余预算重试。正常路径每次动作或 commit 前有 deadline 检查，失败后无应答字节。
+- 锁定 `libsqlite3-sys 0.38.2` 的 `sqlite3/sqlite3.c` 69543 的 `walBusyLock` 仅在有 busy handler 且锁忙时反复尝试。69635 以后 `walCheckpoint` 可在持读快照时同步 WAL、将安全 frame 写入主库并同步主库（约 69712、69750、69764）。随后在 69796–69810 尝试阻止 WAL 重启的 reader 锁并可能返回 BUSY。SQLite no-wait 条件限定 busy 重试，不约束已进入 OS 的同步回填、刷新和线程调度。Blob 文档本就把这些阶段与本库能控制的排队区分。
+- 因此现失败能证实截止后拒绝和 wall-clock 测量越界，同时不能证实旧固定 SQLite 等待恢复、重试预算被放宽或出现新增读计数。
+
+## 本机取证
+
+- 确应用含接受的 B4 产品代码与 coordinator 修订的 `C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos`。三个目标 Git blob 与 9cce 完全相同。ledger 为 `fa941e86349d57b625b083ad752e5baed0701fea`，service 为 `02ea0e6f89cb7797d7d25d84433e591558d1849b`，测试为 `6b09a1f966a31386e758606c36b6d4fb1d4dae44`。当前 `w82-blob-wal-check` 另一工作树有独立未跟踪候选，未用于本验证。
+- `cargo test --locked -p nlos-capability --test blob_reference --no-run --message-format=json` 退出 0，解析出的原版测试二进制直接跑 12 轮精确用例，12/12 分别退出 0，单轮总测试 0.10–0.11 秒。并发对照只加同库的 4,096 次 WAL/FULL 审计用例，不施加全局主机负载。`--test-threads=2 --exact` 执行两名用例，共 3 轮均 2/2，5.46、5.91、5.62 秒。目标绝对耗时原版通过时没有打印，不能由 libtest 总用时推断。原始记录 `b4-ci-checkpoint-logs/{build.txt,focused.txt,checkpoint-plus-audit.txt}`。
+- 只在忽略目录构建 sidecar 探针，包含原 fixture 并链接原版已编译 rlib，未写候选源码。用实际 fault VFS，固定读快照和 WAL 276,072 B > 窗口 263,712 B，首 `xWrite` 返回 IOERR。原版服务读观测到 1 个 `xWrite`，以 SQLite `SystemIoFailure` 返回。原版 read 直到 `trim_wal` 之前的操作无数据库写，这证实 busy 条件下存在实际同步 checkpoint 回填路径。
+- 清除 fault 后外侧连接以 busy timeout=0 请求 TRUNCATE，耗时 1.539 ms，返回 `(busy=1, log=67, checkpointed=67)`，WAL 长度仍为 276,072 字节。由此独立观测到文件内帧已回填，但持有快照仍使 rewind/truncate 失败。回填完成的同一快照下生产短读在 20.3899 ms 返回 `DeadlineExpired`，全局 read receipt 数量保持；放开快照后同键写入 1 条 durable read，签名 release 成功。探针退出 0，`b4-ci-checkpoint-logs/profile-run.txt`。脚本 `profile.py` 使用 `python -X utf8 -B` 以在 Windows 输出 µs；首次默认 GBK 控制台打印失败，底层探针当时也已退出 0，第二次包装器与探针均退出 0。
+
+## 建议的最小修复，待编排确认
+
+1. `crates/nlos-capability/tests/blob_reference.rs`。仍创建并一直持有真实读快照。用观察连接的 no-wait TRUNCATE 校验 `busy=1`、frames 已回填且 WAL 仍高于窗口，再进入服务调用。保留原 20 ms 精确 `DeadlineExpired`、零 receipt、释放锁后同键重试与 release。整段 API 的 `Instant.elapsed` 打印诊断值，将受控等待的门交给以下两项确定性测试，无放宽阈值。
+2. `crates/nlos-capability/src/blob_ledger.rs` 的 `cfg(test)` 单测。连接初始 busy timeout 设为 250 ms，经过生产 `with_blob_writer_settings` 后在 action 内检查 timeout=0，返回可辨识失败并核验原 timeout 恢复。省略生产置零或改为 250 ms 的变异必红，测试依赖 SQLite 连接当前实际设置，不按宿主 wall time 判定。
+3. `crates/nlos-capability/src/blob_reference.rs`。仅提取现有 `Timing::pause` 的剩余预算计算为私有 `retry_delay_at(now)`，`pause` 仍请求原期限内的 sleep 并执行原返回检查。使用显式 `Instant` 测足额 1 ms 重试量、仅剩 250 µs 的收紧、等于/超过 deadline 的失败。移除 `min(remaining)` 或改用固定长 sleep 的相关变异会违反预算断言。不改变产品限值、部署接口、SQLite 数据模型或 Cargo 依赖。
+
+诊断阶段仅生成回执和操作日志。Windows 原 CI 的具体慢阶段仍未定位。

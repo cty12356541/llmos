@@ -1,0 +1,28 @@
+# W82-B4-CI-SCHEMA-EXPECTATION-REVIEW / Attempt 20261116
+
+**PASS：Spec PASS；Quality PASS，无新增阻断。** 将成功打开后的 CapabilityAuthority 数据库版本期望从 2 改成 3 是正确的测试同步，保留原 schema isolation 语义；没有降低断言或修改迁移实现。
+
+## 精确审查对象
+
+- CI/source 基线 `46075b716d77e0bb274f04064f417e0896287bb5`；隔离候选树 `C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos` 的 HEAD 为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，index 为空，已包含接受的 B4 v3 实现。
+- [单文件 delta](b4-ci-schema-logs/review.diff) SHA-256 **`4ca2d5c055a864dc347e9daf187608445c714233ac7fc3e59f32243667715e8c`**；[manifest](b4-ci-schema-logs/manifest.json) 绑定 `crates/nlos-commit-coordinator/tests/custody_gateway_reconciliation.rs`。
+- 已验证 CI 基线 blob `096e41d0bac7f77045dbfa96d55e4b844e30b41a`，候选 blob `208ce9d81c6a71b100587d90329da4b6dc43551a`，候选 LF SHA-256 `0d550bc634d4671068ccbe45d9c77310be2006874f2bc0972680f61ded0968f0`。候选 Windows raw SHA-256 为 `ef53bbf507a908b53a9daf181ab56b49812267528175849a29b0389fad67578a`；manifest 的 after_sha256 对应 LF/Git 内容，回执明确标明 LF，未混称 raw。
+- 独立从 CI 基线完整单文件应用所述两行注释替换及唯一 cap_ver 期望替换，结果与候选 LF 内容全等，确认无其他测试变动。结束复核 patch 与候选 LF 摘要仍匹配。
+
+## 断言与原语义
+
+1. 测试 `custody_gateway_reconciliation.rs:405` 先成功 `CapabilityAuthority::open`，之后才 `GatewayRig::bootstrap` 并进行 custody 签名。已接受的 `nlos-capability/src/lib.rs:49` 为私有 `SCHEMA_VERSION = 3`；`:232–242` 对新库/v1/v2 都执行所需迁移至 v3。因此 `:436` 必须期待精确版本 3。
+2. 修改后仍在 custody 创建和使用之后，单独打开 `capability-authority.db` 并检查精确 user_version；没有删除断言、放宽为范围或引用被测运行值自动自证。新注释区分 Capability 自身安装 v3 与 custody 必须保持其不变，准确解释原隔离意图。
+3. 独立 custody 数据库检查以及 WAL、seed 包装、错误 KEK、重开和签名序列逻辑均在单文件完整比较中保持原样。此 delta 不增加生产 API 常量、不修改生产迁移，也没有为 CI 失败绕过功能门。
+4. `blob_reference.rs:1462–1465` 与 `:1489–1492` 在迁移失败后期待旧版本 2，`:1511–1514` 成功重开期待 3，均正确并保持。已核 capability lib 与该 Blob 测试的 LF 内容与 source 基线全等，不能把这些失败路径中的 2 一并升级。
+
+## 回归与边界
+
+已读取 [实施回执](b4-ci-schema-report.md)及现有日志，未重跑 suite：
+
+- [red.txt](b4-ci-schema-logs/red.txt)：同一精确用例失败于 `cap_ver`，实际 3 / 期望 2，0 passed / 1 failed；实施回执记录 exit 101。
+- [green.txt](b4-ci-schema-logs/green.txt)：精确用例 1/1 通过。
+- [integration.txt](b4-ci-schema-logs/integration.txt)：整个 custody_gateway_reconciliation target 10/10 通过。
+- [clippy.txt](b4-ci-schema-logs/clippy.txt)：指定目标严格 Clippy 完成；[fmt.txt](b4-ci-schema-logs/fmt.txt) 明确记录 exit 0、输出 0 行。命令及成功退出由实施回执记录，与原始输出一致。
+
+可接受此测试增量并合流。主树最终提交及 native CI 结果仍需后续真实回执；本报告不把隔离树测试成功写成原 source SHA 的远端任务已绿。仅写本审查报告，没有改产品、canonical、index、HEAD，没有子 Agent、提交或外部系统操作；原审查其他结论保持。

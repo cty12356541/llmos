@@ -1,0 +1,121 @@
+{
+  "host": "D:\\llmos\\target\\debug\\nlos-wasm-sandbox-host.exe",
+  "host_sha256": "8fe67baa9b3806d5f5c9e905f5b40c03be88052b605534cbf5ec34e214a14c0a",
+  "artifact_sha256": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+  "cases": [
+    {
+      "case": "raw-parent-alias",
+      "command": [
+        "D:\\llmos\\target\\debug\\nlos-wasm-sandbox-host.exe",
+        "--guest",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\alias\\tool.wat",
+        "--entry",
+        "run",
+        "--fuel",
+        "18446744073709551615",
+        "--memory-pages",
+        "16",
+        "--epoch-ticks",
+        "30",
+        "--epoch-interval-ms",
+        "10",
+        "--tool-digest",
+        "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+        "--tool-limits",
+        "262144,61440,8388608",
+        "--tool-wall-ms",
+        "3000"
+      ],
+      "cwd": "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\alias",
+      "environment": {},
+      "exit": 66,
+      "seconds": 0.15599999999994907,
+      "frames": [
+        {
+          "is_report": true,
+          "text": "NLOS-HOST-R1 outcome=host-error code=66 detail=guest-read-failed guest_stdout_len=0"
+        }
+      ],
+      "parent_is_junction": true,
+      "artifact_same_file": true,
+      "artifact_sha256_before": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+      "artifact_sha256_after": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3"
+    },
+    {
+      "case": "canonical-parent",
+      "command": [
+        "D:\\llmos\\target\\debug\\nlos-wasm-sandbox-host.exe",
+        "--guest",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\real\\tool.wat",
+        "--entry",
+        "run",
+        "--fuel",
+        "18446744073709551615",
+        "--memory-pages",
+        "16",
+        "--epoch-ticks",
+        "30",
+        "--epoch-interval-ms",
+        "10",
+        "--tool-digest",
+        "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+        "--tool-limits",
+        "262144,61440,8388608",
+        "--tool-wall-ms",
+        "3000"
+      ],
+      "cwd": "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\real",
+      "environment": {},
+      "exit": 133,
+      "seconds": 0.48499999999989996,
+      "frames": [
+        {
+          "is_report": true,
+          "text": "NLOS-HOST-R1 outcome=trap code=0 detail=epoch-interrupt guest_stdout_len=0"
+        }
+      ],
+      "parent_is_junction": false,
+      "artifact_same_file": true,
+      "artifact_sha256_before": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+      "artifact_sha256_after": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3"
+    },
+    {
+      "case": "canonical-wrong-digest-control",
+      "command": [
+        "D:\\llmos\\target\\debug\\nlos-wasm-sandbox-host.exe",
+        "--guest",
+        "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\real\\tool.wat",
+        "--entry",
+        "run",
+        "--fuel",
+        "18446744073709551615",
+        "--memory-pages",
+        "16",
+        "--epoch-ticks",
+        "30",
+        "--epoch-interval-ms",
+        "10",
+        "--tool-digest",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--tool-limits",
+        "262144,61440,8388608",
+        "--tool-wall-ms",
+        "3000"
+      ],
+      "cwd": "D:\\llmos\\.agentdash\\attempts\\20261116\\w82-services\\b3-ci-epoch-logs\\parent-alias-probe\\real",
+      "environment": {},
+      "exit": 66,
+      "seconds": 0.015000000000100044,
+      "frames": [
+        {
+          "is_report": true,
+          "text": "NLOS-HOST-R1 outcome=host-error code=66 detail=artifact-changed guest_stdout_len=0"
+        }
+      ],
+      "parent_is_junction": false,
+      "artifact_same_file": true,
+      "artifact_sha256_before": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3",
+      "artifact_sha256_after": "ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3"
+    }
+  ]
+}

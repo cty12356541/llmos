@@ -1,0 +1,63 @@
+   Compiling windows-sys v0.61.2
+   Compiling once_cell v1.21.4
+   Compiling log v0.4.33
+   Compiling ring v0.17.14
+   Compiling tempfile v3.27.0
+   Compiling bytes v1.12.1
+   Compiling prost-build v0.14.4
+   Compiling getrandom v0.2.17
+   Compiling zeroize v1.9.1
+   Compiling untrusted v0.9.0
+   Compiling cap-primitives v4.0.3
+   Compiling rustls-pki-types v1.15.1
+   Compiling nlos-schema v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-schema)
+   Compiling syn v3.0.9
+   Compiling rustls v0.23.46
+   Compiling cap-std v4.0.3
+   Compiling mio v1.2.2
+   Compiling socket2 v0.6.5
+   Compiling prost v0.14.4
+   Compiling pin-project-lite v0.2.17
+   Compiling cap-fs-ext v4.0.3
+   Compiling nlos-cell v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-cell)
+   Compiling tokio-macros v2.7.2
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio v1.54.1
+   Compiling nlos-runtime v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-runtime)
+   Compiling minicbor v2.3.1
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+   Compiling tokio-rustls v0.26.6
+   Compiling nlos-canonical v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-canonical)
+   Compiling nlos-net v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-net)
+   Compiling nlos-operation v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-operation)
+   Compiling nlos-process v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-process)
+   Compiling nlos-store v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-store)
+   Compiling nlos-artifact v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-artifact)
+   Compiling nlos-semantic v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-semantic)
+   Compiling nlos-resource v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-resource)
+   Compiling nlos-channel v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-channel)
+   Compiling nlos-task v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-task)
+   Compiling nlos-commit-coordinator v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-commit-coordinator)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.48s
+     Running tests\custody_gateway_reconciliation.rs (D:/llmos/target/w82-b4\debug\deps\custody_gateway_reconciliation-eaa39135cb5c3e13.exe)
+
+running 1 test
+test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... FAILED
+
+failures:
+
+---- custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation stdout ----
+
+thread 'custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation' (37884) panicked at crates\nlos-commit-coordinator\tests\custody_gateway_reconciliation.rs:436:5:
+assertion `left == right` failed
+  left: 3
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p nlos-commit-coordinator --test custody_gateway_reconciliation`

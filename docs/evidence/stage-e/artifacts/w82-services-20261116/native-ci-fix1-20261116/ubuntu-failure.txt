@@ -1,0 +1,26 @@
+5304: 2026-11-16T09:49:20.5971134Z
+5305: 2026-11-16T09:49:20.5972844Z thread 'c_bench_cell_shard_worker_entry' (19985) panicked at crates/nlos-task/tests/c_bench_task_sharded_scale.rs:458:37:
+5306: 2026-11-16T09:49:20.5974532Z signal shard ready: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+5307: 2026-11-16T09:49:20.5975492Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+5308: 2026-11-16T09:49:20.6031759Z test c_bench_cell_shard_worker_entry ... FAILED
+5309: 2026-11-16T09:49:20.6033229Z
+5310: 2026-11-16T09:49:20.6033466Z failures:
+5311: 2026-11-16T09:49:20.6033744Z
+5312: 2026-11-16T09:49:20.6033897Z failures:
+5313: 2026-11-16T09:49:20.6034310Z     c_bench_cell_shard_worker_entry
+6793: 2026-11-16T09:52:49.0908494Z     Checking nlos-compat-shim v0.1.0 (/home/runner/work/llmos/llmos/crates/nlos-compat-shim)
+6794: 2026-11-16T09:52:49.7673933Z error: binding's name is too similar to existing binding
+6795: 2026-11-16T09:52:49.7760272Z     --> crates/nlos-wasm-sandbox/tests/tool_service.rs:1069:17
+6796: 2026-11-16T09:52:49.7789748Z      |
+6797: 2026-11-16T09:52:49.7795475Z 1069 |             let ppid = fields.next()?.parse().ok()?;
+6798: 2026-11-16T09:52:49.7799165Z      |                 ^^^^
+6799: 2026-11-16T09:52:49.7802098Z      |
+6810: 2026-11-16T09:52:49.9623664Z     Checking nlos-semantic v0.1.0 (/home/runner/work/llmos/llmos/crates/nlos-semantic)
+6811: 2026-11-16T09:52:50.0628383Z error: could not compile `nlos-wasm-sandbox` (test "tool_service") due to 1 previous error
+6812: 2026-11-16T09:52:50.0630254Z warning: build failed, waiting for other jobs to finish...
+6813: 2026-11-16T09:52:51.0325047Z ##[error]Process completed with exit code 101.
+6814: 2026-11-16T09:52:51.1189322Z ##[group]Run actions/upload-artifact@v7
+6815: 2026-11-16T09:52:51.1193472Z with:
+6816: 2026-11-16T09:52:51.1201818Z   name: w82-service-ubuntu-latest-9cce6c77e8f29ea44a080c2adf26f2fc8c745fec-43841248536-1
+6817: 2026-11-16T09:52:51.1205819Z   path: /home/runner/work/_temp/w82-service-evidence
+6818: 2026-11-16T09:52:51.1208559Z   if-no-files-found: warn

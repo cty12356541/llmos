@@ -1,0 +1,122 @@
+{
+  "algorithm": "sha256",
+  "verification": "Stored UTF-8 text omits any BOM, uses LF, trims line-ending spaces and terminal empty lines, and retains one final LF. The capture digest binds pre-normalization bytes.",
+  "rust_ci_run": "43841248536",
+  "runtime_source_sha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+  "ci_report_capture_sha256": "b77a1c61cb4bd5c954a7594993bf7d30fe22f18a1cd7baf02cefd81a36954469",
+  "ci_owner_capture_manifest_sha256": "7b5cbd6da0f70ed0d89142eb6545c658d2b241f00c3ee8ad01a8c2aa0dc0de59",
+  "files": {
+    "ci-summary.json": {
+      "bytes": 13307,
+      "sha256": "dbfbc5dcf3856d280a04e5621abd2acad1c6397a729145703e0d53811ad55df7",
+      "capture": "services-native-ci-fix1/final-summary.json",
+      "capture_bytes": 13616,
+      "capture_sha256": "0bd8060fb58d1d7899a246b90a11b61b7ff38a62e5c1a2b4eda2a59892107ef7"
+    },
+    "ubuntu-failure.txt": {
+      "bytes": 2116,
+      "sha256": "1b3d138e022a5bafac2e4702e373a2a28ffd3be1e562137bd2254e192846b5e2",
+      "capture": "services-native-ci-fix1/job-133210177258.failure-excerpt.log",
+      "capture_bytes": 2145,
+      "capture_sha256": "487735fc1456c6c930b81e6587d97cf2571c71b63f4bd2015155c0af152a6510"
+    },
+    "windows-failure.txt": {
+      "bytes": 1896,
+      "sha256": "2327abc8c5ec5161909f11097871d932e2cc6a078e8cf1596f86421a22c88917",
+      "capture": "services-native-ci-fix1/job-133210177429.failure-excerpt.log",
+      "capture_bytes": 1922,
+      "capture_sha256": "e8da1ca032a11c0782dd2a0502d39a730935910e9142b223309629f22f05d2ca"
+    },
+    "macos-failure.txt": {
+      "bytes": 2674,
+      "sha256": "a85dc5f7b3233859d376791a909218d3d5f4f8d3f493d347e05d87ad0b4e7e52",
+      "capture": "services-native-ci-fix1/job-133210177566.failure-excerpt.log",
+      "capture_bytes": 2714,
+      "capture_sha256": "8aded5047adab4541b680103d1045588a9bd35699473d3570944174906d54b5a"
+    },
+    "pages-verified.json": {
+      "bytes": 478,
+      "sha256": "eefe56467cbfd514eaa942106f854a7edc286489d33911ee03816c1d2ba8aea1",
+      "capture": "services-native-ci-fix1/pages-confirmed.json",
+      "capture_bytes": 489,
+      "capture_sha256": "0ca90a979f82a27defd0cff4593082305e90d6fa9ff70059fcb1d8a25b97cada"
+    },
+    "fix-scope-and-fuzz-filter.json": {
+      "bytes": 1188,
+      "sha256": "8bb1cb2ff5e5480462c6f611ce54d5343dbe653f27d49ff47173eb8c39cc7914",
+      "capture": "services-native-ci-fix1/fix-scope-and-fuzz-filter.json",
+      "capture_bytes": 1227,
+      "capture_sha256": "7d6fe626a82eb09b04b4d56f473f1013c1d72a8bd8562daa455b95a0562146a2"
+    },
+    "b3-parent-alias-diagnosis.txt": {
+      "bytes": 7767,
+      "sha256": "d3677e46e6569d89582b025404eed0ff09fd59760578eb742f1d487734d4dd87",
+      "capture": "b3-ci-epoch-diagnosis.md",
+      "capture_bytes": 7821,
+      "capture_sha256": "1ecd6b95890dda1238e25047246a99bcd8d957cf8e0a2d35c6bde57d73af3f9f"
+    },
+    "b3-parent-alias-probe.json": {
+      "bytes": 4257,
+      "sha256": "da786ec29b7c21f394d2dc130f5a44bb8d954e52748d789f8c520eee9366d7fb",
+      "capture": "b3-ci-epoch-logs/parent-alias-probe/result.json",
+      "capture_bytes": 4378,
+      "capture_sha256": "4662fe65ad759b9765fc19e8c0ce66e5e5c192a9b0921066cb730a4b68184601"
+    },
+    "b4-checkpoint-diagnosis.txt": {
+      "bytes": 6195,
+      "sha256": "33c35353ec6967afd7d6f9cd953c9205b91cd97fbaca294d258a7c92ae6ebb83",
+      "capture": "b4-ci-checkpoint-diagnosis.md",
+      "capture_bytes": 6196,
+      "capture_sha256": "3afa5d2f1e392a24bfd74fe0b5878a5d8b7c2205a9b5122c3b1045266a7b06a8"
+    },
+    "b4-checkpoint-vfs-probe.txt": {
+      "bytes": 769,
+      "sha256": "92ad8d833b26b254370613bf06b68b02cfc448e1efe77554e24de5f6404b7cd3",
+      "capture": "b4-ci-checkpoint-logs/profile-run.txt",
+      "capture_bytes": 780,
+      "capture_sha256": "91af73b68bb3537f1dba8dc942c23bce0eec6ec40d92330ab6f5d471fe77dfdf"
+    },
+    "ubuntu-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "8641c2e95d303e00cfc20352ef71e0e8bf12ba0f6e649d91353fe1eb7319c2e7",
+      "capture": "services-native-ci-fix1/artifact-1-ubuntu-latest-14214686000/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "990e4e29e4922212d5938b97860fc7991c70c474ba4db9f2d52dc671eb633107"
+    },
+    "ubuntu-latest-audit.json": {
+      "bytes": 9398,
+      "sha256": "d443c0ba52793fba86f0c21cb1f5e411ec1bfbfa128335b9900cc6bbf26af8c5",
+      "capture": "services-native-ci-fix1/artifact-1-ubuntu-latest-14214686000/ubuntu-latest-audit.json",
+      "capture_bytes": 9688,
+      "capture_sha256": "ca4b13d2b4a6018fa3a85399f3ef27785fdafa96c494bb3ec5416dd4546784cc"
+    },
+    "windows-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "0d307224019e0304bbcd54712b928a32230a46a1bff0966cf8bc674c5ff83ddf",
+      "capture": "services-native-ci-fix1/artifact-1-windows-latest-14213289676/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "889e992425fc7809c0811230123166b461e9197fcf5366efa5d8acd7ae3f4363"
+    },
+    "windows-latest-audit.json": {
+      "bytes": 5875,
+      "sha256": "7899817c581d409b6f4bcc5d3e817d50da579fafb8e2984ef2412e75e98b2932",
+      "capture": "services-native-ci-fix1/artifact-1-windows-latest-14213289676/windows-latest-audit.json",
+      "capture_bytes": 6089,
+      "capture_sha256": "3845d967b65232407b2776113d9abe7b7ddc62596b36a5d7f9ee9fb70daf02ad"
+    },
+    "macos-artifact-receipt.json": {
+      "bytes": 1244,
+      "sha256": "184619d0076301526e8eb83b1eb3ebe08b317b73ee51c2d0d6955112ae7e514a",
+      "capture": "services-native-ci-fix1/artifact-1-macos-latest-14214576902/artifact-receipt.json",
+      "capture_bytes": 1273,
+      "capture_sha256": "31549ee52f9e76575eea47f4baa5fdd6f4fde19f93b7f2e099ff9f286ee965d1"
+    },
+    "macos-latest-audit.json": {
+      "bytes": 6811,
+      "sha256": "995a8ca464473ef8cd55748ef12a107e644a40305f641bb43753ef93b4ffb970",
+      "capture": "services-native-ci-fix1/artifact-1-macos-latest-14214576902/macos-latest-audit.json",
+      "capture_bytes": 7025,
+      "capture_sha256": "f5e9c582db22161011ace40dc0399e787773d64f9a2ec448031c6f4666f5be99"
+    }
+  }
+}

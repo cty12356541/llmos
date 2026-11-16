@@ -15,9 +15,9 @@
 ## 1. 事实起点、权威归属与范围
 
 - A–D 在各自验收边界内已 `EXITED`；E0–E7 为 8/8 工程完成，阶段 E 仍待维护者签字，不能代签 `EXITED` 或 SABI v1.0 长期冻结。
-- W82 已合并 A、B-1、C 主体及 D 的 wheel/Ed25519 前置件。首波 A 三平台验收完成，整车道验收 `1/5 DONE`。B-2/B-3/B-4、C 的 D7 与重启、SDK 主体和 INT 尚待验收。已有代码先复验，禁止重新实施同一成果。
+- W82 的 A 会话和 B1–B4 库级服务已通过验收，整车道 `2/5 DONE`。`B82-SDK` 已开放。C 的 D7 与重启、D 的 SDK 主体仍在推进，INT 待 C、D 验收。
 - 历史基线 `a3a1c007` 的 push CI 常规 9 作业成功，2 个规模作业跳过，Pages 部署成功。`d2a32de9` 的原 Worker E2E 失败已诊断并在首波集成代码的 `include-ignored` 作业复验通过，原负面证据保留。[历史 push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) · [历史 Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) · [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)
-- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-首波执行)及原始台账为准。
+- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-三服务库验证)及原始台账为准。
 - 本文负责跨能力交付顺序、工作包和终局验收；阶段进度归 `stage-*-progress.md`，需求归 v0.5，决策归 ADR，事实归源提交/Evidence，风险归 `risks.yaml`，声明归 `claims.yaml`。本计划不得覆盖这些对象。
 - 后续 `DEL-*` 仅为管理工作包 ID，分别承接既有 B/C/D/E 能力；不新增正式阶段或 Requirement。全球联邦、完整硬件生态、消费级完善等按 §29.2 分包演进；裸机不是完成终局的前置条件。
 
@@ -97,7 +97,7 @@ flowchart LR
 **R/W**：R=`nlos-ipc`、`nlos-system-control` 及 PR #43；W=这两 crate 的 A 原有测试/实现子集与本包 Evidence。输入为已合并实现，输出为复验回执；无反例则不改代码。
 - [x] Windows 候选验证明文/认证各单连接 1,000 轮、独立同连接五通道混合分派与 clock 写事务计数，覆盖空闲关闭、断连、半帧、超限/畸形拒帧、60s 窗口老化、窗口内第 9 次断连、身份与连接隔离。测试列表、计数和断言范围见 [A 复验 Evidence](../evidence/stage-e/w82-a-verify-20261116.md)。
 - [x] Windows 候选执行 `cargo test -p nlos-ipc --test session_mux` 与 `cargo test -p nlos-system-control --features daemon --test daemon_session_mux`；真实 Named Pipe 用例分别为 2 项与 12 项。
-- [x] 集成代码 `4fc70be1` 在三平台完成 IPC 12/12、daemon 17/17 与拒帧老化，含真实 Unix socket / Named Pipe。主树定向验证和独立审查通过，A 验收完成。B82-SDK 仍需 B 整车道通过。[集成验收](../evidence/stage-e/w82-a-verify-20261116.md#2026-11-16-集成代码三平台验收)
+- [x] 集成代码 `4fc70be1` 在三平台完成 IPC 12/12、daemon 17/17 与拒帧老化，含真实 Unix socket / Named Pipe。主树定向验证和独立审查通过，A 验收完成。B 汇总通过后已开放 B82-SDK。[集成验收](../evidence/stage-e/w82-a-verify-20261116.md#2026-11-16-集成代码三平台验收)
 
 ### W82-C-DIAG：定时失败根因与受管 Worker 回收
 
@@ -122,13 +122,14 @@ flowchart LR
 **Owner**：B integrator + Astra 契约审查，机械复验 Sol。**blocked-by**：B1 合并树；**blocks**：公共子门阻塞 B2/B3/B4；Blob 子门仅阻塞 B4 和 D/INT 的相关能力，B82-SDK 汇总仍要求 B 完整验收。
 **R/W**：R=已裁定 D1–D11、三新 proto、SDK/daemon 消费点；W=B 原有 schema/gen/注册表/黄金与 conformance 写集、设计冲突记录、Evidence；共享变更由此唯一 owner 集成。
 - [x] 复核已合并 B1。维护者 2026-11-16 补充裁定见[设计 §5.5](./w82-b-design-draft.md#55-2026-11-16-补充裁定blob-可实施契约)：应用消息只传引用，Blob 服务逐块鉴权并返回对齐块或末尾短块；有效块上限 65,408 字节，完整编码载荷上限 65,536 字节；显式接收者绑定认证身份；重启后旧令牌失效，禁止按旧路径重开。字段、Rust 编码双界与边界向量见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
-- [x] 明确库运行合同并在候选中消费。Blob reference ID 与 holder/recipient 授权分离，重启令牌失效，chunk 与资源界有正负例。共享调用绑定和侧带证明按服务接口注入。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
-- [ ] INT 验收真实 daemon slot 到权威 CapabilityId、身份/签名输送、真实 workspace resolver 和重启接线。裸 URI 与根 ID 均无授权。该项由系统集成工作包签认。
+- [x] 库消费者按契约注入共享调用绑定与侧带证明。Blob reference ID 和裸 URI 与 holder/recipient 授权分离。当前授权、重启令牌失效、chunk 与资源界均有库级正负例。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
 - [x] 候选执行 `cargo test -p nlos-schema`、`npm run schema:lint`、`npm run schema:typecheck`、`python tools/check_golden_immutability.py`、`python -m unittest discover -s tests/conformance/schema -p "test_*.py"`，保存工作树回执。
 - [x] B1 公共 schema/codec 和 Blob 契约子门通过独立审查。运行时共享调用合同与依赖预锁另由服务库前置工作项验收。
 - [x] 提交至 `4fc70be1` 后，原 `npm run schema:check-generated` 退出 0，24 个生成文件与提交基线一致。见[阶段 E 首波回执](./stage-e-progress.md#2026-11-16-首波执行)。
 - [x] 以新增 proto 前的可达提交 `6e9f0a9f^` 和候选树执行真实双版本 `sabi_compat_diff.py`，保存输入、JSON 与 digest，并通过黄金不可变检查。两次差异对照与制品见 [B 契约 Evidence](../evidence/stage-e/w82-b-contract-20261116.md)。
 - [x] `4fc70be1` 在三平台运行 `sdk/go` 的 `go test ./... -count=1` 均通过，根目录的 `dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj` 各 30/30。已合并 B1 的结果随历史基线保留。[三平台契约回执](./stage-e-progress.md#2026-11-16-首波执行)
+
+真实 daemon slot、认证与 custody、签名输送、受信根及大参数 materializer 在 [INT 系统验收](#w82-int-dogfood-e2e系统挂载撤销联动与真实消费者) 逐项关闭。
 
 ### W82-B-SERVICE-PREREQUISITES：服务库公共前置
 
@@ -141,26 +142,26 @@ flowchart LR
 
 **Owner**：服务实现 Sol，预算/崩溃审查 Astra。**blocked-by**：服务库公共前置。**blocks**：B 汇总验收、D、INT。
 **R/W**：R=`llm_gateway.proto`、D4/D8、`nlos-resource`；W=`crates/nlos-driver-llm-http/**` 与本包 Evidence，零直接写 `nlos-resource`/schema/daemon。输入已认证上下文，输出四方法服务库、持久预留 journal、报价/衰减及咨询对账。
-- [ ] 正向：`llm_chat/query_budget/attenuate_budget/record_external_usage`；先持久预留、后发包、权威 consume 唯一硬扣，父子五维不变量；CJK/报价从服务端推导，外部自报只入咨询区。
-- [ ] 失败：并发准入、provider 超时/断流、持久 settlement intent 后或 consume 后崩溃、SETTLE_REJECTED、重放/同键异摘要。安全：不足零发包、可信子会话绑定与账户 sidecar、咨询与子账户数量有界，原始凭据不出服务边界。
-- [ ] 执行 `cargo test -p nlos-driver-llm-http`，把上述情形加入该 crate 自动发现的具名测试；归档故障点、实际用量与 quote 差异、重放结果及三式断言。失败尝试 provider 真实计费和旁路调用限制必须保留。
-- [ ] 独立审查通过且服务库可被 INT 调用后进入 B 汇总；库级测试不冒充真实 provider H5 或整车道 DONE。
+- [x] 正向：`llm_chat/query_budget/attenuate_budget/record_external_usage`；先持久预留、后发包、权威 consume 唯一硬扣，父子五维不变量；CJK/报价从服务端推导，外部自报只入咨询区。
+- [x] 失败：并发准入、provider 超时/断流、持久 settlement intent 后或 consume 后崩溃、SETTLE_REJECTED、重放/同键异摘要。安全：不足零发包、可信子会话绑定与账户 sidecar、咨询与子账户数量有界，原始凭据不出服务边界。
+- [x] 执行 `cargo test -p nlos-driver-llm-http`，把上述情形加入该 crate 自动发现的具名测试；归档故障点、实际用量与 quote 差异、重放结果及三式断言。失败尝试 provider 真实计费和旁路调用限制必须保留。
+- [x] 独立审查与最终三平台具名验收通过。当前交付为 OBSERVED 测试范围；真实 provider H5 与 STRICT 外部支出另行验收。[B2 最终回执](../evidence/stage-e/w82-b2-llm-gateway-20261116.md#最终三平台验收)
 
 ### W82-B-3：沙箱工具执行与持久 Operation
 
 **Owner**：沙箱实现 Sol、安全/取消审查 Astra。**blocked-by**：服务库公共前置与已预锁 sha2。**blocks**：B 汇总、D、INT。大参数的真实引用联动归 INT。
 **R/W**：R=`tool_sandbox.proto`、D9、Operation/Wait 契约；W=`crates/nlos-wasm-sandbox/**` 与 Evidence。输入已授权工具/参数，输出 `list_tools/invoke_tool` 服务库及可替换的持久 `ToolOperationStore`。
-- [ ] 正向：工具目录按 Wasm digest 缓存、per-call 独立宿主、结果可持久重放。失败：持久 dispatch 前取消、运行中 EffectUnknown、完成与取消竞态、deadline 和 journal 崩溃恢复。安全：未知工具与路径/网络逃逸拒绝，stdout 256 KiB、有界 stderr、逐调用写入 8 MiB，非零 epoch 下孤儿自灭。
-- [ ] 执行 `cargo test -p nlos-wasm-sandbox` 与 `cargo test -p nlos-wasm-sandbox --test escape_matrix`；补齐真实服务角色进程被杀后孤儿终止、同键冲突/不确定不盲重做和逐调用资源测试；记录三平台 spawn+run 分位耗时。
-- [ ] Evidence 复用既有逃逸矩阵并追加新增攻击面；MCP 外部 server 桥仍归 DriverProvider，不借此扩大 WASI 导入或给未沙箱原生程序 strict 声明。
+- [x] 正向：工具目录按 Wasm digest 缓存、per-call 独立宿主、结果可持久重放。失败：持久 dispatch 前取消、运行中 EffectUnknown、完成与取消竞态、deadline 和 journal 崩溃恢复。安全：未知工具与路径/网络逃逸拒绝，stdout 256 KiB、有界 stderr、逐调用写入 8 MiB，非零 epoch 下孤儿自灭。
+- [x] 执行 `cargo test -p nlos-wasm-sandbox` 与 `cargo test -p nlos-wasm-sandbox --test escape_matrix`；补齐真实服务角色进程被杀后孤儿终止、同键冲突/不确定不盲重做和逐调用资源测试；记录三平台 spawn+run 分位耗时。
+- [x] Evidence 收录三平台新增逃逸矩阵及隔离上界。MCP 外部 server 桥归 DriverProvider；本验证覆盖既有 WASI 导入与受控宿主。[B3 最终回执](../evidence/stage-e/w82-b3-tool-service-20261116.md#最终三平台验收)
 
 ### W82-B-4：Capability 约束的大载荷引用
 
 **Owner**：能力实现 Sol，授权/TOCTOU/DoS 审查 Astra。**blocked-by**：服务库公共前置及 Blob schema/codec 子门。**blocks**：B 汇总、D、INT。
 **R/W**：R=`blob_reference.proto`、D5 及[设计 §12](./w82-b-design-draft.md#12-l-015-选项-b-的-tcb-增量分析与内存dos-有界性安全论证必备件)、Capability 签名/吊销；W=`crates/nlos-capability/**` 与 Evidence，schema 变更只提给 B integrator。输入受控工作区文件和主体，输出 mint/read/release 库及 additive 令牌表。IdentityAuthority 当前 principal 查询已由独占增量适配并审查。
-- [ ] 正向：真实双主体授权传递、签名 mint/release、摘要/长度/分块校验、release/TTL 收敛。失败：中途吊销、过期、读次耗尽、进程重启/文件变更。安全：三平台从已授权根安全首次打开并验证替换竞态，覆盖 mint 后换靶、读间改写、越界与跨主体读取、并发 mint/read 耗尽。
-- [ ] 执行 `cargo test -p nlos-capability`；在既有 DDL/故障套件加入令牌表保护、fd 钉住/块校验、真实授权接收者与未授权主体对照；边界测试使用完整编码长度，不能只断言 chunk 长度。
-- [ ] Evidence 给出 TCB 增量、连接/令牌/fd/内存上界实测及永久审计行增长限制；qq-agent 落盘过渡退役由 INT 真测，库内 WAV 往返不冒充外部退役。
+- [x] 正向：真实双主体授权传递、签名 mint/release、摘要/长度/分块校验、release/TTL 收敛。失败：中途吊销、过期、读次耗尽、进程重启/文件变更。安全：三平台从已授权根安全首次打开并验证替换竞态，覆盖 mint 后换靶、读间改写、越界与跨主体读取、并发 mint/read 耗尽。
+- [x] 执行 `cargo test -p nlos-capability`；在既有 DDL/故障套件加入令牌表保护、fd 钉住/块校验、真实授权接收者与未授权主体对照；边界测试使用完整编码长度，不能只断言 chunk 长度。
+- [x] Evidence 给出 TCB 增量、连接/令牌/fd/内存上界和永久审计行增长限制。库内 WAV 往返已验；qq-agent 落盘过渡退役归 INT。[B4 最终回执](../evidence/stage-e/w82-b4-blob-service-20261116.md#最终三平台验收)
 
 ### W82-B-SERVICES-ACCEPTANCE：三服务库汇总验收
 
@@ -169,12 +170,14 @@ flowchart LR
 - [x] 三服务候选与首轮修复经独立审查。B3 关闭取消与同步恢复专项，B4 关闭预留、截止时间、并发取时及受控 WAL 提交尾部专项。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
 - [x] 跨实例配额修复通过隔离复验与独立增量审查。冷目录和 invoke 共用 authority 配额，首个成功构造固定限额，后续冲突拒绝。[B3 配额证据](../evidence/stage-e/w82-b3-tool-service-20261116.md#同一-authority-的共享宿主配额)
 - [x] 主树本机完成初验四包 tests/Clippy/MSRV、六锁和供应链，配额修复后三条沙箱变更受影响复验通过，含全 workspace fmt。初验和后修复的结果分别绑定源快照。[主树回执](./stage-e-progress.md#2026-11-16-三服务库验证)
-- [ ] 同源码 SHA 核验原生三平台和具名门，包含 B3 latency/escape、Windows 实际 symlink，以及 Linux 正常 `openat2` 与实际注入 ENOSYS 的 fallback。按原始日志处理 skip、权限不足和失败。
-- [ ] 本包全部门通过后提交治理回执，更新 W82-B 台账为 DONE。A+B 使 B82-SDK 可开。真实 daemon 权威接线、SDK 客户端、Worker 联动和外部 Dogfood 在后续工作包验收。
+- [x] 源码 `2b8d0683` 的原生三平台和具名门各 19/19，含工具 latency/escape、Windows 真实 symlink、Linux 正常 `openat2` 与实际注入 ENOSYS 的 fallback；三平台 workspace、ROAD-E-001、严格 Clippy 通过。[第四轮 Rust](https://github.com/cty12356541/llmos/actions/runs/43857200084) · [原生汇总](../evidence/stage-e/artifacts/w82-services-20261116/native-ci-fix3-20261116/ci-summary.json)
+- [x] W82-B 库级验收 DONE，A+B 开放 `B82-SDK`。真实 daemon 权威接线、SDK 客户端、Worker 联动和外部 Dogfood 由后续工作包验收。
+
+前三轮失败按原 SHA 保留。第四轮 macOS 持久重放已通过；第三轮 `Busy` 的具体打开阶段和锁持有者仍未知。[本轮回执](./stage-e-progress.md#2026-11-16-三服务库验证)
 
 ### W82-D-SDK：Python/TypeScript 完整窄腰与干净安装
 
-**Owner**：SDK Sol；跨语言安全与错误语义审查 Astra。**blocked-by**：B82-SDK；**blocks**：B82-INT、DEL-SDK。
+**Owner**：SDK Sol；跨语言安全与错误语义审查 Astra。**入口**：B82-SDK 已开放；**blocks**：B82-INT、DEL-SDK。
 **R/W**：R=A/B 定稿、已合并 wheel/认证前置件、SDK 等级定义；W=`sdk/python/**`、`sdk/typescript/**`、`tests/conformance/ipc/**` 与 Evidence。新增 `wait/operation/llm_gateway/tool_sandbox/blob_reference` 客户端模块，名称和类型从已合并生成物取得。
 - [ ] 正向：目录协商、认证持久连接、Wait/Operation/LLM/Tool/Blob 调用，脱离源码树安装并消费；失败：超时、半帧、poison、重连、uncertain 同键重试；安全：holder 错配、私钥/回执脱敏、未知 major/critical、上界拒绝。
 - [ ] 运行 `python -m unittest discover -s sdk/python/tests`、`npm run schema:typecheck`、现有 `npm run ipc:test:typescript` / `directory:test:typescript` / `wait-control:test:typescript` 及 Python 对应脚本；新增三服务跨进程脚本纳入同一 CI 门，不能只做 mock 自测。
@@ -185,9 +188,9 @@ flowchart LR
 
 **Owner**：单一 integrator Sol，整条安全/故障链独立终审 Astra；外部仓负责人维护 qq-agent。**blocked-by**：B82-INT；**blocks**：W82 DONE、后续交付候选基线。
 **R/W**：R=各车道回执；W=`crates/nlos-system-control/**`、`crates/nlos-compat-shim/src/sabi_adapter.rs`、Studio 徽标实际文件、根依赖/锁文件、W82 Evidence 与共享治理台账。qq-agent 是单独 Task/write-set，取得对应仓授权后执行，不隐式扩大本仓权限。
-- [ ] 挂载三服务、认证 principal→会话槽位→权威能力与 C 根 ID；正向双 Worker 快慢双脑、LLM/工具/富媒体闭环；失败含 daemon/worker/provider 故障；安全含令牌吊销触发进程树回收、下块拒读、伪造根 ID 拒绝、跨应用隔离与计费守恒。
+- [ ] 挂载三服务、认证 principal→会话槽位→权威 CapabilityId 与 C 根 ID，验证签名与 custody 输送、受信 workspace resolver、Blob 大参数 materializer 和重启接线；正向双 Worker 快慢双脑、LLM/工具/富媒体闭环；失败含 daemon/worker/provider 故障；安全含令牌吊销触发进程树回收、下块拒读、伪造根 ID 拒绝、跨应用隔离与计费守恒。
 - [ ] 真实消费者验证零应用明文 provider key、自建预算库/防火墙/supervisor 可退役；逐个核对旧实现删改与替代路径。模拟消费者可以先验接口，不能代替 qq-agent 真实回执或独立生态。
-- [ ] 执行 `cargo test -p nlos-system-control --features daemon`、`cargo test --workspace`、`python scripts/run_road_e001_upgrade_matrix.py`，保留 16/16 N-1 包零源码修改/重编译/重签；新服务失败、吊销、重启与旧客户端兼容必须同时覆盖。
+- [ ] 执行 `cargo test -p nlos-system-control --features daemon`、`cargo test --workspace`、`python scripts/run_road_e001_upgrade_matrix.py`，核对 8 个 N-1 冻结包、16 份封存制品及零源码修改/重编译/重签；新服务失败、吊销、重启与旧客户端兼容必须同时覆盖。
 - [ ] 补跑受影响 CI/定时门，运行 `python scripts/lint_claims.py`、`python tools/verify_stage_e_ledger_coverage.py --mode strict`、`git diff --check`。按最终 SHA 汇总每车道 Evidence，更新 stage E/claims/risks/index 与 L0，独立终审后才晋升 W82；E 正式退出仍是另一个人类决定。
 
 ## 5. 通往终局的后续交付包

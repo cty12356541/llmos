@@ -1,0 +1,31 @@
+workdir: D:/llmos
+command: cargo clippy --locked -p nlos-commit-coordinator --test custody_gateway_reconciliation -- -D warnings
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking windows-sys v0.61.2
+   Compiling nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking nlos-clock v0.1.0 (D:\llmos\crates\nlos-clock)
+    Checking nlos-cell v0.1.0 (D:\llmos\crates\nlos-cell)
+    Checking nlos-identity v0.1.0 (D:\llmos\crates\nlos-identity)
+    Checking nlos-canonical v0.1.0 (D:\llmos\crates\nlos-canonical)
+    Checking nlos-process v0.1.0 (D:\llmos\crates\nlos-process)
+    Checking nlos-store v0.1.0 (D:\llmos\crates\nlos-store)
+    Checking nlos-resource v0.1.0 (D:\llmos\crates\nlos-resource)
+    Checking nlos-channel v0.1.0 (D:\llmos\crates\nlos-channel)
+    Checking nlos-store-fault v0.1.0 (D:\llmos\crates\nlos-store-fault)
+    Checking cap-primitives v4.0.3
+    Checking socket2 v0.6.5
+    Checking mio v1.2.2
+    Checking cap-std v4.0.3
+    Checking tokio v1.54.1
+    Checking cap-fs-ext v4.0.3
+    Checking tokio-rustls v0.26.6
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking nlos-net v0.1.0 (D:\llmos\crates\nlos-net)
+    Checking nlos-semantic v0.1.0 (D:\llmos\crates\nlos-semantic)
+    Checking nlos-artifact v0.1.0 (D:\llmos\crates\nlos-artifact)
+    Checking nlos-task v0.1.0 (D:\llmos\crates\nlos-task)
+    Checking nlos-commit-coordinator v0.1.0 (D:\llmos\crates\nlos-commit-coordinator)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.84s
+exit_code: 0

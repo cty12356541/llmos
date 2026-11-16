@@ -1,0 +1,133 @@
+{
+  "summary": {
+    "nlos-driver-llm-http": {
+      "passed": 39,
+      "failed": 0,
+      "ignored": 0
+    },
+    "nlos-wasm-sandbox": {
+      "passed": 96,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "harnesses": [
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_driver_llm_http-bf4182be35a17d2b.exe)",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-llm-pool-cli.rs (target\\debug\\deps\\nlos_llm_pool_cli-e515aa52734849bc.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\gateway.rs (target\\debug\\deps\\gateway-82cfa40b26b2c056.exe)",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\keypool_and_budget_gate.rs (target\\debug\\deps\\keypool_and_budget_gate-3186c1aae7d223af.exe)",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_wasm_sandbox-fd4d65623ce6e3c2.exe)",
+      "passed": 47,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-wasm-sandbox-host.rs (target\\debug\\deps\\nlos_wasm_sandbox_host-7468fae15161f7c8.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\escape_matrix.rs (target\\debug\\deps\\escape_matrix-b3f1adbe74943eea.exe)",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_journal.rs (target\\debug\\deps\\tool_journal-8118466e8393b70d.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_pipes.rs (target\\debug\\deps\\tool_pipes-809c834248190f59.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_service.rs (target\\debug\\deps\\tool_service-2f7177465834d88f.exe)",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_driver_llm_http",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_wasm_sandbox",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  ],
+  "named_checks": {
+    "journal_owner_releases_lock_while_a_passive_file_clone_is_alive": [
+      "test reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive ... ok"
+    ],
+    "journal_owner_releases_acquired_lock_when_recovery_fails": [
+      "test reservation_journal::tests::journal_owner_releases_acquired_lock_when_recovery_fails ... ok"
+    ],
+    "last_journal_owner_releases_writer_lock_with_passive_clone_alive": [
+      "test tool_operation_store::tests::last_journal_owner_releases_writer_lock_with_passive_clone_alive ... ok"
+    ],
+    "reopen_requires_sync_before_publishing_retained_completion": [
+      "test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok"
+    ],
+    "lost_completion_after_sync_failure_keeps_dispatch_indeterminate": [
+      "test tool_operation_store::tests::lost_completion_after_sync_failure_keeps_dispatch_indeterminate ... ok"
+    ],
+    "real_guest_catalog_and_durable_result_replay_after_reopen": [
+      "test real_guest_catalog_and_durable_result_replay_after_reopen ... ok"
+    ]
+  },
+  "ignored": []
+}

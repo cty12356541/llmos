@@ -1,0 +1,3 @@
+workdir: D:/llmos
+command: cargo fmt -p nlos-commit-coordinator -- --check
+exit_code: 0

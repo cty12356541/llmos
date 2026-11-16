@@ -1,0 +1,29 @@
+{
+  "id": 14221937390,
+  "run_id": "43857200084",
+  "attempt": "1",
+  "name": "w82-service-ubuntu-latest-2b8d0683ee08637c386f5aec190fcc4397cea0e4-43857200084-1",
+  "archive_bytes": 31730,
+  "archive_sha256": "c1c13c5b613263b1e093fa4ea8ee37a6c0b025f668b6d1973a7c1c90379e241c",
+  "github_digest": "sha256:c1c13c5b613263b1e093fa4ea8ee37a6c0b025f668b6d1973a7c1c90379e241c",
+  "metadata": {
+    "id": 14221937390,
+    "node_id": "MDg6QXJ0aWZhY3QxNDIyMTkzNzM5MA==",
+    "name": "w82-service-ubuntu-latest-2b8d0683ee08637c386f5aec190fcc4397cea0e4-43857200084-1",
+    "size_in_bytes": 31730,
+    "url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14221937390",
+    "archive_download_url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14221937390/zip",
+    "expired": false,
+    "digest": "sha256:c1c13c5b613263b1e093fa4ea8ee37a6c0b025f668b6d1973a7c1c90379e241c",
+    "created_at": "2026-11-16T11:35:14Z",
+    "updated_at": "2026-11-16T11:35:14Z",
+    "expires_at": "2027-02-14T11:22:40Z",
+    "workflow_run": {
+      "id": 43857200084,
+      "repository_id": 1312540670,
+      "head_repository_id": 1312540670,
+      "head_branch": "main",
+      "head_sha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4"
+    }
+  }
+}

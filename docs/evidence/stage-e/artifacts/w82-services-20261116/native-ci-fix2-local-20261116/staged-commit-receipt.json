@@ -1,0 +1,18 @@
+{
+  "base": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+  "head": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "paths": [
+    "crates/nlos-capability/src/blob_ledger.rs",
+    "crates/nlos-capability/src/blob_reference.rs",
+    "crates/nlos-capability/tests/blob_reference.rs",
+    "crates/nlos-wasm-sandbox/tests/tool_service.rs"
+  ],
+  "staged_sha256": "9b9be3f0d12f30154411d295f7c6ff1bad9a9ca648ab4b1f33401ff834dcefc1",
+  "push": "success",
+  "ci": {
+    "rust": 43848357515,
+    "pages": 43848357480,
+    "state": "in_progress"
+  },
+  "remote_head": "533001483b440053e4c7333db445a7c2ff91baa2"
+}

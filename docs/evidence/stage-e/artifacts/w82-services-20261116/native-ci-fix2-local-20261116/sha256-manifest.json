@@ -1,0 +1,201 @@
+{
+  "algorithm": "sha256",
+  "verification": "Stored UTF-8 text omits any BOM, uses LF, trims line-ending spaces and terminal empty lines, and retains one final LF. The capture digest binds pre-normalization bytes.",
+  "runtime_source_sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "base_source_sha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+  "source_revision_delta_capture_sha256": "9b9be3f0d12f30154411d295f7c6ff1bad9a9ca648ab4b1f33401ff834dcefc1",
+  "source_manifest_capture_sha256": "8d57513dd2be5ff1a6a57303021a14afde402478ee1b4f9c6b4446c80989c6da",
+  "main_verification_report_capture_sha256": "407fba26f9d8d489384547fb76210e6c3067c37d9b925acd108733d24b1515d4",
+  "main_capture_manifest_sha256": "a95d0585ef963da6361fafb67ac659af6874cd5a85118d102e159f7565224ef3",
+  "files": {
+    "main-report.txt": {
+      "bytes": 4467,
+      "sha256": "407fba26f9d8d489384547fb76210e6c3067c37d9b925acd108733d24b1515d4",
+      "capture": "services-ci-fix2-main-report.md",
+      "capture_bytes": 4467,
+      "capture_sha256": "407fba26f9d8d489384547fb76210e6c3067c37d9b925acd108733d24b1515d4"
+    },
+    "source-manifest.json": {
+      "bytes": 9624,
+      "sha256": "24c67db499fe4d11d36cffb66f362ef389584c63682637b12f7b9f87cbdc0b06",
+      "capture": "services-ci-fix2-source-manifest.json",
+      "capture_bytes": 9856,
+      "capture_sha256": "8d57513dd2be5ff1a6a57303021a14afde402478ee1b4f9c6b4446c80989c6da"
+    },
+    "staged-commit-receipt.json": {
+      "bytes": 599,
+      "sha256": "806ae8fb01bdb677f08195d047d7c21e04c44a9a2ee388381ecfa9951c689242",
+      "capture": "services-ci-fix2-commit-receipt.json",
+      "capture_bytes": 617,
+      "capture_sha256": "7f01bf126ecdbe4c9fe60913e0feea3ba22f7ec425c0734a5f341803712f4aab"
+    },
+    "b3-unix-lint-report.txt": {
+      "bytes": 1900,
+      "sha256": "83b41e7a7ecc2ed04a512e834690e10518cef684563595b626c304f0c60a7595",
+      "capture": "b3-ci-clippy-report.md",
+      "capture_bytes": 1900,
+      "capture_sha256": "83b41e7a7ecc2ed04a512e834690e10518cef684563595b626c304f0c60a7595"
+    },
+    "b3-unix-lint-independent-review.txt": {
+      "bytes": 2697,
+      "sha256": "5b1b77c3cf568951b7b43e6cc1d2afb4bea9f47c1f455eac43c625a2557bbcec",
+      "capture": "b3-ci-clippy-independent-review.md",
+      "capture_bytes": 2697,
+      "capture_sha256": "5b1b77c3cf568951b7b43e6cc1d2afb4bea9f47c1f455eac43c625a2557bbcec"
+    },
+    "b3-unix-lint-red.txt": {
+      "bytes": 698,
+      "sha256": "90424f17eb7a617b376794f3f79d91f553bc1ca37bea6221c638f5ae8cc2b5e5",
+      "capture": "b3-ci-clippy-logs/fixture-red.log",
+      "capture_bytes": 715,
+      "capture_sha256": "05812918e0fef0b8ae0cd27585e5ad5d106b59822e5848cc9436c5b504199ce3"
+    },
+    "b3-unix-lint-green-exit.txt": {
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "capture": "b3-ci-clippy-logs/fixture-green.exit",
+      "capture_bytes": 1,
+      "capture_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    "b3-epoch-report.txt": {
+      "bytes": 2787,
+      "sha256": "9e531f1b47fa7e2bb4f186b546732a3f62bc1ac02f60abf82bd4efd467dd6214",
+      "capture": "b3-ci-epoch-report.md",
+      "capture_bytes": 2787,
+      "capture_sha256": "9e531f1b47fa7e2bb4f186b546732a3f62bc1ac02f60abf82bd4efd467dd6214"
+    },
+    "b3-epoch-independent-review.txt": {
+      "bytes": 4860,
+      "sha256": "8b5328c2453c46b6353d46286728df70da542dd42bbff698b7e2cba049370ee2",
+      "capture": "b3-ci-epoch-independent-review.md",
+      "capture_bytes": 4894,
+      "capture_sha256": "323493a4051bbfdd938cea27867870e1c1926cbea5c5b2f32a3884d8fb71965b"
+    },
+    "b3-epoch-alias-red.txt": {
+      "bytes": 607,
+      "sha256": "45d44b1d22b8084914eb170d64574deebcb5aa790dd254be3ba806ca59f78068",
+      "capture": "b3-ci-epoch-logs/epoch-exact-alias-red.log",
+      "capture_bytes": 625,
+      "capture_sha256": "3b93d7576fff74d7665921071a1c4f7c3e8ce7706f30bb2b05a37707f892a051"
+    },
+    "b3-epoch-alias-green.txt": {
+      "bytes": 197,
+      "sha256": "40fd44799429b0d37de065a81711c5a4257aef49bf1aa4b97d44eb53d652bfd4",
+      "capture": "b3-ci-epoch-logs/epoch-exact-alias-green.log",
+      "capture_bytes": 204,
+      "capture_sha256": "8d93c2f0fb235ff61f88403052b07cc90eb446eacc7729f1227229bf12afd233"
+    },
+    "b4-checkpoint-report.txt": {
+      "bytes": 5338,
+      "sha256": "19ed8103c2f241a567249b25a81364ca206add2a9bd5e1e858d33f135226a648",
+      "capture": "b4-ci-checkpoint-report.md",
+      "capture_bytes": 5338,
+      "capture_sha256": "19ed8103c2f241a567249b25a81364ca206add2a9bd5e1e858d33f135226a648"
+    },
+    "b4-checkpoint-independent-review.txt": {
+      "bytes": 7889,
+      "sha256": "a6c1eccce3d58b7c4c592b70956d3ae205630594f079824bba8a54e01c36924f",
+      "capture": "b4-ci-checkpoint-independent-review.md",
+      "capture_bytes": 7888,
+      "capture_sha256": "82cff9058dd716bc4a3ed313dea15f149394ddd9d2e726ba6c5c6c42d89744ca"
+    },
+    "b4-busy-mutation-red.txt": {
+      "bytes": 1253,
+      "sha256": "e33072214837c0e80313f3f90824ebb7bc0a77b3aee3c662e879b4a4dd741d71",
+      "capture": "b4-ci-checkpoint-logs/mutation-busy.txt",
+      "capture_bytes": 1253,
+      "capture_sha256": "e33072214837c0e80313f3f90824ebb7bc0a77b3aee3c662e879b4a4dd741d71"
+    },
+    "b4-busy-green.txt": {
+      "bytes": 777,
+      "sha256": "7f1b91ec5d5992fe4da6079aaf66cb890a8e3eb093f6f2c28f3bcc68928c79a7",
+      "capture": "b4-ci-checkpoint-logs/green-busy.txt",
+      "capture_bytes": 778,
+      "capture_sha256": "ba8b398692e854fe78dd583e5c61f3871891bed17730dcc7688ee95832c67e06"
+    },
+    "b4-retry-mutation-red.txt": {
+      "bytes": 1218,
+      "sha256": "a1b1e61c81a8caf6528bcec1d4c28a23b55811d28b1bc9e14d8c5b1f9ecbe747",
+      "capture": "b4-ci-checkpoint-logs/mutation-retry.txt",
+      "capture_bytes": 1218,
+      "capture_sha256": "a1b1e61c81a8caf6528bcec1d4c28a23b55811d28b1bc9e14d8c5b1f9ecbe747"
+    },
+    "b4-retry-green.txt": {
+      "bytes": 690,
+      "sha256": "91b7e9ed5b25e19bcaa473a014f53a492f73c9add0f46fd1c55677429b2fc242",
+      "capture": "b4-ci-checkpoint-logs/green-retry.txt",
+      "capture_bytes": 691,
+      "capture_sha256": "c4f05624c7c6c46b6d4d14a90ad11790ba3f73c2897aace6e72669f6acd5c1fc"
+    },
+    "b4-checkpoint-green.txt": {
+      "bytes": 823,
+      "sha256": "ba175e3276b53296d4257d9f935cabe0336140cfbea2eb13633b0be585b2258e",
+      "capture": "b4-ci-checkpoint-logs/green-checkpoint.txt",
+      "capture_bytes": 824,
+      "capture_sha256": "b3fb5925dda9ece73b47fc2be91a50208b9e1586ea6331ff341357cf378a1813"
+    },
+    "affected-test-output.txt": {
+      "bytes": 15911,
+      "sha256": "62d5030f45dbb36f68bde7c05b599f6034a7081381b6b77ac7a521a2d95cc617",
+      "capture": "services-ci-fix2-main-logs/affected-test.stdout.log",
+      "capture_bytes": 15912,
+      "capture_sha256": "879f9a35da819550e2d9a01ab905801d5dce6a16c552991c2780ef9210fc7b50"
+    },
+    "epoch-exact-alias-output.txt": {
+      "bytes": 197,
+      "sha256": "4b96da8c83223d531b58f12df7cb04fdea0b3c25d0611b8121fab0cf67a25b74",
+      "capture": "services-ci-fix2-main-logs/epoch-exact-alias.stdout.log",
+      "capture_bytes": 198,
+      "capture_sha256": "209bcb189be968a10a02dc71524dee99b1624c63e04b3b5fa48590c7e54e5b71"
+    },
+    "test-summary.json": {
+      "bytes": 5476,
+      "sha256": "bba369e59e2fd61d0b951926422a3eb7636fbcf24a7604c8a0ab467d63387804",
+      "capture": "services-ci-fix2-main-logs/test-summary.json",
+      "capture_bytes": 5658,
+      "capture_sha256": "9298c1b04d9a3e9d8515ca884ac613fa97bba5ff10e10159ebca9453dffd0fa5"
+    },
+    "affected-test.json": {
+      "bytes": 413,
+      "sha256": "2394dc6e49bc64c78ca0d70d2736b04605ec7a2f952da7393319e1ce45d5d358",
+      "capture": "services-ci-fix2-main-logs/affected-test.json",
+      "capture_bytes": 434,
+      "capture_sha256": "93c8b01c7e4d1bd3e96406927252c51e146ff4de57702e4401456016105a3286"
+    },
+    "affected-clippy.json": {
+      "bytes": 471,
+      "sha256": "552711d6d7ae1e3c5589c7a6595a81c89117a2bb6e1c541c2673d00c13a9b94d",
+      "capture": "services-ci-fix2-main-logs/affected-clippy.json",
+      "capture_bytes": 496,
+      "capture_sha256": "836182a714e353e60edaff2eaca18ed2e08fad742f9a5ac5effeca777794e121"
+    },
+    "affected-msrv.json": {
+      "bytes": 465,
+      "sha256": "17ac0c32be8001309853e4982b11f8e3ae751575662973fe3914e8cbf6b2a614",
+      "capture": "services-ci-fix2-main-logs/affected-msrv.json",
+      "capture_bytes": 488,
+      "capture_sha256": "80a7fd9356730a90b1b49f2d712c281cd02fe190f07c8de351d6720b22fdf87e"
+    },
+    "workspace-fmt.json": {
+      "bytes": 320,
+      "sha256": "73479567edf7ec1f2f43edd99b4d7a2d3f3c0552b822fde20ac4058a1402f4b9",
+      "capture": "services-ci-fix2-main-logs/workspace-fmt.json",
+      "capture_bytes": 338,
+      "capture_sha256": "f08ed048ef2457f2b10da48c04abcbd89b90bad4a2fbe40a6ca1d739fee6ac8d"
+    },
+    "epoch-exact-alias.json": {
+      "bytes": 769,
+      "sha256": "c85d8ff88843b5dcf19f230c0b2efcca06bbb956bcaf20bb6977134a8b565750",
+      "capture": "services-ci-fix2-main-logs/epoch-exact-alias.json",
+      "capture_bytes": 796,
+      "capture_sha256": "9f02cde464d6d9397ad1f8f8d0b1efed5d9044c5cd7f6275e65ec5391e4ade32"
+    },
+    "epoch-temp-fixture.json": {
+      "bytes": 233,
+      "sha256": "d35038fa8c825a539dff11949b7db264c07322a1e57ef4f3df9fa150628b91d6",
+      "capture": "services-ci-fix2-main-logs/epoch-temp-fixture.json",
+      "capture_bytes": 237,
+      "capture_sha256": "dedda92e693fe1d62fe92f91fda57200acdea4e783842f2c16b6815a0046d0c4"
+    }
+  }
+}

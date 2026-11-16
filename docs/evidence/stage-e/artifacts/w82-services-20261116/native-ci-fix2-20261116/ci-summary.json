@@ -1,0 +1,340 @@
+{
+  "sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "run_attempt": 1,
+  "job_counts": {
+    "success": 8,
+    "failure": 1,
+    "skipped": 2
+  },
+  "artifacts": {
+    "macos-latest": {
+      "id": 14217094006,
+      "digest": "a5738ded4e70ad7973c446ffeac86aeb7594f7273ccd32c5b474b650ecb88b7c",
+      "directory": "artifact-1-macos-latest-14217094006",
+      "runner_os": "macos26",
+      "runner_image_version": "20261112.0504.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-native": 0
+      },
+      "latency": {
+        "raw": "platform=macos arch=aarch64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=35.22 p95_ms=49.96",
+        "samples": 20,
+        "platform": "macos",
+        "arch": "aarch64",
+        "p50_ms": 35.22,
+        "p95_ms": 49.96
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+          "test rooted_opener_rejects_a_socket_before_reading ... ok",
+          "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+          "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+        ],
+        "swap_results": [
+          "link-parent: swaps=512 inside=649 safe_rejection=1399 exterior_or_unexpected=0",
+          "link-leaf: swaps=512 inside=436 safe_rejection=1612 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=302 safe_rejection=1746 exterior_or_unexpected=0"
+        ]
+      },
+      "openat2": null,
+      "workspace": {
+        "gateway_four_methods": true,
+        "gateway_tcp_subtree": true,
+        "gateway_settlement": true,
+        "blob_signed_recipient": true,
+        "custody_schema_regression": true,
+        "epoch_interrupt": true,
+        "durable_replay": false,
+        "blob_checkpoint": true,
+        "blob_busy_timeout": true,
+        "blob_retry_delay": true,
+        "blob_wal": true,
+        "identity_principal_lookup": true,
+        "retained_completion": true,
+        "lost_completion": true,
+        "shared_quota_global": true,
+        "shared_quota_principal": true
+      },
+      "job_id": 133234216446,
+      "steps": {
+        "Set up job": "success",
+        "Checkout": "success",
+        "Install Rust toolchain": "success",
+        "Cache Rust build artifacts": "success",
+        "Install Node.js": "success",
+        "Install Python": "success",
+        "Install Go": "success",
+        "Install .NET SDK": "success",
+        "Install schema runtimes": "success",
+        "Lint and regenerate schemas": "success",
+        "Type-check and test cross-language schema": "success",
+        "Run Go golden probe": "success",
+        "Run C# golden probe": "success",
+        "Test cross-language local IPC clients": "success",
+        "Reject Protobuf breaking changes": "skipped",
+        "Collect W82 native service evidence": "success",
+        "Test platform kill contract on Windows": "skipped",
+        "Test workspace": "failure",
+        "Test Stage E ROAD-E-001 zero-recompile host upgrade gate": "skipped",
+        "Clippy": "skipped",
+        "Clippy Stage E ROAD-E-001 upgrade gate": "skipped",
+        "Rustfmt": "skipped",
+        "Upload W82 native service evidence": "success",
+        "Require W82 native service evidence": "skipped",
+        "Post Install .NET SDK": "skipped",
+        "Post Install Go": "skipped",
+        "Post Install Python": "skipped",
+        "Post Install Node.js": "skipped",
+        "Post Cache Rust build artifacts": "skipped",
+        "Post Checkout": "success",
+        "Complete job": "success"
+      },
+      "road": null
+    },
+    "ubuntu-latest": {
+      "id": 14216874302,
+      "digest": "520eb861d857ddb13aec623ee98649084aad723e19d4ebb12164d2f190490610",
+      "directory": "artifact-1-ubuntu-latest-14216874302",
+      "runner_os": "ubuntu26",
+      "runner_image_version": "20261111.196.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-build": 0,
+        "strace-version": 0,
+        "blob-open-native": 0,
+        "blob-open-enosys": 0
+      },
+      "latency": {
+        "raw": "platform=linux arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=28.38 p95_ms=31.24",
+        "samples": 20,
+        "platform": "linux",
+        "arch": "x86_64",
+        "p50_ms": 28.38,
+        "p95_ms": 31.24
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test rooted_opener_rejects_a_socket_before_reading ... ok",
+          "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+          "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok",
+          "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok"
+        ],
+        "swap_results": [
+          "link-parent: swaps=512 inside=1788 safe_rejection=260 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=1820 safe_rejection=228 exterior_or_unexpected=0",
+          "link-leaf: swaps=512 inside=1804 safe_rejection=244 exterior_or_unexpected=0"
+        ]
+      },
+      "openat2": {
+        "version": [
+          "strace -- version 6.19"
+        ],
+        "success": {
+          "count": 11427,
+          "first": {
+            "path": "artifact-1-ubuntu-latest-14216874302/data/blob-open-native-trace-5qbl8yem/openat2.7567",
+            "line": 1,
+            "text": "openat2(3, \"nested\", {flags=O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_DIRECTORY, resolve=RESOLVE_NO_MAGICLINKS|RESOLVE_BENEATH}, 24) = 7"
+          }
+        },
+        "enosys_injected": {
+          "count": 2,
+          "first": {
+            "path": "artifact-1-ubuntu-latest-14216874302/data/blob-open-enosys-trace-kn8mpox_/openat2.7585",
+            "line": 1,
+            "text": "openat2(6, \"nested\", {flags=O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_DIRECTORY, resolve=RESOLVE_NO_MAGICLINKS|RESOLVE_BENEATH}, 24) = -1 ENOSYS (Function not implemented) (INJECTED)"
+          }
+        },
+        "fallback_tests": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test rooted_opener_rejects_a_socket_before_reading ... ok",
+          "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+          "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok",
+          "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok"
+        ]
+      },
+      "workspace": {
+        "gateway_four_methods": true,
+        "gateway_tcp_subtree": true,
+        "gateway_settlement": true,
+        "blob_signed_recipient": true,
+        "custody_schema_regression": true,
+        "epoch_interrupt": true,
+        "durable_replay": true,
+        "blob_checkpoint": true,
+        "blob_busy_timeout": true,
+        "blob_retry_delay": true,
+        "blob_wal": true,
+        "identity_principal_lookup": true,
+        "retained_completion": true,
+        "lost_completion": true,
+        "shared_quota_global": true,
+        "shared_quota_principal": true
+      },
+      "job_id": 133234216450,
+      "steps": {
+        "Set up job": "success",
+        "Checkout": "success",
+        "Install Rust toolchain": "success",
+        "Cache Rust build artifacts": "success",
+        "Install Node.js": "success",
+        "Install Python": "success",
+        "Install Go": "success",
+        "Install .NET SDK": "success",
+        "Install schema runtimes": "success",
+        "Lint and regenerate schemas": "success",
+        "Type-check and test cross-language schema": "success",
+        "Run Go golden probe": "success",
+        "Run C# golden probe": "success",
+        "Test cross-language local IPC clients": "success",
+        "Reject Protobuf breaking changes": "skipped",
+        "Collect W82 native service evidence": "success",
+        "Test platform kill contract on Windows": "skipped",
+        "Test workspace": "success",
+        "Test Stage E ROAD-E-001 zero-recompile host upgrade gate": "success",
+        "Clippy": "success",
+        "Clippy Stage E ROAD-E-001 upgrade gate": "success",
+        "Rustfmt": "success",
+        "Upload W82 native service evidence": "success",
+        "Require W82 native service evidence": "skipped",
+        "Post Install .NET SDK": "success",
+        "Post Install Go": "success",
+        "Post Install Python": "success",
+        "Post Install Node.js": "success",
+        "Post Cache Rust build artifacts": "success",
+        "Post Checkout": "success",
+        "Complete job": "success"
+      },
+      "road": {
+        "passed_tests": 6,
+        "frozen_seals": 16,
+        "zero_recompile": true,
+        "cargo_elapsed_ms": 42832
+      }
+    },
+    "windows-latest": {
+      "id": 14220300723,
+      "digest": "5a76c3c730f1af79efc74b9f919b8add67d642d89a53ce155487a803c0e37d45",
+      "directory": "artifact-1-windows-latest-14220300723",
+      "runner_os": "win25-vs2026",
+      "runner_image_version": "20261103.298.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-native": 0,
+        "blob-open-windows-symlink-leaf": 0
+      },
+      "latency": {
+        "raw": "platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=40.04 p95_ms=60.89",
+        "samples": 20,
+        "platform": "windows",
+        "arch": "x86_64",
+        "p50_ms": 40.04,
+        "p95_ms": 60.89
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test repeated_first_open_junction_parent_swaps_do_not_escape ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+        ],
+        "swap_results": [
+          "junction: swaps=398 inside=29 safe_rejection=2019 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=393 safe_rejection=1655 exterior_or_unexpected=0"
+        ],
+        "windows_exact_leaf": [
+          "link-leaf: swaps=512 inside=429 safe_rejection=1619 exterior_or_unexpected=0",
+          "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ok"
+        ]
+      },
+      "openat2": null,
+      "workspace": {
+        "gateway_four_methods": true,
+        "gateway_tcp_subtree": true,
+        "gateway_settlement": true,
+        "blob_signed_recipient": true,
+        "custody_schema_regression": true,
+        "epoch_interrupt": true,
+        "durable_replay": true,
+        "blob_checkpoint": true,
+        "blob_busy_timeout": true,
+        "blob_retry_delay": true,
+        "blob_wal": true,
+        "identity_principal_lookup": true,
+        "retained_completion": true,
+        "lost_completion": true,
+        "shared_quota_global": true,
+        "shared_quota_principal": true
+      },
+      "job_id": 133234216358,
+      "steps": {
+        "Set up job": "success",
+        "Checkout": "success",
+        "Install Rust toolchain": "success",
+        "Cache Rust build artifacts": "success",
+        "Install Node.js": "success",
+        "Install Python": "success",
+        "Install Go": "success",
+        "Install .NET SDK": "success",
+        "Install schema runtimes": "success",
+        "Lint and regenerate schemas": "success",
+        "Type-check and test cross-language schema": "success",
+        "Run Go golden probe": "success",
+        "Run C# golden probe": "success",
+        "Test cross-language local IPC clients": "success",
+        "Reject Protobuf breaking changes": "skipped",
+        "Collect W82 native service evidence": "success",
+        "Test platform kill contract on Windows": "success",
+        "Test workspace": "success",
+        "Test Stage E ROAD-E-001 zero-recompile host upgrade gate": "success",
+        "Clippy": "success",
+        "Clippy Stage E ROAD-E-001 upgrade gate": "success",
+        "Rustfmt": "skipped",
+        "Upload W82 native service evidence": "success",
+        "Require W82 native service evidence": "skipped",
+        "Post Install .NET SDK": "success",
+        "Post Install Go": "success",
+        "Post Install Python": "success",
+        "Post Install Node.js": "success",
+        "Post Cache Rust build artifacts": "success",
+        "Post Checkout": "success",
+        "Complete job": "success"
+      },
+      "road": {
+        "passed_tests": 6,
+        "frozen_seals": 16,
+        "zero_recompile": true,
+        "cargo_elapsed_ms": 57910
+      }
+    }
+  }
+}

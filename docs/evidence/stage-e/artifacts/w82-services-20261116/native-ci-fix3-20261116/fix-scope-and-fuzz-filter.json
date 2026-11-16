@@ -1,0 +1,43 @@
+{
+  "base": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "exact_sha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+  "git_diff_name_only": [
+    "crates/nlos-driver-llm-http/src/reservation_journal.rs",
+    "crates/nlos-wasm-sandbox/src/tool_operation_store.rs",
+    "crates/nlos-wasm-sandbox/tests/tool_service.rs"
+  ],
+  "manifest_sha256": "a2d8b1afeffb6acf18be7942ee27cc5e248c507272d62fbd1ded2672000e034c",
+  "patch_sha256": "3c5331fc16739fb23578436fc97c8e909a85b7cef368efa80c021f47aa87d059",
+  "manifest_git_blobs_matched": 46,
+  "fuzz_push_paths": [
+    ".github/workflows/fuzz-smoke.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/nlos-canonical/**",
+    "crates/nlos-schema/**",
+    "fuzz/**",
+    "schema/**",
+    "scripts/run-fuzz-smoke.sh"
+  ],
+  "changed_paths_match_fuzz_filter": false,
+  "runs": [
+    {
+      "conclusion": "",
+      "databaseId": 43857200084,
+      "event": "push",
+      "headSha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+      "status": "in_progress",
+      "url": "https://github.com/cty12356541/llmos/actions/runs/43857200084",
+      "workflowName": "Rust cross-platform verification"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 43857200320,
+      "event": "push",
+      "headSha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+      "status": "completed",
+      "url": "https://github.com/cty12356541/llmos/actions/runs/43857200320",
+      "workflowName": "Deploy to GitHub Pages"
+    }
+  ]
+}

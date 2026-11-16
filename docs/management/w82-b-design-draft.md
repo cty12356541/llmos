@@ -443,3 +443,9 @@ schema兼容验证和编码边界证据见 [W82-B-CONTRACT](../evidence/stage-e/
 - 库接口的稳定配置与验证范围由 Evidence 记录。[B2 五维预算](../evidence/stage-e/w82-b2-llm-gateway-20261116.md) · [B3 工具执行](../evidence/stage-e/w82-b3-tool-service-20261116.md) · [B4 签名 Blob](../evidence/stage-e/w82-b4-blob-service-20261116.md)
 
 **D9 配额归属**。同一 authority 通过可信 adapter 转发同一个 `Arc<ToolHostQuota>`。默认由 journal writer 持有，冷目录与 invoke 共用全局和每主体计数。只在首个成功构造绑定限额，writer 生存期内的后续配置冲突返回 `ConflictingHostLimits`。当前界适用于同进程共享 authority，系统级跨进程配额与孤儿窗口由各自宿主接线和边界验证。[B3 配额证据](../evidence/stage-e/w82-b3-tool-service-20261116.md#同一-authority-的共享宿主配额)
+
+**2026-11-16 D5 截止时间补充**。短截止时间约束本库控制的 SQLite 锁等待与重试。Blob 写入动作内将 busy timeout 置零，退出时恢复原连接设置。遇忙只在剩余预算内退避，到期后拒绝继续重试或返回块；持读快照的到期回归须验证零新增 read receipt，释锁后原键仍可成功。SQLite `TRUNCATE` 即使最终因读者返回 BUSY，也可能先同步回填 WAL 和主库。已进入的同步 I/O 与宿主调度缺少硬中断界，整次调用 wall-clock 耗时作为诊断值。以真实读快照和 `DeadlineExpired` 验证服务路径，另外确定性核验连接设置和重试预算。[取证与复验边界](../evidence/stage-e/w82-b4-blob-service-20261116.md#第二轮原生专项与-checkpoint-截止验证)
+
+**2026-11-16 D8/D9 journal writer 释放补充**。B2/B3 的私有锁 guard 仅在实际获得文件锁后建立，其作用域覆盖恢复及同步失败。最后逻辑 writer 销毁时显式 unlock 后关闭 File，同一 writer 的多个合法 owner 仍共同延长排他锁。Unix 显式 unlock 限于获得锁的 PID，其他 PID 析构只关闭自身描述符。被动 File 副本可以在原 writer 之后存续；后继 writer 仍须真实 try-lock，Busy 或 I/O 错误继续返回原类型。B3 真实重放用例新增首次打开和释放 writer 后重开的阶段诊断。回执及已有恢复约束见 Evidence。[B2 owner release](../evidence/stage-e/w82-b2-llm-gateway-20261116.md#journal-writer-释放修订) · [B3 owner release](../evidence/stage-e/w82-b3-tool-service-20261116.md#journal-writer-释放修订与重开诊断)
+
+**2026-11-16 库级验收回执**。`2b8d0683ee08637c386f5aec190fcc4397cea0e4` 通过 B2/B3/B4 本机、独立审查与最终三平台验收，B 库级范围完成，A+B 开放 `B82-SDK`。真实身份、slot、custody、签名、受信目录与 Blob 大参数 materializer 由 INT 接线验收。B2 保持 OBSERVED，真实 provider H5 与 STRICT 外部支出须另证；B4 截止约束可控等待，整次 I/O 壁钟仍为诊断。受控 WAL 及 journal 恢复与物理断电的证据范围分别保留。[最终汇总](./stage-e-progress.md#2026-11-16-三服务库验证)

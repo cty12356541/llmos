@@ -1,0 +1,54 @@
+# W82-B3-CI-EPOCH-DIAG / Attempt 20261116
+
+**诊断结论：本次 exit 66 不属于 epoch/watchdog 超时。直接 host 测试遗漏可信 fixture 父路径规范化的缺口已通过真实父目录别名对照证实；原 macOS CI 的具体 66 分支及真实 temp alias 仍未被原始日志直接观测，须由修复后的原生 macOS 回执闭合。** 不应接受 66 或放宽 timer 来让用例通过。
+
+## 1. 原始失败与范围
+
+主树读取 HEAD `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec`。第二轮 run `43841248536`，macOS job `133210177566`，macOS 26.7.2 / 25G332、arm64、runner image `20261102.0473.1`。原始 [job log](services-native-ci-fix1/job-133210177566.api.log) 第 6449、6464–6468 行记录 `real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog` 退出 `Some(66)`，期待 `Some(133)`；该 harness 24 pass / 1 fail。其余 epoch/原生探针成功不能代替此精确用例。
+
+仅追踪该直接 host 测试、加载路径及退出分类，未重审其他 B3/B4 功能、未改产品/main/隔离源码、index、HEAD、canonical，未运行全套测试或派子 Agent。只生成本诊断及 [operational inputs](b3-ci-epoch-logs/diagnostic-inputs.json)、外侧最小对照。
+
+## 2. 确定的退出码因果链
+
+- `tests/tool_service.rs:1167–1194` 自行写出 WAT、计算 SHA-256，直接 `HostProcessRequest` / `build_isolated_host_command`，再追加 tool flags。这里**没有** SABI envelope、CallBinding/ServiceTime、ServiceAuthorizer 或父进程 ToolSandboxService deadline 控制；通用 `call()` 夹具里的 60 秒逻辑截止值不参与本用例。
+- `host_bin.rs:319–320` 识别 tool mode，进入 `run_tool_plan`。`:427–429` 的 `read_artifact` 失败返回 **66 / guest-read-failed**；`:431–433` 的摘要不匹配返回 **66 / artifact-changed**。
+- `tool_host_protocol.rs:33–57` 的加载使用父目录 `open_root`，拒绝链接叶、多个硬链接及超大制品；`wasi_allowlist.rs:424–441` 从绝对根逐段 `open_dir_nofollow`，父目录别名会被拒绝。
+- 两个 66 分支都发生在 `run_guest` 调用之前，因此 Wasmtime module compilation、epoch ticker、SPIN guest 尚未运行。当前 guest 无 `proc_exit(66)` 路径。
+- 真正的 host watchdog 在 `host_bin.rs:413–417` 从 host plan 启动后等待 `tool.wall_ms + 250`，其退出码是 **71**；不是 66。epoch trap 通过 `:469–478` 返回 **133 / epoch-interrupt**。
+
+**配置边界无违规证据：** fixture fuel=`u64::MAX`，16 pages，epoch=30 ticks × 10 ms（名义 300 ms），tool wall=3000 ms；这些符合 tool plan 校验。epoch ticker 在 module compilation 和 store/linker 建立后启动，因此名义 300 ms 不含全部进程/编译开销；原父测试的 elapsed<3s 包括这些开销，host watchdog 为 3.25s。两者都保持原阈值。本次错误不能由这些计时界解释。
+
+## 3. 实际路径差异及对照证据
+
+`Scratch::new` 在 `tests/tool_service.rs:46–52` 直接采用 `std::env::temp_dir()` 拼目录；直接 host 用例原样传入 artifact 路径。`process.rs:121–122` 不规范化该 `--guest` 参数。相对地，正常服务的 `Registration::new` 在 `tool_service.rs:834–844` 已先 canonicalize **parent**，再拼原始 filename，之后仍由 nofollow loader 拒绝不安全叶。
+
+因此，可信临时根含 parent alias 时，常规服务可以进入正常 epoch 执行，而直接测试会在加载门收到 66。macOS 系统临时目录 alias 是与现象吻合的具体推断；原 job 没有输出真实 temp path 或 child stderr，不能把某个具体 `/var/...` 路径写成已采集事实。
+
+为验证机制，使用 main 当前已构建的真实 `nlos-wasm-sandbox-host.exe`，在仅属于本任务的 operational scratch 创建一个真实 Windows junction 父别名，复制本用例 `guest()` WAT 模板与 SPIN body；保持同一物理 artifact、同一摘要和所有 fuel/memory/epoch/wall 参数。未修改或重编译产品。
+
+[外侧脚本](b3-ci-epoch-logs/parent-alias-probe/probe.py) · [完整 argv/结果/解帧](b3-ci-epoch-logs/parent-alias-probe/result.json)
+
+- raw alias parent：**exit 66，0.156s**；真实 framed host report 为 `outcome=host-error code=66 detail=guest-read-failed`。
+- 只将可信 parent 规范化后再拼 filename：**exit 133，0.485s**；report 为 `outcome=trap code=0 detail=epoch-interrupt`，仍小于 3s。
+- 为区分同一个 66 的另一分支，另设明确错误 digest 的控制：canonical parent + 全零 digest，**exit 66，0.015s**，report 为 `detail=artifact-changed`。这是人为控制，不是原 CI 的原因证据。
+
+三次都指向同一物理文件（samefile=true），实际字节 SHA-256 一直为 `ce697b0775dca4ef27e3cb978f65a4e506aac22b4b3dd96163c8e89a7ad718a3`，正常两例期望摘要相同。script exit 0，所有 child 已由 subprocess wait 回收。原始 stdout/stderr 字节及 junction fixture 留在本任务日志目录便于复核。
+
+**Digest 判断：** 当前没有实际 digest drift 证据。测试写完文件后计算摘要，同一 Scratch 由原调用持有且未见此处并发改写；但原 CI 捕获的 stderr 随第一个 assert 失败被丢弃，所以仅凭 exit 66 不能排除原 macOS 曾走 artifact-changed 或其他文件读取失败。Windows 对照证明的是 parent-alias 缺口，不能冒充 macOS 原机器的完整重现。
+
+## 4. 同 fixture 的成功对照
+
+- 同 SHA 的 Ubuntu job `133210177258` 原日志第 6425 行明确该 exact test `ok`；Linux 是原生成功证据。
+- 第二轮 Windows job `133210177429` 在更早的 capability 测试失败，没有运行到此 tool_service 用例，**不能声称本轮 Windows 同 SHA 已通过它**。
+- 之前 Windows B3 候选的 [service-final.log](b3-final-quota-logs/service-final.log) 有此 exact test 通过；本次 operational Windows canonical-parent 对照也在原始 30×10ms / 3000ms 配置下真实产生 epoch 133。它们分别是先前候选/当前本地 binary 的证据，均不替代尚待的最终三平台主矩阵。
+
+## 5. 建议给原 owner 的最小实施方案
+
+**最小产品写集仅 `crates/nlos-wasm-sandbox/tests/tool_service.rs`。** 原有 production opener、loader、profile、epoch、watchdog 及阈值无需改变。
+
+1. 在该直接 host fixture 创建完成后，对可信 artifact 的 **parent** 做 `canonicalize`，再拼原 filename；对这一规范化路径读摘要并传给 HostProcessRequest。不要 canonicalize 不可信 leaf 来掩盖链接/硬链接拒绝，也不要把放宽 nofollow 当修复。
+2. 同文件内用显式 parent alias 的确定性夹具覆盖这一前置条件（Unix symlink / Windows 已有 junction 方式），保留原 133、epoch-interrupt token 和 elapsed<3s 断言。能够先观察旧 raw path 的 guest-read-failed，再证明 canonical parent 到达 epoch trap；无需重试或延长 timer。
+3. 给直接 host 失败断言加入 captured stdout/stderr 和实际 raw/canonical path 的诊断信息；stderr 带 binary frame header，至少保留完整 bytes/可读报告，不要只输出 exit code。诊断不能把 guest 文本当作 host authority。
+4. 定向测试该 epoch 用例及 parent-alias 回归，再跑受影响 tool_service target 与 fmt/Clippy；最终 macOS 原生回执必须确认实际路径与报告，若仍 66，依据新增 detail 调查真实读取错误或摘要变化，而不是继续调整 epoch。
+
+共享文档的新增事实由 root/doc owner 按既定单写流程追加。这个方案修复已被证明的测试配置前提缺口；**macOS 原 CI 精确根因暂标 `parent alias probable; captured detail unavailable`**，在最终原生证据到位前不晋升为平台根因完全关闭。

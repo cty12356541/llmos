@@ -1,0 +1,15 @@
+error: binding's name is too similar to existing binding
+  --> D:/llmos/.agentdash/attempts/20261116/w82-services/b3-ci-clippy-logs/fixture-red.rs:13:17
+   |
+13 |             let ppid = fields.next()?.parse().ok()?;
+   |                 ^^^^
+   |
+note: existing binding defined here
+  --> D:/llmos/.agentdash/attempts/20261116/w82-services/b3-ci-clippy-logs/fixture-red.rs:12:17
+   |
+12 |             let pid = fields.next()?.parse().ok()?;
+   |                 ^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#similar_names
+   = note: requested on the command line with `-D clippy::similar-names`
+
+error: aborting due to 1 previous error

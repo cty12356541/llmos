@@ -1,0 +1,30 @@
+# W82-B4-CI-CHECKPOINT-TIMING / Attempt 20261116
+
+## 原 CI 失败与诊断
+
+Windows job 133210177429 在源码 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec` 上通过了 `DeadlineExpired` 匹配，随后整段 API 用时 411.9058 ms，触发旧的 200 ms 断言。后续零回执及同键恢复断言未执行。原始 CI 日志保留在 [job-133210177429.api.log](services-native-ci-fix1/job-133210177429.api.log:1478)。本机对原测试精确执行 12 轮全过，与同进程的 4,096 次 WAL/FULL 读取用例并行执行 3 轮，每轮两项全过。
+
+持有读快照时，真实 SQLite TRUNCATE 可以先写主库，完成回填后仍因读锁返回 BUSY。本机 fault VFS 使生产路径在首个回填写入返回 `SystemIoFailure`。清除故障后 0 ms busy timeout 的观察连接返回 `(1,67,67)`，WAL 仍超窗口。生产短请求 20.3899 ms 到期，回执计数不变。释放快照后同键成功写入 1 条回执。原 CI 没有阶段时序，411.9058 ms 的具体归属仍未定位。同步 SQLite I/O 和宿主调度可能影响整段 wall time，SQLite busy handler 和应用层退避是可独立验证的受控等待。[完整诊断](b4-ci-checkpoint-diagnosis.md) · [探针输出](b4-ci-checkpoint-logs/profile-run.txt)
+
+## 候选改动
+
+- `tests/blob_reference.rs` 在原 WAL 超窗和真实读快照下，使用已有 fault VFS 注入首个 `xWrite` 错误，实际生产读返回 SQLite `SystemIoFailure`。关闭 fault 后观察到 BUSY、全部 frame 已回填和 WAL 仍超窗，再执行生产 20 ms 请求，验证精确 `DeadlineExpired`、持锁期间零新增回执、释锁后同键成功且持久回执恰增 1 条、签名 release。整段 API elapsed 保留为诊断输出。
+- `src/blob_ledger.rs` 的新 `cfg(test)` 单测读取实际 writer 的 `busy_timeout`，在 action 内为 0，注入有类型的 `BlobError::Busy` 后恢复初始 250 ms。
+- `src/blob_reference.rs` 将原 `Timing::pause` 的计算等价提取为私有 `retry_delay_at(now)`。仍计算 `min(1ms, deadline - now)`，到期则返回错误，sleep 结束后仍检查 elapsed。新单测使用显式 `Instant` 覆盖 1 ms、距截止 250 µs、正好截止、晚于截止。产品时限、权限、计费和持久模型维持接受版本。
+
+## Windows 本机验证
+
+Workdir `C:/Users/Administrator/.codex/worktrees/w82-b4-blob/llmos`，HEAD `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。该隔离树工作版本含已接受的 B4 及 coordinator 变更。使用 `CARGO_TARGET_DIR=D:/llmos/target/w82-b4`。先逐项变异再按字节恢复正常候选。
+
+- `cargo test --locked -p nlos-capability --lib blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error -- --exact --nocapture`。writer 临时设置 250 ms 时退出 101，实际 250、预期 0。恢复后退出 0，1/1 通过。[实际变异](b4-ci-checkpoint-logs/mutation-busy.diff) · [失败输出](b4-ci-checkpoint-logs/mutation-busy.txt) · [通过输出](b4-ci-checkpoint-logs/green-busy.txt)
+- `cargo test --locked -p nlos-capability --lib blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline -- --exact --nocapture`。临时忽略剩余预算、固定返回 1 ms 时退出 101，实际 1 ms、预期 250 µs。恢复后退出 0，1/1 通过。[实际变异](b4-ci-checkpoint-logs/mutation-retry.diff) · [失败输出](b4-ci-checkpoint-logs/mutation-retry.txt) · [通过输出](b4-ci-checkpoint-logs/green-retry.txt)
+- `cargo test --locked -p nlos-capability --test blob_reference blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves -- --exact --nocapture` 退出 0，1/1 通过，短请求记录 20.053 ms。[定向输出](b4-ci-checkpoint-logs/green-checkpoint.txt)
+- `cargo test --locked -p nlos-capability -- --nocapture` 退出 0，93 项单元和集成测试、1 项 compile-fail 文档测试通过，0 失败，2 项原有忽略。BlobReference 集成 40 通过、1 原有 memory probe 忽略。Windows symlink 特权用例维持原忽略。全包中该短请求记录 20.5287 ms。[全包输出](b4-ci-checkpoint-logs/full-capability.txt)
+- `cargo clippy --locked -p nlos-capability --all-targets -- -D warnings` 退出 0。初跑发现测试的 `Instant - Duration`，已改用 `checked_sub`，红绿和全包结果均在该修订后重跑。[首次输出](b4-ci-checkpoint-logs/strict-clippy-initial.txt) · [最终输出](b4-ci-checkpoint-logs/strict-clippy.txt)
+- `cargo fmt -p nlos-capability -- --check` 退出 0。[格式输出](b4-ci-checkpoint-logs/package-fmt.txt)
+
+## 交审与集成
+
+候选仅三个 Rust 文件，108 行增加、12 行删除。Patch SHA-256 `f4c92fbb885b02afe8d3d36721f83ebb312076a4d08769890ee17a3c7bac3d0d`。主树 HEAD 保持 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec`，三个待变更路径的现有 Blob 与原 CI 源码一致。主树 `git apply --check --whitespace=error-all` 与隔离树反向检查均退出 0。两树索引均为空差异。[三文件补丁](b4-ci-checkpoint-logs/review.diff) · [完整 Blob 与 SHA-256 清单](b4-ci-checkpoint-logs/manifest.json) · [应用检查输出](b4-ci-checkpoint-logs/patch-gates.txt)
+
+待独立复审、主树集成和原生 CI。此次修改验证的是受控等待与回执结果，原 CI 整段 wall time 的具体慢阶段仍缺数据。本机验证适用于 Windows 当前主机。

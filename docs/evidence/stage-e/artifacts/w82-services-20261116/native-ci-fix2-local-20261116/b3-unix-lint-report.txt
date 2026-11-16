@@ -1,0 +1,17 @@
+
+# W82-B3-CI-UNIX-CLIPPY / Attempt 20261116
+
+Ubuntu run 43841248536 的 job 133210177258 在提交 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec` 通过 workspace/ROAD 测试，严格 Clippy 退出 101。原始日志 `services-native-ci-fix1/job-133210177258.api.log` 6794–6813 行显示 `#[cfg(unix)]` 的 `native_processes` 中 `pid` 与 `ppid` 触发 `clippy::similar_names`。
+
+只把该作用域的定义和使用处 `ppid` 改为 `parent_process_id`，保留 `ps` 的列参数、解析、过滤和返回值。文件换回两个旧标识符恰好得到原提交字节。隔离树修改前的 Git blob 与主基线完全匹配。
+
+- 路径 `crates/nlos-wasm-sandbox/tests/tool_service.rs`
+- before blob `ef2e68e222ffcc36d60c53259bdf9a12035ed3f3`，after blob `974b65d7571737d2d11c02a20d2d2e8c032f7307`
+- patch `b3-ci-clippy.delta.diff`，SHA-256 `fc1225f5bc1d2bb51bc339d027a419e0440337528d1ca5f8329e34de7e241e8f`
+- 文件原字节及 LF 摘要见 `b3-ci-clippy-logs/source-cas.json`。主树只读 forward apply check 和隔离树 reverse apply check 均退出 0。
+
+## 验证
+
+- 本机 Clippy 0.1.99 将原函数与改后函数分别抽取到临时编译目标，去掉平台条件以静态检查作用域。 `clippy-driver --edition=2024 -D clippy::similar_names --emit=metadata` 原函数退出 1 并复现同一诊断，改后退出 0。日志 `fixture-red.log` 和 `fixture-green.log`。
+- Windows `cargo test --locked -p nlos-wasm-sandbox --test tool_service orphan_host_terminates_after_service_harness_is_killed -- --exact` 退出 0，1 passed，5.60 s。 `cargo clippy --locked -p nlos-wasm-sandbox --all-targets -- -D warnings`、crate `cargo fmt` 检查和 `git diff --check` 退出 0。
+- 本机只有 Windows Rust target，Docker Linux engine 未启动。Linux/macOS 原生 Clippy 由下一次 CI 验证。候选保留于隔离树，主树保持冻结，未暂存、提交或推送。

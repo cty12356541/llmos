@@ -1,0 +1,27 @@
+1842: 2026-11-16T09:24:40.1845765Z test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... FAILED
+1843: 2026-11-16T09:24:40.3183857Z test custody_signing_emits_strictly_monotonic_audit_seq_and_adr0022_root_capability ... ok
+1844: 2026-11-16T09:24:40.9280865Z test compromised_expired_rotated_wrong_gateway_and_stale_fence_attestations_fail_closed ... ok
+1845: 2026-11-16T09:24:43.6219158Z test still_uncertain_quarantine_freezes_active_reservation_and_keeps_quarantined_funds_frozen ... ok
+1846: 2026-11-16T09:24:43.6576271Z test final_confirmed_no_effect_settles_zero_usage_and_rejects_nonzero_high_water ... ok
+1847: 2026-11-16T09:24:43.9325838Z test provisional_gateway_attestation_projects_rebate_without_moving_funds_or_unfreezing ... ok
+1848: 2026-11-16T09:24:43.9882252Z test final_effect_closed_attestation_settles_quarantined_reservation_converges_task_and_replays_idempotently ... ok
+1849: 2026-11-16T09:24:47.1435616Z test supersession_conflicts_stale_versions_post_final_and_below_high_water_fail_closed ... ok
+1850: 2026-11-16T09:24:47.1436286Z
+1851: 2026-11-16T09:24:47.1438059Z failures:
+1852: 2026-11-16T09:24:47.1438230Z
+1853: 2026-11-16T09:24:47.1441033Z ---- custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation stdout ----
+1854: 2026-11-16T09:24:47.1441592Z
+1855: 2026-11-16T09:24:47.1450359Z thread 'custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation' (15830) panicked at crates/nlos-commit-coordinator/tests/custody_gateway_reconciliation.rs:436:5:
+1856: 2026-11-16T09:24:47.1451585Z assertion `left == right` failed
+1857: 2026-11-16T09:24:47.1453452Z   left: 3
+1858: 2026-11-16T09:24:47.1453918Z  right: 2
+1859: 2026-11-16T09:24:47.1457499Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1860: 2026-11-16T09:24:47.1460457Z
+1861: 2026-11-16T09:24:47.1460467Z
+1862: 2026-11-16T09:24:47.1461968Z failures:
+1863: 2026-11-16T09:24:47.1477843Z     custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation
+1864: 2026-11-16T09:24:47.1478437Z
+1865: 2026-11-16T09:24:47.1481465Z test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.48s
+1866: 2026-11-16T09:24:47.1485043Z
+1867: 2026-11-16T09:24:47.1499155Z error: test failed, to rerun pass `-p nlos-commit-coordinator --test custody_gateway_reconciliation`
+1868: 2026-11-16T09:24:47.2254343Z ##[error]Process completed with exit code 101.

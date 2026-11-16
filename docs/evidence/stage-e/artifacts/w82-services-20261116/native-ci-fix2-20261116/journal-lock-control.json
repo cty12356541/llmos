@@ -1,0 +1,14 @@
+{
+  "command": [
+    "wsl",
+    "-d",
+    "docker-desktop",
+    "--",
+    "sh",
+    "/mnt/host/d/llmos/.agentdash/attempts/20261116/w82-services/b3-ci-journal-busy-logs/flock_shared_description.sh"
+  ],
+  "exit": 0,
+  "seconds": 1.703,
+  "script_sha256": "d8c13d48a60aa8fab68258d5c95ba580b3fd31af9f59b5c6133fb1df9dd446bd",
+  "scope": "Linux shared-open-file-description close vs unlock; shell descriptors not CLOEXEC test"
+}

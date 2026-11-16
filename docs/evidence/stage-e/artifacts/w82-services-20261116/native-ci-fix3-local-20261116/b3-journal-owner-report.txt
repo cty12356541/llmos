@@ -1,0 +1,21 @@
+
+# W82-B3-CI-JOURNAL-OWNER-RELEASE / Attempt 20261116-1
+
+基线 `533001483b440053e4c7333db445a7c2ff91baa2`。仅改隔离树的 `crates/nlos-wasm-sandbox/src/tool_operation_store.rs` 和 `crates/nlos-wasm-sandbox/tests/tool_service.rs`，后者的变化仅限原真实重开用例的初次打开、重开阶段诊断。两个 index 为空。历史 patch 和诊断日志保留。
+
+- 正规 journal 只在 `try_lock` 成功后形成私有 `LockedJournalFile`，然后才做目录同步和恢复。最后逻辑 writer 销毁时，guard 先显式 unlock，再由 File 析构 close。Unix guard 记录取得锁的 PID，异 PID 析构仅 close 自己的句柄。后继仍须真实 `try_lock`，`Busy` 不重试。此前的实际追加错误注入改走独立只读写入目标，已获得锁的原文件仍由 guard 持有。
+- 在真实同步失败测试中，给未发布 writer 的已持锁 File 留一份被动 clone，恢复返回 `Durability` 后立即由同一路径取得新锁，再关闭旧 clone，恢复完整输出的原断言通过。目录同步失败分支的 guard 作用域已检查，未专门注入目录同步故障。
+- 原实际重开用例沿用真实 host、目录和持久重放断言。打开失败会区分 `initial open` / `reopen after dropping writer`，并记录 PID、夹具根和 journal 实际路径。公开 API、配额、取消、持久读写顺序和 epoch/watchdog 阈值未发生变化。
+
+## 封存
+
+- `b3-ci-journal-owner-logs/owner-release.delta.diff` SHA-256 `e02d4bab60b014007d43e5108bf16b815e0e11b7b973a7c7d3fb35a4427b8641`。
+- `b3-ci-journal-owner-logs/paths.json` SHA-256 `490821d6d06670db0f60434b30aa19ce96add0d3fe45586b1ec72b1d34acef44`。存储文件 blob `68e60ea1fcbce86c9824ad5c6700e0f199fd87ea` → `67c6519bc1c972e72924c6ab58b2ba4bf6d01d01`。服务测试文件 blob `ac84e309fe69593b629b1912d8c459e3939a182d` → `60c2b95a596f29edec49fb2ef41529eec8401fda`。清单单列原始字节和 LF 规范化 SHA。
+- 5330014 主树只读正向 apply check 与隔离树反向 apply check 均以 `--whitespace=error-all` 退出 0。主树同路径仍是基线 blob。无暂存、提交或推送。
+
+## 实跑
+
+- `cargo test --locked -p nlos-wasm-sandbox --lib tool_operation_store::tests::last_journal_owner_releases_writer_lock_with_passive_clone_alive -- --exact --nocapture`。Windows 真实 writer File `try_clone`。原代码在一个 Arc 释放后保持 Busy，在最后 Arc 释放但被动副本存活时仍返回 Busy，退出 101。显式释放后退出 0，首个 Arc drop 仍 Busy，最后 Arc drop 后即时获锁，关旧副本后新 owner 仍排他，释放后可再次 open。日志 `windows-owner-before.log` 与 `windows-owner-after.log`，最终候选再次在全 crate 中通过同一用例。
+- `cargo test --locked -p nlos-wasm-sandbox` Windows 退出 0。47 unit、16 escape runner reported、7 journal、1 pipe、25 service。含同步失败时被动 clone 存在的恢复、旧 exclusive writer、原 `real_guest_catalog_and_durable_result_replay_after_reopen` 和实际孤儿 host 用例。原 Windows 符号链接 1314 分支沿用现有证据边界。
+- `cargo clippy --locked -p nlos-wasm-sandbox --all-targets -- -D warnings`、Rust 1.97.1 `cargo +1.97 check --locked -p nlos-wasm-sandbox --all-targets`、`cargo fmt -p nlos-wasm-sandbox -- --check` 均退出 0。各命令 stdout/stderr 及 exit 文件位于 `b3-ci-journal-owner-logs`。
+- Unix 项目级 clone 回归和同 PID guard 的原生编译/运行留下一次 Linux/macOS CI。没有多线程 fork 测试。原 macOS 日志的首开/重开归属、锁持有人仍未知。已诊断的 Linux flock 对照和本次 Windows 产品回归分别记录，未用它们补写历史 macOS 现场。

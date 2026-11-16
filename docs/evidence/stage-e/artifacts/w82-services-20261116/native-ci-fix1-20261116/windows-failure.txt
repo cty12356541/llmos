@@ -1,0 +1,22 @@
+1436: 2026-11-16T09:51:20.8744955Z test clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused ... ok
+1437: 2026-11-16T09:51:22.1538180Z test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... FAILED
+1438: 2026-11-16T09:51:22.4455140Z test cold_clock_lock_contention_fails_with_a_bounded_time_unavailable ... ok
+1439: 2026-11-16T09:51:24.0086903Z test established_request_deadline_bounds_queued_clock_sampling ... ok
+1440: 2026-11-16T09:51:24.4523812Z test expiry_between_io_and_receipt_closes_the_pin_on_maintenance ... ok
+1441: 2026-11-16T09:51:24.7448763Z test global_mint_rate_counts_different_issuers ... ok
+1442: 2026-11-16T09:51:25.7936443Z test identical_raw_keys_are_independent_across_authenticated_subjects ... ok
+1477: 2026-11-16T09:52:40.9527883Z
+1478: 2026-11-16T09:52:40.9531418Z thread 'blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves' (7228) panicked at crates\nlos-capability\tests\blob_reference.rs:2080:5:
+1479: 2026-11-16T09:52:40.9532321Z checkpoint wait 411.9058ms
+1480: 2026-11-16T09:52:40.9532998Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1481: 2026-11-16T09:52:40.9533396Z
+1482: 2026-11-16T09:52:40.9533404Z
+1483: 2026-11-16T09:52:40.9533513Z failures:
+1487: 2026-11-16T09:52:40.9535584Z
+1488: 2026-11-16T09:52:40.9564285Z error: test failed, to rerun pass `-p nlos-capability --test blob_reference`
+1489: 2026-11-16T09:52:40.9802047Z ##[error]Process completed with exit code 101.
+1490: 2026-11-16T09:52:41.1894454Z ##[group]Run actions/upload-artifact@v7
+1491: 2026-11-16T09:52:41.1894876Z with:
+1492: 2026-11-16T09:52:41.1895258Z   name: w82-service-windows-latest-9cce6c77e8f29ea44a080c2adf26f2fc8c745fec-43841248536-1
+1493: 2026-11-16T09:52:41.1895700Z   path: D:\a\_temp/w82-service-evidence
+1494: 2026-11-16T09:52:41.1895984Z   if-no-files-found: warn

@@ -1,0 +1,314 @@
+{
+  "source_sha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+  "runner": {
+    "platform": {
+      "system": "Linux",
+      "node": "runnervmccnms",
+      "release": "7.0.0-1019-azure",
+      "version": "#20-Ubuntu SMP PREEMPT Mon Oct 19 22:41:16 UTC 2026",
+      "machine": "x86_64",
+      "processor": ""
+    },
+    "github_runner": {
+      "GITHUB_SHA": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+      "GITHUB_RUN_ID": "43857200084",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "RUNNER_NAME": "GitHub Actions 1000005306",
+      "RUNNER_OS": "Linux",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_ENVIRONMENT": "github-hosted",
+      "ImageOS": "ubuntu26",
+      "ImageVersion": "20261111.196.1"
+    }
+  },
+  "rustc": [
+    "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "binary: rustc",
+    "commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+    "commit-date: 2026-09-28",
+    "host: x86_64-unknown-linux-gnu",
+    "release: 1.99.0",
+    "LLVM version: 23.1.1"
+  ],
+  "cargo": [
+    "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "release: 1.99.0",
+    "commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e",
+    "commit-date: 2026-08-27",
+    "host: x86_64-unknown-linux-gnu",
+    "libgit2: 1.9.6 (sys:0.21.0 vendored)",
+    "libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)",
+    "ssl: OpenSSL 3.6.3 9 Jun 2026",
+    "os: Ubuntu 26.4.0 (resolute) [64-bit]"
+  ],
+  "commands": [
+    {
+      "label": "source-sha",
+      "status": "passed",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "returncode": 0,
+      "log": "source-sha.log"
+    },
+    {
+      "label": "rustc-version",
+      "status": "passed",
+      "command": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "rustc-version.log"
+    },
+    {
+      "label": "cargo-version",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "cargo-version.log"
+    },
+    {
+      "label": "tool-latency",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "tool_service",
+        "measured_spawn_and_run",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-latency.log"
+    },
+    {
+      "label": "tool-escape-matrix",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "escape_matrix",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-escape-matrix.log"
+    },
+    {
+      "label": "blob-open-build",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "--test",
+        "blob_open",
+        "--no-run",
+        "--message-format=json-render-diagnostics"
+      ],
+      "returncode": 0,
+      "log": "blob-open-build.log"
+    },
+    {
+      "label": "strace-version",
+      "status": "passed",
+      "command": [
+        "/usr/bin/strace",
+        "--version"
+      ],
+      "returncode": 0,
+      "log": "strace-version.log"
+    },
+    {
+      "label": "blob-open-native",
+      "status": "passed",
+      "command": [
+        "/usr/bin/strace",
+        "-ff",
+        "-e",
+        "trace=openat2",
+        "-o",
+        "/home/runner/work/_temp/w82-service-evidence/blob-open-native-trace-mxzathvq/openat2",
+        "/home/runner/work/llmos/llmos/target/debug/deps/blob_open-4023c5629c5f8a49",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "blob-open-native.log"
+    },
+    {
+      "label": "blob-open-enosys",
+      "status": "passed",
+      "command": [
+        "/usr/bin/strace",
+        "-ff",
+        "-e",
+        "trace=openat2",
+        "-o",
+        "/home/runner/work/_temp/w82-service-evidence/blob-open-enosys-trace-dci7365j/openat2",
+        "-e",
+        "inject=openat2:error=ENOSYS",
+        "/home/runner/work/llmos/llmos/target/debug/deps/blob_open-4023c5629c5f8a49",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "blob-open-enosys.log"
+    }
+  ],
+  "failed_or_skipped": [],
+  "latency": {
+    "raw": "platform=linux arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=18.59 p95_ms=19.82",
+    "samples": 20,
+    "platform": "linux",
+    "arch": "x86_64",
+    "p50_ms": 18.59,
+    "p95_ms": 19.82
+  },
+  "escape": {
+    "escape_preopen_leaf=unix_symlink": true,
+    "escape_preopen_leaf=hard_link": true,
+    "escape_preopen_parent=unix_symlink": true,
+    "unavailable": []
+  },
+  "rooted": {
+    "test_results": [
+      "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+      "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+      "test rooted_opener_rejects_a_socket_before_reading ... ok",
+      "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+      "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+      "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok",
+      "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok"
+    ],
+    "swap_results": [
+      "link-parent: swaps=512 inside=1803 safe_rejection=245 exterior_or_unexpected=0",
+      "replacement: swaps=512 inside=1813 safe_rejection=235 exterior_or_unexpected=0",
+      "link-leaf: swaps=512 inside=1747 safe_rejection=301 exterior_or_unexpected=0"
+    ]
+  },
+  "openat2": {
+    "version": [
+      "strace -- version 6.19"
+    ],
+    "success": {
+      "count": 11416,
+      "first": {
+        "path": "artifact-1-ubuntu-latest-14221937390/data/blob-open-native-trace-mxzathvq/openat2.6760",
+        "line": 1,
+        "text": "openat2(5, \"nested\", {flags=O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_DIRECTORY, resolve=RESOLVE_NO_MAGICLINKS|RESOLVE_BENEATH}, 24) = 7"
+      }
+    },
+    "enosys_injected": {
+      "count": 2,
+      "first": {
+        "path": "artifact-1-ubuntu-latest-14221937390/data/blob-open-enosys-trace-dci7365j/openat2.6774",
+        "line": 1,
+        "text": "openat2(3, \"nested\", {flags=O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_DIRECTORY, resolve=RESOLVE_NO_MAGICLINKS|RESOLVE_BENEATH}, 24) = -1 ENOSYS (Function not implemented) (INJECTED)"
+      }
+    },
+    "fallback_tests": [
+      "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+      "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+      "test rooted_opener_rejects_a_socket_before_reading ... ok",
+      "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+      "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+      "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok",
+      "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok"
+    ]
+  },
+  "workspace": {
+    "platform": "ubuntu-latest",
+    "workspace_logged": true,
+    "tests": {
+      "gateway_four_methods": [
+        "2026-11-16T11:29:38.5581000Z test four_methods_recover_and_keep_advisory_out_of_the_hard_budget ... ok"
+      ],
+      "gateway_tcp_subtree": [
+        "2026-11-16T11:29:38.6990907Z test subtree_gate_serializes_parent_siblings_and_grandchild_with_live_tcp ... ok"
+      ],
+      "gateway_settlement": [
+        "2026-11-16T11:29:38.6602999Z test settlement_rejects_over_quote_and_preserves_authority_envelope_failure ... ok"
+      ],
+      "blob_signed_recipient": [
+        "2026-11-16T11:28:53.5878716Z test signed_sender_mint_roundtrips_wav_bytes_to_its_explicit_recipient ... ok"
+      ],
+      "custody_schema_regression": [
+        "2026-11-16T11:29:12.9116874Z test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... ok"
+      ],
+      "epoch_interrupt": [
+        "2026-11-16T11:34:02.5748913Z test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok"
+      ],
+      "durable_replay": [
+        "2026-11-16T11:34:02.3600224Z test real_guest_catalog_and_durable_result_replay_after_reopen ... ok"
+      ],
+      "blob_checkpoint": [
+        "2026-11-16T11:28:52.5342233Z test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok"
+      ],
+      "blob_busy_timeout": [
+        "2026-11-16T11:28:48.2804250Z test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok"
+      ],
+      "blob_retry_delay": [
+        "2026-11-16T11:28:48.2799501Z test blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline ... ok"
+      ],
+      "b2_owner_clone": [
+        "2026-11-16T11:29:38.2659347Z test reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive ... ok"
+      ],
+      "b2_owner_recovery": [
+        "2026-11-16T11:29:38.2646062Z test reservation_journal::tests::journal_owner_releases_acquired_lock_when_recovery_fails ... ok"
+      ],
+      "b3_owner_clone": [
+        "2026-11-16T11:34:00.1018188Z test tool_operation_store::tests::last_journal_owner_releases_writer_lock_with_passive_clone_alive ... ok"
+      ],
+      "blob_wal": [
+        "2026-11-16T11:28:57.5366640Z test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok"
+      ],
+      "identity_principal_lookup": [
+        "2026-11-16T11:29:40.2451616Z test principal_lookup_returns_latest_durable_binding_even_when_revoked ... ok"
+      ],
+      "retained_completion": [
+        "2026-11-16T11:34:00.1031157Z test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok"
+      ],
+      "lost_completion": [
+        "2026-11-16T11:34:00.1028766Z test tool_operation_store::tests::lost_completion_after_sync_failure_keeps_dispatch_indeterminate ... ok"
+      ],
+      "shared_quota_global": [
+        "2026-11-16T11:34:02.8016998Z test shared_writer_limits_active_hosts_globally_across_instances ... ok"
+      ],
+      "shared_quota_principal": [
+        "2026-11-16T11:34:02.9056319Z test shared_writer_limits_active_hosts_per_principal_across_instances ... ok"
+      ]
+    }
+  },
+  "checks": {
+    "source_sha": true,
+    "runner_context": true,
+    "rustc_1_99": true,
+    "cargo_1_99": true,
+    "latency": true,
+    "escape_fixtures": true,
+    "unix_special_files": true,
+    "normal_openat2": true,
+    "fallback_openat2": true,
+    "required_commands_succeeded": true,
+    "helper_checks_passed": true,
+    "workspace_cases": true
+  }
+}

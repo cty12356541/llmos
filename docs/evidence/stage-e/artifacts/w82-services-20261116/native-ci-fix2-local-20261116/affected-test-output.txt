@@ -1,0 +1,281 @@
+
+running 6 tests
+test blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline ... ok
+test namespace::tests::prefix_len_trims_trailing_zeros ... ok
+test namespace::tests::namespace_within_allows_equal_and_descendant ... ok
+test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok
+test custody::tests::custody_vault_issues_adr0022_root_capability_without_exporting_private_key ... ok
+test custody::tests::rfc8032_engine_matches_ed25519_dalek_byte_for_byte ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.93s
+
+
+running 5 tests
+test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege
+test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok
+test opens_only_a_single_link_regular_file_under_the_held_directory ... ok
+test repeated_first_open_junction_parent_swaps_do_not_escape ... ok
+test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+
+running 41 tests
+test bounded_blob_buffers_peak_probe ... ignored, run in isolation to measure process memory under the maximum file and block sizes
+test audit_bytes_cover_the_full_admitted_sqlite_read_and_release_tail ... ok
+test blob_sql_ledger_blocks_immutable_row_edits_replace_and_state_rollback ... ok
+test audit_reservation_blocks_new_mint_but_covers_admitted_reads_and_release ... ok
+test ancestor_revocation_after_file_io_prevents_read_receipt ... ok
+test global_mint_rate_counts_different_issuers ... ok
+test identical_raw_keys_are_independent_across_authenticated_subjects ... ok
+test expiry_between_io_and_receipt_closes_the_pin_on_maintenance ... ok
+test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok
+test identity_revocation_and_clock_failures_stop_reads_including_exact_replays ... ok
+test established_request_deadline_bounds_queued_clock_sampling ... ok
+test cold_clock_lock_contention_fails_with_a_bounded_time_unavailable ... ok
+test independently_enforces_global_read_concurrency_across_recipients ... ok
+test independently_enforces_per_recipient_read_concurrency ... ok
+test manifest_corruption_cannot_turn_into_a_read_or_charge ... ok
+test manifest_and_file_bounds_reject_before_resolving_the_path ... ok
+test max_reads_linearizes_concurrent_distinct_keys_and_closes_the_pin ... ok
+test mint_requires_a_valid_recipient_and_proof_for_current_process ... ok
+test maximal_chunk_is_bounded_and_canonical_and_eof_does_not_charge ... ok
+test mint_signature_binds_file_fields_and_explicit_recipient ... ok
+test io_faults_roll_back_mint_read_and_release_and_recover_exact_idempotency ... ok
+test mint_signature_binds_workspace_source_key_and_command_time ... ok
+test pinned_file_survives_path_replacement_and_detects_changes_to_the_original_object ... ok
+test clock_samples_advance_in_order_even_when_the_earlier_callback_is_paused ... ok
+test quota_and_rate_limits_apply_across_new_sessions ... ok
+test release_between_io_and_receipt_blocks_the_chunk_and_future_replay ... ok
+test recipient_pin_quota_counts_distinct_issuers ... ok
+test same_key_replay_concurrent_and_reconnect_share_one_receipt_and_authorization ... ok
+test writer_lease_child_probe ... ok
+test release_is_signed_for_issuer_or_recipient_and_replay_rechecks_current_policy ... ok
+test single_domain_clock_regressions_and_callback_errors_leave_both_watermarks_intact ... ok
+test untrusted_wire_actor_digest_and_task_context_are_rejected ... ok
+test release_during_mint_delivery_cannot_leave_a_published_pin ... ok
+test v3_schema_migration_is_atomic_on_schema_error_and_preserves_prior_history ... ok
+test signed_sender_mint_roundtrips_wav_bytes_to_its_explicit_recipient ... ok
+test restart_fences_old_tokens_and_replays_mint_without_even_resolving_path ... ok
+test physical_audit_bound_uses_the_database_page_size ... ok
+test writer_lease_is_exclusive_across_processes ... ok
+test short_deadline_bounds_wait_for_the_descriptor_mutex ... ok
+test short_deadline_bounds_wait_for_the_sqlite_writer ... ok
+test audit_checkpoint_and_terminal_reserve_support_the_maximum_paid_reads ... ok
+
+test result: ok. 40 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 9.01s
+
+
+running 1 test
+test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+
+running 7 tests
+test consumption_rows_are_ddl_protected ... ok
+test consume_decrements_and_exhaustion_rejects_typed_with_zero_partial_state ... ok
+test consume_enforces_semantic_admission_gates_without_spending ... ok
+test unlimited_capability_never_exhausts_and_readback_is_none ... ok
+test consume_replay_is_free_conflicts_fail_closed_and_restart_persists ... ok
+test concurrent_consumption_linearizes_under_quota ... ok
+test delegated_budget_is_independent_not_pooled_with_parent ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+running 6 tests
+test root_issue_is_authority_bound_durable_and_exactly_replayable ... ok
+test capability_descriptors_versions_and_receipts_are_ddl_protected ... ok
+test direct_revocation_is_replayable_and_generation_fenced ... ok
+test ancestor_revocation_invalidates_descendants_after_restart ... ok
+test semantic_authorization_requires_verified_holder_scope_right_and_purpose ... ok
+test delegation_attenuates_every_mechanical_dimension ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+
+running 4 tests
+test capability_power_loss_invisible_commit_converges_for_issue_and_consume ... ok
+test capability_precommit_ioerr_fails_typed_zero_phantom_converges ... ok
+test capability_precommit_enospc_fails_typed_zero_phantom_converges ... ok
+test capability_replay_storm_is_byte_equal_idempotent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+
+running 5 tests
+test delegate_rejects_namespace_scope_amplification ... ok
+test authorize_and_consume_accept_requested_target_within_capability_subtree ... ok
+test delegate_narrows_namespace_target_within_parent_prefix ... ok
+test narrowed_delegate_replays_across_restart ... ok
+test task_target_still_requires_exact_match ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+
+running 12 tests
+test default_authorizer_denies_a_well_formed_call ... ok
+test all_methods_enforce_their_key_and_deadline_requirements ... ok
+test grant_windows_use_wall_time_and_accept_both_endpoints ... ok
+test capability_sets_enforce_cardinality_and_exact_duplicate_identity ... ok
+test grants_select_the_exact_presented_handle_generation ... ok
+test policy_grants_must_select_a_presented_capability_before_window_validation ... ok
+test supplied_deadlines_must_strictly_exceed_the_host_monotonic_time ... ok
+test policy_cannot_substitute_any_action_or_target_field ... ok
+test policy_cannot_substitute_any_caller_or_call_field ... ok
+test policy_errors_are_preserved_without_exposing_call_data_in_display ... ok
+test malformed_calls_fail_in_preflight_order_without_consulting_policy ... ok
+test successful_result_preserves_the_exact_authorized_binding_and_selected_handle ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 9 tests
+test unknown_signer_principal_fails_closed ... ok
+test replay_does_not_reverify_signature_after_key_revocation ... ok
+test revoked_key_fails_closed_after_registration ... ok
+test signature_over_wrong_message_rejects_with_zero_writes ... ok
+test signed_delegate_roundtrip_records_delegator_as_issuer ... ok
+test signed_issue_root_roundtrip_records_signer_principal ... ok
+test signed_revocation_roundtrip_records_signer ... ok
+test delegate_and_revoke_signatures_bind_their_own_principals ... ok
+test tampered_signature_rejects_with_zero_durable_writes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 46 tests
+test error::tests::host_outcome_tokens_round_trip ... ok
+test error::tests::trap_kind_tokens_are_stable ... ok
+test error::tests::sanitize_detail_keeps_report_line_single_line_and_bounded ... ok
+test host_bin::tests::unknown_flag_is_rejected_as_bad_arguments ... ok
+test host_bin::tests::audit_env_mode_reports_the_real_environment_count_in_process ... ok
+test host_bin::tests::missing_guest_flag_is_rejected ... ok
+test host_bin::tests::unreadable_guest_artifact_reports_guest_read_failed ... ok
+test host_bin::tests::profile_invalid_reports_typed_exit ... ok
+test isolate::tests::invalid_wat_is_rejected_at_compile ... ok
+test isolate::tests::absent_socket_import_rejects_instantiation ... ok
+test isolate::tests::memory_grow_beyond_page_cap_observes_minus_one ... ok
+test isolate::tests::guest_environment_is_empty_and_wild_environ_get_is_safe ... ok
+test isolate::tests::deny_all_profile_has_no_preopen_fds_path_open_returns_badf ... ok
+test isolate::tests::fuel_exhaustion_is_typed_out_of_fuel ... ok
+test isolate::tests::declared_memory_over_cap_is_rejected_at_instantiation ... ok
+test isolate::tests::guest_trap_unreachable_is_typed ... ok
+test isolate::tests::guest_arguments_are_exactly_the_declared_argv ... ok
+test host_bin::tests::full_argv_round_trip_runs_a_minimal_guest_to_completion ... ok
+test isolate::tests::guest_stdout_is_captured_by_the_sink ... ok
+test isolate::tests::fuel_consumption_is_deterministic_across_identical_runs ... ok
+test isolate::tests::missing_entrypoint_is_a_typed_error ... ok
+test process::tests::built_command_carries_explicit_argv_and_empty_environment ... ok
+test process::tests::report_line_parses_round_trip ... ok
+test profile::tests::epoch_deadline_without_ticker_interval_is_rejected ... ok
+test profile::tests::deny_all_defaults_grant_nothing ... ok
+test profile::tests::zero_fuel_is_rejected_fail_closed ... ok
+test profile::tests::guest_args_with_nul_are_rejected ... ok
+test profile::tests::memory_pages_outside_one_to_65536_are_rejected ... ok
+test tool_json::tests::caps_container_depth ... ok
+test profile::tests::preopen_guest_dir_names_are_strictly_guest_absolute ... ok
+test profile::tests::preopen_host_root_must_be_existing_directory ... ok
+test tool_json::tests::rejects_duplicate_decoded_member_names_and_invalid_unicode ... ok
+test isolate::tests::memory_grow_within_page_cap_succeeds ... ok
+test wasi_allowlist::tests::guest_exited_display_mentions_code ... ok
+test wasi_allowlist::tests::errno_constants_match_wasi_preview1_numbering ... ok
+test isolate::tests::wrong_entrypoint_signature_is_a_typed_error ... ok
+test isolate::tests::proc_exit_maps_to_exited_with_requested_code ... ok
+test tool_operation_store::tests::os_append_failure_prevents_receipt_and_poisons_this_writer ... ok
+test wasi_allowlist::tests::lexical_fence_permits_in_mount_relative_paths ... ok
+test wasi_allowlist::tests::lexical_fence_rejects_absolute_and_escape_paths ... ok
+test isolate::tests::readonly_preopen_denies_write_intent_open ... ok
+test isolate::tests::writable_preopen_allows_create_and_write ... ok
+test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok
+test tool_operation_store::tests::lost_completion_after_sync_failure_keeps_dispatch_indeterminate ... ok
+test isolate::tests::epoch_deadline_interrupts_before_fuel_backstop ... ok
+test isolate::tests::preopen_grant_allows_in_mount_read_and_fences_traversal ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 16 tests
+test isolated_child_inherits_zero_host_environment_variables ... ok
+test guest_stdout_flows_through_isolated_child_pipe ... ok
+test preopen_parent_replacement_does_not_retarget_the_grant ... ok
+test fuel_exhaustion_terminates_guest_deterministically ... ok
+test memory_over_allocation_is_terminated_by_store_limiter ... ok
+test epoch_deadline_interrupts_before_fuel_exhaustion ... ok
+test writable_grant_refuses_a_symbolic_link_as_file ... ok
+test wasi_layer_environment_is_empty_for_isolated_child ... ok
+test readonly_grant_denies_writes_and_write_grant_lands_bytes ... ok
+test writable_grant_refuses_a_hard_link_as_file ... ok
+test socket_import_is_absent_and_rejects_instantiation ... ok
+test guest_argv_is_exactly_the_declared_explicit_arguments ... ok
+test path_traversal_and_absolute_escapes_are_denied_with_notcapable ... ok
+test in_whitelist_read_succeeds_with_exact_bytes ... ok
+test preopen_discovery_reports_grant_and_default_is_badf ... ok
+test wall_clock_deadline_hard_kills_unbounded_guest ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+
+running 7 tests
+test crash_fixture_child ... ok
+test checksum_intact_duplicate_journal_frame_is_rejected ... ok
+test concurrent_begin_returns_one_dispatchable_receipt_and_cas_rejects_late_completion ... ok
+test reopen_reconciles_each_unfinished_state_and_preserves_original_completed_result ... ok
+test torn_tail_can_be_repaired_but_middle_corruption_and_bad_sequences_fail_closed ... ok
+test watermark_refuses_admission_but_reserves_a_large_complete_result ... ok
+test subprocess_loss_recovers_at_each_durable_transaction_boundary ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 1 test
+test drains_both_child_pipes_while_waiting ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 25 tests
+test forged_common_bindings_and_invalid_inputs_fail_before_guest ... ok
+test grant_for_a_different_target_cannot_admit_a_host ... ok
+test cancel_before_durable_dispatch_prevents_host_from_running ... ok
+test actual_load_refuses_artifact_replaced_after_authorization_hash ... ok
+test complete_catalog_encoding_rejects_an_oversize_directory ... ok
+test every_named_entry_rechecks_policy_and_trusted_clock ... ok
+test framed_guest_stderr_does_not_replace_the_host_report ... ok
+test failed_durable_observation_stops_host_without_claiming_cancellation ... ok
+test service_harness_child ... ok
+test cold_catalog_occupies_shared_quota_and_releases_it_on_failure ... ok
+test default_quota_caps_by_principal_and_globally_then_releases_permits ... ok
+test complete_result_encoding_obeys_exact_wire_boundary ... ok
+test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+test shared_writer_rejects_conflicting_config_without_rebinding ... ok
+test shared_writer_cancellation_reaches_the_executing_instance ... ok
+test shared_writer_cancel_and_completion_keep_one_terminal_receipt ... ok
+test real_guest_catalog_and_durable_result_replay_after_reopen ... ok
+test catalog_rejects_invalid_effects_extensions_and_unregistered_tools ... ok
+test shared_writer_limits_active_hosts_globally_across_instances ... ok
+test shared_writer_limits_active_hosts_per_principal_across_instances ... ok
+test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok
+test independent_stdout_stderr_wire_and_write_boundaries ... ok
+test measured_spawn_and_run ... ok
+test orphan_host_terminates_after_service_harness_is_killed ... ok
+test deadline_and_unchanged_or_unavailable_observations_preserve_unknown ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.57s
+
+
+running 1 test
+test crates\nlos-capability\src\service_call.rs - service_call::AuthorizedServiceCall (line 220) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

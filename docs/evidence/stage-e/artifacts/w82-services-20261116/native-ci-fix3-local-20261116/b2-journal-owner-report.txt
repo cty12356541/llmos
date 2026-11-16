@@ -1,0 +1,28 @@
+# W82-B2-JOURNAL-OWNER-RELEASE / Attempt 20261116-1
+
+状态：隔离候选，Windows 产品红绿和 crate 门已完成，等待独立审查及 Unix 原生验证。
+
+## 范围和基线
+
+唯一产品路径为 `crates/nlos-driver-llm-http/src/reservation_journal.rs`。隔离树 `C:/Users/Administrator/.codex/worktrees/w82-b2-gateway/llmos` 的 HEAD 仍为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，保留既有 B2 工作内容。开工前将 B2 crate 全部 18 个文件的 Git blob 与主树 `533001483b440053e4c7333db445a7c2ff91baa2` 逐一比对，全部一致。修复后另外 17 路径与输入一致，主树 HEAD 仍为 `53300148`。无 canonical 文档写入，未暂存、提交或推送。[输入 blobs](./b2-ci-journal-owner-logs/inputs.git-blobs) · [路径清单](./b2-ci-journal-owner-logs/paths.txt) · [CAS 记录](./b2-ci-journal-owner-logs/review-status.txt)
+
+## 机制与改动
+
+旧 `Journal` 在取得 OS 文件锁后依赖 `File` 关闭释放锁。真实 `File::try_clone()` 让一个被动 OS 对象引用越过最后逻辑 writer 生命周期。Windows 实测证实，最后 Rust writer 已销毁时，新 writer 仍可能立即收到 `WriterBusy`。Linux 共享文件描述符机制也有独立控制实验。原 B3 macOS CI 的失败阶段、实际锁持有者与并行 spawn 关联仍 UNKNOWN。[B3 诊断与实验边界](./b3-ci-journal-busy-diagnosis.md)
+
+私有 `WriterLock` 仅在原 `File::try_lock()` 成功后建立，随后贯穿恢复、文件同步和 Unix 目录同步错误路径。该 guard 跟随 journal 的最后逻辑 writer 销毁，先显式调用 `File::unlock()`，再让字段 `File` 正常关闭。Unix 额外核对当前 PID 与获得锁的进程，防止 fork 的被动副本若执行该析构而解除仍存活父 owner 的锁。本候选没有 fork 实验。析构不产生成功回执。下一 writer 仍走原 `try_lock` 及 typed Busy/Durability 映射，保持一次尝试。记录格式、恢复/同步顺序、错误类别、容量和调用入口均保持原样。
+
+## 红绿和验证
+
+- Windows x86_64 MSVC / Rust 1.99.0 执行 `cargo test --locked -p nlos-driver-llm-http --lib reservation_journal::tests::journal_owner`。原生产源码加两项回归退出 101，1 通过、1 失败。失败位置是最后逻辑 writer drop 后、真实 File clone 仍活时的立即重开，错误为 `WriterBusy`。红绿测试模块文本完全一致。[Windows 红测](./b2-ci-journal-owner-logs/before-fix-windows.log)
+- 修改后相同命令退出 0，2/2。第一例验证 writer 有多个逻辑 owner 时排斥，丢弃一个 owner 后仍排斥，最后 owner drop 且被动 clone 仍活时立即取得新锁，关闭旧 clone 后新锁仍排斥，最后新 writer drop 后可再开。第二例在恢复回调内尝试竞争锁，确认恢复失败前持续独占，错误返回后可立即恢复。[Windows 绿测](./b2-ci-journal-owner-logs/after-fix-windows.log)
+- `cargo test --locked -p nlos-driver-llm-http` 退出 0，10 个库测试、19 gateway 集成、9 旧 shim 集成、1 个 compile-fail doctest，合计 39/39。既有独占、恢复、损坏和 sync failure 仍在本次实跑范围。[crate 测试](./b2-ci-journal-owner-logs/crate-test.log)
+- `cargo clippy --locked -p nlos-driver-llm-http --all-targets -- -D warnings`、`cargo +1.97 check --locked -p nlos-driver-llm-http --all-targets`、`cargo fmt -p nlos-driver-llm-http -- --check` 各退出 0。[Clippy](./b2-ci-journal-owner-logs/strict-clippy.log) · [MSRV](./b2-ci-journal-owner-logs/msrv-check.log) · [fmt](./b2-ci-journal-owner-logs/fmt-status.txt)
+- `git diff --check`、主树 forward apply check 含 `--whitespace=error-all`、隔离树 reverse apply check 退出 0。delta 准确包含一个路径。[审查检查](./b2-ci-journal-owner-logs/review-status.txt)
+- 本地已安装 Rust target 只有 Windows MSVC，现有 Docker WSL 处于停止状态，未启动或安装额外环境。Linux/macOS 原生产品红绿仍 pending。全仓格式及无关 crate 未重复运行。[本机工具链](./b2-ci-journal-owner-logs/toolchains.txt) · [WSL 状态](./b2-ci-journal-owner-logs/wsl-list.log)
+
+## 审查输入
+
+- [独立 delta](./b2-ci-journal-owner-logs/b2-journal-owner.delta.diff) SHA-256 `dfb3ecdc978dd0ef720dfae29e8c819fa71f3484c54879dd4577ce91c18cd12d`。
+- 源码修改前 SHA-256 `860ead89e2aa440e1ca6786736cb48651b22aeb18225f990d72a9dcb416d09da`，Git blob `d56c5c76af0ce68f1f27f3731b86a2eecb0dc0ca`。
+- 源码修改后 SHA-256 `dadb825431e3ce9187309255eede7bdaa5d723b3c8d085ce58c40eab0315abd4`，Git blob `2abd2a86a46a082027a57e1294bb1faf68e6f2fb`。目录保留实际 before、red 和 after 文件及 [SHA-256 清单](./b2-ci-journal-owner-logs/files.sha256)。

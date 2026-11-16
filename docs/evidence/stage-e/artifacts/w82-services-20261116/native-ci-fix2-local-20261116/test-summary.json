@@ -1,0 +1,182 @@
+{
+  "summary": {
+    "nlos-capability": {
+      "passed": 95,
+      "failed": 0,
+      "ignored": 2
+    },
+    "nlos-wasm-sandbox": {
+      "passed": 95,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "harnesses": [
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_capability-67d7028ec290f592.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_open.rs (target\\debug\\deps\\blob_open-59e344f6ff474538.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_reference.rs (target\\debug\\deps\\blob_reference-becba0b7058da875.exe)",
+      "passed": 40,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\blob_wal_recovery.rs (target\\debug\\deps\\blob_wal_recovery-094beb79aee3c08c.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\call_limit_ledger.rs (target\\debug\\deps\\call_limit_ledger-412e9b02c1d7f8cb.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\capability_authority.rs (target\\debug\\deps\\capability_authority-f1d0b500d18b1c87.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\capability_fault_injection.rs (target\\debug\\deps\\capability_fault_injection-b9d08e22b3b3f94f.exe)",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\namespace_hierarchy.rs (target\\debug\\deps\\namespace_hierarchy-fbd4bd0cf3dd1746.exe)",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\service_call_context.rs (target\\debug\\deps\\service_call_context-550d626f4188a5b2.exe)",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\signed_commands.rs (target\\debug\\deps\\signed_commands-60dd817fd5e49943.exe)",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\lib.rs (target\\debug\\deps\\nlos_wasm_sandbox-72a9b610760c8ab0.exe)",
+      "passed": 46,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running unittests src\\bin\\nlos-wasm-sandbox-host.rs (target\\debug\\deps\\nlos_wasm_sandbox_host-0f43ee1c25383bbf.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\escape_matrix.rs (target\\debug\\deps\\escape_matrix-68606b84a789bc43.exe)",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_journal.rs (target\\debug\\deps\\tool_journal-e0857050cd0612f9.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_pipes.rs (target\\debug\\deps\\tool_pipes-b84f96c72cbc43cc.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Running tests\\tool_service.rs (target\\debug\\deps\\tool_service-606c0567d8f9a4ec.exe)",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_capability",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "suite": "Doc-tests nlos_wasm_sandbox",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  ],
+  "named_checks": {
+    "blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error": [
+      "test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok"
+    ],
+    "retry_delay_is_bounded_by_the_remaining_deadline": [
+      "test blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline ... ok"
+    ],
+    "blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves": [
+      "test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok"
+    ],
+    "real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog": [
+      "test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok"
+    ],
+    "failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix": [
+      "test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok"
+    ]
+  },
+  "ignored": [
+    "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege",
+    "test bounded_blob_buffers_peak_probe ... ignored, run in isolation to measure process memory under the maximum file and block sizes"
+  ],
+  "epoch_alias": "1 passed; 0 failed; 0 ignored"
+}

@@ -1,0 +1,12 @@
+Workdir C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos
+CARGO_TARGET_DIR=D:/llmos/target/w82-b4
+Command cargo test --locked -p nlos-capability --lib blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error -- --exact --nocapture
+Exit 0
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.85s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b4\debug\deps\nlos_capability-ebf53ff4a079fca7.exe)
+
+running 1 test
+test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s

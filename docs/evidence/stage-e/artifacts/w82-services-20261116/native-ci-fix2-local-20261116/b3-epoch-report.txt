@@ -1,0 +1,18 @@
+
+# W82-B3-CI-EPOCH-FIX / Attempt 20261116
+
+主树 Git 基线 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec` 上已接受的 Unix 重命名作为本次文本基线。写集仅隔离树 `crates/nlos-wasm-sandbox/tests/tool_service.rs` 的 `real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog`。函数范围之外逐字节相同，既有 Unix 重命名未进入本次补丁。
+
+直接测试宿主现在对刚创建的受信任夹具的父目录做 `canonicalize` 并拼回原文件名。host 仍按原 no-follow 路径加载文件并校验摘要。WAT、SHA-256 算法、fuel、内存、30×10 ms epoch、3,000 ms wall watchdog 配置均沿用，仍要求 exit 133、`epoch-interrupt` 文本、实际宿主完成耗时 <3s。三个失败断言报告原始路径、解析后路径、退出状态、耗时和 stdout/stderr 各前 256 字节。
+
+- 补丁 `b3-ci-epoch.delta.diff` SHA-256 `ef66305fb57f6f0b7a6d66bae7839c2cff4f6298a4477e76ca38b721fb40a9e8`。
+- before Git blob `974b65d7571737d2d11c02a20d2d2e8c032f7307`，after Git blob `ac84e309fe69593b629b1912d8c459e3939a182d`。封存 `b3-ci-epoch-logs/source-cas.json` SHA-256 `b09b07265c6ef5bd9b34aafb756c26ca93cd29305a7e601dd1241bc8fa8bbe3a`。
+- 主树只读 `git apply --check --whitespace=error-all` 及隔离树 `git apply --reverse --check --whitespace=error-all` 都退出 0，两个 index 均为空。
+
+## Windows 验证
+
+- 直接运行同一测试可执行文件的 `--exact real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog --nocapture`，把单次命令的 TMP/TEMP 指向本 Attempt 下真实 NTFS junction。原测试退出 101，出现 `Some(66)` 对 `Some(133)`，0.01 s。修复后按同一命令及同一 junction 重跑退出 0，原三项断言全部通过，0.49 s。原始日志分别为 `epoch-exact-alias-red.log` 和 `epoch-exact-alias-green.log`，夹具来自 `exact-alias-fixture.txt`。
+- `cargo test --locked -p nlos-wasm-sandbox --test tool_service real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog -- --exact --nocapture` 以默认临时目录退出 0，1/1，0.60 s。
+- `cargo test --locked -p nlos-wasm-sandbox --test tool_service` 退出 0，25/25。 `cargo clippy --locked -p nlos-wasm-sandbox --all-targets -- -D warnings` 与 `cargo fmt -p nlos-wasm-sandbox -- --check` 退出 0。日志均在 `b3-ci-epoch-logs`。
+
+原 macOS run 43841248536 / job 133210177566 只打印 exit 66，未打印 captured stderr。Astra 对照将 Windows 原始 junction 映射到 `guest-read-failed`，将错误摘要控制映射到相同退出码但不同的 `artifact-changed`。因此父路径别名是已确认的跨平台测试缺口，原 macOS 的具体分支仍待下一次原生 CI。候选待独立 scoped 审查，未暂存、提交或推送。

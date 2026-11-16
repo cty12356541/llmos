@@ -1,0 +1,23 @@
+   Compiling nlos-driver-llm-http v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b2-gateway\llmos\crates\nlos-driver-llm-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.83s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b2\debug\deps\nlos_driver_llm_http-edd01fd09d3c042a.exe)
+
+running 2 tests
+test reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive ... FAILED
+test reservation_journal::tests::journal_owner_releases_acquired_lock_when_recovery_fails ... ok
+
+failures:
+
+---- reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive stdout ----
+
+thread 'reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive' (26252) panicked at crates\nlos-driver-llm-http\src\reservation_journal.rs:369:14:
+last writer must release its lock with a passive file clone alive: WriterBusy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    reservation_journal::tests::journal_owner_releases_lock_while_a_passive_file_clone_is_alive
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nlos-driver-llm-http --lib`

@@ -1,0 +1,11 @@
+D:\llmos\.agentdash\attempts\20261116\w82-services\b4-ci-checkpoint-logs\checkpoint_profile.exe --exact --nocapture probe_busy_checkpoint_can_reach_synchronous_backfill
+
+running 1 test
+test probe_busy_checkpoint_can_reach_synchronous_backfill ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.13s
+
+stage=backfill fault; held-reader=true wal_bytes=276072 threshold=263712 xWrite_attempts=1 elapsed=808.6µs outcome=Err(Authority(Sqlite(SqliteFailure(Error { code: SystemIoFailure, extended_code: 10 }, Some("disk I/O error")))))
+stage=direct-zero-busy-TRUNCATE; elapsed=1.539ms result=(1,67,67) wal_bytes=276072
+stage=service-retry-after-backfill; elapsed=20.3899ms result=Err(Authorization(DeadlineExpired))
+exit_code=0

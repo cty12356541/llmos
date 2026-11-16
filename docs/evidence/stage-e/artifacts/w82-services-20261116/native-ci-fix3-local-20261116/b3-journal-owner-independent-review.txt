@@ -1,0 +1,31 @@
+# W82-JOURNAL-OWNER-SCOPED-REVIEW — B3 / Attempt 20261116
+
+Spec compliance: **PASS**. Task/code quality: **PASS**. 本次两文件增量无 P1/P2 阻断；原审查其余结论保持。此结论允许集成该修复，不代表新的 Linux/macOS 原生 CI 已完成，更不声称捕获了原 macOS Busy 的实际持锁者。
+
+## 范围与 CAS
+
+只读完整 `b3-ci-journal-owner-logs/owner-release.delta.diff` 及必要相邻源码，复核实施回执和已保存日志。未重跑 suite、未启动新进程锁探针、未改源码/index/HEAD/canonical；仅创建本报告。
+
+- 比较基线：`533001483b440053e4c7333db445a7c2ff91baa2`。候选树 `C:/Users/Administrator/.codex/worktrees/w82-b3-tools/llmos` 实际 HEAD 仍为 `cdb0d10d0a68c7d23b04081bc0031942cbb2b893`，由既有未提交候选加本次 delta 组成，index 为空；不把候选 HEAD 误当本次 diff 的 before 内容。
+- Delta SHA-256：`e02d4bab60b014007d43e5108bf16b815e0e11b7b973a7c7d3fb35a4427b8641`。
+- `paths.json` SHA-256：`490821d6d06670db0f60434b30aa19ce96add0d3fe45586b1ec72b1d34acef44`。
+- 实施回执 SHA-256：`7a21a13feeac2b22c32969f3c51fa66e5a69645bcb88ddbf6e6f13db9b058237`。
+- `crates/nlos-wasm-sandbox/src/tool_operation_store.rs`：blob `68e60ea1fcbce86c9824ad5c6700e0f199fd87ea` → `67c6519bc1c972e72924c6ab58b2ba4bf6d01d01`；最终 raw/LF SHA-256 均为 `f57132876260be4146c125c9858f41de0c6b9fe5bf92eb914ec78f13327117eb`。
+- `crates/nlos-wasm-sandbox/tests/tool_service.rs`：blob `ac84e309fe69593b629b1912d8c459e3939a182d` → `60c2b95a596f29edec49fb2ef41529eec8401fda`；raw SHA-256 `447003481c4321224440144f13f258f08d6fc2b13f915d7ea58323de0e2ef371`，LF SHA-256 `8a30fb63a2a8543dbc28054f225a92a703d36afa339833599821d2006b7a8e05`。两种字节口径分别核对，未混称。
+- 本审查开始和结束时以上候选文件、delta、manifest、report 哈希一致。独立执行候选树 `git apply --reverse --check --whitespace=error-all` 退出 0；没有实际应用 patch。
+
+## 核对结论
+
+1. **即时 guard 与错误出口：满足。** `tool_operation_store.rs:346–364, 405–445` 在 `try_lock` 成功的分支立即形成私有 `LockedJournalFile`，再执行 Unix 目录同步、构造 Journal 和恢复。目录打开/同步失败、解析/截尾/seek/恢复同步失败，以及 unfinished reconciliation 错误都会销毁拥有 guard 的局部对象。不是只给最终发布的 Store 添加 Drop，因此没有遗漏发布前已取锁的错误路径。原 `WouldBlock → Busy`、其余 I/O → `Durability` 分类和顺序保留，没有重试。
+2. **最后逻辑 owner 释放与后继锁：满足。** `tool_operation_store.rs:352–363` 先显式 unlock，随后由字段析构关闭 File；外层 Mutex/Arc 仍决定 Journal 的最后所有权，不会在普通非最后 Arc drop 时提前释放。Unix 取得锁的 PID 在 guard 中固定，异 PID Drop 跳过 unlock，但仍自动关闭其 File。被动 `File::try_clone` 仅是 File，不持有第二个解锁 guard；它后续关闭不会主动解锁新打开的 writer。公开 API、文件格式、配额、取消和持久 ACK 流程未扩写。
+3. **持久顺序没有退化。** `tool_operation_store.rs:637–651, 662–710` 对 guard 内的同一 File 执行原写入、sync、恢复和 reconciliation；恢复发布前同步屏障保留。Drop 解锁不是成功回执，也不把失败写入当成 durable。即使 Drop 无法报告 unlock 错误，后继仍必须独立真实取锁，不能绕过 Busy。
+4. **追加错误夹具仍有效。** `tool_operation_store.rs:376–379, 637–646, 1075–1089` 仅在 `cfg(test)` 存在独立只读 sink，真实 `write_all` 返回 OS 错误后仍经过原 `poisoned = true` / `Durability` 分支；没有改成预先返回模拟错误。原 begin 不得返回 receipt、find 失败、文件长度为零断言保留。原已取锁 File 一直留在 guard 内，避免用只读 File 替换它而破坏所测的 owner 语义。
+5. **回归覆盖与诊断增量：满足。** `tool_operation_store.rs:1043–1072` 真实 clone + 两 Arc 依次覆盖非最后 owner 仍 Busy、最后 owner 销毁后被动 clone 存活也可立即取得锁、关闭旧 clone 后后继仍 Busy、后继销毁后再次取得锁。`1182–1214` 的真实恢复 sync 失败夹具增加被动 clone，失败后立即重开成功，再验证原完成结果/幂等 replay/冲突与终态约束。`tests/tool_service.rs:323–341, 356–365` 新局部构造与原 `normal` 的 profile/limits/clock/authorizer/store 参数一致，只增加 initial/reopen 阶段、PID、夹具根和 journal 路径诊断；原真实 host、drop、重连和结果相等断言仍在。
+
+## 已核实证据与未完成门
+
+已读取 `b3-ci-journal-owner-logs/windows-owner-before.log` 与 `.exit`：真实 clone 回归在最后 writer 释放后仍遇 Busy，0 passed / 1 failed，退出 101；`windows-owner-after.log` 与 `.exit`：同名回归 1/1、退出 0。最终 `windows-test.log` / `.exit` 明确包含新增 clone、修改后的追加失败/恢复失败测试、原真实 reopen/replay 和 epoch 用例，通过数为 47 unit + 16 escape runner reported + 7 journal + 1 pipe + 25 service = 96，退出 0。没有把 16 个 runner reported 等同于本机全部符号链接分支均实际执行；原 Windows 1314 边界保持。
+
+已读取 `windows-clippy.log/.exit`、`windows-msrv.log/.exit`、`msrv-version.log`（rustc 1.97.1）、`fmt.exit` 和封存日志，所记录退出值均为 0。格式检查没有保存正文输出，本审查据其 exit 回执记录通过，不虚构额外输出或独立重跑。
+
+剩余门：Linux/macOS 上本候选的编译、真实 clone 回归、恢复失败回归及真实 host 重开测试仍须 native CI。Unix PID 条件已静态审查，未做新多线程 fork 实验；目录同步错误仅验证 guard 作用域，没有故障注入。原 macOS job `133234216446` 的首开/重开阶段和实际锁持有者仍为 **UNKNOWN**。既有 WSL flock 机制对照与本次 Windows 产品红绿各自成立，不能合并成“原 macOS 故障已复现/已证实根因”。

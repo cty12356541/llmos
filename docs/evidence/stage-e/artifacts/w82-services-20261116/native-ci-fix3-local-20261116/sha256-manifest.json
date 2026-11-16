@@ -1,0 +1,167 @@
+{
+  "algorithm": "sha256",
+  "verification": "Stored UTF-8 text omits any BOM, uses LF, trims line-ending spaces and terminal empty lines, and retains one final LF. The capture digest binds pre-normalization bytes.",
+  "runtime_source_sha": "2b8d0683ee08637c386f5aec190fcc4397cea0e4",
+  "base_source_sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "fourth_rust_ci_run": 43857200084,
+  "source_revision_delta_capture_sha256": "3c5331fc16739fb23578436fc97c8e909a85b7cef368efa80c021f47aa87d059",
+  "source_manifest_capture_sha256": "a2d8b1afeffb6acf18be7942ee27cc5e248c507272d62fbd1ded2672000e034c",
+  "main_verification_report_capture_sha256": "f4ccac664c9fc7eae5d0c1e79c884110189859a49284f179bef8f442568fb5ae",
+  "main_capture_manifest_sha256": "e250f84c74acc66d43d415e3dc826e7476b6b0d80569ddf4014cf3665f9a647e",
+  "files": {
+    "main-report.txt": {
+      "bytes": 4546,
+      "sha256": "f4ccac664c9fc7eae5d0c1e79c884110189859a49284f179bef8f442568fb5ae",
+      "capture": "services-ci-fix3-main-report.md",
+      "capture_bytes": 4546,
+      "capture_sha256": "f4ccac664c9fc7eae5d0c1e79c884110189859a49284f179bef8f442568fb5ae"
+    },
+    "source-manifest.json": {
+      "bytes": 9624,
+      "sha256": "f7faec6c0ad862915f549cda275a7dcbd4be247d0465d04b738b3ed3cd9eed0f",
+      "capture": "services-ci-fix3-source-manifest.json",
+      "capture_bytes": 9856,
+      "capture_sha256": "a2d8b1afeffb6acf18be7942ee27cc5e248c507272d62fbd1ded2672000e034c"
+    },
+    "push-receipt.json": {
+      "bytes": 566,
+      "sha256": "a2205f70a9a022af67d2c62d507b741ca3f9220b53532a55e442bc4f63075cd7",
+      "capture": "services-ci-fix3-commit-receipt.json",
+      "capture_bytes": 583,
+      "capture_sha256": "e807d32d148877e16ae649a31039a719207b1a7ca10756bd6f83d82ffde81e68"
+    },
+    "pages-verified.json": {
+      "bytes": 478,
+      "sha256": "b087aa7e02aa110e8f0e55b1dfeea84c4d394c27e54ab9794897d0a999867769",
+      "capture": "services-native-ci-fix3/pages-confirmed.json",
+      "capture_bytes": 489,
+      "capture_sha256": "211a7e17b753537b32257ec9f6639d9fed985048727eff3035593b31e0947121"
+    },
+    "b2-journal-owner-report.txt": {
+      "bytes": 4719,
+      "sha256": "279dbeb981f4697cee723849a120e90b313e7a7124d42ac9ebbeb3b4381c7e6a",
+      "capture": "b2-ci-journal-owner-report.md",
+      "capture_bytes": 4719,
+      "capture_sha256": "279dbeb981f4697cee723849a120e90b313e7a7124d42ac9ebbeb3b4381c7e6a"
+    },
+    "b2-journal-owner-independent-review.txt": {
+      "bytes": 4672,
+      "sha256": "0e44f53dc04c14add660da7c63c1c664087863ca7faa8d26d4ca49b6e0cbab6e",
+      "capture": "b2-ci-journal-owner-independent-review.md",
+      "capture_bytes": 4700,
+      "capture_sha256": "3a08e6d600bfde0f6ced7f6369690a3c8c9f3eb39bac45ea31eb7ac1ce20f80d"
+    },
+    "b2-owner-red.txt": {
+      "bytes": 1275,
+      "sha256": "bc18a01e07fa1b41c44e5f780acd9aa4e2e1befbe5fcbf5ab107398a766a748b",
+      "capture": "b2-ci-journal-owner-logs/before-fix-windows.log",
+      "capture_bytes": 1298,
+      "capture_sha256": "4af4fb7bd2777308ee2d6b3dafeb15f400c9698114b5d294bda388172c683293"
+    },
+    "b2-owner-green.txt": {
+      "bytes": 630,
+      "sha256": "dd12f0df0edf406e4ad1c24c31f72d29c379eae65f182317c9b52aa8e2198884",
+      "capture": "b2-ci-journal-owner-logs/after-fix-windows.log",
+      "capture_bytes": 641,
+      "capture_sha256": "5cb5a53f2039b48afed14d6f22e6910c046ef95f063d0db60497598432b349dd"
+    },
+    "b3-journal-owner-report.txt": {
+      "bytes": 3722,
+      "sha256": "7a21a13feeac2b22c32969f3c51fa66e5a69645bcb88ddbf6e6f13db9b058237",
+      "capture": "b3-ci-journal-owner-report.md",
+      "capture_bytes": 3722,
+      "capture_sha256": "7a21a13feeac2b22c32969f3c51fa66e5a69645bcb88ddbf6e6f13db9b058237"
+    },
+    "b3-journal-owner-independent-review.txt": {
+      "bytes": 6123,
+      "sha256": "be79bf7d2bf73fb5dc668c1ca7fc5ae1cc7e87cc8689d6ce6ae46263cee79bef",
+      "capture": "b3-ci-journal-owner-independent-review.md",
+      "capture_bytes": 6123,
+      "capture_sha256": "be79bf7d2bf73fb5dc668c1ca7fc5ae1cc7e87cc8689d6ce6ae46263cee79bef"
+    },
+    "b3-owner-red.txt": {
+      "bytes": 1043,
+      "sha256": "179529d0bc73b8a3a0d481709273b66ad30c6140a9c57989eb07320b683c94d6",
+      "capture": "b3-ci-journal-owner-logs/windows-owner-before.log",
+      "capture_bytes": 1062,
+      "capture_sha256": "0bc2718d30b1973db02aaa57f39bffb18845fe091de3ba1ccabc2a06d78982c7"
+    },
+    "b3-owner-green.txt": {
+      "bytes": 524,
+      "sha256": "5697221a3b3b22181fffd93570607f42e86ba4b69ecc111e12e5df0e633efb7e",
+      "capture": "b3-ci-journal-owner-logs/windows-owner-after.log",
+      "capture_bytes": 534,
+      "capture_sha256": "e360c1a1497f7bd5ed96a55bec991a06e90aabfc8a28f026a35d29a67eaf554a"
+    },
+    "main-test-output.txt": {
+      "bytes": 11422,
+      "sha256": "51b9d1dc7abf4615012a408983a803d1c57d4a77e8ce370ad5a017c3056aba1b",
+      "capture": "services-ci-fix3-main-logs/affected-test.stdout.log",
+      "capture_bytes": 11423,
+      "capture_sha256": "cc247bdfdc85e65b5ee354aa2d9624cc1cb8866044ac6a442ba91ec9a4656112"
+    },
+    "msrv-reused-stderr.txt": {
+      "bytes": 1330,
+      "sha256": "c2867b9385961a9d7aea241d115f97ccbfedd5645c0eae2ae80baf429fdf40d6",
+      "capture": "services-ci-fix3-main-logs/affected-msrv.stderr.log",
+      "capture_bytes": 1330,
+      "capture_sha256": "c2867b9385961a9d7aea241d115f97ccbfedd5645c0eae2ae80baf429fdf40d6"
+    },
+    "msrv-fresh-stderr.txt": {
+      "bytes": 8084,
+      "sha256": "ea685531d39d992ed58dd060dc4976d1a02144fa2bcd65d9b2df6d48278660e6",
+      "capture": "services-ci-fix3-main-logs/affected-msrv-fresh.stderr.log",
+      "capture_bytes": 8084,
+      "capture_sha256": "ea685531d39d992ed58dd060dc4976d1a02144fa2bcd65d9b2df6d48278660e6"
+    },
+    "test-summary.json": {
+      "bytes": 3993,
+      "sha256": "e47bb9bbe49baf181942f9ac98504c96cec0a6001916ea8f41fd5966f8653191",
+      "capture": "services-ci-fix3-main-logs/test-summary.json",
+      "capture_bytes": 4126,
+      "capture_sha256": "fc724016d8e67ca94482923ad9a1a26a645f81a29bf2c493e3ba7182ca97cd26"
+    },
+    "affected-test.json": {
+      "bytes": 419,
+      "sha256": "f769d5079abcee0ff90f8981df853ac7f64f48da586d2f59daeffa436b001f85",
+      "capture": "services-ci-fix3-main-logs/affected-test.json",
+      "capture_bytes": 440,
+      "capture_sha256": "858b4bad7fa120379209631d8e878747a5d7498981b175e21008bb6586563d5b"
+    },
+    "affected-clippy.json": {
+      "bytes": 477,
+      "sha256": "07b3a4d3f885f3d601e0f9a15c5cd9957d84c443f2f5df418ebf82824cead23c",
+      "capture": "services-ci-fix3-main-logs/affected-clippy.json",
+      "capture_bytes": 502,
+      "capture_sha256": "3fc0201812d4b16d77ed0b50019b8aba06ea6766cd6bfedb8af6736406480e9e"
+    },
+    "workspace-fmt.json": {
+      "bytes": 320,
+      "sha256": "c300849d8eaf345b7727fb5a7fb812f61836359f63024d5a70096412c1ece6d4",
+      "capture": "services-ci-fix3-main-logs/workspace-fmt.json",
+      "capture_bytes": 338,
+      "capture_sha256": "763884506f51aa798a1144b08cc0987f91d3286de96ae2666294328d661863f9"
+    },
+    "affected-msrv.json": {
+      "bytes": 473,
+      "sha256": "5b26c0f42da8b66c0f110495c6c8c191052c221c8d13523f073746b9f7d789f1",
+      "capture": "services-ci-fix3-main-logs/affected-msrv.json",
+      "capture_bytes": 496,
+      "capture_sha256": "d726cbba49ef7df3eea1492dfd32a55a5d1ccfc6a4dd6874dd467e953663253e"
+    },
+    "affected-msrv-fresh.json": {
+      "bytes": 482,
+      "sha256": "985f3937cb39d096f212324f58be7ca2a7bcb5c5caf4fb637eca56ed96712342",
+      "capture": "services-ci-fix3-main-logs/affected-msrv-fresh.json",
+      "capture_bytes": 505,
+      "capture_sha256": "c40f39dac44425a194ff4dfbc2922390075e4961b7386acf79a06555f2881ce4"
+    },
+    "msrv-reused-target-inspection.json": {
+      "bytes": 6947,
+      "sha256": "4e463ffedf679931ed8815ac5cfc8b45803a3101473dbf4456e4e4e73d20e3ba",
+      "capture": "services-ci-fix3-main-logs/msrv-reused-target-inspection.json",
+      "capture_bytes": 7195,
+      "capture_sha256": "a8c76362e81144efd615753fe1a3826e89726af96725b1d55c1c05015b0cf7c4"
+    }
+  }
+}

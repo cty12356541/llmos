@@ -1,0 +1,17 @@
+# W82 三服务临时工作树归档回执
+
+在 `D:/llmos` 的最终源码提交 `2b8d0683ee08637c386f5aec190fcc4397cea0e4` 上复核 46 个源码 blob。
+四个临时工作树通过 Codex 原生归档，`list_artifacts` 均显示 `archived_worktree`，Git 已移除对应工作树注册及检出目录。
+原生 Rust 代码门由编排者在 run `43857200084` 核实。归档阶段只复核 Git 与备份。
+
+- `w82-b2-gateway` 的归档 ID 为 `01a1e444-3d6a-77b3-bfd6-6c01b99f37f8`，Git 快照 `31f8d6e3d51cd653546e019f706d55eed05f79f1`，已核对 4 项已跟踪修改与 9 项非忽略未跟踪文件。
+- `w82-b3-tools` 的归档 ID 为 `01a1e445-7c5f-71a0-82bd-fa2a023a7b02`，Git 快照 `e3d0ae0950a4f9164361eafed9f20962ca677ec2`，已核对 10 项已跟踪修改与 10 项非忽略未跟踪文件。
+- `w82-b4-blob` 的归档 ID 为 `01a1e445-ec60-7492-8b10-6ae4a3bb1866`，Git 快照 `17cd7f6336a06af216c6825091dd22609657f00c`，已核对 4 项已跟踪修改与 8 项非忽略未跟踪文件。
+- `w82-service-ci` 的归档 ID 为 `01a1e446-0da7-7561-ada4-c2897ad78779`，Git 快照 `bca566b29f9f2b8db3b9fc0008af4db398481c54`，已核对 1 项已跟踪修改与 2 项非忽略未跟踪文件。
+
+已逐一验证 48 个快照路径。Git 归档快照对 16 个文件规范化换行，原始字节另存并校验，共 602,973 字节。另外 8 份忽略日志的原始备份均已复核，共 159,797 字节。
+
+- `codex/w82-b2-gateway` 的检出解除后，已核实分支和整个 reflog 只指向主树已包含的 `cdb0d10d`，`git branch -d` 成功。
+- `codex/w82-b4-blob` 的检出解除后，已核实分支和整个 reflog 只指向主树已包含的 `cdb0d10d`，`git branch -d` 成功。
+
+已验证当前 `w82-blob-wal-check/llmos`、旧 `windows-scale-barrier/llmos`、诊断分支 `codex/scale-diagnostic-20261116` 与含独有 reflog 历史的 `fix/windows-portability-sync-dir-and-uri-guard` 均仍在。主工作树三处既有用户改动的字节、状态和索引记录仍与归档前一致。

@@ -1,0 +1,249 @@
+{
+  "source_sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "runner": {
+    "platform": {
+      "system": "Windows",
+      "node": "runnervmm7ud1",
+      "release": "2025Server",
+      "version": "10.0.26100",
+      "machine": "AMD64",
+      "processor": "AMD64 Family 26 Model 2 Stepping 1, AuthenticAMD"
+    },
+    "github_runner": {
+      "GITHUB_SHA": "533001483b440053e4c7333db445a7c2ff91baa2",
+      "GITHUB_RUN_ID": "43848357515",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "RUNNER_NAME": "GitHub Actions 1000005296",
+      "RUNNER_OS": "Windows",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_ENVIRONMENT": "github-hosted",
+      "ImageOS": "win25-vs2026",
+      "ImageVersion": "20261103.298.1"
+    }
+  },
+  "rustc": [
+    "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "binary: rustc",
+    "commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+    "commit-date: 2026-09-28",
+    "host: x86_64-pc-windows-msvc",
+    "release: 1.99.0",
+    "LLVM version: 23.1.1"
+  ],
+  "cargo": [
+    "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "release: 1.99.0",
+    "commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e",
+    "commit-date: 2026-08-27",
+    "host: x86_64-pc-windows-msvc",
+    "libgit2: 1.9.6 (sys:0.21.0 vendored)",
+    "libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:Schannel)",
+    "os: Windows 10.0.26100 (Windows 11 ServerDatacenter) [64-bit]"
+  ],
+  "commands": [
+    {
+      "label": "source-sha",
+      "status": "passed",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "returncode": 0,
+      "log": "source-sha.log"
+    },
+    {
+      "label": "rustc-version",
+      "status": "passed",
+      "command": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "rustc-version.log"
+    },
+    {
+      "label": "cargo-version",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "cargo-version.log"
+    },
+    {
+      "label": "tool-latency",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "tool_service",
+        "measured_spawn_and_run",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-latency.log"
+    },
+    {
+      "label": "tool-escape-matrix",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "escape_matrix",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-escape-matrix.log"
+    },
+    {
+      "label": "blob-open-native",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "--test",
+        "blob_open",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "blob-open-native.log"
+    },
+    {
+      "label": "blob-open-windows-symlink-leaf",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "--test",
+        "blob_open",
+        "repeated_first_open_symlink_leaf_swaps_do_not_escape",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "blob-open-windows-symlink-leaf.log"
+    }
+  ],
+  "failed_or_skipped": [],
+  "latency": {
+    "raw": "platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=40.04 p95_ms=60.89",
+    "samples": 20,
+    "platform": "windows",
+    "arch": "x86_64",
+    "p50_ms": 40.04,
+    "p95_ms": 60.89
+  },
+  "escape": {
+    "escape_preopen_leaf=windows_symlink": true,
+    "escape_preopen_leaf=hard_link": true,
+    "escape_preopen_parent=ntfs_junction": true,
+    "unavailable": []
+  },
+  "rooted": {
+    "test_results": [
+      "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+      "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege",
+      "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+      "test repeated_first_open_junction_parent_swaps_do_not_escape ... ok",
+      "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+    ],
+    "swap_results": [
+      "junction: swaps=398 inside=29 safe_rejection=2019 exterior_or_unexpected=0",
+      "replacement: swaps=512 inside=393 safe_rejection=1655 exterior_or_unexpected=0"
+    ],
+    "windows_exact_leaf": [
+      "link-leaf: swaps=512 inside=429 safe_rejection=1619 exterior_or_unexpected=0",
+      "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ok"
+    ]
+  },
+  "workspace": {
+    "platform": "windows-latest",
+    "workspace_logged": true,
+    "tests": {
+      "gateway_four_methods": [
+        "2026-11-16T10:39:46.4120451Z test four_methods_recover_and_keep_advisory_out_of_the_hard_budget ... ok"
+      ],
+      "gateway_tcp_subtree": [
+        "2026-11-16T10:39:48.6341924Z test subtree_gate_serializes_parent_siblings_and_grandchild_with_live_tcp ... ok"
+      ],
+      "gateway_settlement": [
+        "2026-11-16T10:39:47.7643275Z test settlement_rejects_over_quote_and_preserves_authority_envelope_failure ... ok"
+      ],
+      "blob_signed_recipient": [
+        "2026-11-16T10:36:16.0117571Z test signed_sender_mint_roundtrips_wav_bytes_to_its_explicit_recipient ... ok"
+      ],
+      "custody_schema_regression": [
+        "2026-11-16T10:38:16.0151256Z test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... ok"
+      ],
+      "epoch_interrupt": [
+        "2026-11-16T10:59:43.2517092Z test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok"
+      ],
+      "durable_replay": [
+        "2026-11-16T10:59:42.3162170Z test real_guest_catalog_and_durable_result_replay_after_reopen ... ok"
+      ],
+      "blob_checkpoint": [
+        "2026-11-16T10:36:04.1644346Z test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok"
+      ],
+      "blob_busy_timeout": [
+        "2026-11-16T10:35:55.5103196Z test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok"
+      ],
+      "blob_retry_delay": [
+        "2026-11-16T10:35:55.5091630Z test blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline ... ok"
+      ],
+      "blob_wal": [
+        "2026-11-16T10:36:53.8460798Z test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok"
+      ],
+      "identity_principal_lookup": [
+        "2026-11-16T10:40:01.5758579Z test principal_lookup_returns_latest_durable_binding_even_when_revoked ... ok"
+      ],
+      "retained_completion": [
+        "2026-11-16T10:59:39.0725391Z test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok"
+      ],
+      "lost_completion": [
+        "2026-11-16T10:59:39.0726232Z test tool_operation_store::tests::lost_completion_after_sync_failure_keeps_dispatch_indeterminate ... ok"
+      ],
+      "shared_quota_global": [
+        "2026-11-16T10:59:44.2791728Z test shared_writer_limits_active_hosts_globally_across_instances ... ok"
+      ],
+      "shared_quota_principal": [
+        "2026-11-16T10:59:44.3323726Z test shared_writer_limits_active_hosts_per_principal_across_instances ... ok"
+      ]
+    }
+  },
+  "checks": {
+    "source_sha": true,
+    "runner_context": true,
+    "rustc_1_99": true,
+    "cargo_1_99": true,
+    "latency": true,
+    "escape_fixtures": true,
+    "windows_leaf_swaps": true,
+    "required_commands_succeeded": true,
+    "helper_checks_passed": true,
+    "workspace_cases": true
+  }
+}

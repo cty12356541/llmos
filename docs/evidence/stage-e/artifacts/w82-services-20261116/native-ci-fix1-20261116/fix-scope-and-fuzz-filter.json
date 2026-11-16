@@ -1,0 +1,39 @@
+{
+  "previous": "46075b716d77e0bb274f04064f417e0896287bb5",
+  "exact_sha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+  "git_diff_name_only": [
+    "crates/nlos-commit-coordinator/tests/custody_gateway_reconciliation.rs"
+  ],
+  "manifest_git_blobs_matched": 45,
+  "fuzz_push_paths": [
+    ".github/workflows/fuzz-smoke.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/nlos-canonical/**",
+    "crates/nlos-schema/**",
+    "fuzz/**",
+    "schema/**",
+    "scripts/run-fuzz-smoke.sh"
+  ],
+  "changed_paths_match_fuzz_filter": false,
+  "runs": [
+    {
+      "conclusion": "",
+      "databaseId": 43841248536,
+      "event": "push",
+      "headSha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+      "status": "in_progress",
+      "url": "https://github.com/cty12356541/llmos/actions/runs/43841248536",
+      "workflowName": "Rust cross-platform verification"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 43841248548,
+      "event": "push",
+      "headSha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec",
+      "status": "completed",
+      "url": "https://github.com/cty12356541/llmos/actions/runs/43841248548",
+      "workflowName": "Deploy to GitHub Pages"
+    }
+  ]
+}

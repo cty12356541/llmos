@@ -1,0 +1,116 @@
+{
+  "algorithm": "sha256",
+  "verification": "Stored UTF-8 text omits any BOM, uses LF, trims line-ending spaces and terminal empty lines, and retains one final LF. The capture digest binds pre-normalization bytes.",
+  "runtime_source_sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "rust_ci_run": "43848357515",
+  "ci_report_capture_sha256": "cf7e542293982ea25cf38a37e87a2792d7862ce6e50ad35282153b735ce94ca8",
+  "ci_owner_capture_manifest_sha256": "03f2666e51a3c1496f45e8230a34d3ffac9531964bd6b170c082b498627449b4",
+  "journal_busy_diagnosis_capture_sha256": "999f0f27c079f051780c5d4370001266511ae4b064154e1a7f50c800d0de7696",
+  "files": {
+    "ci-rest.json": {
+      "bytes": 12354,
+      "sha256": "80b642b7b0d678344fbc185cca1501abdcc72d3c4bfe4993735e22620aa9943f",
+      "capture": "services-native-ci-fix2/rust-run-rest.json",
+      "capture_bytes": 12353,
+      "capture_sha256": "5668cabc30b0ad4039cb9a8b4d80911cdcdbbf00e0b8c6a23c8cec02ca0c0e2f"
+    },
+    "ci-summary.json": {
+      "bytes": 14201,
+      "sha256": "cb46f1bc0075c33915c64bd56a7a20773c07eab0930743ecc3969188c6007462",
+      "capture": "services-native-ci-fix2/final-summary.json",
+      "capture_bytes": 14541,
+      "capture_sha256": "7cf7a0487f300f9afa95a0d128019cd38fee82c6ba3449bc4f813056f5e2e7c6"
+    },
+    "macos-failure.txt": {
+      "bytes": 3210,
+      "sha256": "09af5a95abd0367c587d4d33f332f13c06bbee92b89ace0a4f236916846f94f2",
+      "capture": "services-native-ci-fix2/job-133234216446.failure-excerpt.log",
+      "capture_bytes": 3259,
+      "capture_sha256": "1889a89617a5a5e502c23d6b637f080e2605c69a7d5794260dd1c0b7b56495b1"
+    },
+    "pages-verified.json": {
+      "bytes": 478,
+      "sha256": "acab9ed411b5bc26a99bc25928399bffd1e9e036bae4b01a1c7aa7c9319fe93a",
+      "capture": "services-native-ci-fix2/pages-confirmed.json",
+      "capture_bytes": 489,
+      "capture_sha256": "36cc55d999f9ccff4130bb713f90c3200e0058f16c6390b2541bd292b2da0868"
+    },
+    "fix-scope-and-fuzz-filter.json": {
+      "bytes": 1315,
+      "sha256": "d7dee94332e10b8596f33575e2917b4c003d3510cd6a199736ea13d9d17be3a2",
+      "capture": "services-native-ci-fix2/fix-scope-and-fuzz-filter.json",
+      "capture_bytes": 1357,
+      "capture_sha256": "15b66b76adfc95a10672bcfe400a2e225b91faa8db0804145e9618f06e30c919"
+    },
+    "artifact-list.json": {
+      "bytes": 2256,
+      "sha256": "1c17850bd7648a004de29c52dc3f6c8f69a5804362b15f132e06bd0865b57b88",
+      "capture": "services-native-ci-fix2/rust-artifacts-20261116T110249751001Z.json",
+      "capture_bytes": 2255,
+      "capture_sha256": "2f45f31324bbc5a22425e7d33b5ec3e925dfc0b5766d131435fb8caf1b829eb3"
+    },
+    "journal-lock-control.json": {
+      "bytes": 425,
+      "sha256": "4c25b4fa1a251a004f8237e6f080e7af057daa04d246c1be6891d1eb0d44f1a9",
+      "capture": "b3-ci-journal-busy-logs/wsl-flock-result.json",
+      "capture_bytes": 439,
+      "capture_sha256": "057d206f62e2a4531bcbfcdf18afb79713470254d39eb19d0657aa136d4b9cc7"
+    },
+    "journal-lock-control-output.txt": {
+      "bytes": 501,
+      "sha256": "d1537293a95c57b7f910698eda792b0cf1b879cd3fd3a12d4d6d35020c0d2464",
+      "capture": "b3-ci-journal-busy-logs/wsl-flock.stdout.log",
+      "capture_bytes": 501,
+      "capture_sha256": "d1537293a95c57b7f910698eda792b0cf1b879cd3fd3a12d4d6d35020c0d2464"
+    },
+    "ubuntu-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "6186104958942f94a7ad8069dc0ff32d9348e0bc5a1c6730e9b6843f3de7671d",
+      "capture": "services-native-ci-fix2/artifact-1-ubuntu-latest-14216874302/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "0e94a31877ea32234a7fffd82dd41fee32d00c880e0154c080ff2ea63b52362f"
+    },
+    "ubuntu-latest-audit.json": {
+      "bytes": 10197,
+      "sha256": "92ae6ac9666d7d1ae253849164419ca6209e5b1bcccca227cd47b257c67f5590",
+      "capture": "services-native-ci-fix2/artifact-1-ubuntu-latest-14216874302/ubuntu-latest-audit.json",
+      "capture_bytes": 10502,
+      "capture_sha256": "eb8bcacdba35424f513b6d036123d3f30a1a8665a7ac48ca9d72e57e0bd445a1"
+    },
+    "windows-artifact-receipt.json": {
+      "bytes": 1248,
+      "sha256": "b1866a12d73d4beae12537354066088d9349cc79d393fc0bad885e7cab0c8d52",
+      "capture": "services-native-ci-fix2/artifact-1-windows-latest-14220300723/artifact-receipt.json",
+      "capture_bytes": 1277,
+      "capture_sha256": "76ba9721285c6f45573e8a6cfe1ae1082baa9cf552f8aa8ef2f00322e19c2d23"
+    },
+    "windows-latest-audit.json": {
+      "bytes": 7973,
+      "sha256": "96f841d0946743d0a5438b3cda843db800a7f9c07d224a20ea52a58ac2271058",
+      "capture": "services-native-ci-fix2/artifact-1-windows-latest-14220300723/windows-latest-audit.json",
+      "capture_bytes": 8222,
+      "capture_sha256": "4b9fdaa1dceaa723c9bf7ea1dd22b05c34631b55096ebe7b9140a1a8e12c1683"
+    },
+    "windows-leaf-symlink.txt": {
+      "bytes": 409,
+      "sha256": "850985d09ebd3b157bc8688767fc5b8f3fe4aa0b22371b4458532e6b31af63cb",
+      "capture": "services-native-ci-fix2/artifact-1-windows-latest-14220300723/data/blob-open-windows-symlink-leaf.log",
+      "capture_bytes": 410,
+      "capture_sha256": "ce332431fbf4926a063f269895ac2fcdb56a810f167b12cb6e6edf5dce8a2dd7"
+    },
+    "macos-artifact-receipt.json": {
+      "bytes": 1244,
+      "sha256": "4a27eebcc6d7f7c5aad726cbd8e0c41eb27626a22fed24641bda17fcc579434f",
+      "capture": "services-native-ci-fix2/artifact-1-macos-latest-14217094006/artifact-receipt.json",
+      "capture_bytes": 1273,
+      "capture_sha256": "42a336f448ea0104472a786e454cb3133566ada3db7a4f46b57d49aa1ab459f4"
+    },
+    "macos-latest-audit.json": {
+      "bytes": 7495,
+      "sha256": "581d828d8a0c17c394c70b6cb4cc2132bbdbb0b8ac5de72e53c1d2745fbbfbff",
+      "capture": "services-native-ci-fix2/artifact-1-macos-latest-14217094006/macos-latest-audit.json",
+      "capture_bytes": 7722,
+      "capture_sha256": "8938e06234f09e719678a6c02aa3ab05dda481e400874952afa850e205d70fc5"
+    }
+  }
+}

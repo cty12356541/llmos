@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "nlos-driver-llm-http",
+    "-p",
+    "nlos-wasm-sandbox"
+  ],
+  "cwd": "D:\\llmos",
+  "env": {
+    "CARGO_TERM_COLOR": "never",
+    "PYTHONUTF8": "1",
+    "CARGO_TARGET_DIR": "D:\\llmos\\target"
+  },
+  "started_utc": "2026-11-16T11:14:48.375+00:00",
+  "exit": 0,
+  "finished_utc": "2026-11-16T11:16:35.223+00:00",
+  "duration_seconds": 106.875
+}

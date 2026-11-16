@@ -1,0 +1,23 @@
+    Checking nlos-schema v0.1.0 (D:\llmos\crates\nlos-schema)
+    Checking nlos-runtime v0.1.0 (D:\llmos\crates\nlos-runtime)
+    Checking nlos-resource v0.1.0 (D:\llmos\crates\nlos-resource)
+    Checking nlos-capability v0.1.0 (D:\llmos\crates\nlos-capability)
+    Checking nlos-ipc v0.1.0 (D:\llmos\crates\nlos-ipc)
+    Checking nlos-operation v0.1.0 (D:\llmos\crates\nlos-operation)
+    Checking nlos-store v0.1.0 (D:\llmos\crates\nlos-store)
+error[E0599]: no method named `inspect_current_principal_binding` found for struct `Arc<IdentityAuthority>` in the current scope
+   --> crates\nlos-capability\src\blob_reference.rs:600:36
+    |
+600 |         let record = self.identity.inspect_current_principal_binding(principal)?;
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `inspect_current_binding` with a similar name
+    |
+600 -         let record = self.identity.inspect_current_principal_binding(principal)?;
+600 +         let record = self.identity.inspect_current_binding(principal)?;
+    |
+
+    Checking nlos-driver-mock v0.1.0 (D:\llmos\crates\nlos-driver-mock)
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `nlos-capability` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

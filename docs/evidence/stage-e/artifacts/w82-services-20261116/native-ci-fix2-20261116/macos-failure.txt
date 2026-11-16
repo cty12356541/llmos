@@ -1,0 +1,40 @@
+5306: 2026-11-16T10:39:28.7266290Z
+5307: 2026-11-16T10:39:28.7269400Z thread 'c_bench_cell_shard_worker_entry' (109435) panicked at crates/nlos-task/tests/c_bench_task_sharded_scale.rs:458:37:
+5308: 2026-11-16T10:39:28.7272810Z signal shard ready: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+5309: 2026-11-16T10:39:28.7273520Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+5310: 2026-11-16T10:39:28.7358870Z test c_bench_cell_shard_worker_entry ... FAILED
+5311: 2026-11-16T10:39:28.7359510Z
+5312: 2026-11-16T10:39:28.7359800Z failures:
+5313: 2026-11-16T10:39:28.7360120Z
+5314: 2026-11-16T10:39:28.7360390Z failures:
+5315: 2026-11-16T10:39:28.7361710Z     c_bench_cell_shard_worker_entry
+5316: 2026-11-16T10:39:28.7366520Z
+5317: 2026-11-16T10:39:28.7367750Z test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.24s
+6422: 2026-11-16T10:42:16.9787770Z test measured_spawn_and_run ... ok
+6423: 2026-11-16T10:42:17.0676200Z test real_guest_catalog_and_durable_result_replay_after_reopen ... FAILED
+6424: 2026-11-16T10:42:18.4095430Z test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok
+6425: 2026-11-16T10:42:18.5120870Z test running_cancel_kills_real_host_and_preserves_uncertain_effect ... ok
+6426: 2026-11-16T10:42:18.5136090Z test service_harness_child ... ok
+6427: 2026-11-16T10:42:18.6544600Z test shared_writer_cancel_and_completion_keep_one_terminal_receipt ... ok
+6428: 2026-11-16T10:42:18.7397770Z test shared_writer_cancellation_reaches_the_executing_instance ... ok
+6429: 2026-11-16T10:42:18.9737600Z test shared_writer_limits_active_hosts_globally_across_instances ... ok
+6430: 2026-11-16T10:42:19.3035300Z test shared_writer_limits_active_hosts_per_principal_across_instances ... ok
+6438: 2026-11-16T10:42:22.3124300Z
+6439: 2026-11-16T10:42:22.3125840Z thread 'real_guest_catalog_and_durable_result_replay_after_reopen' (120945) panicked at crates/nlos-wasm-sandbox/tests/tool_service.rs:249:18:
+6440: 2026-11-16T10:42:22.3126790Z called `Result::unwrap()` on an `Err` value: Busy
+6441: 2026-11-16T10:42:22.3127620Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+6442: 2026-11-16T10:42:22.3128020Z
+6443: 2026-11-16T10:42:22.3128050Z
+6444: 2026-11-16T10:42:22.3128300Z failures:
+6445: 2026-11-16T10:42:22.3129360Z     real_guest_catalog_and_durable_result_replay_after_reopen
+6446: 2026-11-16T10:42:22.3129780Z
+6448: 2026-11-16T10:42:22.3130990Z
+6449: 2026-11-16T10:42:22.3133300Z error: test failed, to rerun pass `-p nlos-wasm-sandbox --test tool_service`
+6450: 2026-11-16T10:42:22.3279260Z ##[error]Process completed with exit code 101.
+6451: 2026-11-16T10:42:22.3443820Z ##[group]Run actions/upload-artifact@v7
+6452: 2026-11-16T10:42:22.3444180Z with:
+6453: 2026-11-16T10:42:22.3444510Z   name: w82-service-macos-latest-533001483b440053e4c7333db445a7c2ff91baa2-43848357515-1
+6454: 2026-11-16T10:42:22.3444940Z   path: /Users/runner/work/_temp/w82-service-evidence
+6455: 2026-11-16T10:42:22.3445190Z   if-no-files-found: warn
+6456: 2026-11-16T10:42:22.3445380Z   compression-level: 6
+6457: 2026-11-16T10:42:22.3445550Z   overwrite: false

@@ -1,0 +1,29 @@
+{
+  "id": 14217094006,
+  "run_id": "43848357515",
+  "attempt": "1",
+  "name": "w82-service-macos-latest-533001483b440053e4c7333db445a7c2ff91baa2-43848357515-1",
+  "archive_bytes": 4708,
+  "archive_sha256": "a5738ded4e70ad7973c446ffeac86aeb7594f7273ccd32c5b474b650ecb88b7c",
+  "github_digest": "sha256:a5738ded4e70ad7973c446ffeac86aeb7594f7273ccd32c5b474b650ecb88b7c",
+  "metadata": {
+    "id": 14217094006,
+    "node_id": "MDg6QXJ0aWZhY3QxNDIxNzA5NDAwNg==",
+    "name": "w82-service-macos-latest-533001483b440053e4c7333db445a7c2ff91baa2-43848357515-1",
+    "size_in_bytes": 4708,
+    "url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14217094006",
+    "archive_download_url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14217094006/zip",
+    "expired": false,
+    "digest": "sha256:a5738ded4e70ad7973c446ffeac86aeb7594f7273ccd32c5b474b650ecb88b7c",
+    "created_at": "2026-11-16T10:42:23Z",
+    "updated_at": "2026-11-16T10:42:23Z",
+    "expires_at": "2027-02-14T10:23:13Z",
+    "workflow_run": {
+      "id": 43848357515,
+      "repository_id": 1312540670,
+      "head_repository_id": 1312540670,
+      "head_branch": "main",
+      "head_sha": "533001483b440053e4c7333db445a7c2ff91baa2"
+    }
+  }
+}

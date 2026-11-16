@@ -1,0 +1,175 @@
+{
+  "sha": "46075b716d77e0bb274f04064f417e0896287bb5",
+  "run_attempt": 1,
+  "job_counts": {
+    "success": 6,
+    "failure": 3,
+    "skipped": 2
+  },
+  "artifacts": {
+    "macos-latest": {
+      "id": 14211933909,
+      "digest": "9251a9b3a756c595f33b59d09bf95ead54874a42c81efd0454c42cfe9f4ce06a",
+      "directory": "artifact-1-macos-latest-14211933909",
+      "runner_os": "macos26",
+      "runner_image_version": "20261102.0473.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-native": 0
+      },
+      "latency": {
+        "raw": "platform=macos arch=aarch64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=35.63 p95_ms=43.92",
+        "samples": 20,
+        "platform": "macos",
+        "arch": "aarch64",
+        "p50_ms": 35.63,
+        "p95_ms": 43.92
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+          "test rooted_opener_rejects_a_socket_before_reading ... ok",
+          "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+          "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+        ],
+        "swap_results": [
+          "link-parent: swaps=512 inside=597 safe_rejection=1451 exterior_or_unexpected=0",
+          "link-leaf: swaps=512 inside=448 safe_rejection=1600 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=221 safe_rejection=1827 exterior_or_unexpected=0"
+        ]
+      },
+      "workspace": {
+        "gateway_four_methods": false,
+        "gateway_tcp_subtree": false,
+        "gateway_settlement": false,
+        "blob_signed_recipient": true,
+        "blob_wal": true,
+        "identity_principal_lookup": false,
+        "retained_completion": false,
+        "lost_completion": false,
+        "shared_quota_global": false,
+        "shared_quota_principal": false
+      }
+    },
+    "ubuntu-latest": {
+      "id": 14211679219,
+      "digest": "93554e08ba91af04a6e847140034df355534fbb96c472c219a2da0bfa4a79bfa",
+      "directory": "artifact-1-ubuntu-latest-14211679219",
+      "runner_os": "ubuntu26",
+      "runner_image_version": "20261111.196.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-build": 0,
+        "strace-version": 0,
+        "blob-open-native": 0,
+        "blob-open-enosys": 0
+      },
+      "latency": {
+        "raw": "platform=linux arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=26.29 p95_ms=29.62",
+        "samples": 20,
+        "platform": "linux",
+        "arch": "x86_64",
+        "p50_ms": 26.29,
+        "p95_ms": 29.62
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test rooted_opener_rejects_a_socket_before_reading ... ok",
+          "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+          "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok",
+          "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok"
+        ],
+        "swap_results": [
+          "link-parent: swaps=512 inside=1817 safe_rejection=231 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=1817 safe_rejection=231 exterior_or_unexpected=0",
+          "link-leaf: swaps=512 inside=1859 safe_rejection=189 exterior_or_unexpected=0"
+        ]
+      },
+      "workspace": {
+        "gateway_four_methods": false,
+        "gateway_tcp_subtree": false,
+        "gateway_settlement": false,
+        "blob_signed_recipient": true,
+        "blob_wal": true,
+        "identity_principal_lookup": false,
+        "retained_completion": false,
+        "lost_completion": false,
+        "shared_quota_global": false,
+        "shared_quota_principal": false
+      }
+    },
+    "windows-latest": {
+      "id": 14212638503,
+      "digest": "be8d67f2c1079274f9c4ac4547b20c500f423de147a04d0fc5e0825581478e59",
+      "directory": "artifact-1-windows-latest-14212638503",
+      "runner_os": "win25-vs2026",
+      "runner_image_version": "20261103.298.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "commands": {
+        "source-sha": 0,
+        "rustc-version": 0,
+        "cargo-version": 0,
+        "tool-latency": 0,
+        "tool-escape-matrix": 0,
+        "blob-open-native": 0,
+        "blob-open-windows-symlink-leaf": 0
+      },
+      "latency": {
+        "raw": "platform=windows arch=x86_64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=38.27 p95_ms=40.78",
+        "samples": 20,
+        "platform": "windows",
+        "arch": "x86_64",
+        "p50_ms": 38.27,
+        "p95_ms": 40.78
+      },
+      "rooted": {
+        "test_results": [
+          "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+          "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ignored, requires Windows symbolic link creation privilege",
+          "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+          "test repeated_first_open_junction_parent_swaps_do_not_escape ... ok",
+          "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+        ],
+        "swap_results": [
+          "junction: swaps=386 inside=30 safe_rejection=2018 exterior_or_unexpected=0",
+          "replacement: swaps=512 inside=422 safe_rejection=1626 exterior_or_unexpected=0"
+        ],
+        "windows_exact_leaf": [
+          "link-leaf: swaps=512 inside=431 safe_rejection=1617 exterior_or_unexpected=0",
+          "test repeated_first_open_symlink_leaf_swaps_do_not_escape ... ok"
+        ]
+      },
+      "workspace": {
+        "gateway_four_methods": false,
+        "gateway_tcp_subtree": false,
+        "gateway_settlement": false,
+        "blob_signed_recipient": true,
+        "blob_wal": true,
+        "identity_principal_lookup": false,
+        "retained_completion": false,
+        "lost_completion": false,
+        "shared_quota_global": false,
+        "shared_quota_principal": false
+      }
+    }
+  }
+}

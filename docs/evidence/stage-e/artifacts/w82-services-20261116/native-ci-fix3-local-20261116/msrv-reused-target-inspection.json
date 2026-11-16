@@ -1,0 +1,248 @@
+{
+  "identity_source_contains_method": true,
+  "capability_uses_method": true,
+  "both_sources_unchanged_from_5330014": true,
+  "initial_msrv_compiled_identity_again": false,
+  "existing_metadata_files": [
+    {
+      "file": "D:\\llmos\\target\\w82-service-deps\\debug\\deps\\libnlos_identity-08c4d396342b69b0.rmeta",
+      "bytes": 238752,
+      "sha256": "0e50600e143350b65830fc4f6c8c5a31c0eed4c35035108a4efb0adb4ffd7f94",
+      "modified_utc": "2026-11-16T11:06:06.891788+00:00",
+      "literal_method_presence": false,
+      "fingerprint": {
+        "rustc": 3720210673988096810,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 13122199558476892306,
+        "profile": 8492129325755110931,
+        "path": 11601493298330073040,
+        "deps": [
+          [
+            607226329374857347,
+            "nlos_clock",
+            false,
+            15639661057671987271
+          ],
+          [
+            1024696905174896702,
+            "nlos_types",
+            false,
+            12202098446209947234
+          ],
+          [
+            5392943018803026983,
+            "rusqlite",
+            false,
+            6281568201939808507
+          ],
+          [
+            7351225753156291014,
+            "sha2",
+            false,
+            11950226582567759246
+          ],
+          [
+            16355727447238799070,
+            "ed25519_dalek",
+            false,
+            2295910120576023811
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\nlos-identity-08c4d396342b69b0\\dep-lib-nlos_identity",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    },
+    {
+      "file": "D:\\llmos\\target\\w82-service-deps\\debug\\deps\\libnlos_identity-31efeb7df4de6335.rmeta",
+      "bytes": 239028,
+      "sha256": "a6e315c4018d3fb2ac9b05ca646689dbfc7f07964d93a8ac071a2be6fed2efaf",
+      "modified_utc": "2026-11-16T06:23:49.573111+00:00",
+      "literal_method_presence": false,
+      "fingerprint": {
+        "rustc": 3720210673988096810,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 13122199558476892306,
+        "profile": 8492129325755110931,
+        "path": 6305932613021598328,
+        "deps": [
+          [
+            607226329374857347,
+            "nlos_clock",
+            false,
+            14091351929296070201
+          ],
+          [
+            1024696905174896702,
+            "nlos_types",
+            false,
+            1387239672780245431
+          ],
+          [
+            5392943018803026983,
+            "rusqlite",
+            false,
+            13599763029483594242
+          ],
+          [
+            7351225753156291014,
+            "sha2",
+            false,
+            11996729847539669229
+          ],
+          [
+            16355727447238799070,
+            "ed25519_dalek",
+            false,
+            14104693131780033019
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\nlos-identity-31efeb7df4de6335\\dep-lib-nlos_identity",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    },
+    {
+      "file": "D:\\llmos\\target\\w82-service-deps\\debug\\deps\\libnlos_identity-77979e23fd138a64.rmeta",
+      "bytes": 239163,
+      "sha256": "aaa864403b8b0cf47d4319e0034461756a02b1d6eb63f658661383941d7328d7",
+      "modified_utc": "2026-11-16T08:42:07.114051+00:00",
+      "literal_method_presence": true,
+      "fingerprint": {
+        "rustc": 3720210673988096810,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 13122199558476892306,
+        "profile": 8492129325755110931,
+        "path": 11601493298330073040,
+        "deps": [
+          [
+            607226329374857347,
+            "nlos_clock",
+            false,
+            15639661057671987271
+          ],
+          [
+            1024696905174896702,
+            "nlos_types",
+            false,
+            12202098446209947234
+          ],
+          [
+            5392943018803026983,
+            "rusqlite",
+            false,
+            6281568201939808507
+          ],
+          [
+            7351225753156291014,
+            "sha2",
+            false,
+            15347364592249181137
+          ],
+          [
+            16355727447238799070,
+            "ed25519_dalek",
+            false,
+            8605995915743378561
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\nlos-identity-77979e23fd138a64\\dep-lib-nlos_identity",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    },
+    {
+      "file": "D:\\llmos\\target\\w82-service-deps\\debug\\deps\\libnlos_identity-aa9d811182f7aa5e.rmeta",
+      "bytes": 238878,
+      "sha256": "b5ca35e077ceca7355f53207fa20ca10de808633463d5b015f8e3114e3b2f430",
+      "modified_utc": "2026-11-16T06:23:28.750518+00:00",
+      "literal_method_presence": false,
+      "fingerprint": {
+        "rustc": 3720210673988096810,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 13122199558476892306,
+        "profile": 8492129325755110931,
+        "path": 6305932613021598328,
+        "deps": [
+          [
+            607226329374857347,
+            "nlos_clock",
+            false,
+            9848796380090333921
+          ],
+          [
+            1024696905174896702,
+            "nlos_types",
+            false,
+            1387239672780245431
+          ],
+          [
+            5392943018803026983,
+            "rusqlite",
+            false,
+            13639637399632502434
+          ],
+          [
+            7351225753156291014,
+            "sha2",
+            false,
+            11996729847539669229
+          ],
+          [
+            16355727447238799070,
+            "ed25519_dalek",
+            false,
+            10521638589684026217
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\nlos-identity-aa9d811182f7aa5e\\dep-lib-nlos_identity",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    },
+    {
+      "file": "D:\\llmos\\target\\w82-service-deps\\debug\\deps\\libnlos_identity-d8764eec3e4b7be9.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified_utc": "2026-11-16T08:42:07.114051+00:00",
+      "literal_method_presence": false,
+      "fingerprint": null
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+Workdir C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos
+CARGO_TARGET_DIR=D:/llmos/target/w82-b4
+Command cargo test --locked -p nlos-capability --lib blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error -- --exact --nocapture
+Exit 101
+   Compiling nlos-capability v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b4-blob\llmos\crates\nlos-capability)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b4\debug\deps\nlos_capability-ebf53ff4a079fca7.exe)
+
+running 1 test
+
+thread 'blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error' (2744) panicked at crates\nlos-capability\src\blob_ledger.rs:703:13:
+assertion `left == right` failed
+  left: 250
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... FAILED
+
+failures:
+
+failures:
+    blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nlos-capability --lib`

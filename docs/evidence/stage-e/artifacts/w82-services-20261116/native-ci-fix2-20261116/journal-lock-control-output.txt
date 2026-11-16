@@ -1,0 +1,6 @@
+Linux XS-202605111629 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 Linux
+flock from util-linux 2.41.6
+mode=close-only child_pid=18 parent_closed=true child_still_at_barrier=true acquired=false
+mode=close-only child_reaped=true new_owner_exclusive=true final_reacquire=true
+mode=explicit-unlock child_pid=28 parent_closed=true child_still_at_barrier=true acquired=true
+mode=explicit-unlock child_reaped=true new_owner_exclusive=true final_reacquire=true

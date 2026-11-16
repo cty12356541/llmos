@@ -1,0 +1,29 @@
+{
+  "id": 14213289676,
+  "run_id": "43841248536",
+  "attempt": "1",
+  "name": "w82-service-windows-latest-9cce6c77e8f29ea44a080c2adf26f2fc8c745fec-43841248536-1",
+  "archive_bytes": 4949,
+  "archive_sha256": "f287f82836b2d9ff1aa3615d0271e318e0e7d141e5340fddbb7be34e199e7f30",
+  "github_digest": "sha256:f287f82836b2d9ff1aa3615d0271e318e0e7d141e5340fddbb7be34e199e7f30",
+  "metadata": {
+    "id": 14213289676,
+    "node_id": "MDg6QXJ0aWZhY3QxNDIxMzI4OTY3Ng==",
+    "name": "w82-service-windows-latest-9cce6c77e8f29ea44a080c2adf26f2fc8c745fec-43841248536-1",
+    "size_in_bytes": 4949,
+    "url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14213289676",
+    "archive_download_url": "https://api.github.com/repos/cty12356541/llmos/actions/artifacts/14213289676/zip",
+    "expired": false,
+    "digest": "sha256:f287f82836b2d9ff1aa3615d0271e318e0e7d141e5340fddbb7be34e199e7f30",
+    "created_at": "2026-11-16T09:52:42Z",
+    "updated_at": "2026-11-16T09:52:42Z",
+    "expires_at": "2027-02-14T09:36:28Z",
+    "workflow_run": {
+      "id": 43841248536,
+      "repository_id": 1312540670,
+      "head_repository_id": 1312540670,
+      "head_branch": "main",
+      "head_sha": "9cce6c77e8f29ea44a080c2adf26f2fc8c745fec"
+    }
+  }
+}

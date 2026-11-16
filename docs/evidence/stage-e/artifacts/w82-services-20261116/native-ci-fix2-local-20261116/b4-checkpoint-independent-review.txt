@@ -1,0 +1,49 @@
+# W82-B4-CI-CHECKPOINT-REVIEW / Attempt20261116
+
+结论：**Spec compliance PASS；Code quality PASS；CAS PASS。** 本次三文件增量没有发现需修复的 P1/P2。可按已核实的补丁集成，然后在最终主树运行规定的原生 CI；本结论不把本机通过改写为原生 CI 已通过。
+
+## 范围与证据
+
+独立只读审阅 `b4-ci-checkpoint-diagnosis.md`、`b4-ci-checkpoint-report.md`、完整三文件 `b4-ci-checkpoint-logs/review.diff`、manifest、两份实际 mutation patch 与红/绿日志、定向 checkpoint 日志、full-capability、clippy、fmt、patch-gates 和 backfill profile 日志。源码只补读改动附近及其 fixture/故障锁/调用辅助函数。未重跑 suite、未派下属、未改候选或主树源码/文档/index/HEAD，未提交；只新增本报告。
+
+本次仅判断替换 Windows CI 中整段 API `<200 ms` 断言的验证方式，以及唯一生产代码提取的等价性。原 B4 fix2、F1/F2/F3、存储预留模型和独立 WAL 恢复门保持先前审查状态，不在此重审。
+
+## Spec compliance
+
+1. **整段 elapsed 与受控等待分开验证：符合已裁定边界。** 旧 Windows job 的 `DeadlineExpired` 匹配先通过，411.9058 ms 在后续整段 API stopwatch 断言失败；该观测不能定位具体慢阶段。新用例只把这一 stopwatch 改为诊断输出，没有提高阈值、修改产品 deadline 或声称确定了原 CI 根因。SQLite 的同步回填/刷新、OS I/O 和线程调度不因此获得整个请求 20 ms 或 200 ms 的硬 wall-time SLA。
+2. **真实 checkpoint 路径保留且增强。** `tests/blob_reference.rs:2040–2084` 使用实际 fault VFS 创建 authority，WAL 实际长度超出由当前 page size 算出的 64-frame 窗口；独立连接 `BEGIN` 后执行真实 SELECT 建立并持有读快照。`assert_checkpoint_backfill_attempted`（2105–2126）在生产服务 read 上让首个 VFS `xWrite` 返回 IOERR，断言实际观察到写入和精确 SQLite `SystemIoFailure`。关闭故障后另一个 busy_timeout=0 的连接验证 `(busy=1, frames>0, backfilled=frames)`，且 WAL 仍超窗。这证明后面的重试用例面对真实不能截断的 WAL，不是空 checkpoint 或模拟 Busy 返回。附带 profile 的实际 `(1,67,67)`、写入计数 1 与 WAL 276072 B 支持诊断，但不外推原 CI 的慢阶段。
+3. **截止失败、零回执及恢复闭环仍是硬断言。** `tests/blob_reference.rs:2086–2102` 仍在可信 mono=100000000 ns 的 fixture 上传入 deadline=120000000 ns，必须返回精确 `DeadlineExpired`。receipt 数量现在在释放 reader 之前检查不变；ROLLBACK 后相同主体、reference、offset/length、idempotency key=100 成功，持久 receipt 恰增一条，再执行真实签名 release。此前故障读也使用 key=100，因此零增长及后续同键成功覆盖两个错误路径没有留下成功 receipt。新用例不再因无依据的整段耗时上限提前 panic 而跳过这些断言。
+4. **受控 SQLite 排队有直接回归门。** `src/blob_ledger.rs:692–712` 在真实 Connection 上调用生产 `with_blob_writer_settings`；初始 timeout=250 ms，action 内通过实际 PRAGMA 断言 timeout=0，返回有类型的 `BlobError::Busy`，调用后仍得到该错误且 timeout 恢复为 250 ms。实际 mutation 将生产设置改为 250 ms，测试以 left=250/right=0 退出 101；恢复候选后 1/1 通过。这不是对常量的孤立断言，也不依赖宿主调度精度。
+5. **应用退避预算有确定性回归门。** `src/blob_reference.rs:1080–1099` 对传入的显式 Instant 验证正常 1 ms、仅剩 250 µs 时收紧，以及等于/超过 deadline 时精确拒绝。去掉 `.min(remaining)` 的实际 mutation 以 left=1 ms/right=250 µs 退出 101，恢复后 1/1 通过。该门验证生产 pause 所用预算计算；它不宣称 OS 的实际唤醒时刻绝不晚于请求的 sleep。
+
+## Code quality
+
+**生产提取语义等价。** `src/blob_reference.rs:1050–1060` 仍只采样一次 `Instant::now()` 来计算 `stop_elapsed.saturating_duration_since(now)`；零剩余量仍在 sleep 前返回同一错误，非零剩余量仍请求 `min(1 ms, remaining)`，sleep 返回后仍执行原 `check_elapsed()`。新增函数为私有方法，未引入新时钟、重设 stop_elapsed、额外 sleep、锁或错误映射。其余生产差异为空：ledger 仅新增 `cfg(test)` 模块，没有更改参数、DDL、权限、会计、公共 API 或依赖。
+
+**故障注入隔离与清理可接受。** 新用例使用同一集成测试二进制内既有 `FAULT_LOCK`，检查到所有同进程 fault-arm 测试都在此锁内；普通 fixture 使用默认 VFS。新 helper 在 read 返回并取得写计数后、执行任何新断言之前 disarm；断言失败不会把已注入故障留给后续正常操作，锁也覆盖 fixture 连接的生存期。observer/snapshot 为独立普通连接，故障只覆盖被测生产连接。没有增加全局默认 VFS 替换或未锁的异步注入线程。
+
+**跨平台验证没有静默放宽。** 页面窗口从实际 page_size 推导，不固定某一主机 frame 数量；没有新增平台 ignore、时间阈值或错误吞并。held-reader/BUSY、实际 xWrite、全回填、WAL 超窗和 receipt 结果都必须成立。Windows 本机原始日志可确认通过；其他原生平台仍由最终 CI 验证。本报告不把 fault VFS 的 IOERR 当成 xSync 故障、物理断电或完整持久性框架的证明。
+
+## 已核实的验证记录
+
+- `mutation-busy.txt` / `green-busy.txt`：101 → 0，恢复后 1/1。
+- `mutation-retry.txt` / `green-retry.txt`：101 → 0，恢复后 1/1。
+- `green-checkpoint.txt`：退出 0，1/1；elapsed=20.053 ms 仅为本次诊断值。
+- `full-capability.txt`：退出 0，93 项单元/集成 + 1 项 compile-fail 文档通过，2 项原有忽略；其中 Blob 40 pass / 1 ignored，checkpoint elapsed=20.5287 ms。
+- `strict-clippy.txt`、`package-fmt.txt`：退出 0。首次 clippy 的 checked_sub 修订已经包含在当前候选及重跑后的日志中。
+
+上述测试由实现 owner 执行，本复审独立读取实际命令、结果和 mutation 差异；没有重复 suite。
+
+## CAS 与精确身份
+
+独立执行只读核对时：主树 HEAD=`9cce6c77e8f29ea44a080c2adf26f2fc8c745fec`；候选隔离树 HEAD=`cdb0d10d0a68c7d23b04081bc0031942cbb2b893`。两树 index 检查均退出 0；主树 `git apply --check --whitespace=error-all` 与候选 `git apply --reverse --check --whitespace=error-all` 均退出 0。主树三个旧 Git blob 与 manifest baseline 一致；候选的新 Git blob 和 LF-normalized SHA-256 均独立匹配。
+
+补丁：`b4-ci-checkpoint-logs/review.diff`，3 files，108 additions / 12 deletions；SHA-256 **`f4c92fbb885b02afe8d3d36721f83ebb312076a4d08769890ee17a3c7bac3d0d`**。
+
+- `src/blob_ledger.rs`：old `fa941e86349d57b625b083ad752e5baed0701fea` → new `09237c0c48620a63cface70c76b3513d22ab48c3`；LF SHA-256 `ee092967416420b554114dec9e9ff453bd5a2a72a60af35018b773be2fe446e1`。
+- `src/blob_reference.rs`：old `02ea0e6f89cb7797d7d25d84433e591558d1849b` → new `7f27977510e525956ed2429eecd15f0b680b1b88`；LF SHA-256 `3bb4f79ca595185aac9dd8c40012a38dca43adce71e7f8a28bb06a1afd2521aa`。
+- `tests/blob_reference.rs`：old `6b09a1f966a31386e758606c36b6d4fb1d4dae44` → new `6abfe68e0baf4dfc75174ba70e34fe598da6547d`；LF SHA-256 `1bb61a85226f36ebee9c6dce552da6d3f4d0a8028a4430626a854acb23fceccf`。
+
+两份 mutation patch SHA-256 也与 manifest 匹配：busy=`6d0906a3bae71ff736b2bcff269e7276cb43e50a0fc4d39fbe6d89baf9d65024`，retry=`627504697e348f79adae0a93345f189a720fc515228d5598d3aa1038ebfd9e61`。
+
+Findings：**无新增 P1/P2，无本次范围内的阻断性遗漏。** 集成采用上述精确补丁；若基线/候选漂移，重新核验 CAS。原生 CI 的最终结果仍需由 integrator 记录。

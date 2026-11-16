@@ -1,0 +1,8 @@
+   Compiling nlos-wasm-sandbox v0.1.0 (C:\Users\Administrator\.codex\worktrees\w82-b3-tools\llmos\crates\nlos-wasm-sandbox)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.30s
+     Running unittests src\lib.rs (D:/llmos/target/w82-b3\debug\deps\nlos_wasm_sandbox-72a9b610760c8ab0.exe)
+
+running 1 test
+test tool_operation_store::tests::last_journal_owner_releases_writer_lock_with_passive_clone_alive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.10s

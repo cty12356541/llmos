@@ -1,0 +1,17 @@
+# W82-B3-CI-UNIX-CLIPPY-REVIEW / Attempt 20261116
+
+**独立审查 PASS。** 补丁 SHA-256 为 `fc1225f5bc1d2bb51bc339d027a419e0440337528d1ca5f8329e34de7e241e8f`。
+
+## 补丁范围
+
+以 `9cce6c77e8f29ea44a080c2adf26f2fc8c745fec` 的 `crates/nlos-wasm-sandbox/tests/tool_service.rs` 和 B3 隔离树中的候选文件为输入，逐字节核对并重新生成补丁。唯一变化是将 `#[cfg(unix)]` 的 `native_processes` 中 `ppid` 的定义和元组中的使用改为 `parent_process_id`。`ps` 列参数、字段解析、僵尸进程过滤和返回元组均保留。
+
+复算得到的基线 blob 为 `ef2e68e222ffcc36d60c53259bdf9a12035ed3f3`，候选 blob 为 `974b65d7571737d2d11c02a20d2d2e8c032f7307`。两份源文件的 SHA-256、重新生成的补丁字节和补丁 SHA-256 均与清单一致。基线主树上的 `git apply --check` 和 B3 隔离树上的 `git apply --reverse --check` 均退出 0。B3 隔离树包含既有 B3 改动，审查以基线提交中的目标文件和封存补丁为准。[补丁](./b3-ci-clippy.delta.diff) · [校验清单](./b3-ci-clippy-logs/source-cas.json)
+
+## 证据
+
+- Ubuntu run `43841248536` 的 job `133210177258` 在基线提交上完成 workspace 测试并进入 ROAD 检查。`tool_service` 通过 25 项，含孤儿宿主终止测试。ROAD-E-001 报告 PASS，6 项通过。日志中 `c_bench_cell_shard_worker_entry` 的子进程失败紧接着记录外层 `shard_readiness_failure_reaps_waiting_peer` 及其测试组通过。随后 `cargo clippy --workspace --all-targets -- -D warnings` 在 `tool_service.rs:1069` 对 `pid` 和 `ppid` 报出 `clippy::similar_names`，退出 101。[原始 Ubuntu 日志](./services-native-ci-fix1/job-133210177258.api.log)
+- 原版和候选 fixture 分别与对应源码中去掉 `#[cfg(unix)]` 的完整 helper 加固定 `main` 一致。在 Windows 上独立重跑 `clippy-driver --edition=2024 -D clippy::similar_names --emit=metadata`。原版复现同一诊断并退出 1，候选无诊断并退出 0。该命令静态检查 helper，未执行 `ps`。 [原版诊断](./b3-ci-clippy-logs/fixture-red.log) · [候选退出码](./b3-ci-clippy-logs/fixture-green.exit)
+- Windows 留存日志显示 `orphan_host_terminates_after_service_harness_is_killed` 通过（1 passed，5.60 s），crate 全 targets 严格 Clippy 退出 0。独立重跑 `cargo fmt -p nlos-wasm-sandbox -- --check` 退出 0。[测试日志](./b3-ci-clippy-logs/windows-test.log) · [Clippy 日志](./b3-ci-clippy-logs/windows-clippy.log) · [格式检查退出码](./b3-ci-clippy-logs/fmt.exit)
+
+候选集成后的 Linux/macOS 原生严格 Clippy 仍待 CI 验证。独立审查未重跑产品测试，未暂存、提交或推送。

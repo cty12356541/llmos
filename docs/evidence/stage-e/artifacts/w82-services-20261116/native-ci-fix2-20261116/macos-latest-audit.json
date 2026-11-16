@@ -1,0 +1,227 @@
+{
+  "source_sha": "533001483b440053e4c7333db445a7c2ff91baa2",
+  "runner": {
+    "platform": {
+      "system": "Darwin",
+      "node": "sat12-bq159-34aa14eb-8374-49a6-926e-ae4940de8b62-A2862AFAE835.local",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Mon Oct 12 00:39:04 PDT 2026; root:xnu-12377.161.15.701.48~2/RELEASE_ARM64_VMAPPLE",
+      "machine": "arm64",
+      "processor": "arm"
+    },
+    "github_runner": {
+      "GITHUB_SHA": "533001483b440053e4c7333db445a7c2ff91baa2",
+      "GITHUB_RUN_ID": "43848357515",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "RUNNER_NAME": "GitHub Actions 1000005294",
+      "RUNNER_OS": "macOS",
+      "RUNNER_ARCH": "ARM64",
+      "RUNNER_ENVIRONMENT": "github-hosted",
+      "ImageOS": "macos26",
+      "ImageVersion": "20261112.0504.1"
+    }
+  },
+  "rustc": [
+    "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "binary: rustc",
+    "commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+    "commit-date: 2026-09-28",
+    "host: aarch64-apple-darwin",
+    "release: 1.99.0",
+    "LLVM version: 23.1.1"
+  ],
+  "cargo": [
+    "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "release: 1.99.0",
+    "commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e",
+    "commit-date: 2026-08-27",
+    "host: aarch64-apple-darwin",
+    "libgit2: 1.9.6 (sys:0.21.0 vendored)",
+    "libcurl: 8.7.1 (sys:0.4.90+curl-8.21.0 system ssl:(SecureTransport) LibreSSL/3.3.6)",
+    "ssl: OpenSSL 3.6.3 9 Jun 2026",
+    "os: Mac OS 26.7.2 [64-bit]"
+  ],
+  "commands": [
+    {
+      "label": "source-sha",
+      "status": "passed",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "returncode": 0,
+      "log": "source-sha.log"
+    },
+    {
+      "label": "rustc-version",
+      "status": "passed",
+      "command": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "rustc-version.log"
+    },
+    {
+      "label": "cargo-version",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "--version",
+        "--verbose"
+      ],
+      "returncode": 0,
+      "log": "cargo-version.log"
+    },
+    {
+      "label": "tool-latency",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "tool_service",
+        "measured_spawn_and_run",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-latency.log"
+    },
+    {
+      "label": "tool-escape-matrix",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-wasm-sandbox",
+        "--test",
+        "escape_matrix",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "tool-escape-matrix.log"
+    },
+    {
+      "label": "blob-open-native",
+      "status": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "nlos-capability",
+        "--test",
+        "blob_open",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "log": "blob-open-native.log"
+    }
+  ],
+  "failed_or_skipped": [],
+  "latency": {
+    "raw": "platform=macos arch=aarch64 guest=test argv={} samples=20 fuel=1000000 memory_pages=16 epoch_ms=30000 catalog=warm path=invoke+spawn+run+durable_result p50_ms=35.22 p95_ms=49.96",
+    "samples": 20,
+    "platform": "macos",
+    "arch": "aarch64",
+    "p50_ms": 35.22,
+    "p95_ms": 49.96
+  },
+  "escape": {
+    "escape_preopen_leaf=unix_symlink": true,
+    "escape_preopen_leaf=hard_link": true,
+    "escape_preopen_parent=unix_symlink": true,
+    "unavailable": []
+  },
+  "rooted": {
+    "test_results": [
+      "test rejects_ambiguous_relative_paths_and_device_names_on_every_platform ... ok",
+      "test opens_only_a_single_link_regular_file_under_the_held_directory ... ok",
+      "test rooted_opener_rejects_a_fifo_before_reading ... ok",
+      "test rooted_opener_rejects_a_socket_before_reading ... ok",
+      "test rooted_opener_rejects_the_null_character_device_before_reading ... ok",
+      "test repeated_first_open_symlink_parent_and_leaf_swaps_do_not_escape ... ok",
+      "test repeated_first_open_leaf_swaps_do_not_read_the_hard_link_outside_sentinel ... ok"
+    ],
+    "swap_results": [
+      "link-parent: swaps=512 inside=649 safe_rejection=1399 exterior_or_unexpected=0",
+      "link-leaf: swaps=512 inside=436 safe_rejection=1612 exterior_or_unexpected=0",
+      "replacement: swaps=512 inside=302 safe_rejection=1746 exterior_or_unexpected=0"
+    ]
+  },
+  "workspace": {
+    "platform": "macos-latest",
+    "workspace_logged": true,
+    "tests": {
+      "gateway_four_methods": [
+        "2026-11-16T10:33:01.1648970Z test four_methods_recover_and_keep_advisory_out_of_the_hard_budget ... ok"
+      ],
+      "gateway_tcp_subtree": [
+        "2026-11-16T10:33:01.8307480Z test subtree_gate_serializes_parent_siblings_and_grandchild_with_live_tcp ... ok"
+      ],
+      "gateway_settlement": [
+        "2026-11-16T10:33:01.5751000Z test settlement_rejects_over_quote_and_preserves_authority_envelope_failure ... ok"
+      ],
+      "blob_signed_recipient": [
+        "2026-11-16T10:31:31.3091190Z test signed_sender_mint_roundtrips_wav_bytes_to_its_explicit_recipient ... ok"
+      ],
+      "custody_schema_regression": [
+        "2026-11-16T10:32:14.9099000Z test custody_vault_durable_sqlite_wal_full_reopen_kek_commitment_and_schema_isolation ... ok"
+      ],
+      "epoch_interrupt": [
+        "2026-11-16T10:42:18.4095430Z test real_tool_epoch_interrupts_independently_of_parent_deadline_and_watchdog ... ok"
+      ],
+      "durable_replay": [],
+      "blob_checkpoint": [
+        "2026-11-16T10:31:29.9473930Z test blocked_checkpoint_expires_without_charging_and_recovers_when_reader_leaves ... ok"
+      ],
+      "blob_busy_timeout": [
+        "2026-11-16T10:31:19.7957040Z test blob_ledger::tests::blob_writer_disables_sqlite_busy_wait_and_restores_it_on_error ... ok"
+      ],
+      "blob_retry_delay": [
+        "2026-11-16T10:31:19.7825380Z test blob_reference::tests::retry_delay_is_bounded_by_the_remaining_deadline ... ok"
+      ],
+      "blob_wal": [
+        "2026-11-16T10:31:35.4515850Z test failed_blob_read_commit_recovers_only_the_acknowledged_wal_prefix ... ok"
+      ],
+      "identity_principal_lookup": [
+        "2026-11-16T10:33:03.7829120Z test principal_lookup_returns_latest_durable_binding_even_when_revoked ... ok"
+      ],
+      "retained_completion": [
+        "2026-11-16T10:42:14.4443050Z test tool_operation_store::tests::reopen_requires_sync_before_publishing_retained_completion ... ok"
+      ],
+      "lost_completion": [
+        "2026-11-16T10:42:14.4441740Z test tool_operation_store::tests::lost_completion_after_sync_failure_keeps_dispatch_indeterminate ... ok"
+      ],
+      "shared_quota_global": [
+        "2026-11-16T10:42:18.9737600Z test shared_writer_limits_active_hosts_globally_across_instances ... ok"
+      ],
+      "shared_quota_principal": [
+        "2026-11-16T10:42:19.3035300Z test shared_writer_limits_active_hosts_per_principal_across_instances ... ok"
+      ]
+    }
+  },
+  "checks": {
+    "source_sha": true,
+    "runner_context": true,
+    "rustc_1_99": true,
+    "cargo_1_99": true,
+    "latency": true,
+    "escape_fixtures": true,
+    "unix_special_files": true,
+    "required_commands_succeeded": true,
+    "helper_checks_passed": true,
+    "workspace_cases": false
+  }
+}

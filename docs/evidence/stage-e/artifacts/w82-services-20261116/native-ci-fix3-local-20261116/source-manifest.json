@@ -1,0 +1,232 @@
+[
+  {
+    "path": ".github/workflows/rust-cross-platform.yml",
+    "sha256": "776d088da8438401de56eca7c8165246e77a6fb4573c1bc5fd77cf0138556c35",
+    "git_blob": "3c636458ddcb279d5c09e0919c8df87b61f03640"
+  },
+  {
+    "path": "Cargo.lock",
+    "sha256": "0d7b9df1a63bec61ba61c41ee59878a034fb9488a1d01b09644174d7901ecfd6",
+    "git_blob": "e2ed52d28230c65e9202786aa83fb37a1f2c59ff"
+  },
+  {
+    "path": "crates/nlos-capability/src/blob_ledger.rs",
+    "sha256": "b491bd8a4c5ee284ba1bea2d5e25167b63dbdc41e21e2454c02c34254498af6d",
+    "git_blob": "09237c0c48620a63cface70c76b3513d22ab48c3"
+  },
+  {
+    "path": "crates/nlos-capability/src/blob_model.rs",
+    "sha256": "c21314ba0ac3b9cc1ecd834f22f055b08b36f7c559aa2457e846bde4ff28979e",
+    "git_blob": "406248edb0bc1ddd980532e111084d8a7bfa7994"
+  },
+  {
+    "path": "crates/nlos-capability/src/blob_open.rs",
+    "sha256": "58e61fe22400a384fcb60be4aedf3e1bfbe7e4f8d367f49d6cdca6f3914e6491",
+    "git_blob": "0bfe373acd97f8a79c8d46f713b60ba432f99ea9"
+  },
+  {
+    "path": "crates/nlos-capability/src/blob_reference.rs",
+    "sha256": "4f2d7b19a5d82d3e6bf2f069c7ea2a689e69d2168f9d9b96d1f542edd03fe5fa",
+    "git_blob": "7f27977510e525956ed2429eecd15f0b680b1b88"
+  },
+  {
+    "path": "crates/nlos-capability/src/lib.rs",
+    "sha256": "6d931e326a57cee7c6f633e1e75cca6dcdc091730b861e51dd401dac354a1dbc",
+    "git_blob": "412a003914ad74723ab05576a439ad3eb20e71e9"
+  },
+  {
+    "path": "crates/nlos-capability/src/schema.rs",
+    "sha256": "c33d6d4feea8c05aa78f808190755097434069dda50b212516eb1e6635aca58c",
+    "git_blob": "c3049aed4e6a192e3b80b144d5e1c74d0d6dc1c7"
+  },
+  {
+    "path": "crates/nlos-capability/tests/blob_open.rs",
+    "sha256": "558548ffe7e90feec8d0a5f0af0c86572ae5f662a30ba091c1b655ed20a84d41",
+    "git_blob": "f706f17e67ccdc316846dca421e6ef0bc7014ff6"
+  },
+  {
+    "path": "crates/nlos-capability/tests/blob_reference.rs",
+    "sha256": "42f6dce6712f5076f75cf78d2cf1456f4bb13242a2df74821334b19014b71155",
+    "git_blob": "6abfe68e0baf4dfc75174ba70e34fe598da6547d"
+  },
+  {
+    "path": "crates/nlos-capability/tests/blob_wal_recovery.rs",
+    "sha256": "920a498c3cc313200dce9873e21100e775538268188423d2e9343861c45b7967",
+    "git_blob": "d0d70ef721dd75b48f405a29fc5fd7840992fd77"
+  },
+  {
+    "path": "crates/nlos-commit-coordinator/tests/custody_gateway_reconciliation.rs",
+    "sha256": "ef53bbf507a908b53a9daf181ab56b49812267528175849a29b0389fad67578a",
+    "git_blob": "208ce9d81c6a71b100587d90329da4b6dc43551a"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/gateway_fault_tests.rs",
+    "sha256": "353b6e043871e3a3ff7367c293d9d0e71bd52fb8e1403b077e7cf08c04ad9d0a",
+    "git_blob": "cfaf986de73c1bcc847d369aae26d0f1e8c2fa63"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/gateway_pricing.rs",
+    "sha256": "8c9573a06f5210985d3127de65b075c0b8ce367abe08a74eb0a173f77907e389",
+    "git_blob": "df7441f9693592aa46a641bbd14576c2f912edc7"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/gateway_state.rs",
+    "sha256": "7702afb0826826a8df34a580db71c619c9724451d53c6d1b39bc3c2dc3ce1b17",
+    "git_blob": "1659de60d645f32759468dbaa1df958fa88a8ad1"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/gateway_wire.rs",
+    "sha256": "0a5dd7f74ca40bccc40f9cc13061e9ab6b88a801148f2f10498e1abd7b1f708a",
+    "git_blob": "c581238fd63292bed87126ab03b81c76b3874f03"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/http.rs",
+    "sha256": "b8ba2d96b7e4ada9c353fc6924880ae2a5c848c05ff23605404ce7e70fd3d3af",
+    "git_blob": "535083d1d5ca8af86863858f24cfe94db5f6d246"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/keypool.rs",
+    "sha256": "f8cd643cdef073130389302eec583accf4d25e16c815ff9fb216b7e81b0d33dc",
+    "git_blob": "3a816ff6e53acac98b63866450bdeeb88bebaea8"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/lib.rs",
+    "sha256": "9afc3c097826a92c4a632a7e7d1cd5be46e142d1a2d0faea8affc553f92e3a13",
+    "git_blob": "25b1457459205d471d9c385d0a67864959d16701"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/llm_gateway.rs",
+    "sha256": "c7adf4bfade8fe75f70652d216c5cbe466e986bdba93bd18641e54276f1c6258",
+    "git_blob": "9abee5c8c173f34c7708ef15d4af2e1aeb383d51"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/reservation_journal.rs",
+    "sha256": "4d107937d4fbea9b2435744727e1aaacfab5209f8605d5f128c8cbd6b0ba602b",
+    "git_blob": "2abd2a86a46a082027a57e1294bb1faf68e6f2fb"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/src/shim.rs",
+    "sha256": "889adac1b81dfb577270497bd45c8e75400ce9756cf3dc9ac02abeda77a4ea83",
+    "git_blob": "8f6742f2df4b8a15ce1a5b284294e8e4d8fe26dc"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/tests/gateway.rs",
+    "sha256": "92925a8a8a979c7acc550a0b05d406d74430b5e894c7fe69547cbd9596a0d6e2",
+    "git_blob": "83013d393acd615a3dc7d90efe87a85d7a4d4c5c"
+  },
+  {
+    "path": "crates/nlos-driver-llm-http/tests/gateway_support/mod.rs",
+    "sha256": "09ad31c857bcbdf5ab95aa392d63a158efe041476573ccbb55a97cebd0a98b78",
+    "git_blob": "0e53fce2b3e671a974b572631f83b2f5f72bb800"
+  },
+  {
+    "path": "crates/nlos-identity/src/lib.rs",
+    "sha256": "9e0dde36266d777b473b8d647fa0049dcdba087e67288d0e6f872960e8c6ab13",
+    "git_blob": "472bd06dc47eae4672380e9b4f13c6ecd6de3089"
+  },
+  {
+    "path": "crates/nlos-identity/tests/principal_lookup.rs",
+    "sha256": "491c5e4d10726a5df317f668929084abf73f4251a07063802bea567f4f440150",
+    "git_blob": "d6a383bdce1f6a6d67ee3be35744417a07af4b36"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/Cargo.toml",
+    "sha256": "28ca1f57454e598e4a3da1d3cd3b44c9dde4b5c7bb6169b434a6fa1d0daca19c",
+    "git_blob": "d7a52e5a6ab32222d49df551fdfb53de40efe775"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/host_bin.rs",
+    "sha256": "86b68445337497ead0acbcfc69994d45e45797bd242b6038397cdb83f69b5c80",
+    "git_blob": "04bf0b872e9cddb84be5f7b572832b255b928a96"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/isolate.rs",
+    "sha256": "06db53313fe9c3848bea8103ed778d5c4ac17911af8c3513dea22712995838e6",
+    "git_blob": "7d4e275cdff28dc42959c35fad6f4fceb8f3a3ad"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/lib.rs",
+    "sha256": "53273247d6b88f377156eafa672133b544f3f5f28ca6b1c7e65c958902045211",
+    "git_blob": "e1bb9e1ac054b15c8133439e1d9c569adb85da6b"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/process.rs",
+    "sha256": "a3d215ecb98a2e3e9d5e59312532aea809975b21f10a13173c814d73d04db01e",
+    "git_blob": "47c142dc715a0a931827e19711b6a47ca60fca99"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/profile.rs",
+    "sha256": "75e6a75fbf5fafbd13e6904e6ab9098c44d3f89e2f735ff48bc3170ce36e23c5",
+    "git_blob": "5fad94c35453a1c4489acdedfafd54bd7a3c6c5c"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_host_protocol.rs",
+    "sha256": "b508b247797bae8cef115d6b9dfd28c1bc5404b0d74c57269dec361c67075ce0",
+    "git_blob": "cfceb41e07a2283372e22e6d736358e5f3a8b546"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_json.rs",
+    "sha256": "e73d366834b7425f622c90e3a037d64b4ae1598f46c154734544ea05c412c754",
+    "git_blob": "19155102a7bac98c4922c8c287cca7f4a1923b82"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_operation_store.rs",
+    "sha256": "d10656818465a1be9fcb9690566217c580e02d967f4ad3629e20823b3dca6651",
+    "git_blob": "67c6519bc1c972e72924c6ab58b2ba4bf6d01d01"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_process.rs",
+    "sha256": "ad5786685c0cb350bbeda58b103e097e269c01b96d096e4e344c400e4fdaf2c6",
+    "git_blob": "17896bb8a754e0372e1ab85edf83b199777fb6e8"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_reconcile.rs",
+    "sha256": "d90b93efea16688e85c1e91100ebcfd92f7e0dce557e3718844d8c63c5f95589",
+    "git_blob": "d127f26fb384cc1d26f82f79927d6ff2994cc3a2"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/tool_service.rs",
+    "sha256": "3e87d3b1f6073729d944bc8e26d72b68250a5bf7608691d8f6b6248897ec8d10",
+    "git_blob": "d4d5fcb76f3be4a07e5bcb301594a7f7c2670b05"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/src/wasi_allowlist.rs",
+    "sha256": "4b366d09e53178d3622d5085d0e1e427b81aed35c8e612f6bb914083d0da1a5b",
+    "git_blob": "744ff3655a5398af0070f3f58be1a9d764b70b42"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/tests/escape_matrix.rs",
+    "sha256": "dc1a45ec52a345b3cd4b22e2a9b4920382d4433f070402456446a10e16612cef",
+    "git_blob": "ee52e5c04a60fd0a634649194a24b432f29b41a3"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/tests/tool_journal.rs",
+    "sha256": "fd8325a4c93b42f4380e37346632e452c41204d435d7d830310be7f8be807a9c",
+    "git_blob": "4be08722b86eec0f375bc75018d1b903eed9dd99"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/tests/tool_pipes.rs",
+    "sha256": "63770a90be65e212353d462e7015cd921a5de38c8acb0a59b6b9f73143f51a20",
+    "git_blob": "08db254d4330c298676857e2b2e4ed479d7dfaa4"
+  },
+  {
+    "path": "crates/nlos-wasm-sandbox/tests/tool_service.rs",
+    "sha256": "447003481c4321224440144f13f258f08d6fc2b13f915d7ea58323de0e2ef371",
+    "git_blob": "60c2b95a596f29edec49fb2ef41529eec8401fda"
+  },
+  {
+    "path": "scripts/test_verify_w82_service_evidence.py",
+    "sha256": "e589911f38366f656844bbaf7d8f34aff4cf38e5ad5f5065c2190bee7f7b28ab",
+    "git_blob": "b17348dc40067583e5257f2a1616720e2028b789"
+  },
+  {
+    "path": "scripts/verify_w82_service_evidence.py",
+    "sha256": "32a9846c9de9a435e1333c08542ddb0cf40f5105b864c5c44a3579f82f000e04",
+    "git_blob": "ab8d8e962716c3243ef6905d10b8548a3ec7d77a"
+  },
+  {
+    "path": "tests/stage_e_road_e001_upgrade_gate/Cargo.lock",
+    "sha256": "536a079967a63c03c81d263a460717c1e1d5b2605a2b655c6471022dd5282360",
+    "git_blob": "8d3094ff986df63f3187a7d7ff2db88b084c7dbb"
+  }
+]
