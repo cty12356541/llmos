@@ -201,6 +201,12 @@ impl SqlitePlanAuthority {
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
+        // Idempotent covering index for bounded ready-FIFO materialization
+        // selection (C-SCHED-002); keeps SCHEMA_VERSION / user_version at 9.
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS plan_nodes_state_order
+                 ON plan_nodes(plan_id, node_state, first_declared_at_ms, task_node_id);",
+        )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
