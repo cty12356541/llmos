@@ -3,10 +3,11 @@
 
 use nlos_process::{
     MANAGED_ENV_AUTH_ENDPOINT, MANAGED_ENV_PROCESS_IDENTITY_SEED, MANAGED_ENV_ROOT_CAPABILITY_SLOT,
-    ManagedWorkerEnv, ProcessSupervisor, SpawnSupervisedRequest, prepare_managed_command,
-    spawn_managed_worker, terminate_group_with_escalation,
+    ManagedWorkerEnv, ManagedWorkerEnvError, ProcessSupervisor, SpawnSupervisedRequest,
+    SupervisorError, parse_root_capability_slot, prepare_managed_command, spawn_managed_worker,
+    terminate_group_with_escalation, validate_managed_worker_env,
 };
-use nlos_types::{Generation, ProcessId};
+use nlos_types::{CapabilityId, Generation, ProcessId};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -24,11 +25,13 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+const SAMPLE_CAP_SLOT: &str = "0123456789abcdef0123456789abcdef";
+
 fn sample_env() -> ManagedWorkerEnv {
     ManagedWorkerEnv {
         auth_endpoint: "/tmp/w82c-auth.sock".to_owned(),
         process_identity_seed: "/tmp/w82c-operator.key".to_owned(),
-        root_capability_slot: "slot-token-xyz".to_owned(),
+        root_capability_slot: SAMPLE_CAP_SLOT.to_owned(),
     }
 }
 
@@ -115,7 +118,93 @@ fn env_constants_and_entries_order() {
             MANAGED_ENV_ROOT_CAPABILITY_SLOT
         ]
     );
-    assert!(entries[2].1.contains("slot-token-xyz"));
+    assert_eq!(entries[2].1, SAMPLE_CAP_SLOT);
+}
+
+#[test]
+fn root_capability_slot_accepts_d7_32hex_and_rejects_malformed_variants() {
+    let parsed = parse_root_capability_slot(SAMPLE_CAP_SLOT).expect("valid 32-hex slot");
+    assert_eq!(
+        parsed,
+        CapabilityId::from_bytes([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ])
+    );
+    validate_managed_worker_env(&sample_env()).expect("valid 32-hex env");
+
+    let empty_slot_env = ManagedWorkerEnv {
+        root_capability_slot: String::new(),
+        ..sample_env()
+    };
+    validate_managed_worker_env(&empty_slot_env).expect("empty slot remains compatible");
+    assert!(matches!(
+        parse_root_capability_slot(""),
+        Err(ManagedWorkerEnvError::InvalidRootCapabilitySlot { .. })
+    ));
+
+    let bad_slots = [
+        "0123456789ABCDEF0123456789ABCDEF",     // uppercase
+        "0123456789abcdef0123456789abcde",      // too short (31)
+        "0123456789abcdef0123456789abcdef0",    // too long (33)
+        "0123456789abcdef0123456789abcdeg",     // non-hex
+        "01234567-89ab-cdef-0123-456789abcdef", // hyphen separator
+        "01234567:89ab:cdef:0123:456789abcdef", // colon separator
+        "slot-token-xyz",
+    ];
+    for bad in bad_slots {
+        assert!(
+            matches!(
+                parse_root_capability_slot(bad),
+                Err(ManagedWorkerEnvError::InvalidRootCapabilitySlot { .. })
+            ),
+            "expected parse rejection for {bad:?}"
+        );
+        let bad_env = ManagedWorkerEnv {
+            root_capability_slot: bad.to_owned(),
+            ..sample_env()
+        };
+        assert!(
+            matches!(
+                validate_managed_worker_env(&bad_env),
+                Err(ManagedWorkerEnvError::InvalidRootCapabilitySlot { .. })
+            ),
+            "expected validate rejection for {bad:?}"
+        );
+    }
+}
+
+#[test]
+fn spawn_managed_worker_rejects_invalid_slot_before_spawning_child() {
+    let dir = temp_dir("bad-slot-spawn");
+    let marker = dir.join("spawned.txt");
+    let supervisor = ProcessSupervisor::new();
+    let bad_env = ManagedWorkerEnv {
+        root_capability_slot: "0123456789ABCDEF0123456789ABCDEF".to_owned(),
+        ..sample_env()
+    };
+    let err = spawn_managed_worker(
+        &supervisor,
+        SpawnSupervisedRequest {
+            process_id: ProcessId::from_bytes([8; 16]),
+            process_generation: Generation::INITIAL,
+            registered_at_ms: 0,
+        },
+        "/bin/sh",
+        &[
+            "-c".to_owned(),
+            format!("echo leaked > {}", marker.display()),
+        ],
+        &dir,
+        &bad_env,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SupervisorError::InvalidManagedEnv(_)),
+        "{err}"
+    );
+    assert!(!marker.exists(), "child must not spawn when env is invalid");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -186,7 +275,7 @@ fn spawned_worker_env_is_exactly_three_vars_and_parent_does_not_leak() {
     );
     assert_eq!(
         map.get("LLMOS_ROOT_CAPABILITY_SLOT").unwrap(),
-        "slot-token-xyz"
+        SAMPLE_CAP_SLOT
     );
     // 先读 grandpid 再回收:排除"SIGTERM 先于夹具写 grandpid 落地"的竞态
     let grandpid: u32 = poll_file(&base.with_extension("grandpid"), 5)

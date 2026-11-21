@@ -7,11 +7,13 @@
 //! Unix 依赖 Task 2 的 `process_group(0)` + `killpg`;Windows 沿用
 //! `taskkill /F /T`(单级强杀,无宽限二级,平台差异如实登记)。
 
+use std::error::Error;
+use std::fmt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
 use std::time::Duration;
 
-use nlos_types::{Generation, ProcessId};
+use nlos_types::{CapabilityId, Generation, ProcessId};
 
 use crate::supervisor::{
     ProcessSupervisor, SpawnSupervisedRequest, SupervisedSpawn, SupervisorError,
@@ -23,8 +25,115 @@ use crate::supervisor_pid::KillScope;
 pub const MANAGED_ENV_AUTH_ENDPOINT: &str = "LLMOS_AUTH_ENDPOINT";
 /// 进程身份种子(当前约定为 operator 种子文件路径;见 spec §8)。
 pub const MANAGED_ENV_PROCESS_IDENTITY_SEED: &str = "LLMOS_PROCESS_IDENTITY_SEED";
-/// 根能力槽位(字节透传;格式契约 TODO 对表 W82-B 设计)。
+/// 根能力槽位(W82-B D7 契约:`^[0-9a-f]{32}$` = 16 字节 `CapabilityId`,未声明时为空串)。
 pub const MANAGED_ENV_ROOT_CAPABILITY_SLOT: &str = "LLMOS_ROOT_CAPABILITY_SLOT";
+
+/// 受管 worker 环境变量校验与 D7 `CapabilityId` 槽位解析错误。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ManagedWorkerEnvError {
+    /// `LLMOS_ROOT_CAPABILITY_SLOT` 不符合 W82-B D7 契约(`^[0-9a-f]{32}$`)。
+    InvalidRootCapabilitySlot { detail: &'static str },
+    /// 环境变量值包含 NUL 字节。
+    InteriorNul { var: &'static str },
+}
+
+impl fmt::Display for ManagedWorkerEnvError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRootCapabilitySlot { detail } => {
+                write!(
+                    formatter,
+                    "invalid {MANAGED_ENV_ROOT_CAPABILITY_SLOT}: {detail}"
+                )
+            }
+            Self::InteriorNul { var } => {
+                write!(
+                    formatter,
+                    "managed worker env {var} contains an interior NUL byte"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ManagedWorkerEnvError {}
+
+const fn decode_lowercase_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+/// 按 W82-B D7 契约解析 `LLMOS_ROOT_CAPABILITY_SLOT`:严格 32 位小写
+/// ASCII 十六进制字符(`^[0-9a-f]{32}$`)映射为 16 字节权威 [`CapabilityId`],
+/// 不含 slot 序号或 generation。
+///
+/// # Errors
+///
+/// 空串、长度非 32、含大写十六进制/非十六进制字符或分隔符时返回
+/// [`ManagedWorkerEnvError::InvalidRootCapabilitySlot`]。
+pub fn parse_root_capability_slot(slot: &str) -> Result<CapabilityId, ManagedWorkerEnvError> {
+    if slot.is_empty() {
+        return Err(ManagedWorkerEnvError::InvalidRootCapabilitySlot {
+            detail: "slot must not be empty (expected 32 lowercase hex characters)",
+        });
+    }
+    if slot.len() != 32 {
+        return Err(ManagedWorkerEnvError::InvalidRootCapabilitySlot {
+            detail: "slot must be exactly 32 lowercase hex characters",
+        });
+    }
+    let raw = slot.as_bytes();
+    let mut bytes = [0_u8; 16];
+    for (index, out) in bytes.iter_mut().enumerate() {
+        let hi = decode_lowercase_hex_nibble(raw[2 * index]).ok_or(
+            ManagedWorkerEnvError::InvalidRootCapabilitySlot {
+                detail: "slot must contain only lowercase ASCII hex [0-9a-f] without separators",
+            },
+        )?;
+        let lo = decode_lowercase_hex_nibble(raw[2 * index + 1]).ok_or(
+            ManagedWorkerEnvError::InvalidRootCapabilitySlot {
+                detail: "slot must contain only lowercase ASCII hex [0-9a-f] without separators",
+            },
+        )?;
+        *out = (hi << 4) | lo;
+    }
+    Ok(CapabilityId::from_bytes(bytes))
+}
+
+/// 校验受管 worker 三变量环境:
+/// - 所有字段不得包含 NUL 字节;
+/// - `root_capability_slot` 允许为空串(未配置 `slot` 兼容)或严格满足
+///   [`parse_root_capability_slot`] 的 D7 32 位小写十六进制格式;任何非空非法值
+///   fail-closed 拒绝。
+///
+/// # Errors
+///
+/// 任一字段含 NUL 或 `root_capability_slot` 非空且不符合 D7 契约时返回
+/// [`ManagedWorkerEnvError`]。
+pub fn validate_managed_worker_env(env: &ManagedWorkerEnv) -> Result<(), ManagedWorkerEnvError> {
+    if env.auth_endpoint.contains('\0') {
+        return Err(ManagedWorkerEnvError::InteriorNul {
+            var: MANAGED_ENV_AUTH_ENDPOINT,
+        });
+    }
+    if env.process_identity_seed.contains('\0') {
+        return Err(ManagedWorkerEnvError::InteriorNul {
+            var: MANAGED_ENV_PROCESS_IDENTITY_SEED,
+        });
+    }
+    if env.root_capability_slot.contains('\0') {
+        return Err(ManagedWorkerEnvError::InteriorNul {
+            var: MANAGED_ENV_ROOT_CAPABILITY_SLOT,
+        });
+    }
+    if !env.root_capability_slot.is_empty() {
+        let _ = parse_root_capability_slot(&env.root_capability_slot)?;
+    }
+    Ok(())
+}
 
 const DRAIN_PROBE_ATTEMPTS: u32 = 200;
 const DRAIN_PROBE_STEP: Duration = Duration::from_millis(10);
@@ -92,6 +201,7 @@ pub fn spawn_managed_worker(
     cwd: &Path,
     env: &ManagedWorkerEnv,
 ) -> Result<SupervisedSpawn, SupervisorError> {
+    validate_managed_worker_env(env).map_err(SupervisorError::InvalidManagedEnv)?;
     let mut command = prepare_managed_command(program, argv, cwd, env);
     supervisor.spawn_supervised_grouped(request, &mut command)
 }
@@ -196,3 +306,58 @@ pub fn terminate_group_with_escalation(
 const _: fn(KillScope) = |scope| {
     let _ = scope;
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn d7_slot_parser_and_env_validator_work_cross_platform() {
+        let valid = "abcdef0123456789abcdef0123456789";
+        let cap = parse_root_capability_slot(valid).expect("valid 32-hex");
+        assert_eq!(
+            cap.into_bytes(),
+            [
+                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                0x67, 0x89,
+            ]
+        );
+        let env_valid = ManagedWorkerEnv {
+            auth_endpoint: "/tmp/auth.sock".to_owned(),
+            process_identity_seed: "/tmp/op.key".to_owned(),
+            root_capability_slot: valid.to_owned(),
+        };
+        assert!(validate_managed_worker_env(&env_valid).is_ok());
+        let env_empty = ManagedWorkerEnv {
+            root_capability_slot: String::new(),
+            ..env_valid
+        };
+        assert!(validate_managed_worker_env(&env_empty).is_ok());
+
+        for bad in [
+            "",
+            "ABCDEF0123456789ABCDEF0123456789",
+            "abcdef0123456789abcdef012345678",
+            "abcdef0123456789abcdef01234567890",
+            "abcdef0123456789abcdef012345678g",
+            "abcdef01:2345:6789:abcd:ef0123456789",
+            "abcdef01-2345-6789-abcd-ef0123456789",
+        ] {
+            assert!(
+                parse_root_capability_slot(bad).is_err(),
+                "must reject {bad:?}"
+            );
+            if !bad.is_empty() {
+                let env_bad = ManagedWorkerEnv {
+                    auth_endpoint: "/tmp/auth.sock".to_owned(),
+                    process_identity_seed: "/tmp/op.key".to_owned(),
+                    root_capability_slot: bad.to_owned(),
+                };
+                assert!(
+                    validate_managed_worker_env(&env_bad).is_err(),
+                    "must reject env slot {bad:?}"
+                );
+            }
+        }
+    }
+}

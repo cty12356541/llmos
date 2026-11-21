@@ -7,16 +7,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer as _, SigningKey};
+use nlos_capability::{
+    CapabilityRights, CapabilityTarget, DelegateCapabilityRequest, RevokeCapabilityRequest,
+    SignedDelegateCapabilityRequest, SignedRevokeCapabilityRequest, delegate_command_message,
+    revoke_command_message,
+};
+use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, KeyPurpose};
 use nlos_resource::ResourceAuthority;
 use nlos_system_control::auth::dispatch_over_authenticated_socket;
 use nlos_system_control::control::{ControlCommand, dispatch_over_plain_endpoint, receipt_to_hex};
 use nlos_system_control::daemon::{assemble, serve_authenticated_endpoint, serve_plain_endpoint};
-use nlos_types::PackageId;
+use nlos_types::{Generation, IdempotencyKey, NamespaceId, PackageId};
 use nlos_up::{
     BootstrapOptions, DEFAULT_TRIAL_INITIAL_CREDIT, DEFAULT_TRIAL_MAX_API_CALLS,
     DEFAULT_TRIAL_MAX_COMPLETION_TOKENS, DEFAULT_TRIAL_MAX_COST_MICROCREDITS,
     DEFAULT_TRIAL_MAX_PROMPT_TOKENS, DEFAULT_TRIAL_MAX_TOTAL_TOKENS, KeyOrigin,
     SampleAppSeedStatus, TRIAL_ACCOUNT_FILE, bootstrap_trial_root, daemon_options_for_receipt,
+    encode_hex, validate_worker_capability_slot,
 };
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -76,6 +83,14 @@ fn bootstrap_trial_root_is_idempotent_across_replays_and_seeds_llm_budget() {
     let first = bootstrap_trial_root(&options).expect("initial bootstrap");
     assert_eq!(first.key_origin, KeyOrigin::GeneratedDevTrial);
     assert!(!first.principal_replayed);
+    assert!(!first.operator_root_replayed);
+    assert_eq!(first.operator_root_capability_hex.len(), 32);
+    assert!(
+        first
+            .operator_root_capability_hex
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    );
     assert!(!first.llm_budget_replayed);
     assert_eq!(
         first.account_record.initial_credit,
@@ -119,6 +134,15 @@ fn bootstrap_trial_root_is_idempotent_across_replays_and_seeds_llm_budget() {
     let second = bootstrap_trial_root(&options).expect("replayed bootstrap");
     assert_eq!(second.key_origin, KeyOrigin::ReusedExisting);
     assert!(second.principal_replayed);
+    assert!(second.operator_root_replayed);
+    assert_eq!(
+        second.operator_root_capability_id,
+        first.operator_root_capability_id
+    );
+    assert_eq!(
+        second.operator_root_capability_hex,
+        first.operator_root_capability_hex
+    );
     assert!(second.llm_budget_replayed);
     assert_eq!(second.public_key_hex, first.public_key_hex);
     assert_eq!(second.principal_id, first.principal_id);
@@ -175,7 +199,14 @@ async fn bootstrap_trial_root_with_sample_app_assembles_daemon_and_serves_dual_i
         daemon.bootstrapped_principal_hex.as_deref(),
         Some(receipt.principal_hex.as_str())
     );
-    assert!(daemon.operator_root.is_some());
+    let issuance = daemon
+        .operator_root
+        .as_ref()
+        .expect("operator root issuance present");
+    assert_eq!(
+        issuance.record.handle.capability_id,
+        receipt.operator_root_capability_id
+    );
 
     // Confirm the assembled daemon observes both the seeded LLM budget and the installed sample app.
     let budget = daemon
@@ -285,6 +316,7 @@ fn cli_init_and_env_powershell_posix_succeed_without_secret_leakage() {
     );
     let init_stdout = String::from_utf8_lossy(&init_out.stdout);
     assert!(init_stdout.contains("NLOS_UP_INIT status=ok"));
+    assert!(init_stdout.contains("operator_root_cap = "));
     assert!(init_stdout.contains("http://127.0.0.1:18317"));
     assert!(!init_stdout.contains("SYNTHETIC_DUMMY"));
 
@@ -385,6 +417,7 @@ fn cli_desktop_dry_run_verifies_embedded_daemon_and_env_handoff() {
     );
     let dry_stdout = String::from_utf8_lossy(&dry_out.stdout);
     assert!(dry_stdout.contains("READY service=system_control"));
+    assert!(dry_stdout.contains("operator_root_capability="));
     assert!(dry_stdout.contains("DRY_RUN desktop_dir="));
     for required in [
         "ENV LLMOS_DESKTOP_SOCKET=",
@@ -823,4 +856,200 @@ fn cli_chat_and_intent_charge_trial_5d_budget_with_monotonic_receipts_and_safety
     assert!(!intent_stdout.contains("SYNTHETIC_EGRESS_TOKEN_DO_NOT_LEAK"));
 
     assert_compiled_intent_and_durable_budget(&intent_stdout, &root_dir);
+}
+
+fn delegate_capability_to(
+    daemon: &nlos_system_control::daemon::SystemControlDaemon,
+    operator_key: &SigningKey,
+    operator_principal: nlos_types::PrincipalId,
+    delegator_key_id: nlos_types::KeyId,
+    recipient_key_id: nlos_types::KeyId,
+    idem_byte: u8,
+) -> String {
+    let root_record = daemon.operator_root.expect("operator_root").record;
+    let capabilities = daemon.capabilities.as_deref().expect("capabilities");
+    let cmd = DelegateCapabilityRequest {
+        parent: root_record.handle,
+        delegator_key_id,
+        recipient_key_id,
+        target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0; 16])),
+        rights: CapabilityRights::SEMANTIC_APPEND,
+        purpose_digest: None,
+        valid_from_ms: 0,
+        valid_until_ms: 4_102_444_800_000,
+        delegation_depth_remaining: 1,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([idem_byte; 16]),
+        delegated_at_ms: 1,
+    };
+    let cap = capabilities
+        .delegate_signed(
+            &daemon.identity,
+            SignedDelegateCapabilityRequest {
+                command: cmd,
+                signer: operator_principal,
+                signature: operator_key.sign(&delegate_command_message(cmd)).to_bytes(),
+            },
+        )
+        .expect("delegate capability")
+        .record();
+    encode_hex(cap.handle.capability_id.as_bytes())
+}
+
+fn bootstrap_secondary_key_id(
+    daemon: &nlos_system_control::daemon::SystemControlDaemon,
+) -> nlos_types::KeyId {
+    let other_key = SigningKey::from_bytes(&[0x7a; 32]);
+    match daemon
+        .identity
+        .bootstrap_principal(BootstrapPrincipalRequest {
+            principal_profile_digest: [0x44; 32],
+            control_domain_policy_digest: [0x55; 32],
+            public_key: other_key.verifying_key().to_bytes(),
+            key_purpose: KeyPurpose::SemanticSigning,
+            key_valid_from_ms: 0,
+            key_valid_until_ms: 4_102_444_800_000,
+            idempotency_key: IdempotencyKey::from_bytes([0x66; 16]),
+            created_at_ms: 0,
+        })
+        .expect("bootstrap other principal")
+    {
+        BootstrapDecision::Created(b) | BootstrapDecision::Replayed(b) => b.key_id,
+    }
+}
+
+fn revoke_operator_root(
+    daemon: &nlos_system_control::daemon::SystemControlDaemon,
+    operator_key: &SigningKey,
+    operator_principal: nlos_types::PrincipalId,
+    operator_key_id: nlos_types::KeyId,
+) {
+    let root_record = daemon.operator_root.expect("operator_root").record;
+    let revoke_cmd = RevokeCapabilityRequest {
+        handle: root_record.handle,
+        revoker_key_id: operator_key_id,
+        idempotency_key: IdempotencyKey::from_bytes([0x99; 16]),
+        revoked_at_ms: 2,
+    };
+    daemon
+        .capabilities
+        .as_deref()
+        .expect("capabilities")
+        .revoke_signed(
+            &daemon.identity,
+            SignedRevokeCapabilityRequest {
+                command: revoke_cmd,
+                signer: operator_principal,
+                signature: operator_key
+                    .sign(&revoke_command_message(revoke_cmd))
+                    .to_bytes(),
+            },
+        )
+        .expect("revoke operator root");
+}
+
+#[tokio::test]
+async fn worker_capability_slot_authority_validation_positive_and_negative_gates() {
+    let temp = TempTrialDir::new("cap-slot-auth");
+    let receipt = bootstrap_trial_root(
+        &BootstrapOptions::new()
+            .with_root(&temp.0)
+            .without_default_keypool_probe(),
+    )
+    .expect("bootstrap");
+    let (daemon, endpoints) = assemble(
+        daemon_options_for_receipt(&receipt),
+        tokio::runtime::Handle::current(),
+    )
+    .expect("assemble daemon");
+
+    assert_eq!(
+        validate_worker_capability_slot(&daemon, receipt.principal_id, "py", "").expect("empty"),
+        None
+    );
+    assert_eq!(
+        validate_worker_capability_slot(
+            &daemon,
+            receipt.principal_id,
+            "adapter",
+            &receipt.operator_root_capability_hex,
+        )
+        .expect("real operator root capability accepted"),
+        Some(receipt.operator_root_capability_id)
+    );
+    for forged_or_bad in [
+        "deadbeefdeadbeefdeadbeefdeadbeef",
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef",
+        "01234567-89ab-cdef-0123-456789abcdef",
+    ] {
+        assert!(
+            validate_worker_capability_slot(&daemon, receipt.principal_id, "bad", forged_or_bad)
+                .is_err(),
+            "expected rejection for {forged_or_bad:?}"
+        );
+    }
+
+    let operator_seed = parse_seed32(&fs::read_to_string(&receipt.key_file).expect("read seed"));
+    let operator_key = SigningKey::from_bytes(&operator_seed);
+    let operator_key_id = daemon
+        .identity
+        .inspect_current_principal_binding(receipt.principal_id)
+        .expect("inspect operator binding")
+        .key_id;
+    let other_key_id = bootstrap_secondary_key_id(&daemon);
+    let other_cap_hex = delegate_capability_to(
+        &daemon,
+        &operator_key,
+        receipt.principal_id,
+        operator_key_id,
+        other_key_id,
+        0x77,
+    );
+    let mismatch_err = validate_worker_capability_slot(
+        &daemon,
+        receipt.principal_id,
+        "other-holder",
+        &other_cap_hex,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{mismatch_err}").contains("holder mismatch"),
+        "{mismatch_err}"
+    );
+
+    let child_hex = delegate_capability_to(
+        &daemon,
+        &operator_key,
+        receipt.principal_id,
+        operator_key_id,
+        operator_key_id,
+        0x88,
+    );
+    assert!(
+        validate_worker_capability_slot(&daemon, receipt.principal_id, "child", &child_hex)
+            .expect("delegated active capability accepted")
+            .is_some()
+    );
+
+    revoke_operator_root(
+        &daemon,
+        &operator_key,
+        receipt.principal_id,
+        operator_key_id,
+    );
+    for slot in [
+        receipt.operator_root_capability_hex.as_str(),
+        child_hex.as_str(),
+    ] {
+        assert!(
+            validate_worker_capability_slot(&daemon, receipt.principal_id, "revoked", slot)
+                .is_err()
+        );
+    }
+    let _ = Generation::INITIAL;
+
+    daemon.stop_worker();
+    daemon.stop_materialization();
+    drop(endpoints);
 }

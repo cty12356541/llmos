@@ -6,11 +6,11 @@
 //! ```text
 //! worker = <name> <interpreter> <argv...>   # argv 至少 1 个 token,原样透传
 //! cwd  = <name> <dir>    # 可选;相对路径,相对清单目录;仅可引用已声明的 worker
-//! slot = <name> <token>  # 可选;单 token,字节透传;仅可引用已声明的 worker
+//! slot = <name> <token>  # 可选;32 位小写十六进制(W82-B D7 16B CapabilityId);仅可引用已声明的 worker
 //! ```
 //!
-//! 刻意独立于 `package.manifest`(不扩展包格式);`slot` 值格式契约对表
-//! W82-B 设计(见 spec §2 冻结决策 2)。
+//! 刻意独立于 `package.manifest`(不扩展包格式);`slot` 值严格遵循
+//! W82-B D7 契约 `^[0-9a-f]{32}$`(未写 `slot` 行时为空字符串向后兼容)。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,17 @@ use std::path::{Path, PathBuf};
 /// 受管 worker 名字段节数上限(与 nlos-artifact entry-name 常量同量级)。
 pub const MAX_WORKER_NAME_BYTES: usize = 128;
 const MAX_TOKEN_BYTES: usize = 4096;
+
+/// 校验 `LLMOS_ROOT_CAPABILITY_SLOT` 值是否符合 W82-B D7 契约:
+/// 严格 32 位小写 ASCII 十六进制字符(`^[0-9a-f]{32}$`,即 16 字节权威
+/// `CapabilityId`,不含 slot 序号、generation 或分隔符)。
+#[must_use]
+pub fn is_valid_root_capability_slot(slot: &str) -> bool {
+    slot.len() == 32
+        && slot
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
 
 /// 一个受管 worker 单元:解释器、透传 argv、可选相对 cwd、字节透传 slot。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +175,14 @@ pub fn parse_managed_worker_manifest(
                         detail: format!("duplicate slot for worker {name:?}"),
                     });
                 }
+                if !is_valid_root_capability_slot(&token) {
+                    return Err(ManagedWorkerManifestError::Parse {
+                        line: line_no,
+                        detail: format!(
+                            "slot for worker {name:?} must be 32 lowercase hex characters (D7 CapabilityId), got {token:?}"
+                        ),
+                    });
+                }
                 units[index].root_capability_slot = token;
             }
             other => {
@@ -301,12 +320,14 @@ fn scalar_line(line: &str) -> Result<(String, String), String> {
 mod tests {
     use super::*;
 
+    const ADAPTER_SLOT: &str = "0123456789abcdef0123456789abcdef";
+    const BRAIN_SLOT: &str = "fedcba9876543210fedcba9876543210";
     const QQ_AGENT: &str = "\
 # qq-agent 受管双进程示例
 worker = adapter python3 adapter/main.py --port 7901
-slot = adapter root-cap-placeholder
+slot = adapter 0123456789abcdef0123456789abcdef
 worker = brain python3 brain/main.py --mode resident
-slot = brain root-cap-placeholder
+slot = brain fedcba9876543210fedcba9876543210
 ";
 
     #[test]
@@ -325,8 +346,9 @@ slot = brain root-cap-placeholder
             ]
         );
         assert_eq!(adapter.cwd, None);
-        assert_eq!(adapter.root_capability_slot, "root-cap-placeholder");
+        assert_eq!(adapter.root_capability_slot, ADAPTER_SLOT);
         assert_eq!(manifest.units[1].name, "brain");
+        assert_eq!(manifest.units[1].root_capability_slot, BRAIN_SLOT);
         assert_eq!(manifest.units[1].argv.last().unwrap(), "resident");
     }
 
@@ -368,8 +390,50 @@ slot = brain root-cap-placeholder
     fn rejects_duplicate_cwd_and_slot_for_same_worker() {
         let text = "worker = a /bin/sh a.sh\ncwd = a x\ncwd = a y\n";
         assert!(parse_managed_worker_manifest(text).is_err());
-        let text = "worker = a /bin/sh a.sh\nslot = a x\nslot = a y\n";
-        assert!(parse_managed_worker_manifest(text).is_err());
+        let text =
+            format!("worker = a /bin/sh a.sh\nslot = a {ADAPTER_SLOT}\nslot = a {BRAIN_SLOT}\n");
+        let err = parse_managed_worker_manifest(&text).unwrap_err();
+        assert!(format!("{err}").contains("duplicate slot"), "{err}");
+    }
+
+    #[test]
+    fn accepts_valid_d7_slot_and_omitted_slot_compatibility() {
+        assert!(is_valid_root_capability_slot(ADAPTER_SLOT));
+        assert!(is_valid_root_capability_slot(&"0".repeat(32)));
+        assert!(is_valid_root_capability_slot(&"f".repeat(32)));
+
+        let omitted = parse_managed_worker_manifest("worker = a /bin/sh a.sh\n").expect("omitted");
+        assert_eq!(omitted.units[0].root_capability_slot, "");
+    }
+
+    #[test]
+    fn rejects_non_d7_root_capability_slots() {
+        let invalid_cases = [
+            "",
+            "root-cap-placeholder",
+            "0123456789ABCDEF0123456789ABCDEF",     // uppercase
+            "0123456789abcdef0123456789abcdeF",     // mixed case
+            "0123456789abcdef0123456789abcde",      // 31 chars (too short)
+            "0123456789abcdef0123456789abcdef0",    // 33 chars (too long)
+            "0123456789abcdef0123456789abcdeg",     // non-hex char 'g'
+            "01234567-89ab-cdef-0123-456789abcdef", // hyphen separator
+            "01234567:89ab:cdef:0123:456789abcdef", // colon separator
+            "0x0123456789abcdef0123456789abcdef",   // 0x prefix
+        ];
+        for bad in invalid_cases {
+            assert!(
+                !is_valid_root_capability_slot(bad),
+                "expected invalid slot {bad:?}"
+            );
+            if !bad.is_empty() {
+                let text = format!("worker = a /bin/sh a.sh\nslot = a {bad}\n");
+                let err = parse_managed_worker_manifest(&text).unwrap_err();
+                assert!(
+                    format!("{err}").contains("32 lowercase hex"),
+                    "unexpected error for {bad:?}: {err}"
+                );
+            }
+        }
     }
 
     #[test]

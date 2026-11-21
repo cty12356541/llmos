@@ -6,5 +6,5 @@ pub mod managed_workers;
 
 pub use managed_workers::{
     MAX_WORKER_NAME_BYTES, ManagedWorkerManifest, ManagedWorkerManifestError, ManagedWorkerUnit,
-    parse_managed_worker_manifest, read_managed_worker_manifest,
+    is_valid_root_capability_slot, parse_managed_worker_manifest, read_managed_worker_manifest,
 };
