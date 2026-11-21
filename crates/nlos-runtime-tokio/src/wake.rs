@@ -8,6 +8,7 @@
 //! blocks on fiber execution.
 
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -44,10 +45,128 @@ impl WaitKey {
         }
     }
 
-    /// Whether this wait belongs to the given fiber generation. The runtime
-    /// lifecycle uses it to purge a terminated fiber's waits.
+    /// Whether this wait belongs to the given fiber generation.
+    #[cfg(test)]
     pub(crate) fn for_fiber(&self, fiber_id: ExecutionFiberId, generation: Generation) -> bool {
         self.fiber_id == fiber_id && self.fiber_generation == generation
+    }
+}
+
+/// In-memory Operation wait registry pairing the primary `WaitKey -> WaitEntry`
+/// map with a secondary `(ExecutionFiberId, Generation) -> HashSet<WaitKey>`
+/// index so terminal fiber cleanup (`purge_fiber`) runs in O(k) time over
+/// that fiber's own waits rather than scanning the entire registry.
+///
+/// Invariant: `by_fiber` indexes the exact set of keys present in `map`, and
+/// empty inner sets are removed immediately so terminated fibers leave zero
+/// residual metadata.
+pub(crate) struct OperationWaitRegistry {
+    map: HashMap<WaitKey, WaitEntry>,
+    by_fiber: HashMap<(ExecutionFiberId, Generation), HashSet<WaitKey>>,
+}
+
+impl OperationWaitRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            by_fiber: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn get(&self, key: &WaitKey) -> Option<&WaitEntry> {
+        self.map.get(key)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, key: &WaitKey) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: WaitKey, entry: WaitEntry) -> Option<WaitEntry> {
+        self.by_fiber
+            .entry((key.fiber_id, key.fiber_generation))
+            .or_default()
+            .insert(key);
+        self.map.insert(key, entry)
+    }
+
+    pub(crate) fn remove(&mut self, key: &WaitKey) -> Option<WaitEntry> {
+        let removed = self.map.remove(key)?;
+        self.deindex_key(key);
+        Some(removed)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
+        self.by_fiber.clear();
+    }
+
+    /// Delivers a wake to a live `Pending` entry (re-buffering under `key` if
+    /// its receiver was already dropped) or buffers an early wake when `key` is
+    /// vacant, keeping `by_fiber` synchronized across every transition. Returns
+    /// `true` when a `Pending` wait was consumed so the caller can transition
+    /// the fiber out of `WaitingIo`.
+    pub(crate) fn deliver_or_buffer(&mut self, key: WaitKey) -> bool {
+        match self.map.entry(key) {
+            Entry::Occupied(entry) => {
+                if matches!(entry.get(), WaitEntry::Pending(_))
+                    && let WaitEntry::Pending(sender) = entry.remove()
+                {
+                    if sender.send(()).is_err() {
+                        // The receiver was dropped or superseded: re-buffer
+                        // under the same key. `by_fiber` already indexes `key`
+                        // for `(key.fiber_id, key.fiber_generation)`.
+                        debug_assert!(
+                            self.by_fiber
+                                .get(&(key.fiber_id, key.fiber_generation))
+                                .is_some_and(|keys| keys.contains(&key))
+                        );
+                        self.map.insert(key, WaitEntry::Buffered);
+                    } else {
+                        self.deindex_key(&key);
+                    }
+                    return true;
+                }
+                false
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(WaitEntry::Buffered);
+                self.by_fiber
+                    .entry((key.fiber_id, key.fiber_generation))
+                    .or_default()
+                    .insert(key);
+                false
+            }
+        }
+    }
+
+    /// Removes every wait key belonging to `(fiber_id, generation)` in O(k)
+    /// time and drops the entire `by_fiber` bucket so zero residual metadata
+    /// leaks after termination.
+    pub(crate) fn purge_fiber(&mut self, fiber_id: ExecutionFiberId, generation: Generation) {
+        if let Some(keys) = self.by_fiber.remove(&(fiber_id, generation)) {
+            for key in keys {
+                self.map.remove(&key);
+            }
+        }
+    }
+
+    fn deindex_key(&mut self, key: &WaitKey) {
+        if let Some(keys) = self.by_fiber.get_mut(&(key.fiber_id, key.fiber_generation)) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.by_fiber.remove(&(key.fiber_id, key.fiber_generation));
+            }
+        }
     }
 }
 
@@ -184,33 +303,8 @@ impl WakeSink for TokioWakeSink {
         if is_terminal(*lock_unpoisoned(&record.state)) {
             return Ok(WakeOutcome::NotWaiting);
         }
-        let mut rebuffer = false;
-        match waits.entry(key) {
-            Entry::Occupied(entry) => {
-                if matches!(entry.get(), WaitEntry::Pending(_)) {
-                    // Consuming the entry is what makes a duplicate delivery a
-                    // no-op instead of a second logical wake. The signal is
-                    // the entire handoff: `wake` never awaits the fiber.
-                    if let WaitEntry::Pending(sender) = entry.remove() {
-                        if sender.send(()).is_err() {
-                            // The receiver is gone (the wait was dropped or
-                            // superseded): re-buffer the wake so a later
-                            // registration for the same key still resolves
-                            // immediately instead of pending forever.
-                            rebuffer = true;
-                        }
-                        record.resume_from_wait();
-                    }
-                }
-            }
-            Entry::Vacant(entry) => {
-                // Early wake on a live fiber: buffer by key so a later
-                // registration for the same Operation resolves immediately.
-                entry.insert(WaitEntry::Buffered);
-            }
-        }
-        if rebuffer {
-            waits.insert(key, WaitEntry::Buffered);
+        if waits.deliver_or_buffer(key) {
+            record.resume_from_wait();
         }
         // A repeat wake that hits a buffered or just-consumed key still
         // reports `Delivered`, as at-least-once redelivery requires.
@@ -512,5 +606,123 @@ mod tests {
         let outcome = delivery.join().expect("delivery thread");
         shutdown.join().expect("shutdown thread");
         assert_eq!(outcome, Err(RuntimeError::ShuttingDown));
+    }
+
+    fn assert_registry_invariants(registry: &super::OperationWaitRegistry) {
+        let mut indexed_total = 0_usize;
+        for ((fiber_id, generation), keys) in &registry.by_fiber {
+            assert!(
+                !keys.is_empty(),
+                "empty by_fiber bucket leaked for ({fiber_id:?}, {generation:?})"
+            );
+            for key in keys {
+                assert!(key.for_fiber(*fiber_id, *generation));
+                assert!(
+                    registry.contains_key(key),
+                    "by_fiber contains dangling key not present in map"
+                );
+                indexed_total += 1;
+            }
+        }
+        assert_eq!(
+            indexed_total,
+            registry.len(),
+            "by_fiber key count must exactly match map len"
+        );
+        for key in registry.map.keys() {
+            assert!(
+                registry
+                    .by_fiber
+                    .get(&(key.fiber_id, key.fiber_generation))
+                    .is_some_and(|keys| keys.contains(key)),
+                "map key missing from by_fiber index"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_wait_registry_syncs_by_fiber_and_purges_by_generation() {
+        let mut registry = super::OperationWaitRegistry::new();
+        assert!(registry.is_empty());
+
+        let gen1 = Generation::INITIAL;
+        let gen2 = gen1.checked_next().expect("next generation");
+        let fiber0 = nlos_runtime::FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes([0; 16]),
+            generation: gen1,
+        };
+        let fiber0_gen2 = nlos_runtime::FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes([0; 16]),
+            generation: gen2,
+        };
+        let fiber1 = nlos_runtime::FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes(id_bytes(1)),
+            generation: gen1,
+        };
+
+        let k0_op1 = super::WaitKey::new(&fiber0, operation(1), gen1);
+        let k0_op2 = super::WaitKey::new(&fiber0, operation(2), gen1);
+        let k0_gen2_op1 = super::WaitKey::new(&fiber0_gen2, operation(1), gen1);
+        let k1_op1 = super::WaitKey::new(&fiber1, operation(1), gen1);
+
+        // Insert + supersede same key must not duplicate in by_fiber.
+        let (tx_old, _rx_old) = tokio::sync::oneshot::channel();
+        let (tx_new, mut rx_new) = tokio::sync::oneshot::channel();
+        assert!(
+            registry
+                .insert(k0_op1, super::WaitEntry::Pending(tx_old))
+                .is_none()
+        );
+        assert!(
+            registry
+                .insert(k0_op1, super::WaitEntry::Pending(tx_new))
+                .is_some()
+        );
+        assert_registry_invariants(&registry);
+
+        // Deliver consumes Pending and deindexes from by_fiber.
+        assert!(registry.deliver_or_buffer(k0_op1));
+        assert_eq!(rx_new.try_recv(), Ok(()));
+        assert!(!registry.contains_key(&k0_op1));
+        assert_registry_invariants(&registry);
+
+        // Dropped receiver rebuffers under the same key and stays indexed.
+        let (tx_drop, rx_drop) = tokio::sync::oneshot::channel();
+        registry.insert(k0_op1, super::WaitEntry::Pending(tx_drop));
+        drop(rx_drop);
+        assert!(registry.deliver_or_buffer(k0_op1));
+        assert!(matches!(
+            registry.get(&k0_op1),
+            Some(super::WaitEntry::Buffered)
+        ));
+        assert_registry_invariants(&registry);
+
+        // Early wake buffers directly into map and by_fiber; repeat wake is a no-op.
+        assert!(!registry.deliver_or_buffer(k0_op2));
+        assert!(!registry.deliver_or_buffer(k0_op2));
+        assert_registry_invariants(&registry);
+
+        // Sibling generation and sibling fiber entries remain isolated.
+        let (tx_gen2, _rx_gen2) = tokio::sync::oneshot::channel();
+        let (tx_f1, _rx_f1) = tokio::sync::oneshot::channel();
+        registry.insert(k0_gen2_op1, super::WaitEntry::Pending(tx_gen2));
+        registry.insert(k1_op1, super::WaitEntry::Pending(tx_f1));
+        assert_eq!(registry.len(), 4);
+        assert_registry_invariants(&registry);
+
+        // Remove one key, then purge (fiber0, gen1) -> removes k0_op1 only, leaving gen2 & fiber1.
+        assert!(registry.remove(&k0_op2).is_some());
+        assert_registry_invariants(&registry);
+        registry.purge_fiber(fiber0.fiber_id, fiber0.generation);
+        assert!(!registry.contains_key(&k0_op1));
+        assert!(registry.contains_key(&k0_gen2_op1));
+        assert!(registry.contains_key(&k1_op1));
+        assert_eq!(registry.len(), 2);
+        assert_registry_invariants(&registry);
+
+        registry.clear();
+        assert!(registry.is_empty());
+        assert!(registry.by_fiber.is_empty());
+        assert_registry_invariants(&registry);
     }
 }

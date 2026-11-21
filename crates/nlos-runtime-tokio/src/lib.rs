@@ -46,8 +46,8 @@ pub use replay::{
     ResumePlan, ResumeRejection, ResumeReport,
 };
 pub use snapshot::{SnapshotResumable, SnapshotResumeReport};
+use wake::OperationWaitRegistry;
 pub use wake::{OperationWait, TokioWakeSink, WaitOutcome};
-use wake::{WaitEntry, WaitKey};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ScopeKey {
@@ -799,7 +799,7 @@ impl ScopeRegistry {
 struct Inner {
     fibers: Mutex<FiberRegistry>,
     scopes: Mutex<ScopeRegistry>,
-    waits: Mutex<HashMap<WaitKey, WaitEntry>>,
+    waits: Mutex<OperationWaitRegistry>,
     channel_waits: Mutex<ChannelWaitRegistry>,
     /// Monotonic count of orphaned Channel-wait buffer entries dropped by
     /// the ORPHAN-001 capacity bound; never resets. Lock-free so
@@ -947,7 +947,7 @@ impl TokioRuntimeAdapter {
             inner: Arc::new(Inner {
                 fibers: Mutex::new(FiberRegistry::new(config.tombstone_capacity)),
                 scopes: Mutex::new(ScopeRegistry::new(config.scope_tombstone_capacity)),
-                waits: Mutex::new(HashMap::new()),
+                waits: Mutex::new(OperationWaitRegistry::new()),
                 channel_waits: Mutex::new(ChannelWaitRegistry::new(config.orphan_buffer_capacity)),
                 orphan_buffer_dropped: AtomicU64::new(0),
                 process_cancel_sweeps: AtomicU64::new(0),
@@ -989,6 +989,21 @@ impl TokioRuntimeAdapter {
     #[must_use]
     pub fn registered_scopes(&self) -> usize {
         lock_unpoisoned(&self.inner.scopes).len()
+    }
+
+    /// Number of live Operation wait entries (both pending and buffered)
+    /// currently tracked in the runtime's Operation wait registry.
+    #[must_use]
+    pub fn wait_count(&self) -> usize {
+        lock_unpoisoned(&self.inner.waits).len()
+    }
+
+    /// Number of live Channel sequence wait entries (pending, fiber-buffered,
+    /// and unclaimed orphaned buffer entries) currently tracked in the
+    /// runtime's Channel wait registry.
+    #[must_use]
+    pub fn channel_wait_count(&self) -> usize {
+        lock_unpoisoned(&self.inner.channel_waits).len()
     }
 
     /// Resolves the cancellation scope for a spawn, creating it on first
@@ -1302,9 +1317,9 @@ async fn run_fiber(
     // terminal critical section reached below (FIBER-REAP-003).
     let mut waits = lock_unpoisoned(&inner.waits);
     let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
+    waits.purge_fiber(spec.fiber_id, spec.fiber_generation);
+    channel_waits.purge_fiber(spec.fiber_id, spec.fiber_generation);
     record.finish_terminal(state, started_at, finished_at, &inner);
-    waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
-    channel_waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
 }
 
 fn fiber_exit_from_state(state: FiberState) -> FiberExit {
