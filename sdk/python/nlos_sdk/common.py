@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
-from nlos.sabi.v1 import envelope_pb2 as _pb
+
+def _ensure_gen_python_path() -> None:
+    """Ensure `<repo_root>/gen/python` is importable in editable repo checkouts."""
+
+    try:
+        import nlos.sabi.v1.envelope_pb2  # noqa: F401
+    except ModuleNotFoundError:
+        resolved = Path(__file__).resolve()
+        if len(resolved.parents) > 3:
+            candidate = resolved.parents[3] / "gen" / "python"
+            if candidate.is_dir():
+                candidate_str = str(candidate)
+                if candidate_str not in sys.path:
+                    sys.path.insert(0, candidate_str)
+
+
+_ensure_gen_python_path()
+
+from nlos.sabi.v1 import envelope_pb2 as _pb  # noqa: E402
 
 _ID_BYTES = 16
 _SHA256_BYTES = 32
@@ -12,6 +32,7 @@ _MAX_ACTIVITY_CONTEXT_BYTES = 4 * 1024
 _MAX_CAPABILITY_HANDLES = 64
 _MAX_RECEIPTS = 64
 _MAX_SAFE_MESSAGE_BYTES = 512
+_MAX_EXTENSION_IDS = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +53,7 @@ class CommonSemanticsError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class SabiChannelSpec:
-    """Frozen SABI v1.0 channel descriptor for client-side compatibility gates."""
+    """Frozen SABI v1.x channel descriptor for client-side compatibility gates."""
 
     name: str
     major: int
@@ -52,6 +73,9 @@ SABI_V1_CHANNELS: dict[str, SabiChannelSpec] = {
     ),
     "nlos.sabi.DriverProvider": SabiChannelSpec("nlos.sabi.DriverProvider", 1, 0),
     "nlos.sabi.ChannelControl": SabiChannelSpec("nlos.sabi.ChannelControl", 1, 0),
+    "nlos.sabi.LlmGateway": SabiChannelSpec("nlos.sabi.LlmGateway", 1, 0),
+    "nlos.sabi.ToolSandbox": SabiChannelSpec("nlos.sabi.ToolSandbox", 1, 0),
+    "nlos.sabi.BlobReference": SabiChannelSpec("nlos.sabi.BlobReference", 1, 0),
 }
 
 
@@ -74,6 +98,14 @@ def validate_schema_compatibility(
     spec = SABI_V1_CHANNELS.get(identity.name)
     if spec is None and supported_major is None:
         _fail("UNKNOWN_SCHEMA", f"unregistered SABI schema {identity.name!r}")
+    if (
+        len(identity.critical_extension_ids) > _MAX_EXTENSION_IDS
+        or len(identity.non_critical_extension_ids) > _MAX_EXTENSION_IDS
+    ):
+        _fail(
+            "E_ABI_VERSION",
+            f"schema extension id count exceeds {_MAX_EXTENSION_IDS} on {identity.name}",
+        )
 
     req_major = supported_major if supported_major is not None else spec.major  # type: ignore[union-attr]
     if identity.major != req_major:

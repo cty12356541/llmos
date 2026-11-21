@@ -5,14 +5,24 @@ from __future__ import annotations
 import secrets
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from google.protobuf.message import DecodeError
 
+from .common import (
+    MethodSemantics,
+    validate_request_context,
+    validate_response_context,
+)
 from .local_rpc import (
     IpcError,
     LocalRpcClient,
     TransportConfig,
     _ensure_gen_python_path,
+)
+from .principal_session import (
+    SessionIdentity,
+    connect_authenticated as _connect_authenticated_rpc,
 )
 
 _ensure_gen_python_path()
@@ -32,6 +42,7 @@ ENVELOPE_SCHEMA = "nlos.sabi.Envelope"
 DIRECTORY_SCHEMA = "nlos.sabi.ServiceDirectory"
 DIRECTORY_SERVICE = "service_directory"
 MAX_DIRECTORY_PAYLOAD_BYTES = 64 * 1024
+_QUERY_SEMANTICS = MethodSemantics(side_effecting=False, long_running=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +90,30 @@ class DirectoryNegotiationError(Exception):
 class ServiceDirectoryClient:
     """Resolver reached through a trusted Namespace/bootstrap endpoint."""
 
-    def __init__(self, rpc: LocalRpcClient) -> None:
+    def __init__(
+        self,
+        rpc: LocalRpcClient,
+        *,
+        principal_id: bytes | None = None,
+        application_id: bytes | None = None,
+        process_id: bytes | None = None,
+        process_generation: int = 1,
+    ) -> None:
         self._rpc = rpc
+        self._identity = SessionIdentity(
+            principal_id=(
+                principal_id if principal_id is not None else secrets.token_bytes(16)
+            ),
+            application_id=(
+                application_id
+                if application_id is not None
+                else secrets.token_bytes(16)
+            ),
+            process_id=(
+                process_id if process_id is not None else secrets.token_bytes(16)
+            ),
+            process_generation=process_generation,
+        )
 
     @classmethod
     async def connect(
@@ -93,6 +126,35 @@ class ServiceDirectoryClient:
         return cls(
             await LocalRpcClient.connect(trusted_bootstrap_endpoint, config)
         )
+
+    @classmethod
+    async def connect_authenticated(
+        cls,
+        endpoint: str,
+        *,
+        signer: Any,
+        principal_id: bytes,
+        config: TransportConfig | None = None,
+        application_id: bytes | None = None,
+        process_id: bytes | None = None,
+        process_generation: int = 1,
+    ) -> ServiceDirectoryClient:
+        """Handshake once and return a ServiceDirectoryClient bound to that connection."""
+
+        rpc = await _connect_authenticated_rpc(
+            endpoint, signer, principal_id, config
+        )
+        try:
+            return cls(
+                rpc,
+                principal_id=principal_id,
+                application_id=application_id,
+                process_id=process_id,
+                process_generation=process_generation,
+            )
+        except BaseException:
+            await rpc.close()
+            raise
 
     @classmethod
     async def negotiate_and_connect(
@@ -117,7 +179,7 @@ class ServiceDirectoryClient:
 
         transport = _platform_transport()
         directory_request = NegotiateServiceRequest()
-        _set_identity(directory_request.schema, DIRECTORY_SCHEMA)
+        _set_identity(directory_request.schema, DIRECTORY_SCHEMA, minor=0)
         directory_request.service = requirement.service
         directory_request.schema_name = requirement.schema_name
         directory_request.major = requirement.major
@@ -134,12 +196,34 @@ class ServiceDirectoryClient:
             )
 
         exchange = ExchangeRequest()
-        _set_identity(exchange.envelope.schema, ENVELOPE_SCHEMA)
+        _set_identity(exchange.envelope.schema, ENVELOPE_SCHEMA, minor=1)
         exchange.envelope.request_id = secrets.token_bytes(16)
         exchange.envelope.service = DIRECTORY_SERVICE
         exchange.envelope.method = "negotiate"
         exchange.envelope.payload = payload
+        req_ctx = exchange.envelope.request_context
+        req_ctx.caller.principal_id = self._identity.principal_id
+        req_ctx.caller.application_id = self._identity.application_id
+        req_ctx.caller.process_id = self._identity.process_id
+        req_ctx.caller.process_generation = self._identity.process_generation
+        req_ctx.correlation_id = secrets.token_bytes(16)
+        validate_request_context(exchange.envelope, _QUERY_SEMANTICS, 0)
+
         response = await self._rpc.exchange(exchange)
+        if response.envelope.WhichOneof("common_context") == "response_context":
+            resp_ctx = validate_response_context(response.envelope, _QUERY_SEMANTICS)
+            if resp_ctx.correlation_id != req_ctx.correlation_id:
+                raise IpcError(
+                    "CORRELATION_ID_MISMATCH",
+                    "ServiceDirectory response correlation_id does not match request",
+                )
+            if resp_ctx.HasField("failure"):
+                raise IpcError(
+                    "SERVICE_ERROR",
+                    f"ServiceDirectory envelope failed: code={resp_ctx.failure.code}, "
+                    f"detail={resp_ctx.failure.safe_message!r}",
+                )
+
         response_payload = response.envelope.payload
         if not response_payload or len(response_payload) > MAX_DIRECTORY_PAYLOAD_BYTES:
             raise IpcError(
@@ -148,21 +232,21 @@ class ServiceDirectoryClient:
             )
         try:
             negotiation = NegotiateServiceResponse.FromString(response_payload)
-        except DecodeError as error:
+        except DecodeError:
             raise IpcError(
                 "COMPATIBILITY",
                 "malformed ServiceDirectory response",
-            ) from error
+            ) from None
         _require_directory_identity(negotiation)
         result = negotiation.WhichOneof("result")
         if result == "error":
             try:
                 DirectoryErrorCode.Name(negotiation.error.code)
-            except ValueError as error:
+            except ValueError:
                 raise IpcError(
                     "COMPATIBILITY",
                     "ServiceDirectory returned an unknown error code",
-                ) from error
+                ) from None
             if negotiation.error.code == DIRECTORY_ERROR_CODE_UNSPECIFIED:
                 raise IpcError(
                     "COMPATIBILITY",
@@ -188,10 +272,10 @@ class ServiceDirectoryClient:
         await self._rpc.close()
 
 
-def _set_identity(identity: object, name: str) -> None:
+def _set_identity(identity: object, name: str, *, minor: int = 0) -> None:
     identity.name = name
     identity.major = 1
-    identity.minor = 0
+    identity.minor = minor
 
 
 def _require_directory_identity(response: NegotiateServiceResponse) -> None:
@@ -200,6 +284,7 @@ def _require_directory_identity(response: NegotiateServiceResponse) -> None:
         or response.schema.name != DIRECTORY_SCHEMA
         or response.schema.major != 1
         or response.schema.critical_extension_ids
+        or len(response.schema.non_critical_extension_ids) > 32
     ):
         raise IpcError(
             "COMPATIBILITY",

@@ -94,6 +94,24 @@ export const SABI_V1_CHANNELS: Readonly<Record<string, SabiChannelSpec>> = {
     minor: 0,
     supportedCriticalExtensionIds: [],
   },
+  "nlos.sabi.LlmGateway": {
+    name: "nlos.sabi.LlmGateway",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.ToolSandbox": {
+    name: "nlos.sabi.ToolSandbox",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
+  "nlos.sabi.BlobReference": {
+    name: "nlos.sabi.BlobReference",
+    major: 1,
+    minor: 0,
+    supportedCriticalExtensionIds: [],
+  },
 };
 
 export interface SchemaCompatibilityOptions {

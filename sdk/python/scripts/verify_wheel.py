@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """L-012 机械验收:wheel 构建纳入 gen/python 生成模块且与 buf 钉扎输出零漂移,
-全新临时 venv(无 llmos 源码树)安装后 nlos_sdk 与 9 个 nlos.sabi.v1 生成模块
+全新临时 venv(无 llmos 源码树)安装后 nlos_sdk 与 12 个 nlos.sabi.v1 生成模块
 全部可 import。
 
 用法: python3 sdk/python/scripts/verify_wheel.py
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,22 +21,41 @@ SDK_PY = Path(__file__).resolve().parents[1]
 REPO = SDK_PY.parents[1]
 GEN_PY = REPO / "gen" / "python"
 GEN_MODULES = sorted(p.relative_to(GEN_PY).as_posix() for p in GEN_PY.rglob("*_pb2.py"))
+EXPECTED_GEN_MODULE_COUNT = 12
 
 # fresh venv 里必须可 import 的全链路:nlos_sdk 自身各模块 + 全部生成模块 + 命名空间根
 SDK_IMPORT_MODULES = [
     "nlos_sdk",
+    "nlos_sdk._client_base",
+    "nlos_sdk._signing",
+    "nlos_sdk.blob_reference",
     "nlos_sdk.channel",
     "nlos_sdk.common",
+    "nlos_sdk.handshake",
+    "nlos_sdk.llm_gateway",
     "nlos_sdk.local_rpc",
+    "nlos_sdk.operation",
+    "nlos_sdk.principal_session",
     "nlos_sdk.service_directory",
+    "nlos_sdk.tool_sandbox",
+    "nlos_sdk.wait",
     "nlos",
 ]
 
 PROBE = (
-    "import importlib, os;"
+    "import importlib, os, pathlib;"
     "mods = os.environ['NLOS_PROBE_MODULES'].split(',');"
     "[importlib.import_module(m) for m in mods];"
-    "from nlos_sdk import Ed25519Signer;"
+    "import nlos_sdk;"
+    "repo = pathlib.Path(os.environ['NLOS_REPO_ROOT']).resolve();"
+    "sdk_path = pathlib.Path(nlos_sdk.__file__).resolve();"
+    "assert repo not in sdk_path.parents, f'source-tree leak: {sdk_path}';"
+    "from nlos_sdk import ("
+    "SABI_V1_CHANNELS, Ed25519Signer, WaitClient, OperationClient, "
+    "LlmGatewayClient, ToolSandboxClient, BlobReferenceClient, "
+    "SessionIdentity, connect_authenticated, SabiServiceError);"
+    "assert len(SABI_V1_CHANNELS) == 12, len(SABI_V1_CHANNELS);"
+    "assert {'nlos.sabi.LlmGateway', 'nlos.sabi.ToolSandbox', 'nlos.sabi.BlobReference'} <= set(SABI_V1_CHANNELS);"
     "assert len(Ed25519Signer(bytes(32)).sign(b'probe')) == 64;"
     "print('IMPORT-OK', len(mods))"
 )
@@ -46,9 +66,27 @@ def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str
     return subprocess.run(command, capture_output=True, text=True, **kwargs)  # type: ignore[arg-type]
 
 
+def _venv_python(venv_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _sanitized_env(**extra: str) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env.update(extra)
+    return env
+
+
 def main() -> int:
     if not GEN_MODULES:
         print("FAIL: gen/python 下没有 *_pb2.py", file=sys.stderr)
+        return 1
+    if len(GEN_MODULES) != EXPECTED_GEN_MODULE_COUNT:
+        print(
+            f"FAIL: 预期 {EXPECTED_GEN_MODULE_COUNT} 个 *_pb2.py, 实得 {len(GEN_MODULES)}: {GEN_MODULES}",
+            file=sys.stderr,
+        )
         return 1
     print(f"[verify_wheel] gen/python 生成模块 {len(GEN_MODULES)} 个: {GEN_MODULES}")
 
@@ -90,7 +128,7 @@ def main() -> int:
 
         venv_dir = tmp / "venv"
         venv.create(venv_dir, with_pip=True)
-        py = venv_dir / "bin" / "python"
+        py = _venv_python(venv_dir)
         install = run(
             [
                 str(py),
@@ -110,11 +148,13 @@ def main() -> int:
         probe_modules = SDK_IMPORT_MODULES + [
             module[:-3].replace("/", ".") for module in GEN_MODULES
         ]
-        import os
-
         result = run(
             [str(py), "-c", PROBE],
-            env={**os.environ, "NLOS_PROBE_MODULES": ",".join(probe_modules)},
+            cwd=tmp,
+            env=_sanitized_env(
+                NLOS_PROBE_MODULES=",".join(probe_modules),
+                NLOS_REPO_ROOT=str(REPO),
+            ),
         )
         if result.returncode != 0 or "IMPORT-OK" not in result.stdout:
             print(result.stdout + result.stderr, file=sys.stderr)
