@@ -18,6 +18,10 @@ from typing import AsyncIterator
 
 import pytest
 
+_SDK_PY = str(Path(__file__).resolve().parents[1])
+if _SDK_PY not in sys.path:
+    sys.path.insert(0, _SDK_PY)
+
 from nlos_sdk._signing import Ed25519Signer
 from nlos_sdk.channel import ChannelClient, ChannelControlError
 from nlos_sdk.handshake import (

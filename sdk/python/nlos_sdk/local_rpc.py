@@ -37,11 +37,50 @@ SUPPORTED_MAJOR = 1
 
 
 class IpcError(Exception):
-    """Typed local IPC failure."""
+    """Typed local IPC failure (never embeds sensitive wire/key bytes)."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        service: str = "",
+        method: str = "",
+        idempotency_key: bytes = b"",
+        request_digest_sha256: bytes = b"",
+        side_effecting: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
+        self.service = service
+        self.method = method
+        self.idempotency_key = bytes(idempotency_key)
+        self.request_digest_sha256 = bytes(request_digest_sha256)
+        self.side_effecting = side_effecting
+
+    def with_call_context(
+        self,
+        *,
+        service: str,
+        method: str,
+        idempotency_key: bytes,
+        request_digest_sha256: bytes,
+        side_effecting: bool,
+    ) -> "IpcError":
+        """Attach sanitized call metadata for retry validation."""
+
+        return IpcError(
+            self.code,
+            str(self),
+            retryable=self.retryable or self.code in {"TIMEOUT", "READ", "WRITE", "CONNECTION_UNUSABLE"},
+            service=service,
+            method=method,
+            idempotency_key=idempotency_key,
+            request_digest_sha256=request_digest_sha256,
+            side_effecting=side_effecting,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +132,24 @@ class LocalRpcClient:
         self._in_flight = False
         self._usable = True
 
+    @property
+    def is_usable(self) -> bool:
+        """Whether this connection can accept another sequential RPC exchange."""
+
+        return self._usable
+
+    @property
+    def is_in_flight(self) -> bool:
+        """Whether an RPC exchange is currently executing on this connection."""
+
+        return self._in_flight
+
+    async def __aenter__(self) -> LocalRpcClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
     @classmethod
     async def connect(
         cls,
@@ -109,8 +166,8 @@ class LocalRpcClient:
                 _open_platform_stream(endpoint),
                 timeout=resolved.connect_timeout,
             )
-        except TimeoutError as error:
-            raise IpcError("TIMEOUT", "IPC connect timed out") from error
+        except TimeoutError:
+            raise IpcError("TIMEOUT", "IPC connect timed out", retryable=True) from None
         except OSError as error:
             raise IpcError("CONNECT", "IPC connect failed") from error
         return cls(reader, writer, resolved)
@@ -118,13 +175,13 @@ class LocalRpcClient:
     async def exchange(self, request: ExchangeRequest) -> ExchangeResponse:
         """Execute one unary call with immediate concurrent backpressure."""
 
-        request_envelope = _require_compatible_envelope(request)
-        wire = request.SerializeToString()
-        _ensure_frame_bound(len(wire), self._config.maximum_frame_bytes)
         if self._in_flight:
             raise IpcError("BACKPRESSURE", "IPC client already has an in-flight call")
         if not self._usable:
             raise IpcError("CONNECTION_UNUSABLE", "IPC connection is unusable; reconnect")
+        request_envelope = _require_compatible_envelope(request)
+        wire = request.SerializeToString()
+        _ensure_frame_bound(len(wire), self._config.maximum_frame_bytes)
 
         self._in_flight = True
         # 镜像 lib.rs:445-448:进首个 await 前预毒化——外部取消/丢弃本协程
@@ -153,21 +210,33 @@ class LocalRpcClient:
                 )
             self._usable = True
             return response
-        except asyncio.IncompleteReadError as error:
+        except asyncio.IncompleteReadError:
             await self._poison()
-            raise IpcError("READ", "IPC peer disconnected mid-frame") from error
-        except TimeoutError as error:
+            raise IpcError(
+                "READ",
+                "IPC peer disconnected mid-frame",
+                retryable=True,
+            ) from None
+        except TimeoutError:
             await self._poison()
-            raise IpcError("TIMEOUT", "IPC exchange timed out") from error
-        except DecodeError as error:
+            raise IpcError(
+                "TIMEOUT",
+                "IPC exchange timed out",
+                retryable=True,
+            ) from None
+        except DecodeError:
             await self._poison()
-            raise IpcError("COMPATIBILITY", "malformed protobuf response") from error
+            raise IpcError("COMPATIBILITY", "malformed protobuf response") from None
         except IpcError:
             await self._poison()
             raise
         except Exception as error:
             await self._poison()
-            raise IpcError(operation, f"IPC {operation.lower()} failed") from error
+            raise IpcError(
+                operation,
+                f"IPC {operation.lower()} failed",
+                retryable=True,
+            ) from error
         except BaseException:
             # 外部取消(CancelledError 是 BaseException):保持预毒化,同步
             # 关写端,不 await(避免在已取消上下文里再挂起)。
@@ -186,7 +255,7 @@ class LocalRpcClient:
         self._writer.close()
         try:
             await self._writer.wait_closed()
-        except OSError:
+        except (OSError, EOFError, RuntimeError):
             pass
 
 
@@ -271,6 +340,11 @@ def _require_compatible_envelope(message: ExchangeRequest | ExchangeResponse) ->
             "COMPATIBILITY",
             "unsupported critical extension "
             f"{envelope.schema.critical_extension_ids[0]}",
+        )
+    if len(envelope.schema.non_critical_extension_ids) > 32:
+        raise IpcError(
+            "COMPATIBILITY",
+            "non_critical_extension_ids exceeds maximum 32",
         )
     if len(envelope.request_id) != 16:
         raise IpcError("COMPATIBILITY", "request_id must contain 16 bytes")

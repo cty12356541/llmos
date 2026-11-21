@@ -121,18 +121,24 @@ async def connect_authenticated(
         writer.close()
         await _swallow_wait_closed(writer)
         raise
-    except TimeoutError as error:
+    except asyncio.IncompleteReadError:
         writer.close()
         await _swallow_wait_closed(writer)
-        raise IpcError("TIMEOUT", "handshake timed out") from error
-    except OSError as error:
+        raise IpcError("READ", "handshake peer disconnected mid-frame") from None
+    except TimeoutError:
         writer.close()
         await _swallow_wait_closed(writer)
-        raise IpcError("READ", "handshake transport failed") from error
+        raise IpcError("TIMEOUT", "handshake timed out") from None
+    except OSError:
+        writer.close()
+        await _swallow_wait_closed(writer)
+        raise IpcError("READ", "handshake transport failed") from None
     except Exception as error:
         writer.close()
         await _swallow_wait_closed(writer)
-        raise IpcError("HANDSHAKE", f"handshake failed: {error}") from error
+        raise IpcError(
+            "HANDSHAKE", f"handshake failed ({type(error).__name__})"
+        ) from None
     except BaseException:
         # 外部取消(CancelledError 是 BaseException):同步关写端不留半开
         # 连接,不再 await(避免取消上下文里二次挂起)。
@@ -144,7 +150,7 @@ async def connect_authenticated(
 async def _swallow_wait_closed(writer: asyncio.StreamWriter) -> None:
     try:
         await writer.wait_closed()
-    except OSError:
+    except (OSError, EOFError, RuntimeError):
         pass
 
 

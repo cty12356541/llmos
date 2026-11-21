@@ -7,7 +7,14 @@ docs/plans/2026-11-08-w82d-sdk-prework.md);KAT 保证无论底层库选谁,
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+_SDK_PY = str(Path(__file__).resolve().parents[1])
+if _SDK_PY not in sys.path:
+    sys.path.insert(0, _SDK_PY)
 
 from nlos_sdk._signing import Ed25519Signer
 
