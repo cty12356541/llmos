@@ -880,6 +880,18 @@
   scope: "移交#10 三子项最小前缀：consume_platform_kill 与 Activation meter 联动、ProcessSupervisor 复用 pid registry、合同层 BirthDecision/BirthRejection；非跨 authority BirthDecision，非 ROAD-B-006 整体"
   assurance: H3
   date: "2026-09-22"
+- id: b-artifact-u12-concurrent-gc-20261121
+  path: docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
+  title: "B-ARTIFACT-U12：ArtifactStore 跨进程并发孤儿 GC 竞态修复与实证"
+  scope: "将 nlos-artifact ArtifactStore::put_revision 与 stage_revision 的 BEGIN IMMEDIATE 提前至 blob::commit_blob 之前（保持 SQLite SCHEMA_VERSION = 8 不变），并在 macOS arm64 实跑 u12_cross_process_gc 7 OS 子进程并发锤击、确定性屏障与 SIGKILL 崩溃残留回收对抗矩阵（nlos-artifact 113 passed; 0 failed; 1 ignored，连续复跑 5 次全通过）；三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 边界保留"
+  assurance: H4
+  date: "2026-11-21"
+- id: b-res-profile-audit-20261121
+  path: docs/evidence/stage-b/b-res-profile-audit-20261121.md
+  title: "B-RES-PROFILE-001：12 维现代资源平面现网基线核验与降档画像"
+  scope: "DEL-RES 启动基线核验与一手源码审计：macOS arm64 实跑 nlos-resource（61 passed）、nlos-lease（30 passed）与 nlos-wasm-sandbox（97 passed）共 188 passed / 0 failed，核实全仓零 cgroup v2 / Win32 JobObject / setrlimit 强制控制器实现并固化 12 维 x 3 平台分级约束画像与 DESIGN 宿主 shim 规划（H8=0，Linux/Windows 未在本轮实跑）"
+  assurance: H3
+  date: "2026-11-21"
 - id: c-shard-001-cross-cell-takeover-drive
   path: docs/evidence/stage-c/c-shard-001-cross-cell-takeover-drive.md
   title: "C-SHARD-001 / W54-CS0A：跨 Cell 接管驱动器 + 双进程 PoC（成功路径）"
@@ -1319,5 +1331,15 @@
   path: docs/evidence/stage-e/w82-int-precheck-20261121.md
   title: "W82-INT 预检、吊销回收联动与全 8 通道前置签认清册"
   scope: "macOS 本机合流 W82-C/D/DEL-BASE Wave 1 成果，交付 nlos-compat-shim 三保留名映射、SystemControlDaemon 令牌吊销联动真实进程树回收、14 处 WASI 导入勘误清零与 DEL-BASE 索引挂接，并按源码精确行号固化阻塞全 8 通道挂载的三项前置契约/实现/策略缺口（H8=0，未含 qq-agent 实机消费闭环）"
+  assurance: H4
+  date: "2026-11-21"
+
+# ---------------------------------------------------------------------------
+# Stage E W82-R3 Gateway Envelope Alignment (GAP-2 Part A)
+# ---------------------------------------------------------------------------
+- id: w82-r3-gateway-envelope-fix-20261121
+  path: docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
+  title: "W82-R3 Gateway Wire 外层信封一致性修复（GAP-2 Part A）"
+  scope: "修复 crates/nlos-driver-llm-http/src/gateway_wire.rs 入站与回包（含 SabiFailure）外层 Envelope.schema 由 nlos.sabi.LlmGateway 错配对齐至 SABI_ENVELOPE_SCHEMA（nlos.sabi.Envelope major=1 minor=1），保持内层业务载荷契约不变；macOS arm64 实测 nlos-driver-llm-http 42 passed / 0 failed（含 3 项新增外层信封回归）、fmt 与 clippy -D warnings 退出 0（仅关闭 GAP-2 Part A，不含 GAP-2 Part B / GAP-1 / GAP-3 与 daemon 挂载，H8=0）"
   assurance: H4
   date: "2026-11-21"

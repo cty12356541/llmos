@@ -1,12 +1,12 @@
 # NLOS 多语言 SDK 支持评估计划
 
-> Work Item：`B-SDK-LANG-EVAL`
+> Work Item：`B-SDK-LANG-EVAL`（由阶段 E `E1` / `W82-D-PY-TS-SDK-WAIST` 持续演进，并由 `DEL-BASE` / `DEL-SDK` 承接官方发行门）
 >
-> 状态：`BLOCKED / GATE B DEFERRED`（2026-08-04 起 Go/C# 探针后移至 `B-TASK`/EffectPermit 纵切面之后，依据[议题 31](../discussions/31-重复建设评估与继续投入边界.md)第 5 节与[议题 32](../discussions/32-核心设计理念撞车风险评估.md)；Rust/TS/Python 已产证据保持有效）
+> 状态：`IN_PROGRESS / PARTIAL_PASS`（2026-11-21 依 `W82-R2` 实测与 [del-base-coverage-audit.md §5 表 4](./del-base-coverage-audit.md#5-表-4多语言-sdk-探针-vs-正式支持等级矩阵) 校准；注：2026-08-04 曾为 `BLOCKED / GATE B DEFERRED`，随后 Gate B Go/C# 黄金探针已于 `W29-G`/`W77`/`W82-B1` 解封并入三平台 CI；当前五语言均**未达到 `SDK-4 OFFICIAL SDK`**）
 >
-> 日期：2026-08-04
+> 日期：2026-11-21（初立于 2026-08-04）
 >
-> 适用基线：架构总纲 v0.5、ADR-0003、`B-SCHEMA`
+> 适用基线：架构总纲 v0.5、ADR-0003/0014/0024/0027、`B-SCHEMA`、`SABI v1.1`（12 通道）
 
 ## 1. 目标与边界
 
@@ -56,22 +56,24 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 
 ## 4. 当前候选分层
 
+> 2026-11-21 校准口径（[del-base-coverage-audit.md §5 表 4](./del-base-coverage-audit.md#5-表-4多语言-sdk-探针-vs-正式支持等级矩阵)）：严格禁止宣称任何语言达到 `SDK-4 OFFICIAL SDK`。
+
 | 优先级 | 语言 | 当前证据级别 | 当前定位 | 主要价值 | 主要待证风险 |
 |---|---|---|---|---|---|
-| P0 | Rust | `SDK-2 PARTIAL` | 核心实现 + 首个 SDK | 内核、系统服务、CLI、可信 adapter | 不能让 Rust type/layout 泄漏成公共 ABI |
-| P0 | TypeScript | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | Tauri/Node 控制工具、桌面 UI 配套生态 | WebView 与 Node 权限边界；discovery/common semantics 尚未完成 |
-| P0 | Python | `SDK-2 CANDIDATE / PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界（已在 `W73` 补齐显式 `UNSUPPORTED_EVENT_LOOP` fail-fast 检测）、`sdk/python/pyproject.toml` 打包入口与 `ChannelClient` SABI 通道（[W73-DOGFOOD-001](../evidence/stage-c/w73-qq-agent-dogfood-closure.md)）已就位；`qq-agent` Dogfood 二期登记的独立 wheel 打包 `gen/python`（`L-012`）、单连接多轮复用 `--auth-socket` `PrincipalHandshake`（`L-008`/`L-011`）、`WaitClient`/`OperationClient`（`L-009`/`L-011`）及受控 LLM 预算/沙箱工具薄客户端（`L-010`/`L-013`/`L-014`）已排入 `W82`（`PLANNED / DESIGN`，见 [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8`）；跨平台发布流水线待 `SDK-4` |
-| P1 | C#/.NET | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | Windows 桌面、企业、Unity/.NET；原生 `System.IO.Pipes` | macOS/Linux profile、peer identity、版本最低线和 NuGet 发布 |
-| P1 | Go | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | CLI、系统代理、基础设施和后续远程节点；部署简单 | Windows named pipe 通常需额外 adapter；context cancel 与 uncertain retry 映射 |
+| P0 | Rust | **仓内 `SDK-3 SABI-CAPABLE`（非 `SDK-4`）** | 核心实现 + 仓内首个完整 SABI 消费面 | 内核、系统服务、CLI、可信 adapter、全 12 通道编解码与多路 IPC | 不能让内部 Rust type/layout 泄漏成公共 ABI；缺仓外独立 SDK 门面 crate、semver 策略与独立消费验收（归 `DEL-SDK`） |
+| P0 | TypeScript | **`SDK-2 PASS` + `SDK-3 PARTIAL_PASS`（仅限 Node.js `>=20`，非 WebView，非 `SDK-4`）** | 阶段 B/E 官方 SDK 候选（[W82-D-TS-SDK](../evidence/stage-e/w82-d-ts-sdk-20261121.md) macOS 本地已验收） | Tauri/Node 控制工具、桌面 UI 配套生态；已补齐 `SABI_V1_CHANNELS` 12 通道、`node:crypto` Ed25519 持久认证会话、`Wait`/`Operation`/`LlmGateway`/`ToolSandbox`/`BlobReference` 客户端与 `12/12` 跨进程一致性 | live daemon 尚未全 8 通道实时挂载（阻塞于 `GAP-1/2/3` 与 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) 签认）；Windows Named Pipe 仅代码对齐未在 Windows 实测；`sdk/typescript/` 无独立 `package.json`、未发布 npm、缺文档与三平台 CI 复跑（归 `W82-R4` / `DEL-SDK`） |
+| P0 | Python | **`SDK-2 PASS` + `SDK-3 PARTIAL_PASS`（非 `SDK-4`）** | 阶段 B/E 官方 SDK 候选（[W82-D-PY-SDK](../evidence/stage-e/w82-d-py-sdk-20261121.md) macOS 本地已验收） | AI、模型策略、数据与自动化生态；已补齐 `SABI_V1_CHANNELS` 12 通道、`Ed25519Signer` 持久认证会话、`Wait`/`Operation`/`LlmGateway`/`ToolSandbox`/`BlobReference` 客户端、跨平台 `verify_wheel.py`（源码树外剥离 `PYTHONPATH` 校验 12 个 `*_pb2.py` 零漂移）与 `6/6` 守护进程一致性 | live daemon 尚未全 8 通道实时挂载（阻塞于 `GAP-1/2/3` 与 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) 签认）；三平台 CI 待复跑；`verify_wheel.py` 仅校验本地 wheel，绝不等于已发布 PyPI，缺独立开发者消费文档（归 `W82-R4` / `DEL-SDK`） |
+| P1 | C#/.NET | **`SDK-0 + SDK-1 PARTIAL`（纯黄金探针，非可用 SDK）** | 线协议兼容性独立探针（`.NET 8.0` 零依赖，已入三平台 CI） | Windows 桌面、企业、`.NET` 黄金验证；已同步 `SabiRegistry.SabiV1Channels` 12 通道身份校验与 `v1.0` 9 通道黄金向量（`30/30`） | 无 `.proto` 代码生成链（手写 codec）；缺 `v1.1` 三通道黄金向量；完全缺失 `SDK-2`（Named Pipe / Unix socket）、`SDK-3` 与 `SDK-4`（NuGet 发布）（`DEL-SDK` 有真实消费方与 owner 时再立项） |
+| P1 | Go | **`SDK-0 + SDK-1 PARTIAL`（纯黄金探针，非可用 SDK）** | 线协议兼容性独立探针（Go `1.27.0` 零依赖，已入三平台 CI） | 线协议独立跨编译器探针；已同步 `SabiV1Channels` 12 通道身份校验、`TestCompatVer002SchemaIdentityValidation` 与 `v1.0` 9 通道黄金向量（`go test ./... -count=1`） | 无 `.proto` 代码生成链（手写 struct/codec）；缺 `v1.1` 三通道黄金向量；完全缺失 `SDK-2`（UnixConn / Named Pipe）、`SDK-3` 与 `SDK-4`（`DEL-SDK` 有真实消费方与 owner 时再立项） |
 | P2 | Java/Kotlin | `UNASSESSED` | 需求驱动评估 | 企业服务、JVM 工具、Android/Kotlin 生态 | Windows named pipe 缺少同等直接标准路径；JVM/runtime 体量 |
 | P2 | Swift | `UNASSESSED` | Apple profile 候选 | macOS 原生 Application/UI 与 Apple 开发生态 | Windows/Linux 覆盖弱；跨平台官方 SDK 维护收益不足 |
 | P3 | C/C++ | `UNASSESSED` | 低层 bridge/兼容探针，不优先做完整 SDK | 既有 native 软件、Driver/游戏/高性能库 | 内存安全、ABI/编译器矩阵、ownership/cancel/error 表达成本高 |
 | WATCH | Dart、Ruby、PHP 等 | `UNASSESSED` | 保持 schema 可生成性观察 | 特定 UI、脚本或 Web 后端生态 | 当前缺乏足以承担正式 SDK 维护成本的 NLOS 用例 |
 
-初步建议不是永久决定：
+进展演进与约束（历史注记与现行边界）：
 
-- **阶段 B 语言主线**：Rust/TypeScript/Python 的 `SDK-3` 已达成 PARTIAL PASS；当前项目主线已切换为 `B-TASK` 纵切面，语言工作不再持有主线；
-- **Go 与 C# 探针后移（2026-08-04，议题 31/32）**：两者仍保留 P1 评估计划（`SDK-0–SDK-1` 生成/golden 探针、至少一个 `SDK-2` 跨平台 IPC 探针），但在 `B-TASK`/EffectPermit 纵切面通过前不启动；Rust/TS/Python 已足以证明跨语言协议可行，第四种语言不能证明 NLOS 核心成立，且 Go/C# 不应推动 SABI 在 Task/Effect/Receipt 语义稳定前过早冻结；
+- **语言支持现状（2026-11-21）**：Rust 达仓内 `SDK-3`（非 `SDK-4`）；Python 与 TypeScript（Node.js）在 macOS 本地达成 `SDK-2 PASS` 与 `SDK-3 PARTIAL_PASS`（非 `SDK-4`），其全 8 通道实时挂载仍待 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) 签认与 `W82-R4` 合流；Go 与 C# 均仅停留在 `SDK-0 + SDK-1 PARTIAL` 纯黄金探针，不是可用 SDK；
+- **Go 与 C# 探针历史与当前定位**：`2026-08-04`（议题 31/32）曾将 Gate B 后移至 `B-TASK`/EffectPermit 纵切面之后；随后 Gate B 已于 `W29-G`、`W77`（[E-SABI-002](../evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md)）及 `W82-B1`（`4fc70be1`）解封并在三平台 CI 常跑，目前维持低成本线协议黄金探针定位（无真实外部消费方与维护 owner 前不进入 `SDK-2..4`）；
 - **C# 可优先进行 Windows transport PoC**，因为 .NET 官方提供 `NamedPipeClientStream/NamedPipeServerStream`，且 NLOS 最高目标明确包含 Windows 级桌面系统；[Microsoft .NET pipe operations](https://learn.microsoft.com/en-us/dotnet/standard/io/pipe-operations)
 - **Go 可优先进行 Unix/服务工具 PoC**，标准库直接提供 `UnixConn`；Windows named-pipe 依赖和身份语义必须单独选型，不能假设与 Unix 等价；[Go `net.UnixConn`](https://pkg.go.dev/net#UnixConn)
 - Java/Kotlin、Swift 不进入阶段 B 必交矩阵，但 schema 设计不得主动制造其无法表达的语义；Java 标准库已有 Unix-domain socket API，可作为后续 Unix profile 起点。[Java `UnixDomainSocketAddress`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/net/UnixDomainSocketAddress.html)
@@ -89,6 +91,7 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 ### Gate B：Go/C# 低成本独立兼容探针
 
 > 2026-08-04 起本 Gate 后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更）；下列内容保持为启动时的执行定义。
+> **2026-11-21 状态同步**：`W77` [E-SABI-002](../evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md) 已将 Go / C# 纳入五语言 `v1.0` 黄金探针（含 12 通道身份校验与 `v1.0` 线级兼容），目前维持 **`SDK-0 + SDK-1 PARTIAL`**（缺 `SABI v1.1` 增量黄金向量及 `SDK-2/3/4`）；参见 [DEL-BASE §5 表 4](./del-base-coverage-audit.md)。
 
 1. 固定 Go 与 C# generator/runtime 版本，生成物 checked in 或提供可验证的离线恢复方式；
 2. 读取 Rust golden，覆盖 major/critical、unknown field、malformed 和 frame bound；
@@ -122,12 +125,12 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
 | Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012/013 均已通过三平台，最新 run 30743421174 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
-| Python/TS SABI 最小完备窄腰（`L-008` ~ `L-015`：单连接多轮复用、`WaitClient`/`OperationClient`/`--auth-socket`、`nlos-sdk` 独立 wheel 打包 `gen/python`、受控 LLM 五维预算网关与沙箱工具薄通道、`ChannelControl` 大载荷原语 `L-015`（2026-11-02 裁定并入 `W82-B`，绝对安全宗旨）） | `PLANNED / DESIGN`（2026-11-02 立项排入 `W82`，承接 `qq-agent` `W1 -> W4` Dogfood 二期审计，不阻塞 `W81` `SABI v1.0` 冻结） | [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` |
-| Go generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
-| C# generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
-| Go/C# transport 对比 Evidence | `DEFERRED` | 新 Evidence，不提前编号 |
-| 官方 SDK 语言集合 ADR | `PLANNED` | 至少一个 P1 transport PoC 后创建 |
-| Java/Kotlin、Swift、C/C++ 复审 | `DEFERRED / DEMAND-DRIVEN` | Stage B 后段或具体消费者触发 |
+| Python/TS SABI 最小完备窄腰（`L-008` ~ `L-015`：单连接多轮复用、`WaitClient`/`OperationClient`/`--auth-socket`、`nlos-sdk` 独立 wheel 打包 `gen/python`、受控 LLM 五维预算网关、`ToolSandboxClient` 与 `BlobReferenceClient` 大载荷引用客户端） | `SDK-2 PASS + SDK-3 PARTIAL_PASS`（macOS 本地已验收：[W82-D-PY-SDK](../evidence/stage-e/w82-d-py-sdk-20261121.md)、[W82-D-TS-SDK](../evidence/stage-e/w82-d-ts-sdk-20261121.md)，覆盖 12 通道表、Ed25519 持久认证会话、5 类新客户端与源码树外 `verify_wheel.py` 12 个 `*_pb2.py` 零漂移；因 live daemon 尚未全 8 通道实时挂载且三平台 CI / PyPI / npm 发布未完成，维持 `SDK-3 PARTIAL_PASS`，非 `SDK-4`） | [stage-e-progress.md](./stage-e-progress.md) `§E.6.1.8` / `W82-D-SDK` |
+| Go generation/golden probe | `PARTIAL_PASS`（`SDK-0 + SDK-1 PARTIAL`：已覆盖 12 通道身份校验与 `v1.0` 9 通道 11 向量黄金校验，三平台 CI `go test ./... -count=1` 常跑；缺 `.proto` 代码生成链、`v1.1` 向量及 `SDK-2/3/4`） | `B-SDK-LANG-EVAL` / `E-SABI-002` |
+| C# generation/golden probe | `PARTIAL_PASS`（`SDK-0 + SDK-1 PARTIAL`：已覆盖 12 通道身份校验与 `v1.0` 9 通道 11 向量黄金校验，三平台 CI `30/30` 常跑；缺 `.proto` 代码生成链、`v1.1` 向量及 `SDK-2/3/4`） | `B-SDK-LANG-EVAL` / `E-SABI-002` |
+| Go/C# transport 对比 Evidence | `DEFERRED`（仅在出现真实外部消费方与维护 owner 触发 Gate C/D 时再立项） | `DEL-SDK` |
+| 官方 SDK 语言集合 ADR 与 `SDK-4` 发布流水线 | `PLANNED`（当前无任何语言达到 `SDK-4 OFFICIAL SDK`；须完成独立包发布、三平台 CI 与仓外临时项目验收） | `DEL-SDK` |
+| Java/Kotlin、Swift、C/C++ 复审 | `DEFERRED / DEMAND-DRIVEN` | `DEL-SDK` 或具体消费者触发 |
 
 复审触发器：
 
@@ -139,14 +142,15 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 
 ## 7. 当前结论
 
-当前纳入计划的不是“立刻正式支持所有语言”，而是：
+当前依据实测证据核定的分语言能力状态如下（详见 [del-base-coverage-audit.md §5 表 4](./del-base-coverage-audit.md#5-表-4多语言-sdk-探针-vs-正式支持等级矩阵)）：
 
 ```text
-阶段 B 官方候选：Rust + TypeScript + Python
-优先兼容评估：Go + C#
-需求驱动候选：Java/Kotlin + Swift
-低层桥接候选：C/C++
-观察池：Dart/Ruby/PHP 等
+仓内 SDK-3 SABI-CAPABLE（非 SDK-4）：Rust
+本地 SDK-2 PASS + SDK-3 PARTIAL_PASS（仅 Node.js / asyncio macOS 实测，非 SDK-4）：TypeScript + Python
+SDK-0 + SDK-1 PARTIAL 纯黄金探针（已入三平台 CI，缺 v1.1 向量与 SDK-2/3/4）：Go + C#
+需求驱动候选（UNASSESSED）：Java/Kotlin + Swift
+低层桥接候选（UNASSESSED）：C/C++
+观察池（UNASSESSED）：Dart/Ruby/PHP 等
 ```
 
-在 Go/C# 探针与官方 SDK ADR 完成前，项目只能声称它们是 `PLANNED`，不能声称 NLOS 已支持这些语言。
+**严正边界**：当前五语言均**未达到 `SDK-4 OFFICIAL SDK`**；Go/C# 纯黄金探针不等于可用或官方支持 SDK；Python/TypeScript 在 live daemon 全 8 通道实时挂载、三平台 CI 复跑、独立包元数据（TS `package.json`）及 PyPI/npm 正式发布与独立仓外消费验收完成前，一律维持 `SDK-3 PARTIAL_PASS`。

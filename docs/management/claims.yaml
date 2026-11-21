@@ -31,6 +31,9 @@
     - docs/evidence/stage-b/b-application-007-third-party-sample.md
     - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
     - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
+    - docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
+    - docs/evidence/stage-c/c-app-payload-001-sample-cli-execution.md
+    - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
   assurance: H3
   limitations:
     - "构造性证明为 PARTIAL（W33-H §2 四具名边界，W34-A §1 沿引不删）：载荷执行面未做、Os 服务替身为 sleep 子进程、消费端为库驱动（nlos package install CLI 未做）、模板编译只到 proposal"
@@ -38,6 +41,7 @@
     - "三平台 CI 收口未完成：workspace 全仓门已收（275 二进制/1536 passed/0 failed），有效载体为 HEAD a01fd57 run 35531478487（W34-A 评审时 in_progress；7dc9e57 的 run 35531386660 被后续 push 取代 cancelled）；CI 绿 + 链接回填是本门晋升最后屏障动作"
     - "证据口径：单节点、单写者、macOS/arm64 实跑 + 非 Unix 契约道"
     - "deferred minors：迁移面 kill-9 矩阵/abandon 命令/跨进程并发注入、patch-downgrade 拒绝、跨进程 uninstall 审批、capability revoke、uninstall 不解除 artifact 引用、GC 跨进程并发 tick 未证明"
+    - "[后续承接] W76 三平台 CI（Run 40868357139）已置换早先 35531478487 口径；87ef288（B-SLICE-K-001 §17）闭合 09d 孤儿误收与 RISK-B-12（U-6 退役）；C-APP-PAYLOAD-001 与 W80 E-SANDBOX-001 闭合载荷执行与 U-9 沙箱；W82-R3-U12-GC（b-artifact-u12-concurrent-gc-20261121.md，H4）已在 macOS 修复 nlos-artifact put_revision/stage_revision BEGIN IMMEDIATE 跨进程 GC TOCTOU（保留三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 边界）；nlos package install CLI 已由阶段 E E-STORE-001/E-CERTIFY-001 承接，真实生态与第三方独立安装 H8=0 仍保留"
   source: "stage-b-progress.md §6 ROAD-B-001 行 + §3 B-APPLICATION/B-ARTIFACT/B-SLICE-K 行（base a01fd57）；W33-H 评审 + W34-A §1 状态更新：构造性证明成立、裁决 PARTIAL-residuals（近收口）"
 
 - requirement_id: ROAD-B-002
@@ -57,12 +61,15 @@
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
     - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+    - docs/evidence/stage-e/w82-c-diag-20261116.md
+    - docs/evidence/stage-e/w82-c-acceptance-20261121.md
   assurance: H3
   limitations:
     - "UI Surface（W32-F）已闭合 W33-H 所裁唯一硬缺口（merge e5d7115，W34-A §2.2 增补评审）：manifest surfaces 段 + schema v8 登记面 + desktop 呈现最小链；W32-F 四呈现边界沿引（载荷内容渲染/生命周期状态机/本地权威直读非 IPC/登记入口为库 API）"
     - "Windows 实杀（B6-2 同源）未做：第二 Process spawn→kill 全链为 Unix 实证 + 非 Unix 契约道（CI leg 验证）"
     - "生命周期 NL 动词（uninstall/disable application 不在白名单）、supervisor 自动 pid 发现/unregister、restore_process 复活链、干净退出终态路径、teardown 无并发竞争面登记递延"
     - "demo STEP 12b 因 09d 登记 defect 不可达（沿 b-slice-k-001 §15.4）"
+    - "[后续承接] W62-CWINKILL 与 w82-c-diag-20261116.md / w82-c-acceptance-20261121.md 推进 Windows 同权限进程树实杀、daemon 吊销联动回收与 macOS 管理环境验收（保留 Windows 跨权限/Breakaway U-2 残域）；阶段 D（D-COMPOSITOR-001 / D-ROAD-001）闭合同路桌面呈现与 GUI 战役（U-3）；87ef288（B-SLICE-K-001 §17）闭合 09d 缺陷；C-LIFECYCLE 跨主机迁移与完整干净退出终态路径仍保留"
   source: "stage-b-progress.md §6 ROAD-B-002 行 + §3 B-APPLICATION/B-SLICE-K 行（base a01fd57）；W33-H 评审 + W34-A §2.2 增补：裁决 SATISFIED-WITH-BOUNDARIES；本 claim 因具名边界与登记 residual 未清仍为 PARTIAL_PASS"
 
 - requirement_id: ROAD-B-003
@@ -94,6 +101,7 @@
     - "三平台复验（B3-5）随当前 CI run 35531478487（W34-A 评审时 in_progress），绿后回填方可收口"
     - "kill-9=页缓存存活的进程崩溃建模；真实断电/跨 Cell/三权威原子性不外推"
     - "六域闭环口径：seal/permit 层六域全闭；终结回执层 Artifact 混合终结门缺失（结构性登记，矩阵行 5/6 钉死）+ Channel 面到 endpoint binding 为止（W30-A §3）"
+    - "[后续承接] W52 / W82-A-VERIFY（w82-a-verify-20261116.md）已验证 Windows Named Pipe 认证会话；W65 ADR-0024 与 C-PROVIDER-001 推进跨进程真子进程 provider 与冻结通道；W76 三平台 CI（Run 40868357139）置换 35531478487；W82-B2/B3（w82-b2-llm-gateway-20261116.md / w82-b3-tool-service-20261116.md）完成库级驱动与沙箱服务，待 ADR-0028 签认挂接 Daemon；Artifact 混合终结门与真实物理掉电（U-4 / X-6）仍保留"
   source: "stage-b-progress.md §6 ROAD-B-003 行 + §3 B-TASK 行（base a01fd57）；W34-A §3 新评审：门六条款全部具名测试闭合，裁决 SATISFIED-WITH-BOUNDARIES（提案，控制器集成为准）；本 claim 因具名边界未清仍为 PARTIAL_PASS"
 
 - requirement_id: ROAD-B-004
@@ -119,6 +127,7 @@
     - "G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务 typed selector）未落；apply 侧 TaskNode 维 admission consult 仍缺（仅物化半边接线）"
     - "Task 面 reclaim 闭环与 plan 侧 residency 轴未互连；PINNED tier 未落；比例矩阵无 100K@50% cell 且 occupancy 只单调填充、无回收再入场动态；调度器自身规模探针未跑"
     - "故障矩阵 kill-9=页缓存存活的进程崩溃；真实断电/跨 Cell/三权威原子性未测；G6 边界 1 的 CI 半边待当前 run 35531478487 绿后解除"
+    - "[后续承接] W67 C-BENCH-001 与 W76 B-SCALE-RELEASE-001（Run 40868357139）补齐 Windows --release 8-Cell 分片及三平台 CI --release 五探针基线；W79 E-TRUST-001 闭合 G3 三条件与 G4 7 类 typed selector（U-7 / U-8）；2026-11-16 c-bench-readiness-20261116.md 收录 Windows Regime B 与 Ubuntu Regime C（0.59x/0.51x/0.41x）退化反例；1M_LOGICAL 裸金属/WAN、Linux/macOS 8-Cell、O(N/S) 二级索引、PINNED tier 与 100K@50% 仍保留（U-1 / U-11）"
   source: "stage-b-progress.md §6 ROAD-B-004 行（base a01fd57）；W31-G 评审：G1–G6 全 SATISFIED-WITH-BOUNDARIES、无一 NOT-SATISFIED；W34-A §4 维持裁决（具名边界随裁定带入 limitations）"
 
 - requirement_id: ROAD-B-005
@@ -135,12 +144,15 @@
     - docs/evidence/stage-b/b-control-003-nl-prefix.md
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H3
   limitations:
     - "七层中 Application 层控制面完全缺位（无 ControlCommand arm、生命周期动词不在 NL 白名单）；AgentInstance 未独立分面建模"
     - "pause/resume/cancel 命令/回执/parity 面完备但真实执行器未接线（UnwiredOperationCommandExecutor typed NOT_FOUND）；kill/throttle/reclaim 三条真实 authority 路径已接（throttle 不落 durable、reclaim 为合成可重建计数，W29-D §383/384 登记）"
     - "GUI 真机战役（computer-use 清单）未跑——GUI 证据形态为命令层集成测试 + 窗口注册 + CLI 活体冒烟；五层 inspect 的 desktop 派发接线未做（W33-F ③）"
     - "semantic 域 NL 语法空缺（typed 拒绝钉死）；desktop 测试不在根 workspace CI；Windows 无 GUI 认证面；同路证明条款已由 W32-C 四路径 parity（20 命令家族）钉死"
+    - "[后续承接] W74 D-GUI-CAMPAIGN-001 / D-ROAD-001（U-3）闭合 12 域显控同构、四入口 Receipt parity 与真机 GUI 战役，W52 / W82-A-VERIFY 验证 Windows Named Pipe 认证会话；w82-int-precheck-20261121.md 落地 Daemon 令牌吊销联动进程树回收；pause/resume/cancel 真实宿主执行器与 throttle durable 落账 / 合成 reclaimed_units 仍保留（待 ADR-0028 方案 4 与 del-res-resource-profile.md 推进）"
   source: "stage-b-progress.md §6 ROAD-B-005 行 + §3 B-CONTROL 行（base a01fd57）；W34-A §5 新评审：裁决 PARTIAL-residuals（提案，控制器集成为准）"
 
 - requirement_id: ROAD-B-006
@@ -157,6 +169,7 @@
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+    - docs/evidence/stage-e/w82-c-diag-20261116.md
   assurance: H3
   limitations:
     - "单平台 macOS arm64、debug/test profile 数字；多平台（Linux/Windows）与 release-profile 复测未做；「coroutine 级大规模并发」生产量级声明以此为前置"
@@ -164,6 +177,7 @@
     - "runtime kill receipt 消费与 Activation meter 联动未接线；B6-4 跨平台 supervisor spawn/suspend/kill、B6-5 完整 BirthDecision 登记"
     - "Windows 实杀精确口径（W34-A §6 residual 4）：run 35511878717 的 platform kill 步骤 step 级 success、job 级因无关 Clippy 步失败（根因已修）；且步骤绿也不含 live-child 实杀断言——「Windows 真 OS kill 集成测试」仅收窄「CI 复验已跑」半维（RISK-B-10）"
     - "100K fiber/activation-meter 探针为 #[ignore] 定档，常规 CI 不跑"
+    - "[后续承接] W62-CWINKILL、w82-c-diag-20261116.md 与 W82-C 推进 Windows 同权限进程树实杀与 Worker E2E 复验（保留 U-2 跨权限/Breakaway 残域）；W67 C-BENCH-001 与 W76 B-SCALE-RELEASE-001（Run 40868357139）补齐三平台 --release 规模基线并暴露 c-bench-readiness-20261116.md Regime B/C 退化反例；100K cancel O(n²) purge、wake 跨 worker 墙钟与 OS 资源约束仍保留（U-1 / U-11 / DEL-RES）"
   source: "stage-b-progress.md §6 ROAD-B-006 行 + §3 B-RUNTIME 行（base a01fd57）；W34-A §6 新评审：门六条款全部具名测试/探针闭合，裁决 SATISFIED-WITH-BOUNDARIES（提案）；本 claim 因具名边界未清仍为 PARTIAL_PASS"
 
 # ===== §3 工作包行（按进度单 §3 表序）=====
@@ -227,10 +241,13 @@
     - docs/evidence/stage-b/b-capability-002-call-limit-ledger.md
     - docs/evidence/stage-b/b-capability-003-namespace-hierarchy.md
     - docs/evidence/stage-b/b-capability-004-fault-matrix.md
+    - docs/evidence/stage-e/w82-service-prerequisites-20261116.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
   assurance: H3
   limitations:
     - "跨进程认证入口、通用 object/right registry、kill-9/torn-WAL/revoke 扩展窗、authority 侧 Namespace 派生 API 未做"
     - "无签名 TCB 入口已收敛为强制签名（W24-004：issue_root/delegate/revoke 删除，签名版为唯一入口）"
+    - "[后续承接] W82-A / W82-B / W82-INT（w82-service-prerequisites-20261116.md、w82-b4-blob-service-20261116.md）推进权限前置收口与作用域校验，生产 CapabilityAuthorizer 与 GAP-3 分服务权限映射（w82-b-contract-20261116.md §4.2）待 ADR-0028 签认落地（RISK-B-01）"
   source: "stage-b-progress.md §3 B-CAPABILITY 行（base a01fd57）：IN_PROGRESS；001–004 各最小前缀 PARTIAL PASS"
 
 - requirement_id: B-SEMANTIC
@@ -396,10 +413,16 @@
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
     - docs/evidence/stage-b/b-sdk-go-001-golden-probe.md
     - docs/evidence/stage-b/b-sdk-csharp-001-golden-probe.md
+    - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+    - docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
   assurance: H3
   limitations:
     - "Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority 未做"
     - "双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing 未做（§3 行登记）"
+    - "[后续承接] W65 ADR-0024、W77 E-SABI-001/002（9/9 冻结 v1.0 通道）与 W82-A/B1/D（w73-qq-agent-dogfood-closure.md、w82-a-verify-20261116.md、w82-b-contract-20261116.md、w82-d-py-sdk-20261121.md、w82-d-ts-sdk-20261121.md）已将协议扩至 12 通道 v1.1 增量、验证 Windows Named Pipe 认证、Ed25519 握手签名与 macOS Py/TS 客户端一致性；SABI v1.0 长期冻结签署与 GAP-1/2B/3 绑定待 ADR-0028 签认及三平台 CI 补跑"
   source: "stage-b-progress.md §3 B-SCHEMA 行（base a01fd57）：IN_PROGRESS；001–015 各切片 PARTIAL PASS，SABI 已扩至 v1.5（W32-G，additive）"
 
 - requirement_id: B-TASK-006L
@@ -441,10 +464,13 @@
   evidence_refs:
     - docs/evidence/stage-b/b-sdk-go-001-golden-probe.md
     - docs/evidence/stage-b/b-sdk-csharp-001-golden-probe.md
+    - docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+    - docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
   assurance: H2
   limitations:
     - "官方语言集合评估未定案（Java/Kotlin、Swift、C/C++ 需求驱动复审）；Go/C# golden 探针已解封执行且复验零漂移（X-3 前半，W29-G/W34-A §7）"
     - "Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效（§5 行 1281）；TS/Python conformance 未钉 W28-D/W29-D/W32-G 新臂/新视图 golden（Deferred minor，W34-A §7 X-3 行）；长期 SDK packaging/维护面未决"
+    - "[后续承接] 2026-11-21 W82-D 与 DEL-BASE §5 表 4 统一为 SDK-0..4 评估口径（见 language-sdk-support-plan.md）：Rust 为仓内 SDK-3（非 SDK-4），Python / TypeScript 已通过 w82-d-py-sdk-20261121.md / w82-d-ts-sdk-20261121.md 在 macOS 完成 12 通道窄腰客户端与认证一致（SDK-2 PASS + SDK-3 PARTIAL_PASS，缺 Daemon 全 8 通道挂载与三平台 CI/PyPI/npm 发布），Go / C# 维持 SDK-0 + SDK-1 PARTIAL（缺 v1.1 黄金向量），全仓零语言达到 SDK-4"
   source: "stage-b-progress.md §3 B-SDK-LANG-EVAL 行 + §6.5.3 W29-G 行 + §5 行 1281 + W34-A §7（base a01fd57）：§3 行状态字段仍为 READY（行文滞后于探针解封执行），按证据登记 PARTIAL_PASS"
 
 - requirement_id: B-SANDBOX
@@ -455,10 +481,12 @@
   test_refs: []
   evidence_refs:
     - docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
   assurance: H3
   limitations:
     - "单平台 macOS 对比实验；Linux rlimit 补测、Seatbelt、Component Model/p2 未覆盖（ADR-0015 复审触发器）"
     - "结论已经 ADR-0015 定案（双层隔离：独立 host Process + 进程内 Wasmtime 按信任档分层），候选已晋升 canonical"
+    - "[后续承接] W80 E-SANDBOX-001 已交付 crates/nlos-wasm-sandbox 双层强沙箱（54/54 闭合 U-9）并由 W82-B3 w82-b3-tool-service-20261116.md 完成 ToolSandboxService 库级封装；ToolSandboxService 实机挂载与常驻宿主评审信号（macOS p95 = 72.50 ms）已纳入 ADR-0028（PROPOSED）"
   source: "stage-b-progress.md §3 B-SANDBOX 行（base a01fd57）：PARTIAL_PASS（结论已定案）"
 
 - requirement_id: B-PROCESS
@@ -471,10 +499,13 @@
   evidence_refs:
     - docs/evidence/stage-b/b-process-001-durable-execution-binding-authority.md
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
+    - docs/evidence/stage-e/w82-c-diag-20261116.md
+    - docs/evidence/stage-e/w82-c-acceptance-20261121.md
   assurance: H3
   limitations:
     - "完整 BirthDecision、多 authority prepare/activate、macOS/Windows/Linux spawn/suspend/kill 全谱、checkpoint、IsolationUnit 与 resource mapping 未做"
     - "Windows 实机 platform kill 未做（POSIX 已有；Windows 为 adapter 前缀 + CI 契约道——RISK-B-10）"
+    - "[后续承接] W62-CWINKILL、C-XHOST-004、w82-c-diag-20261116.md 与 w82-c-acceptance-20261121.md（macOS ACCEPTANCE PASS）已验证同权限 Windows 父子树实杀、跨主机迁移与 W82-C 双 Worker 管理环境（含吊销联动进程树回收）；Windows Job Object 禁 Breakaway / 跨权限回收（U-2）与三平台 CI 复跑仍保留"
   source: "stage-b-progress.md §3 B-PROCESS 行（base a01fd57）：IN_PROGRESS；001/003 各最小前缀 PARTIAL PASS"
 
 - requirement_id: B-PROCESS-002
@@ -505,10 +536,14 @@
     - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
     - docs/evidence/stage-b/b-resource-005-finalize-refund.md
     - docs/evidence/stage-b/b-task-007c1-resource-endpoint-proofs.md
+    - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
+    - docs/evidence/stage-b/b-res-profile-audit-20261121.md
   assurance: H3
   limitations:
     - "完整 Ledger/risk/rebate、AdmissionPlan、ControllerBinding、真实 enforcement shim 与平台 Device adapter 未做"
     - "多维 demand 谓词（W22-R）与跨 authority prepare/finalize（ADR-0017/W28-C）已落地为前缀"
+    - "[后续承接] w73-qq-agent-dogfood-closure.md、w82-b2-llm-gateway-20261116.md 与 2026-11-21 DEL-RES 基线（del-res-resource-profile.md、b-res-profile-audit-20261121.md H3：nlos-resource 61 + nlos-lease 30 + nlos-wasm-sandbox 97 = 188 passed）完成 ROAD-A-004 12 维 x 3 平台边界盘点；实证零 OS cgroup v2 / JobObject / setrlimit 宿主执行器实现，待 Lane-RES-1..4 推进"
   source: "stage-b-progress.md §3 B-RESOURCE 行（base a01fd57）：IN_PROGRESS；001/003/004/005 各最小前缀 PARTIAL PASS"
 
 - requirement_id: B-TASK
@@ -1045,10 +1080,13 @@
     - crates/nlos-channel/tests
   evidence_refs:
     - docs/evidence/stage-b/b-channel-001-endpoint-authority.md
+    - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+    - docs/evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md
   assurance: H3
   limitations:
     - "Topic routing/fanout 与 payer accounting 已移交 B-TOPIC-001（ADR-0007）；ack 消费身份绑定已关闭（第五十增量前系列）"
     - "跨进程/多机语义、真实掉电未实现；queue delivery 故障矩阵与 D-1 反例修复后 27 passed"
+    - "[后续承接] w73-qq-agent-dogfood-closure.md 闭合 L-002 第九通道与 qq-agent dogfood 基线；e-dogfood-001-qq-agent-l015-channel-payload-bound.md（POC）记录大载荷有界边界为 W82-B1 SABI v1.1 增量输入；真实物理掉电（U-4）与跨主机广域调优仍保留"
   source: "stage-b-progress.md §3 B-CHANNEL-001 行（base a01fd57）：PARTIAL_PASS"
 
 - requirement_id: B-TOPIC-001
@@ -1075,9 +1113,12 @@
     - crates/nlos-wait/tests
   evidence_refs:
     - docs/evidence/stage-b/b-wait-001-durable-wait-registry.md
+    - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
   assurance: H3
   limitations:
     - "fiber 执行状态重建（B-PROCESS 检查点域）、per-channel notify 水位扩展、真实掉电未实现；跨进程等待本地 IPC 前缀已落地、认证实现未决（模型 ADR-0011 已定）"
+    - "[后续承接] w73-qq-agent-dogfood-closure.md 与 w82-a-verify-20261116.md 已在三平台验证跨进程认证等待与会话握手链路（含 Windows Named Pipe 认证）；B-PROCESS 检查点深度重建与物理掉电仍保留"
   source: "stage-b-progress.md §3 B-WAIT-001 行（base a01fd57）：PARTIAL_PASS；WakeSink 消费接线与 rehydration 已落"
 
 - requirement_id: B-CONTROL
@@ -1093,10 +1134,13 @@
     - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
     - docs/evidence/stage-b/b-control-003-nl-prefix.md
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H3
   limitations:
     - "命令面已扩至全命令家族（W28-D/W29-D + W32-G 四层 inspect，SABI v1.5 additive）；真实执行接线仅 kill/throttle/reclaim 三条（pause/resume/cancel 执行器未接线，UnwiredOperationCommandExecutor typed NOT_FOUND——W34-A §5.2）"
     - "GUI 已接（W32-A..F，本行「GUI 路径未接」为行文滞后）；剩余：Application 层控制命令/生命周期 NL 动词、ResourceInspector 生产接线、多层手动调度深度、GUI 真机战役"
+    - "[后续承接] W74（D-GUI-CAMPAIGN-001 / D-ROAD-001）闭合真机 GUI 战役与 12 域同构（U-3）；w82-a-verify-20261116.md 与 w82-int-precheck-20261121.md 完成跨平台控制前置校验与 Daemon 吊销联动回收；pause/resume/cancel 真实宿主执行器与 ResourceInspector 生产挂接仍保留（待 ADR-0028 / DEL-RES）"
   source: "stage-b-progress.md §3 B-CONTROL 行 + W34-A §5（base a01fd57）：PARTIAL_PASS"
 
 - requirement_id: B-ARTIFACT
@@ -1115,9 +1159,11 @@
     - docs/evidence/stage-b/b-artifact-005-retention-policy.md
     - docs/evidence/stage-b/b-artifact-006-provenance.md
     - docs/evidence/stage-b/b-artifact-007-package-sdk.md
+    - docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
   assurance: H3
   limitations:
     - "加密/lineage/backfill/legal hold、sync/对象存储后端、真实 ENOSPC 探针未做；Task registry/operation admission 接线已由 008C2B/OP 切片承接"
+    - "[后续承接] W82-R3-U12-GC（b-artifact-u12-concurrent-gc-20261121.md，H4）已在 macOS 修复 nlos-artifact put_revision/stage_revision BEGIN IMMEDIATE 跨进程 TOCTOU 并完成 7 子进程对抗矩阵（113 passed / 1 ignored x5），显式保留三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 交错边界（U-12）"
   source: "stage-b-progress.md §3 B-ARTIFACT 行（base a01fd57）：IN_PROGRESS；001–007 各最小前缀 PARTIAL PASS"
 
 - requirement_id: B-SLICE-K
@@ -1135,6 +1181,7 @@
   limitations:
     - "单机单进程演示级；application↔task 关联已下沉（W29-A TaskSpec 关联字段）、teardown 链与 NL 控制真全链已落（W30-D）、自动 GC tick 已落（W28-E）"
     - "demo STEP 09d 登记 defect 待处置（W33-H HEAD 复现）；W33-B lifecycle.sh 为现行构造性演示"
+    - "[后续承接] 87ef288（B-SLICE-K-001 §17）已闭合 STEP 09d 孤儿误收根因并退役 U-6 / 关闭 RISK-B-12；阶段 C C-ROAD-001 与 C-XHOST-005 已将单机推进至跨进程与跨物理机域；跨进程 GC 并发 TOCTOU 在 macOS 另由 b-artifact-u12-concurrent-gc-20261121.md 修复（保留 U-12 残域）"
   source: "stage-b-progress.md §3 B-SLICE-K 行（base a01fd57）：PARTIAL_PASS"
 
 # ===== §6.5.3 收官波最小服务（X-1/X-2/X-3）=====
@@ -1262,6 +1309,7 @@
     - docs/evidence/stage-c/c-xhost-005-chaos-proxy-and-h6-multi-machine-gate.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
     - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
+    - docs/evidence/stage-c/c-bench-readiness-20261116.md
   assurance: H6
   limitations:
     - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（SQLite WAL+FULL）实测 1->2->4->8 子进程分片无全局锁扩展（release 4.44x）、8-Cell 10K/100K_LOGICAL、以及跨网络套接字 1/2/4 Cell 分片数据面 spawn/message/commit 0 Raft RPC 扩展与五类故障全覆盖（C-XHOST-005）；1M_LOGICAL 裸金属多数据中心 WAN 档位显式未声称"
@@ -1442,6 +1490,7 @@
     - crates/nlos-runtime-tokio/tests/c_bench_road_c002_scale_and_faults.rs
   evidence_refs:
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/c-bench-readiness-20261116.md
   assurance: H6
   limitations:
     - "已在单机 Windows 11 x86_64 6C/12T（SQLite WAL+FULL）验证 PERF-CLASS-001、1->8 子进程分片无全局锁扩展、8-Cell 10K/100K_LOGICAL（1%/5%/10% 工作集）、PERF-CONTROL-001（p50=84-85us）及 ROAD-C-002 五类故障；1M_LOGICAL 与跨物理机网络基准显式未声称"
@@ -1509,6 +1558,7 @@
     - crates/nlos-process/tests/platform_kill.rs
   evidence_refs:
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
+    - docs/evidence/stage-e/w82-c-diag-20261116.md
   assurance: H3
   limitations:
     - "已在真实 Windows 宿主验证 taskkill /F /T 终止同权限父+子双活进程树及 B2-1 双活兄弟树 100% 存活（RISK-B-10 降级为 partial）；跨权限/UAC 子进程与 Job Object breakaway 脱离进程树残余边界保留"
@@ -1557,9 +1607,11 @@
     - crates/nlos-plan/tests
   evidence_refs:
     - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+    - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
   assurance: H3
   limitations:
     - "Application/Artifact 类型化 selector 与 G3 三条件结构化字段已验证（B-PLAN-001 §12）；Topic/Skill/Tool/Model/外部服务类型化 selector 解析与 G3 运行时强制绑定递延至阶段 D/E 生态扩展（U-7 / U-8）"
+    - "[后续承接] W79 E-TRUST-001（e-trust-001-publisher-pki-revocation-and-selectors.md）已在 nlos-plan ecosystem_selector.rs 落地 7 类跨生态 typed selector 不可变解析与 G3 条件授权物化门控，闭合 U-7 / U-8"
   source: "stage-c-progress.md §C.3.2 C-SELECTOR（移交#7，merge 8b91419，base 9e5e0edc）：PARTIAL_PASS"
 
 - requirement_id: C-PLAN-HARDEN
@@ -2097,6 +2149,7 @@
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已冻结 SABI v1 N/N-1/N-2 三纪元兼容窗口与 APPLICATION_PLATFORM/DESKTOP SurfaceProfile 准入矩阵并由 Gate 1 与 sabi-compat-diff 机械守护；正式 SABI v1.0 里程碑签署需维护者终批（关联 RISK-E-01 / RISK-B-05）"
@@ -2118,6 +2171,8 @@
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证 SABI 线级扩展协商、可选字段安全降级与未知 critical 扩展 fail-closed 拒绝；跨大版本 SABI v2 破坏性迁移不在 v1 周期范围内"
@@ -2176,6 +2231,7 @@
   evidence_refs:
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片与 7 类跨生态 Typed Selector 解析路径强制执行不透明不可伪造句柄绑定，拒绝裸宿主路径或跨主体句柄伪造；确定性本地 H4 集成测试级别"
@@ -2195,9 +2251,12 @@
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
+    - docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：微内核保持零厂商 LLM API 与零应用市场框架侵入，nlos-up 试用栈与 OpenAI/MCP 生态驱动均严格运行于用户态 DriverProvider + EnforcementShim 边界之外；商业多供应商云路由属 E-deferred"
+    - "[后续承接] W82-B2（w82-b2-llm-gateway-20261116.md）交付 LLMGatewayService 库级实现，W82-R3-GW-FIX（w82-r3-gateway-envelope-fix-20261121.md，H4）已修复 Gateway::handle_wire 与 nlos.sabi.Envelope 对齐（GAP-2 Part A）；GAP-2 Part B（attenuate_budget / ChildSessionBinding）与 GAP-1 / GAP-3 待 ADR-0028 签认后完成 Daemon 全 8 通道实时挂载"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E1,E6（W77-PRE..W80）：PARTIAL_PASS"
 
 - requirement_id: KABI-ERR-001
@@ -2234,6 +2293,7 @@
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片、nlos-migrate 静态审计、Gate 1 商店认证门与 mcp-bridge-driver 中强制保留 UNCERTAIN 终态并校验同幂等键对账契约；物理外部硬件设备在途擦除不在软件对账范围内"
@@ -2253,6 +2313,8 @@
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+    - docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已冻结 ServiceDirectory v1 发现协议黄金向量并在本地试用栈与 SurfaceProfile 边界门禁完成确定性验证；跨公网联邦服务目录发现属 E-deferred"
@@ -2271,9 +2333,11 @@
   evidence_refs:
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已冻结 SABI v1 公共信封（版本、追踪、相关 ID 与结构化错误头）并通过黄金线级不可变门禁校验；正式 SABI v1.0 签署保留维护者批复门控"
+    - "[后续承接] W82-R3-GW-FIX（w82-r3-gateway-envelope-fix-20261121.md，H4）已实证修复 nlos-driver-llm-http Gateway::handle_wire 使其严格解码 nlos.sabi.Envelope v1 公共信封，消除 GAP-2 Part A 信封契约漂移"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E1（W77）：PARTIAL_PASS"
 
 - requirement_id: SABI-RECEIPT-001
@@ -2290,6 +2354,7 @@
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证本地试用栈审计收据、SABI 黄金收据向量与域分离签名 StoreCertificationReceipt 全链路验签；外部第三方透明日志公证属 E-deferred"
@@ -2308,6 +2373,8 @@
   evidence_refs:
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-c-acceptance-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已冻结 PrincipalHandshake v1 线级黄金向量并在 nlos-up 本地栈实证主体身份与能力握手绑定；企业外部 OIDC/SSO 联合身份目录属 E-deferred"
@@ -2326,6 +2393,9 @@
   evidence_refs:
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证传输无关 SABI 帧封装与 nlos-compat-shim 旧版本消息无损转译（零特权旁路）；跨数据中心广域网传输优化不在阶段 E 核心范围内"
@@ -2346,9 +2416,13 @@
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+    - docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
   assurance: H4
   limitations:
-    - "SATISFIED-WITH-BOUNDARIES：已交付 SABI 9/9 通道黄金线级语料不可变门禁与商店上架 Gate 1 自动化一致性认证；驱动包扩展副作用清单 sidecar 与 nlos-package 四键基础清单的语法分界已在 E-MARKET-001 如实记录"
+    - "SATISFIED-WITH-BOUNDARIES：已交付 SABI v1.0 9/9 冻结通道黄金线级语料不可变门禁（v1.0 基线不变，W82-B1 已纯增量扩至 12 通道 v1.1，W82-D Py/TS SDK 已完成 macOS 本地 12 通道一致性校验）与商店上架 Gate 1 自动化一致性认证；驱动包扩展副作用清单 sidecar 与 nlos-package 四键基础清单的语法分界已在 E-MARKET-001 如实记录"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E1,E5（W77,W79）：PARTIAL_PASS"
 
 - requirement_id: DRV-NEGO-001
@@ -2382,6 +2456,7 @@
   evidence_refs:
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证用户态驱动与兼容垫片严格隔离于内核特权域之外，社区不可信扩展强制封入双层 Wasm 子进程沙箱；Windows 11 本机实测通过，Linux/macOS #[cfg(unix)] 分支由远端三平台 CI 守护"
@@ -2421,6 +2496,7 @@
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证驱动凭据仅经受控句柄注入、nlos-migrate 与 Gate 2 硬编码密钥扫描强制脱敏阻断且日志零明文回显；硬件 TPM/HSM 外部密钥托管属 E-deferred"
@@ -2440,6 +2516,7 @@
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
     - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在冻结 DriverProvider v1 通道之上通过版本化扩展封装交付 MCP（JSON-RPC 2.0 stdio）与 OpenAI-compatible（同步+SSE 流式）两款解耦用户态驱动（31/31 测试）；以脚本化传输 double 验证协议语义，未依赖外部商业在线网关"
@@ -2461,6 +2538,7 @@
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
     - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证驱动协作退出/强杀终态分类（GuestExited/TrapKind）、四类 EffectDescriptor 声明校验及崩溃转 UNCERTAIN 后的同幂等键对账恢复；本地 H4 确定性宿主验证级别"
@@ -2476,6 +2554,7 @@
     - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
   evidence_refs:
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已交付零 unsafe 纯用户态无特权兼容垫片 crates/nlos-compat-shim，覆盖 N-1/N-2 旧包消息翻译、驱动适配与对抗性越权阻断回归；后续新增跨代垫片规则仍须按 RISK-E-02 复审"
@@ -2659,6 +2738,7 @@
   evidence_refs:
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：nlos-wasm-sandbox 将引擎执行面收敛为 pub(crate) 且生产路径仅经独立空环境子进程 nlos-wasm-sandbox-host 承载，nlos-compat-shim 零特权运行于 EnforcementShim 之外；写授信树内极端符号链接 TOCTOU 窗口与 Linux/macOS CI 分支在 E-SANDBOX-001 如实标注"
@@ -2718,6 +2798,7 @@
   evidence_refs:
     - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
+    - docs/evidence/stage-e/w82-service-prerequisites-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在三级发布者 PKI、StoreCertificationReceipt 与 SignedEntitlementToken 中采用显式域分离 Ed25519 签名与 SigningKeyCustodyVault（OperatorFileSealed KEK）密钥托管；物理硬件 HSM 托管属 E-deferred"
@@ -2739,6 +2820,7 @@
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
     - docs/evidence/stage-e/e-trust-001-publisher-pki-revocation-and-selectors.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在兼容垫片权限不可放大测试、G3 跨生态选择器条件物化门与 WASI 预打开只读/路径围栏中实证能力单调衰减；确定性本地 H4 测试级别"
@@ -2761,6 +2843,9 @@
     - docs/evidence/stage-e/e-store-001-oci-index-and-entitlement-ledger.md
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
     - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
+    - docs/evidence/stage-e/w82-c-acceptance-20261121.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H7
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已实证单调 RevocationEpoch（含 SQLite RAISE(ABORT) 防回滚/防反吊销触发器）、Level 3 QuarantineInstallation 级联能力吊销与应用禁用、以及卸载即时能力吊销 H7 对抗回归；持有宿主文件系统根写权限整库替换旧 DB 副本的防御依赖上层纪元水位对账"
@@ -2814,6 +2899,7 @@
     - tools/verify_stage_e_ledger_coverage.py
   evidence_refs:
     - docs/evidence/stage-e/e-ledger-001-v13-conformance-audit.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已由 lint_claims.py（44/44 单测）与 verify_stage_e_ledger_coverage.py（13/13 正负向单测）机械强制阶段 E 全量条目满足 rank(claim.assurance) <= max(rank(evidence_refs)) 且无越级 DESIGN/EXITED 冒充"
@@ -2937,9 +3023,10 @@
   evidence_refs:
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
   assurance: H4
   limitations:
-    - "SATISFIED-WITH-BOUNDARIES：工作包 E1（W77 / M-E1）已补齐 SABI v1 9/9 通道 schema、三纪元版本演进矩阵、deprecation-manifest.yaml 与冻结黄金线级语料不可变门禁；正式 SABI v1.0 冻结签署待维护者终批（关联 RISK-E-01 / RISK-B-05）"
+    - "SATISFIED-WITH-BOUNDARIES：工作包 E1（W77 / M-E1）已补齐 SABI v1.0 9/9 冻结通道 schema（v1.0 基线不变，W82-B1 已纯增量扩至 12 通道 v1.1）、三纪元版本演进矩阵、deprecation-manifest.yaml 与冻结黄金线级语料不可变门禁；正式 SABI v1.0 冻结签署待维护者终批（关联 RISK-E-01 / RISK-B-05）"
   source: "stage-e-progress.md §E.2.2 E1（W77）：PARTIAL_PASS"
 
 - requirement_id: E-COMPAT-SHIM
@@ -2952,6 +3039,7 @@
     - crates/nlos-compat-shim/tests/drv_shim_adversarial_isolation.rs
   evidence_refs:
     - docs/evidence/stage-e/e-shim-001-out-of-core-epoch-adapter.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：工作包 E2（W78 / M-E2 左半）已交付 #![forbid(unsafe_code)] 纯用户态无特权兼容垫片 crates/nlos-compat-shim，实证 N-1/N-2 协议与驱动消息翻译、幂等键与 UNCERTAIN 无损透传及对抗性越权阻断；后续新纪元翻译规则按 RISK-E-02 持续复核"
