@@ -67,7 +67,7 @@
 //! registrations and re-buffered wakes under a real fiber key — are outside
 //! the bound and behave exactly as before (ORPHAN-002).
 
-use std::collections::{HashMap, VecDeque, hash_map};
+use std::collections::{HashMap, HashSet, VecDeque, hash_map};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -89,17 +89,19 @@ use crate::wake::{WaitEntry, WaitOutcome, is_terminal};
 use crate::{CancellationScope, FiberRecord, Inner, TokioRuntimeAdapter, lock_unpoisoned};
 
 /// The identity of one logical Channel sequence wait: the authority-derived
-/// durable [`WaitId`] plus the waiting fiber generation used for terminal
-/// purge alignment.
+/// durable [`WaitId`] plus the waiting fiber generation (or orphaned placeholder
+/// marker) used for O(k) terminal purge alignment.
 ///
 /// The `WaitId` is the logical identity (the durable row the wait mirrors);
-/// the fiber fields exist so the fiber lifecycle can purge the registry with
-/// the same `for_fiber` scan as the Operation wait registry.
+/// `orphaned` separates fiber-less early-delivery placeholders from a real
+/// fiber that happens to carry the zero `ExecutionFiberId` at
+/// `Generation::INITIAL`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ChannelWaitKey {
     wait_id: WaitId,
     fiber_id: ExecutionFiberId,
     fiber_generation: Generation,
+    orphaned: bool,
 }
 
 impl ChannelWaitKey {
@@ -108,44 +110,120 @@ impl ChannelWaitKey {
             wait_id,
             fiber_id: fiber.fiber_id,
             fiber_generation: fiber.generation,
+            orphaned: false,
         }
-    }
-
-    /// Whether this wait belongs to the given fiber generation. The runtime
-    /// lifecycle uses it to purge a terminated fiber's channel waits.
-    pub(crate) fn for_fiber(&self, fiber_id: ExecutionFiberId, generation: Generation) -> bool {
-        self.fiber_id == fiber_id && self.fiber_generation == generation
     }
 
     /// The placeholder key for a wake buffered by [`TokioChannelWakeSink::
     /// deliver`] when no registration exists yet: delivery reports carry no
-    /// fiber identity, so the buffer is keyed with the zero fiber id and can
-    /// never be purged by a real fiber. Registration consumes buffered
-    /// entries by `WaitId` regardless of the fiber fields, which is what
-    /// gives early deliveries their consume-on-register semantics.
+    /// fiber identity, so the buffer is marked `orphaned: true` and can never
+    /// be indexed under or purged by a real fiber (not even the zero
+    /// `ExecutionFiberId`). Registration consumes buffered entries by `WaitId`
+    /// regardless of the fiber fields, which is what gives early deliveries
+    /// their consume-on-register semantics.
     fn orphaned(wait_id: WaitId) -> Self {
         Self {
             wait_id,
             fiber_id: ExecutionFiberId::from_bytes([0; 16]),
             fiber_generation: Generation::INITIAL,
+            orphaned: true,
+        }
+    }
+
+    const fn is_orphaned(&self) -> bool {
+        self.orphaned
+    }
+
+    const fn fiber_key(&self) -> Option<(ExecutionFiberId, Generation)> {
+        if self.orphaned {
+            None
+        } else {
+            Some((self.fiber_id, self.fiber_generation))
+        }
+    }
+
+    #[cfg(test)]
+    fn for_fiber(&self, fiber_id: ExecutionFiberId, generation: Generation) -> bool {
+        !self.orphaned && self.fiber_id == fiber_id && self.fiber_generation == generation
+    }
+}
+
+/// Compact per-`WaitId` key set avoiding extra heap allocation in the common
+/// single-key case while still handling concurrent waiters on the same
+/// durable `WaitId`.
+enum WaitKeyBucket {
+    One(ChannelWaitKey),
+    Many(HashSet<ChannelWaitKey>),
+}
+
+impl WaitKeyBucket {
+    fn insert(&mut self, key: ChannelWaitKey) {
+        match self {
+            Self::One(existing) => {
+                if *existing != key {
+                    let first = *existing;
+                    let mut set = HashSet::with_capacity(2);
+                    set.insert(first);
+                    set.insert(key);
+                    *self = Self::Many(set);
+                }
+            }
+            Self::Many(set) => {
+                set.insert(key);
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &ChannelWaitKey) -> bool {
+        match self {
+            Self::One(existing) => existing == key,
+            Self::Many(set) => {
+                set.remove(key);
+                if set.len() == 1 {
+                    if let Some(&remaining) = set.iter().next() {
+                        *self = Self::One(remaining);
+                    }
+                    false
+                } else {
+                    set.is_empty()
+                }
+            }
+        }
+    }
+
+    fn find_matching(
+        &self,
+        map: &HashMap<ChannelWaitKey, WaitEntry>,
+        mut predicate: impl FnMut(&WaitEntry) -> bool,
+    ) -> Option<ChannelWaitKey> {
+        match self {
+            Self::One(key) => map.get(key).is_some_and(predicate).then_some(*key),
+            Self::Many(set) => set
+                .iter()
+                .find(|key| map.get(*key).is_some_and(&mut predicate))
+                .copied(),
         }
     }
 }
 
-/// The Channel sequence wait registry: the shared wait map plus the FIFO
-/// order queue of its orphaned (placeholder-keyed) buffer entries, under the
-/// single pre-existing `channel_waits` lock so the ORPHAN-001 capacity clamp
-/// is a short critical section with no new lock edges.
+/// The Channel sequence wait registry: the shared wait map, O(k) `by_fiber`
+/// purge index, O(1) `by_wait_id` lookup index, and the FIFO order queue of
+/// orphaned (placeholder-keyed) buffer entries, under the single pre-existing
+/// `channel_waits` lock so the ORPHAN-001 capacity clamp is a short critical
+/// section with no new lock edges.
 ///
-/// Data-structure choice: the wait map stays a `HashMap` — key lookups and
-/// by-`WaitId` scans are unchanged — while insertion age lives in a
-/// lightweight `VecDeque<WaitId>` companion, because `HashMap` iteration
-/// order is unspecified and drop-oldest needs true FIFO. Queue invariant:
-/// every id in `orphan_order` has a live orphaned `Buffered` entry in `map`
-/// (`remove` and `retain` keep it exact), so `orphan_order.len()` IS the
-/// live orphaned count and eviction pops the true oldest.
+/// Invariants:
+/// - `by_fiber` indexes every non-orphaned key in `map` and NEVER contains an
+///   `orphaned` key; no empty inner `HashSet` is retained.
+/// - `by_wait_id` indexes every key (both fiber-bound and orphaned) in `map`.
+/// - Every `WaitId` in `orphan_order` has a live orphaned `Buffered` entry in
+///   `map` (`remove`, `retain`, and `clear` keep it exact; `purge_fiber` never
+///   touches `orphan_order`), so `orphan_order.len()` IS the live orphaned
+///   count and eviction pops the true oldest.
 pub(crate) struct ChannelWaitRegistry {
     map: HashMap<ChannelWaitKey, WaitEntry>,
+    by_fiber: HashMap<(ExecutionFiberId, Generation), HashSet<ChannelWaitKey>>,
+    by_wait_id: HashMap<WaitId, WaitKeyBucket>,
     orphan_order: VecDeque<WaitId>,
     orphan_capacity: usize,
 }
@@ -154,17 +232,31 @@ impl ChannelWaitRegistry {
     pub(crate) fn new(orphan_capacity: usize) -> Self {
         Self {
             map: HashMap::new(),
+            by_fiber: HashMap::new(),
+            by_wait_id: HashMap::new(),
             orphan_order: VecDeque::new(),
             orphan_capacity,
         }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
     }
 
     pub(crate) fn get(&self, key: &ChannelWaitKey) -> Option<&WaitEntry> {
         self.map.get(key)
     }
 
-    pub(crate) fn iter(&self) -> hash_map::Iter<'_, ChannelWaitKey, WaitEntry> {
-        self.map.iter()
+    pub(crate) fn find_pending_by_wait_id(&self, wait_id: WaitId) -> Option<ChannelWaitKey> {
+        self.by_wait_id.get(&wait_id).and_then(|bucket| {
+            bucket.find_matching(&self.map, |entry| matches!(entry, WaitEntry::Pending(_)))
+        })
+    }
+
+    pub(crate) fn find_buffered_by_wait_id(&self, wait_id: WaitId) -> Option<ChannelWaitKey> {
+        self.by_wait_id.get(&wait_id).and_then(|bucket| {
+            bucket.find_matching(&self.map, |entry| matches!(entry, WaitEntry::Buffered))
+        })
     }
 
     /// Plain insert for fiber-bound entries — live `Pending` registrations
@@ -173,37 +265,76 @@ impl ChannelWaitRegistry {
     /// (ORPHAN-002); the orphaned placeholder path is [`Self::buffer_orphan`],
     /// the only insert that clamps.
     pub(crate) fn insert(&mut self, key: ChannelWaitKey, entry: WaitEntry) {
+        debug_assert!(
+            !key.is_orphaned(),
+            "orphaned placeholder entries must be inserted via buffer_orphan"
+        );
+        self.index_key(key);
         self.map.insert(key, entry);
     }
 
     pub(crate) fn remove(&mut self, key: &ChannelWaitKey) -> Option<WaitEntry> {
+        let removed = self.map.remove(key)?;
+        self.deindex_key(key);
         // Keep the order queue exact when an orphaned placeholder entry is
         // consumed, so its age slot does not outlive its entry.
-        if *key == ChannelWaitKey::orphaned(key.wait_id)
+        if key.is_orphaned()
             && let Some(position) = self.orphan_order.iter().position(|id| *id == key.wait_id)
         {
             self.orphan_order.remove(position);
         }
-        self.map.remove(key)
+        Some(removed)
     }
 
-    /// Drops entries whose `keep` predicate fails (the fiber lifecycle
-    /// terminal purge). Orphaned placeholder keys are fiber-less and never
-    /// match a real fiber, but the queue reconciliation runs regardless so
-    /// the invariant survives even the reserved zero-fiber-identity alias.
+    /// Drops entries whose `keep` predicate fails, keeping `by_fiber`,
+    /// `by_wait_id`, and `orphan_order` synchronized.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ChannelWaitKey, &mut WaitEntry) -> bool) {
-        self.map.retain(|key, entry| keep(key, entry));
-        self.orphan_order
-            .retain(|id| self.map.contains_key(&ChannelWaitKey::orphaned(*id)));
+        let mut removed_orphans = false;
+        let mut removed_keys = Vec::new();
+        self.map.retain(|key, entry| {
+            let kept = keep(key, entry);
+            if !kept {
+                if key.is_orphaned() {
+                    removed_orphans = true;
+                }
+                removed_keys.push(*key);
+            }
+            kept
+        });
+        for key in &removed_keys {
+            self.deindex_key(key);
+        }
+        if removed_orphans {
+            self.orphan_order
+                .retain(|id| self.map.contains_key(&ChannelWaitKey::orphaned(*id)));
+        }
     }
 
     /// Drops every entry (the shutdown path, which resolves all pending
-    /// waits by dropping their senders). The orphaned order queue empties
-    /// with the map; the drop counter deliberately does NOT reset — it is a
-    /// monotonic health counter, and shutdown is not a drop.
+    /// waits by dropping their senders). Both secondary indexes and the
+    /// orphaned order queue empty with the map; the drop counter deliberately
+    /// does NOT reset — it is a monotonic health counter, and shutdown is not
+    /// a drop.
     pub(crate) fn clear(&mut self) {
         self.map.clear();
+        self.by_fiber.clear();
+        self.by_wait_id.clear();
         self.orphan_order.clear();
+    }
+
+    /// Removes every non-orphaned wait belonging to `(fiber_id, generation)` in
+    /// O(k) time (k = waits owned by that fiber generation) and drops the
+    /// `by_fiber` bucket. Never touches orphaned entries or `orphan_order`.
+    pub(crate) fn purge_fiber(&mut self, fiber_id: ExecutionFiberId, generation: Generation) {
+        if let Some(keys) = self.by_fiber.remove(&(fiber_id, generation)) {
+            for key in keys {
+                debug_assert!(!key.is_orphaned());
+                if self.map.remove(&key).is_some() {
+                    self.deindex_wait_id(&key);
+                }
+            }
+        }
     }
 
     /// Buffers one orphaned (placeholder-keyed) early wake under the
@@ -224,15 +355,51 @@ impl ChannelWaitRegistry {
         while self.orphan_order.len() >= self.orphan_capacity {
             match self.orphan_order.pop_front() {
                 Some(oldest) => {
-                    self.map.remove(&ChannelWaitKey::orphaned(oldest));
+                    let evicted = ChannelWaitKey::orphaned(oldest);
+                    if self.map.remove(&evicted).is_some() {
+                        self.deindex_key(&evicted);
+                    }
                     dropped += 1;
                 }
                 None => break,
             }
         }
         self.orphan_order.push_back(wait_id);
+        self.index_key(key);
         self.map.insert(key, WaitEntry::Buffered);
         dropped
+    }
+
+    fn index_key(&mut self, key: ChannelWaitKey) {
+        if let Some(fiber_key) = key.fiber_key() {
+            self.by_fiber.entry(fiber_key).or_default().insert(key);
+        }
+        match self.by_wait_id.entry(key.wait_id) {
+            hash_map::Entry::Occupied(mut entry) => entry.get_mut().insert(key),
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(WaitKeyBucket::One(key));
+            }
+        }
+    }
+
+    fn deindex_key(&mut self, key: &ChannelWaitKey) {
+        if let Some(fiber_key) = key.fiber_key()
+            && let Some(keys) = self.by_fiber.get_mut(&fiber_key)
+        {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.by_fiber.remove(&fiber_key);
+            }
+        }
+        self.deindex_wait_id(key);
+    }
+
+    fn deindex_wait_id(&mut self, key: &ChannelWaitKey) {
+        if let hash_map::Entry::Occupied(mut entry) = self.by_wait_id.entry(key.wait_id)
+            && entry.get_mut().remove(key)
+        {
+            entry.remove();
+        }
     }
 }
 
@@ -423,10 +590,7 @@ fn remove_channel_pending(inner: &Inner, key: &ChannelWaitKey) {
 /// an early delivery into an immediate wake for the rehydrating wait.
 fn consume_channel_buffer(inner: &Inner, wait_id: WaitId) -> bool {
     let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
-    let buffered = channel_waits
-        .iter()
-        .find(|(key, entry)| key.wait_id == wait_id && matches!(entry, WaitEntry::Buffered))
-        .map(|(key, _)| *key);
+    let buffered = channel_waits.find_buffered_by_wait_id(wait_id);
     buffered.is_some_and(|key| channel_waits.remove(&key).is_some())
 }
 
@@ -643,13 +807,7 @@ pub(crate) fn arm_durable_row(
             // A delivery raced this arming and buffered the wake under this
             // `WaitId`: consume the buffer and resolve immediately (the
             // durable flip already happened on the delivery side).
-            let buffered_key = channel_waits
-                .iter()
-                .find(|(buffered, entry)| {
-                    buffered.wait_id == key.wait_id && matches!(entry, WaitEntry::Buffered)
-                })
-                .map(|(buffered, _)| *buffered);
-            if let Some(buffered_key) = buffered_key {
+            if let Some(buffered_key) = channel_waits.find_buffered_by_wait_id(key.wait_id) {
                 channel_waits.remove(&buffered_key);
                 return Ok(RowArming::Satisfied(RearmedChannelWait {
                     record: durable,
@@ -772,13 +930,7 @@ impl TokioChannelWakeSink {
             delivered += 1;
             let resume = {
                 let mut channel_waits = lock_unpoisoned(&self.inner.channel_waits);
-                let pending_key = channel_waits
-                    .iter()
-                    .find(|(key, entry)| {
-                        key.wait_id == record.wait_id && matches!(entry, WaitEntry::Pending(_))
-                    })
-                    .map(|(key, _)| *key);
-                if let Some(key) = pending_key {
+                if let Some(key) = channel_waits.find_pending_by_wait_id(record.wait_id) {
                     // Consuming the entry is what makes a duplicate delivery
                     // a no-op instead of a second logical wake.
                     match channel_waits.remove(&key) {
@@ -796,9 +948,9 @@ impl TokioChannelWakeSink {
                         Some(WaitEntry::Buffered) | None => None,
                     }
                 } else {
-                    let already_buffered = channel_waits.iter().any(|(key, entry)| {
-                        key.wait_id == record.wait_id && matches!(entry, WaitEntry::Buffered)
-                    });
+                    let already_buffered = channel_waits
+                        .find_buffered_by_wait_id(record.wait_id)
+                        .is_some();
                     if !already_buffered {
                         // Early delivery on an unregistered wait: buffer
                         // under the placeholder key so the eventual
@@ -820,14 +972,14 @@ impl TokioChannelWakeSink {
                     None
                 }
             };
-            if let Some(key) = resume {
+            if let Some((fiber_id, fiber_generation)) = resume.and_then(|key| key.fiber_key()) {
                 // Mirror `TokioWakeSink::wake`: consuming a pending entry
                 // best-effort transitions the fiber back out of `WaitingIo`,
                 // never overwriting a lifecycle-set state. A reaped record is
                 // simply absent — there is nothing left to resume.
                 let registry = lock_unpoisoned(&self.inner.fibers);
-                if let Some(fiber_record) = registry.get(&key.fiber_id)
-                    && fiber_record.generation == key.fiber_generation
+                if let Some(fiber_record) = registry.get(&fiber_id)
+                    && fiber_record.generation == fiber_generation
                 {
                     fiber_record.resume_from_wait();
                 }
@@ -964,13 +1116,7 @@ impl TokioRuntimeAdapter {
         // A delivery raced the durable read (the row flipped `WOKEN` after it
         // read `PENDING`) and buffered under this `WaitId`: consume the
         // buffer and resolve immediately.
-        let buffered_key = channel_waits
-            .iter()
-            .find(|(buffered, entry)| {
-                buffered.wait_id == key.wait_id && matches!(entry, WaitEntry::Buffered)
-            })
-            .map(|(buffered, _)| *buffered);
-        if let Some(buffered_key) = buffered_key {
+        if let Some(buffered_key) = channel_waits.find_buffered_by_wait_id(key.wait_id) {
             channel_waits.remove(&buffered_key);
             return Ok(ChannelSequenceWait::ready(WaitOutcome::Woken));
         }
@@ -1065,5 +1211,189 @@ impl TokioRuntimeAdapter {
             }
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nlos_runtime::FiberHandle;
+    use nlos_types::{ExecutionFiberId, Generation};
+    use nlos_wait::WaitId;
+    use tokio::sync::oneshot;
+
+    use crate::wake::WaitEntry;
+
+    use super::{ChannelWaitKey, ChannelWaitRegistry, WaitKeyBucket};
+
+    fn wait_id(seed: u8) -> WaitId {
+        WaitId::from_bytes([seed; 16])
+    }
+
+    fn fiber_handle(id_byte: u8, generation: Generation) -> FiberHandle {
+        FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes([id_byte; 16]),
+            generation,
+        }
+    }
+
+    fn assert_registry_invariants(registry: &ChannelWaitRegistry) {
+        let mut non_orphaned_indexed = 0_usize;
+        for ((fiber_id, generation), keys) in &registry.by_fiber {
+            assert!(
+                !keys.is_empty(),
+                "empty by_fiber bucket leaked for ({fiber_id:?}, {generation:?})"
+            );
+            for key in keys {
+                assert!(
+                    !key.is_orphaned(),
+                    "orphaned placeholder key must never enter by_fiber"
+                );
+                assert!(key.for_fiber(*fiber_id, *generation));
+                assert!(
+                    registry.map.contains_key(key),
+                    "by_fiber references missing map key"
+                );
+                non_orphaned_indexed += 1;
+            }
+        }
+
+        let mut wait_id_indexed = 0_usize;
+        for (id, bucket) in &registry.by_wait_id {
+            match bucket {
+                WaitKeyBucket::One(key) => {
+                    assert_eq!(key.wait_id, *id);
+                    assert!(registry.map.contains_key(key));
+                    wait_id_indexed += 1;
+                }
+                WaitKeyBucket::Many(keys) => {
+                    assert!(
+                        keys.len() > 1,
+                        "Many bucket should collapse back to One when <= 1 key remains"
+                    );
+                    for key in keys {
+                        assert_eq!(key.wait_id, *id);
+                        assert!(registry.map.contains_key(key));
+                        wait_id_indexed += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(wait_id_indexed, registry.len());
+
+        let mut non_orphaned_in_map = 0_usize;
+        for key in registry.map.keys() {
+            if let Some(fiber_key) = key.fiber_key() {
+                non_orphaned_in_map += 1;
+                assert!(
+                    registry
+                        .by_fiber
+                        .get(&fiber_key)
+                        .is_some_and(|keys| keys.contains(key)),
+                    "non-orphaned key missing from by_fiber"
+                );
+            }
+            let found_in_wait_id = match registry.by_wait_id.get(&key.wait_id) {
+                Some(WaitKeyBucket::One(only)) => only == key,
+                Some(WaitKeyBucket::Many(set)) => set.contains(key),
+                None => false,
+            };
+            assert!(found_in_wait_id, "key missing from by_wait_id");
+        }
+        assert_eq!(non_orphaned_indexed, non_orphaned_in_map);
+
+        for orphan_id in &registry.orphan_order {
+            assert!(matches!(
+                registry.get(&ChannelWaitKey::orphaned(*orphan_id)),
+                Some(WaitEntry::Buffered)
+            ));
+        }
+        let orphan_in_map = registry.map.keys().filter(|key| key.is_orphaned()).count();
+        assert_eq!(orphan_in_map, registry.orphan_order.len());
+    }
+
+    #[test]
+    fn channel_wait_registry_isolates_orphans_from_zero_fiber_and_purges_o1() {
+        let mut registry = ChannelWaitRegistry::new(2);
+        let gen1 = Generation::INITIAL;
+        let gen2 = gen1.checked_next().expect("next generation");
+        // Intentionally use the zero fiber id at Generation::INITIAL — the
+        // historical orphan alias — to verify structural separation.
+        let zero_fiber = fiber_handle(0, gen1);
+        let zero_fiber_gen2 = fiber_handle(0, gen2);
+        let other_fiber = fiber_handle(1, gen1);
+
+        // Buffer three orphans under capacity 2 -> oldest (w1) FIFO evicted.
+        assert_eq!(registry.buffer_orphan(wait_id(1)), 0);
+        assert_eq!(registry.buffer_orphan(wait_id(2)), 0);
+        assert_eq!(registry.buffer_orphan(wait_id(3)), 1);
+        assert_eq!(registry.orphan_order.len(), 2);
+        assert!(registry.by_fiber.is_empty());
+        assert_registry_invariants(&registry);
+
+        // Zero-fiber Pending entry on wait_id(2) does NOT collide with orphan(wait_id(2))
+        // and transitions WaitKeyBucket One -> Many.
+        let zero_k2 = ChannelWaitKey::new(wait_id(2), &zero_fiber);
+        let (tx2, _rx2) = oneshot::channel();
+        registry.insert(zero_k2, WaitEntry::Pending(tx2));
+        assert_eq!(registry.find_pending_by_wait_id(wait_id(2)), Some(zero_k2));
+        assert_eq!(
+            registry.find_buffered_by_wait_id(wait_id(2)),
+            Some(ChannelWaitKey::orphaned(wait_id(2)))
+        );
+        assert_registry_invariants(&registry);
+
+        // Second key for zero_fiber plus sibling generation and sibling fiber.
+        let zero_k4 = ChannelWaitKey::new(wait_id(4), &zero_fiber);
+        let zero_gen2_k5 = ChannelWaitKey::new(wait_id(5), &zero_fiber_gen2);
+        let other_k6 = ChannelWaitKey::new(wait_id(6), &other_fiber);
+        let (tx4, _rx4) = oneshot::channel();
+        let (tx5, _rx5) = oneshot::channel();
+        let (tx6, _rx6) = oneshot::channel();
+        registry.insert(zero_k4, WaitEntry::Pending(tx4));
+        registry.insert(zero_gen2_k5, WaitEntry::Pending(tx5));
+        registry.insert(other_k6, WaitEntry::Pending(tx6));
+        assert_registry_invariants(&registry);
+
+        // Purging zero_fiber removes ONLY zero_k2 and zero_k4; orphan(wait_id(2)),
+        // orphan(wait_id(3)), orphan_order, zero_fiber_gen2, and other_fiber survive!
+        registry.purge_fiber(zero_fiber.fiber_id, zero_fiber.generation);
+        assert!(registry.get(&zero_k2).is_none());
+        assert!(registry.get(&zero_k4).is_none());
+        assert!(
+            registry
+                .get(&ChannelWaitKey::orphaned(wait_id(2)))
+                .is_some()
+        );
+        assert!(
+            registry
+                .get(&ChannelWaitKey::orphaned(wait_id(3)))
+                .is_some()
+        );
+        assert_eq!(registry.orphan_order.len(), 2);
+        assert!(registry.get(&zero_gen2_k5).is_some());
+        assert!(registry.get(&other_k6).is_some());
+        assert_registry_invariants(&registry);
+
+        // Consuming an orphan removes it from map, by_wait_id, and orphan_order.
+        let consumed = registry
+            .find_buffered_by_wait_id(wait_id(2))
+            .expect("orphan wait_id(2) survives zero_fiber purge");
+        assert!(registry.remove(&consumed).is_some());
+        assert_eq!(registry.orphan_order.len(), 1);
+        assert_registry_invariants(&registry);
+
+        // Retain filtering out zero_gen2 keeps by_fiber, by_wait_id, orphan_order exact.
+        registry
+            .retain(|key, _| !key.for_fiber(zero_fiber_gen2.fiber_id, zero_fiber_gen2.generation));
+        assert!(registry.get(&zero_gen2_k5).is_none());
+        assert!(registry.get(&other_k6).is_some());
+        assert_eq!(registry.orphan_order.len(), 1);
+        assert_registry_invariants(&registry);
+
+        registry.clear();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.by_fiber.is_empty());
+        assert!(registry.by_wait_id.is_empty());
+        assert!(registry.orphan_order.is_empty());
     }
 }

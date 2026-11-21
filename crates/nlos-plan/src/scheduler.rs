@@ -72,7 +72,7 @@
 use std::collections::HashMap;
 
 use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};
-use rusqlite::params;
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::PlanStoreError;
 use crate::materialization::{
@@ -81,10 +81,11 @@ use crate::materialization::{
 use crate::model::{
     MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationRejection,
     MaterializationRequest, MaterializationResolution, MaterializationResolutionDecision,
-    PlanNodeState, SCHEDULER_REQUEST_KEY_DOMAIN,
+    PlanNodeState, SCHEDULER_REQUEST_KEY_DOMAIN, decode_state,
 };
 use crate::store::{
-    SqlitePlanAuthority, decode_node_row, decode_u64, digest16, load_plan_head, raw_node_row,
+    SqlitePlanAuthority, decode_node_row, decode_u64, digest16, encode_u64, load_plan_head,
+    raw_node_row,
 };
 
 /// The consult answer for one materialization candidate: the Task-side
@@ -239,6 +240,51 @@ pub struct SchedulerPassSummary {
 
 /// Default bound of the in-memory decision trail.
 pub const DEFAULT_DECISION_LOG_CAPACITY: usize = 1_024;
+
+/// Integer `node_state` discriminants that satisfy
+/// `state_can_await_materialization`: `DECLARED` (`1`),
+/// `BLOCKED_DEPENDENCY` (`2`), `ELIGIBLE` (`3`),
+/// `WAITING_AUTHORIZATION` (`4`), `WAITING_RESOURCE` (`5`), and
+/// `REHYDRATING` (`10`).
+pub const AWAITING_MATERIALIZATION_STATES: [i64; 6] = [1, 2, 3, 4, 5, 10];
+
+/// Integer `node_state` discriminants occupying a W31-A window-band
+/// seat: `MATERIALIZING` (`6`), `ACTIVE` (`7`), `CHECKPOINTED` (`8`), and
+/// `REHYDRATING` (`10`).
+pub const ACTIVE_BAND_STATES: [i64; 4] = [6, 7, 8, 10];
+
+/// Covering-index query used by [`MaterializationScheduler::select_bounded`]
+/// to count active window-band seats via `plan_nodes_state_order`.
+pub const BOUNDED_BAND_SEATS_SQL: &str = "SELECT COUNT(*) FROM plan_nodes
+     WHERE plan_id = ?1 AND node_state IN (6, 7, 8, 10)";
+
+/// Single-state streaming cursor query used by
+/// [`MaterializationScheduler::select_bounded`]. Fixing both `plan_id`
+/// and `node_state` lets `SQLite` walk `plan_nodes_state_order` in
+/// `(first_declared_at_ms, task_node_id)` order with zero
+/// `USE TEMP B-TREE FOR ORDER BY` and zero full-table scan.
+pub const BOUNDED_AWAITING_CURSOR_SQL: &str =
+    "SELECT task_node_id, first_declared_at_ms, declared_revision
+     FROM plan_nodes
+     WHERE plan_id = ?1 AND node_state = ?2
+     ORDER BY first_declared_at_ms, task_node_id";
+
+const BOUNDED_PENDING_REQUESTS_SQL: &str = "SELECT task_node_id, idempotency_key
+     FROM plan_materialization_requests
+     WHERE plan_id = ?1 AND status = 1";
+
+const BOUNDED_PENDING_NODE_STATE_SQL: &str = "SELECT node_state, first_declared_at_ms
+     FROM plan_nodes
+     WHERE plan_id = ?1 AND task_node_id = ?2";
+
+const UNRESOLVED_DEPENDENCIES_SQL: &str = "SELECT edges.dependency_node_id, nodes.node_state
+     FROM plan_revision_edges AS edges
+     LEFT JOIN plan_nodes AS nodes
+       ON nodes.plan_id = edges.plan_id
+      AND nodes.task_node_id = edges.dependency_node_id
+     WHERE edges.plan_id = ?1 AND edges.revision = ?2
+       AND edges.dependent_node_id = ?3
+     ORDER BY edges.dependency_node_id";
 
 /// The shrink floor: sustained rejections keep one selection per pass
 /// so pressure stays observable as a durable probe instead of a silent
@@ -445,6 +491,96 @@ impl MaterializationScheduler {
         })
     }
 
+    /// **Global tier (bounded)**: ready-FIFO selection over awaiting states
+    /// using the `plan_nodes_state_order` index, stopping as soon as the
+    /// window budget reaches zero and all remaining pending gate rounds are
+    /// resolved.
+    ///
+    /// Unlike [`Self::select`], this bounded path does **not** perform a
+    /// full-table scan over non-awaiting (`MATERIALIZING`, `ACTIVE`,
+    /// `CHECKPOINTED`, `EVICTED`, or terminal) nodes and does **not**
+    /// enumerate `SelectionSkipReason::NotAwaitingMaterialization` (or
+    /// post-budget `WindowExhausted` / `DependenciesNotReady`) entries for
+    /// unvisited rows. `skips` contains only skips observed during the
+    /// bounded scan and pending-round resolution; callers requiring a
+    /// full-plan skip diagnostic inventory should use [`Self::select`].
+    ///
+    /// Under any plan topology, `selections` (including ready-FIFO order
+    /// and `AdoptPendingGateRound` entries) and `seats_in_use` match
+    /// [`Self::select`] identically.
+    ///
+    /// # Errors
+    ///
+    /// Fails typed on unknown plans
+    /// ([`PlanStoreError::PlanNotFound`]) or storage failure.
+    pub fn select_bounded(
+        &self,
+        authority: &SqlitePlanAuthority,
+        plan_id: TaskPlanId,
+    ) -> Result<SelectionReport, PlanStoreError> {
+        let connection = authority.lock()?;
+        if load_plan_head(&connection, plan_id)?.is_none() {
+            return Err(PlanStoreError::PlanNotFound(plan_id));
+        }
+        let plan_bytes = plan_id.as_bytes().as_slice();
+
+        let mut remaining_pending: HashMap<TaskNodeId, IdempotencyKey> = HashMap::new();
+        {
+            let mut statement = connection.prepare_cached(BOUNDED_PENDING_REQUESTS_SQL)?;
+            let mut rows = statement.query(params![plan_bytes])?;
+            while let Some(row) = rows.next()? {
+                let node_id =
+                    TaskNodeId::from_bytes(fixed16_col(row, 0, "materialization node id")?);
+                let request_key = IdempotencyKey::from_bytes(fixed16_col(
+                    row,
+                    1,
+                    "materialization idempotency key",
+                )?);
+                remaining_pending.insert(node_id, request_key);
+            }
+        }
+
+        let band_seats: i64 =
+            connection.query_row(BOUNDED_BAND_SEATS_SQL, params![plan_bytes], |row| {
+                row.get(0)
+            })?;
+        let pending_seats = u64::try_from(remaining_pending.len()).unwrap_or(u64::MAX);
+        let seats_in_use = decode_u64(band_seats)?.saturating_add(pending_seats);
+        let mut budget = self.window.saturating_sub(seats_in_use);
+
+        let mut selections = Vec::new();
+        let mut skips = Vec::new();
+
+        if budget > 0 {
+            scan_awaiting_bounded(
+                &connection,
+                plan_id,
+                &mut remaining_pending,
+                &mut budget,
+                &mut selections,
+                &mut skips,
+            )?;
+        }
+
+        if !remaining_pending.is_empty() {
+            resolve_remaining_pending(
+                &connection,
+                plan_id,
+                &remaining_pending,
+                &mut selections,
+                &mut skips,
+            )?;
+        }
+
+        Ok(SelectionReport {
+            plan_id,
+            window: self.window,
+            seats_in_use,
+            selections,
+            skips,
+        })
+    }
+
     /// **Worker tier**: drives one selection report through the W31-A
     /// gate (request → consult → resolve per selection), records the
     /// decision trail, and shrinks the window on every admission
@@ -563,6 +699,25 @@ impl MaterializationScheduler {
         self.drive(authority, &report, admission, at_ms)
     }
 
+    /// One bounded pass: the Global tier selects via
+    /// [`MaterializationScheduler::select_bounded`], the Worker tier
+    /// drives.
+    ///
+    /// # Errors
+    ///
+    /// Same surface as [`MaterializationScheduler::select_bounded`] and
+    /// [`MaterializationScheduler::drive`].
+    pub fn run_pass_bounded<C: AdmissionConsult>(
+        &mut self,
+        authority: &SqlitePlanAuthority,
+        plan_id: TaskPlanId,
+        admission: &C,
+        at_ms: u64,
+    ) -> Result<SchedulerPassSummary, PlanStoreError> {
+        let report = self.select_bounded(authority, plan_id)?;
+        self.drive(authority, &report, admission, at_ms)
+    }
+
     /// Consults admission for one gate round and resolves it with the
     /// verdict. A failed consult leaves the round `PENDING` (adopted by
     /// the next pass); a rejection shrinks the window; typed gate
@@ -667,5 +822,223 @@ impl MaterializationScheduler {
         while self.decision_log.len() > self.decision_log_capacity {
             self.decision_log.remove(0);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AwaitingCursorRow {
+    node_id: TaskNodeId,
+    first_declared_at_ms: u64,
+    declared_revision: u64,
+}
+
+fn fixed16_col(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> Result<[u8; 16], PlanStoreError> {
+    let bytes = row
+        .get_ref(index)?
+        .as_blob()
+        .map_err(|_| PlanStoreError::CorruptRecord(field))?;
+    bytes
+        .try_into()
+        .map_err(|_| PlanStoreError::CorruptRecord(field))
+}
+
+fn next_cursor_row(
+    rows: &mut rusqlite::Rows<'_>,
+) -> Result<Option<AwaitingCursorRow>, PlanStoreError> {
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let node_id = TaskNodeId::from_bytes(fixed16_col(row, 0, "node id")?);
+    let first_declared_at_ms = decode_u64(row.get::<_, i64>(1)?)?;
+    let declared_revision = decode_u64(row.get::<_, i64>(2)?)?;
+    Ok(Some(AwaitingCursorRow {
+        node_id,
+        first_declared_at_ms,
+        declared_revision,
+    }))
+}
+
+fn unresolved_dependencies_for(
+    connection: &Connection,
+    plan_id: TaskPlanId,
+    declared_revision: u64,
+    node_id: TaskNodeId,
+) -> Result<Vec<TaskNodeId>, PlanStoreError> {
+    let mut statement = connection.prepare_cached(UNRESOLVED_DEPENDENCIES_SQL)?;
+    let mut rows = statement.query(params![
+        plan_id.as_bytes().as_slice(),
+        encode_u64(declared_revision)?,
+        node_id.as_bytes().as_slice(),
+    ])?;
+    let mut unresolved = Vec::new();
+    while let Some(row) = rows.next()? {
+        let dependency_id = TaskNodeId::from_bytes(fixed16_col(row, 0, "dependency node id")?);
+        let state: Option<i64> = row.get(1)?;
+        let state = state.ok_or(PlanStoreError::CorruptRecord("dependency node row missing"))?;
+        if decode_state(state)? != PlanNodeState::Completed {
+            unresolved.push(dependency_id);
+        }
+    }
+    Ok(unresolved)
+}
+
+fn scan_awaiting_bounded(
+    connection: &Connection,
+    plan_id: TaskPlanId,
+    remaining_pending: &mut HashMap<TaskNodeId, IdempotencyKey>,
+    budget: &mut u64,
+    selections: &mut Vec<SelectionEntry>,
+    skips: &mut Vec<SkipEntry>,
+) -> Result<(), PlanStoreError> {
+    let plan_bytes = plan_id.as_bytes().as_slice();
+    let mut statements = Vec::with_capacity(AWAITING_MATERIALIZATION_STATES.len());
+    for _ in AWAITING_MATERIALIZATION_STATES {
+        statements.push(connection.prepare(BOUNDED_AWAITING_CURSOR_SQL)?);
+    }
+    let mut cursors = Vec::with_capacity(AWAITING_MATERIALIZATION_STATES.len());
+    for (statement, state_code) in statements.iter_mut().zip(AWAITING_MATERIALIZATION_STATES) {
+        cursors.push(statement.query(params![plan_bytes, state_code])?);
+    }
+    let mut heads: [Option<AwaitingCursorRow>; AWAITING_MATERIALIZATION_STATES.len()] =
+        [None; AWAITING_MATERIALIZATION_STATES.len()];
+    for (cursor, head) in cursors.iter_mut().zip(heads.iter_mut()) {
+        *head = next_cursor_row(cursor)?;
+    }
+
+    while *budget > 0 {
+        let Some(min_idx) = heads
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, head)| head.map(|row| (idx, row)))
+            .min_by(|(_, a), (_, b)| {
+                a.first_declared_at_ms
+                    .cmp(&b.first_declared_at_ms)
+                    .then_with(|| a.node_id.cmp(&b.node_id))
+            })
+            .map(|(idx, _)| idx)
+        else {
+            break;
+        };
+        let Some(node) = heads[min_idx].take() else {
+            break;
+        };
+
+        if let Some(request_key) = remaining_pending.remove(&node.node_id) {
+            selections.push(SelectionEntry {
+                node_id: node.node_id,
+                kind: SelectionKind::AdoptPendingGateRound { request_key },
+            });
+        } else {
+            let unresolved = unresolved_dependencies_for(
+                connection,
+                plan_id,
+                node.declared_revision,
+                node.node_id,
+            )?;
+            if unresolved.is_empty() {
+                *budget -= 1;
+                selections.push(SelectionEntry {
+                    node_id: node.node_id,
+                    kind: SelectionKind::NewGateRound,
+                });
+            } else {
+                skips.push(SkipEntry {
+                    node_id: node.node_id,
+                    reason: SelectionSkipReason::DependenciesNotReady { unresolved },
+                });
+            }
+        }
+
+        if *budget == 0 {
+            break;
+        }
+        heads[min_idx] = next_cursor_row(&mut cursors[min_idx])?;
+    }
+    Ok(())
+}
+
+fn resolve_remaining_pending(
+    connection: &Connection,
+    plan_id: TaskPlanId,
+    remaining_pending: &HashMap<TaskNodeId, IdempotencyKey>,
+    selections: &mut Vec<SelectionEntry>,
+    skips: &mut Vec<SkipEntry>,
+) -> Result<(), PlanStoreError> {
+    let mut statement = connection.prepare_cached(BOUNDED_PENDING_NODE_STATE_SQL)?;
+    let plan_bytes = plan_id.as_bytes().as_slice();
+    let mut adoptable: Vec<(u64, TaskNodeId, IdempotencyKey)> = Vec::new();
+    let mut non_awaiting: Vec<(u64, TaskNodeId, PlanNodeState)> = Vec::new();
+
+    for (&node_id, &request_key) in remaining_pending {
+        let Some((state_code, declared_at_ms)) = statement
+            .query_row(params![plan_bytes, node_id.as_bytes().as_slice()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        let state = decode_state(state_code)?;
+        let declared_at_ms = decode_u64(declared_at_ms)?;
+        if state_can_await_materialization(state) {
+            adoptable.push((declared_at_ms, node_id, request_key));
+        } else {
+            non_awaiting.push((declared_at_ms, node_id, state));
+        }
+    }
+
+    adoptable.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, node_id, request_key) in adoptable {
+        selections.push(SelectionEntry {
+            node_id,
+            kind: SelectionKind::AdoptPendingGateRound { request_key },
+        });
+    }
+
+    non_awaiting.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, node_id, current) in non_awaiting {
+        skips.push(SkipEntry {
+            node_id,
+            reason: SelectionSkipReason::NotAwaitingMaterialization { current },
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ACTIVE_BAND_STATES, AWAITING_MATERIALIZATION_STATES, state_can_await_materialization,
+    };
+    use crate::model::{PlanNodeState, decode_state};
+
+    #[test]
+    fn awaiting_and_band_state_codes_match_state_machine() {
+        let mut expected_awaiting = Vec::new();
+        let mut expected_band = Vec::new();
+        for code in 1..=13_i64 {
+            let state = decode_state(code).expect("valid state code");
+            if state_can_await_materialization(state) {
+                expected_awaiting.push(code);
+            }
+            if matches!(
+                state,
+                PlanNodeState::Materializing
+                    | PlanNodeState::Active
+                    | PlanNodeState::Checkpointed
+                    | PlanNodeState::Rehydrating
+            ) {
+                expected_band.push(code);
+            }
+        }
+        assert_eq!(
+            expected_awaiting.as_slice(),
+            AWAITING_MATERIALIZATION_STATES.as_slice()
+        );
+        assert_eq!(expected_band.as_slice(), ACTIVE_BAND_STATES.as_slice());
     }
 }

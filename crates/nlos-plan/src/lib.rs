@@ -68,7 +68,8 @@ pub use model::{
 };
 use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};
 pub use scheduler::{
-    AdmissionConsult, AdmissionConsultOutcome, DEFAULT_DECISION_LOG_CAPACITY,
+    ACTIVE_BAND_STATES, AWAITING_MATERIALIZATION_STATES, AdmissionConsult, AdmissionConsultOutcome,
+    BOUNDED_AWAITING_CURSOR_SQL, BOUNDED_BAND_SEATS_SQL, DEFAULT_DECISION_LOG_CAPACITY,
     MaterializationScheduler, SchedulerDecision, SchedulerDecisionRecord, SchedulerPassSummary,
     SelectionEntry, SelectionKind, SelectionReport, SelectionSkipReason, SkipEntry,
 };
