@@ -16,8 +16,8 @@ use nlos_driver_llm_http::{
     DirectKeyPoolConfig, DirectKeyPoolScheduler, DirectKeySlotConfig, HttpClient,
     KeySelectionStrategy, LlmEnforcementShim, SecretCredential,
 };
-use nlos_schema::llm_gateway_schema_identity;
-use nlos_schema::sabi::v1::{LlmChatRequest, LlmChatTurn, LlmUsageWire};
+use nlos_schema::sabi::v1::{LlmChatRequest, LlmChatTurn, LlmUsageWire, SchemaIdentity};
+use nlos_schema::{SABI_ENVELOPE_SCHEMA, llm_gateway_schema_identity};
 use nlos_types::{
     ApplicationId, CapabilityId, Generation, IdempotencyKey, NamespaceId, PrincipalId, ProcessId,
     SessionId,
@@ -302,4 +302,14 @@ pub async fn endpoint(
         }
     });
     (port, rx, server)
+}
+
+pub fn envelope_schema_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_ENVELOPE_SCHEMA.to_owned(),
+        major: 1,
+        minor: 1,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
 }

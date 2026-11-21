@@ -169,7 +169,7 @@ fn wire_call(name: &str, call: &CallBinding, payload: Vec<u8>) -> nlos_schema::s
         CallerIdentity, CapabilityHandle as WireHandle, SabiRequestContext, envelope::CommonContext,
     };
     nlos_schema::sabi::v1::Envelope {
-        schema: Some(llm_gateway_schema_identity()),
+        schema: Some(envelope_schema_identity()),
         request_id: vec![9; 16],
         service: "llm_gateway".into(),
         method: name.into(),
@@ -212,7 +212,7 @@ fn check_response(
     failure: Option<nlos_schema::sabi::v1::SabiErrorCode>,
 ) -> nlos_schema::ValidatedFrame {
     let frame = nlos_schema::decode_sabi_envelope(&reply.frame).unwrap();
-    assert_eq!(frame.envelope().schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(frame.envelope().schema, Some(envelope_schema_identity()));
     let context = nlos_schema::validate_sabi_response_context(frame.envelope(), semantics).unwrap();
     assert_eq!(
         context.failure.as_ref().map(|failure| failure.code),
@@ -302,12 +302,10 @@ async fn all_wire_methods_use_canonical_codec_and_reject_header_substitution() {
         .await
         .unwrap();
     let response = check_response(&reply, MethodSemantics::QUERY, None);
-    assert_eq!(
-        nlos_schema::decode_query_budget_result(&response.envelope().payload)
-            .unwrap()
-            .remaining,
-        Some(budget(300_000))
-    );
+    let query_result =
+        nlos_schema::decode_query_budget_result(&response.envelope().payload).unwrap();
+    assert_eq!(query_result.schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(query_result.remaining, Some(budget(300_000)));
 
     let chat = wire_call(
         "llm_chat",
@@ -325,12 +323,9 @@ async fn all_wire_methods_use_canonical_codec_and_reject_header_substitution() {
         .await
         .unwrap();
     let response = check_response(&reply, MethodSemantics::LONG_RUNNING_MUTATION, None);
-    assert_eq!(
-        nlos_schema::decode_llm_chat_result(&response.envelope().payload)
-            .unwrap()
-            .content_utf8,
-        "答"
-    );
+    let chat_result = nlos_schema::decode_llm_chat_result(&response.envelope().payload).unwrap();
+    assert_eq!(chat_result.schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(chat_result.content_utf8, "答");
 
     let child = ChildSessionBinding {
         recipient: call(1, 12).caller,
@@ -363,12 +358,10 @@ async fn all_wire_methods_use_canonical_codec_and_reject_header_substitution() {
         .unwrap();
     assert!(reply.child.is_some());
     let response = check_response(&reply, MethodSemantics::MUTATION, None);
-    assert_eq!(
-        nlos_schema::decode_attenuate_budget_result(&response.envelope().payload)
-            .unwrap()
-            .granted_limit,
-        Some(budget(60))
-    );
+    let attenuate_result =
+        nlos_schema::decode_attenuate_budget_result(&response.envelope().payload).unwrap();
+    assert_eq!(attenuate_result.schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(attenuate_result.granted_limit, Some(budget(60)));
 
     let advisory = RecordExternalUsageRequest {
         schema: Some(llm_gateway_schema_identity()),
@@ -393,12 +386,196 @@ async fn all_wire_methods_use_canonical_codec_and_reject_header_substitution() {
         .await
         .unwrap();
     let response = check_response(&reply, MethodSemantics::MUTATION, None);
-    assert!(
-        !nlos_schema::decode_record_external_usage_result(&response.envelope().payload)
-            .unwrap()
-            .replayed
-    );
+    let advisory_result =
+        nlos_schema::decode_record_external_usage_result(&response.envelope().payload).unwrap();
+    assert_eq!(advisory_result.schema, Some(llm_gateway_schema_identity()));
+    assert!(!advisory_result.replayed);
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn wire_accepts_envelope_schema_minor_variants_and_preserves_inner_result_schema() {
+    use nlos_schema::{MethodSemantics, encode_sabi_envelope};
+    let (port, hits, server) = provider().await;
+    let path = TestRoot::new();
+    let policy = Arc::new(Policy(AtomicBool::new(true)));
+    let clock = Arc::new(AtomicU64::new(10_000));
+    let gateway = Gateway::initialize(&path.0, config(port, Some(policy), clock)).unwrap();
+    let account = gateway.provision_root(root(), budget(1_000)).unwrap();
+    let caller = call(81, 14);
+
+    let mut minor_zero_query = wire_call(
+        "query_budget",
+        &caller,
+        nlos_schema::encode_query_budget_request(&query_request()).unwrap(),
+    );
+    minor_zero_query.schema.as_mut().unwrap().minor = 0;
+    let reply = gateway
+        .handle_wire(
+            &encode_sabi_envelope(&minor_zero_query).unwrap(),
+            &caller,
+            &[4],
+            &account,
+            None,
+        )
+        .await
+        .unwrap();
+    let frame = check_response(&reply, MethodSemantics::QUERY, None);
+    let decoded_query = nlos_schema::decode_query_budget_result(&frame.envelope().payload).unwrap();
+    assert_eq!(decoded_query.schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(decoded_query.remaining, Some(budget(1_000)));
+
+    let chat = wire_call(
+        "llm_chat",
+        &caller,
+        nlos_schema::encode_llm_chat_request(&chat_request()).unwrap(),
+    );
+    let reply = gateway
+        .handle_wire(
+            &encode_sabi_envelope(&chat).unwrap(),
+            &caller,
+            &[4],
+            &account,
+            None,
+        )
+        .await
+        .unwrap();
+    let frame = check_response(&reply, MethodSemantics::LONG_RUNNING_MUTATION, None);
+    let decoded_chat = nlos_schema::decode_llm_chat_result(&frame.envelope().payload).unwrap();
+    assert_eq!(decoded_chat.schema, Some(llm_gateway_schema_identity()));
+    assert_eq!(decoded_chat.content_utf8, "答");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn wire_rejects_outer_gateway_schema_and_incompatible_envelope_versions() {
+    use nlos_schema::{
+        CompatibilityError, SABI_ENVELOPE_SCHEMA, decode_sabi_envelope, encode_sabi_envelope,
+    };
+    let (port, hits, server) = provider().await;
+    let path = TestRoot::new();
+    let policy = Arc::new(Policy(AtomicBool::new(true)));
+    let clock = Arc::new(AtomicU64::new(10_000));
+    let gateway = Gateway::initialize(&path.0, config(port, Some(policy), clock)).unwrap();
+    let account = gateway.provision_root(root(), budget(1_000)).unwrap();
+    let caller = call(82, 14);
+    let payload = nlos_schema::encode_query_budget_request(&query_request()).unwrap();
+
+    for (schema, service) in [
+        (llm_gateway_schema_identity(), "llm_gateway"),
+        (nlos_schema::tool_sandbox_schema_identity(), "llm_gateway"),
+        (envelope_schema_identity(), "tool_sandbox"),
+    ] {
+        let mut bad = wire_call("query_budget", &caller, payload.clone());
+        bad.schema = Some(schema);
+        bad.service = service.into();
+        let bytes = encode_sabi_envelope(&bad).unwrap();
+        assert_eq!(
+            gateway
+                .handle_wire(&bytes, &caller, &[4], &account, None)
+                .await
+                .err(),
+            Some(GatewayError::IncompatibleSchema)
+        );
+    }
+
+    let valid = encode_sabi_envelope(&wire_call("query_budget", &caller, payload)).unwrap();
+    assert_eq!(valid[0], 0x0a);
+    let missing_schema = valid[2 + usize::from(valid[1])..].to_vec();
+    let name_pos = valid
+        .windows(SABI_ENVELOPE_SCHEMA.len())
+        .position(|window| window == SABI_ENVELOPE_SCHEMA.as_bytes())
+        .unwrap();
+    let suffix = name_pos + SABI_ENVELOPE_SCHEMA.len();
+    assert_eq!(&valid[suffix..suffix + 4], &[0x10, 0x01, 0x18, 0x01]);
+
+    let mut wrong_major = valid.clone();
+    wrong_major[suffix + 1] = 0x02;
+    let mut critical_ext = valid;
+    critical_ext[suffix + 2] = 0x20;
+
+    for (raw, expected) in [
+        (missing_schema, CompatibilityError::MissingSchemaIdentity),
+        (
+            wrong_major,
+            CompatibilityError::UnsupportedMajor {
+                schema: SABI_ENVELOPE_SCHEMA.into(),
+                got: 2,
+                supported: 1,
+            },
+        ),
+        (
+            critical_ext,
+            CompatibilityError::UnsupportedCriticalExtension {
+                schema: SABI_ENVELOPE_SCHEMA.into(),
+                extension_id: 1,
+            },
+        ),
+    ] {
+        assert_eq!(decode_sabi_envelope(&raw).unwrap_err(), expected);
+        assert_eq!(
+            gateway
+                .handle_wire(&raw, &caller, &[4], &account, None)
+                .await
+                .err(),
+            Some(GatewayError::IncompatibleSchema)
+        );
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn wire_failure_replies_wrap_sabi_failure_in_envelope_schema() {
+    use nlos_schema::sabi::v1::SabiErrorCode;
+    use nlos_schema::{MethodSemantics, encode_sabi_envelope};
+    let (port, hits, server) = provider().await;
+    let path = TestRoot::new();
+    let policy = Arc::new(Policy(AtomicBool::new(false)));
+    let clock = Arc::new(AtomicU64::new(10_000));
+    let gateway = Gateway::initialize(&path.0, config(port, Some(policy.clone()), clock)).unwrap();
+    let account = gateway.provision_root(root(), budget(1_000)).unwrap();
+    let caller = call(83, 14);
+
+    let denied_query = wire_call(
+        "query_budget",
+        &caller,
+        nlos_schema::encode_query_budget_request(&query_request()).unwrap(),
+    );
+    let reply = gateway
+        .handle_wire(
+            &encode_sabi_envelope(&denied_query).unwrap(),
+            &caller,
+            &[4],
+            &account,
+            None,
+        )
+        .await
+        .unwrap();
+    let frame = check_response(&reply, MethodSemantics::QUERY, Some(SabiErrorCode::Rights));
+    assert_eq!(frame.envelope().payload, [] as [u8; 0]);
+
+    policy.0.store(true, Ordering::SeqCst);
+    let missing_inner_schema = wire_call("query_budget", &caller, Vec::new());
+    let reply = gateway
+        .handle_wire(
+            &encode_sabi_envelope(&missing_inner_schema).unwrap(),
+            &caller,
+            &[4],
+            &account,
+            None,
+        )
+        .await
+        .unwrap();
+    let frame = check_response(
+        &reply,
+        MethodSemantics::QUERY,
+        Some(SabiErrorCode::AbiVersion),
+    );
+    assert_eq!(frame.envelope().payload, [] as [u8; 0]);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
