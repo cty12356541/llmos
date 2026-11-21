@@ -4,15 +4,14 @@ use nlos_capability::service_call::{AuthorizationError, CallBinding, ServiceMeth
 use nlos_schema::sabi::v1::{
     AttenuateBudgetRequest, Envelope, LlmChatRequest, OperationReference, QueryBudgetRequest,
     ReceiptReference, RecordExternalUsageRequest, RetryDirective, SabiErrorCode, SabiFailure,
-    SabiRequestContext, SabiResponseContext, envelope::CommonContext,
+    SabiRequestContext, SabiResponseContext, SchemaIdentity, envelope::CommonContext,
 };
 use nlos_schema::{
-    CommonSemanticsError, MAX_LLM_GATEWAY_PAYLOAD_BYTES, MethodSemantics,
+    CommonSemanticsError, MAX_LLM_GATEWAY_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
     decode_attenuate_budget_request, decode_llm_chat_request, decode_query_budget_request,
     decode_record_external_usage_request, decode_sabi_envelope, encode_attenuate_budget_result,
     encode_llm_chat_result, encode_query_budget_result, encode_record_external_usage_result,
-    encode_sabi_envelope, llm_gateway_schema_identity, validate_sabi_request_context,
-    validate_sabi_response_context,
+    encode_sabi_envelope, validate_sabi_request_context, validate_sabi_response_context,
 };
 use nlos_types::{Generation, OperationId, ReceiptId};
 
@@ -47,10 +46,11 @@ impl Gateway {
         let frame = decode_sabi_envelope(frame)?;
         let envelope = frame.envelope();
         if envelope.service != SERVICE_NAME
-            || envelope
-                .schema
-                .as_ref()
-                .is_none_or(|schema| schema.name != nlos_schema::SABI_LLM_GATEWAY_SCHEMA)
+            || envelope.schema.as_ref().is_none_or(|schema| {
+                schema.name != SABI_ENVELOPE_SCHEMA
+                    || schema.major != 1
+                    || !schema.critical_extension_ids.is_empty()
+            })
         {
             return Err(GatewayError::IncompatibleSchema);
         }
@@ -251,7 +251,7 @@ fn wire_reply(
         }
     };
     let response = Envelope {
-        schema: Some(llm_gateway_schema_identity()),
+        schema: Some(envelope_schema_identity()),
         request_id: request.request_id.clone(),
         service: SERVICE_NAME.to_owned(),
         method: request.method.clone(),
@@ -316,4 +316,14 @@ fn wire_failure(error: GatewayError) -> (SabiErrorCode, Option<OperationId>, Ret
         _ => SabiErrorCode::InvalidArgument,
     };
     (code, reconciliation, RetryDirective::DoNotRetry)
+}
+
+fn envelope_schema_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_ENVELOPE_SCHEMA.to_owned(),
+        major: 1,
+        minor: 1,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
 }

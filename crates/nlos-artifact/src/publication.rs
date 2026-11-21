@@ -28,15 +28,18 @@ impl ArtifactStore {
         let staging_id = staging_id_for(request.artifact_id, request.idempotency_key);
         let size_bytes = u64::try_from(request.bytes.len())
             .map_err(|_| ArtifactError::InvalidSpec("blob length exceeds u64"))?;
-        // Phase 1 (durable blob) inside the writer critical section, as in
-        // `put_revision` (deep-audit/32 H1): the single-writer mutex is held
-        // from before the blob bytes hit disk until the staging transaction
-        // commits, so a concurrent `collect_orphan_blobs` scan (same mutex)
-        // cannot delete this in-flight blob before the staging row that
-        // references it exists.
+        // Phase 1 (durable blob) inside the full cross-process writer critical
+        // section, as in `put_revision` (deep-audit/32 H1, U-12): both the
+        // process-local mutex and the `SQLite` `BEGIN IMMEDIATE` write lock
+        // are acquired BEFORE the blob bytes hit disk and held until the
+        // staging transaction commits, so a concurrent
+        // `collect_orphan_blobs` / `tick_auto_gc` scan (same lock
+        // discipline, even in another OS process or handle) cannot acquire
+        // the write lock and delete this in-flight blob before the staging
+        // row that references it commits.
         let mut connection = self.lock_connection()?;
-        blob::commit_blob(&self.paths().artifacts, digest, request.bytes)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        blob::commit_blob(&self.paths().artifacts, digest, request.bytes)?;
 
         if let Some(existing) = load_staged_by_key(&transaction, request.idempotency_key)? {
             let same = existing.staging_id == staging_id
