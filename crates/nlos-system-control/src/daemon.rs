@@ -82,6 +82,7 @@
 //! sockets as server-side state; the GET envelope still crosses for
 //! authorization parity.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -94,9 +95,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nlos_application::ApplicationAuthority;
 use nlos_artifact::ArtifactStore;
 use nlos_capability::{
-    CapabilityAuthority, CapabilityAuthorityError, CapabilityIssueDecision, CapabilityIssueReceipt,
-    CapabilityRecord, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
-    SignedIssueRootCapabilityRequest, issue_root_command_message,
+    CapabilityAuthority, CapabilityAuthorityError, CapabilityHandle, CapabilityIssueDecision,
+    CapabilityIssueReceipt, CapabilityRecord, CapabilityRights, CapabilityTarget,
+    IssueRootCapabilityRequest, SignedIssueRootCapabilityRequest, issue_root_command_message,
 };
 use nlos_channel::{ChannelAuthority, ChannelAuthorityError};
 use nlos_clock::{AuthorityClock, AuthorityClockError};
@@ -126,8 +127,10 @@ use nlos_process::PosixPlatformKillAdapter;
 #[cfg(windows)]
 use nlos_process::WindowsPlatformKillAdapter;
 use nlos_process::{
-    ProcessAuthority, ProcessAuthorityError, RegisterSupervisorPidRequest, SupervisorPidDecision,
-    SupervisorPidRegistry, SupervisorPidRegistryError,
+    KillScope, PlatformKillAdapter, PlatformKillAdapterError, PlatformKillAdapterOutcome,
+    PlatformKillDecision, ProcessAuthority, ProcessAuthorityError, ProcessBindingRecord,
+    RegisterSupervisorPidRequest, RequestPlatformKillRequest, SupervisorPidDecision,
+    SupervisorPidEntry, SupervisorPidRegistry, SupervisorPidRegistryError,
 };
 use nlos_resource::{ResourceAuthority, ResourceAuthorityError};
 use nlos_runtime::RuntimeError;
@@ -142,7 +145,7 @@ use nlos_service_directory::SnapshotDirectory;
 use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_task::{SqliteTaskAuthority, TASK_PROFILE_10K, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
-use nlos_types::{IdempotencyKey, NamespaceId};
+use nlos_types::{CapabilityId, Generation, IdempotencyKey, NamespaceId, ProcessId};
 use nlos_wait::{WaitAuthority, WaitAuthorityError};
 use sha2::{Digest, Sha256};
 
@@ -720,6 +723,320 @@ fn platform_kill_adapter(registry: &SupervisorPidRegistry) -> DaemonPlatformKill
     }
 }
 
+const TREE_KILL_GRACE_STEPS: u32 = 10;
+const TREE_KILL_GRACE_STEP: Duration = Duration::from_millis(20);
+const TREE_KILL_DRAIN_STEPS: u32 = 100;
+const TREE_KILL_DRAIN_STEP: Duration = Duration::from_millis(10);
+
+struct TreeAwareDaemonKillAdapter<'a> {
+    inner: &'a DaemonPlatformKillAdapter,
+    kill_scope: KillScope,
+}
+
+impl PlatformKillAdapter for TreeAwareDaemonKillAdapter<'_> {
+    fn signal_platform_kill(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        match self.kill_scope {
+            KillScope::Process => self
+                .inner
+                .signal_platform_kill(process_id, process_generation),
+            KillScope::ProcessGroup => {
+                let first =
+                    self.inner
+                        .signal_platform_kill_group(process_id, process_generation, false)?;
+                if first == PlatformKillAdapterOutcome::AlreadyTerminated {
+                    // Drain check in case a grandchild outlived the leader briefly.
+                    for _ in 0..TREE_KILL_DRAIN_STEPS {
+                        if self.inner.signal_platform_kill_group(
+                            process_id,
+                            process_generation,
+                            true,
+                        )? == PlatformKillAdapterOutcome::AlreadyTerminated
+                        {
+                            break;
+                        }
+                        std::thread::sleep(TREE_KILL_DRAIN_STEP);
+                    }
+                    return Ok(PlatformKillAdapterOutcome::AlreadyTerminated);
+                }
+
+                let mut drained = false;
+                for _ in 0..TREE_KILL_GRACE_STEPS {
+                    std::thread::sleep(TREE_KILL_GRACE_STEP);
+                    if self.inner.signal_platform_kill_group(
+                        process_id,
+                        process_generation,
+                        false,
+                    )? == PlatformKillAdapterOutcome::AlreadyTerminated
+                    {
+                        drained = true;
+                        break;
+                    }
+                }
+                if !drained {
+                    for _ in 0..TREE_KILL_DRAIN_STEPS {
+                        if self.inner.signal_platform_kill_group(
+                            process_id,
+                            process_generation,
+                            true,
+                        )? == PlatformKillAdapterOutcome::AlreadyTerminated
+                        {
+                            break;
+                        }
+                        std::thread::sleep(TREE_KILL_DRAIN_STEP);
+                    }
+                }
+                Ok(PlatformKillAdapterOutcome::Signaled)
+            }
+        }
+    }
+
+    fn signal_platform_kill_group(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        force: bool,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        self.inner
+            .signal_platform_kill_group(process_id, process_generation, force)
+    }
+}
+
+/// Binding request associating an issued capability handle with one
+/// authority-assigned managed worker process incarnation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityWorkerBindingRequest {
+    pub capability: CapabilityHandle,
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+}
+
+impl CapabilityWorkerBindingRequest {
+    /// Binds `capability_id` at `Generation::INITIAL` to `(process_id, process_generation)`.
+    #[must_use]
+    pub const fn new(
+        capability_id: CapabilityId,
+        process_id: ProcessId,
+        process_generation: Generation,
+    ) -> Self {
+        Self {
+            capability: CapabilityHandle {
+                capability_id,
+                generation: Generation::INITIAL,
+            },
+            process_id,
+            process_generation,
+        }
+    }
+
+    /// Overrides the capability generation fence for delegated/rotated handles.
+    #[must_use]
+    pub const fn with_capability_generation(mut self, generation: Generation) -> Self {
+        self.capability.generation = generation;
+        self
+    }
+}
+
+/// One registered capability-to-worker binding tracked by [`SystemControlDaemon`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityWorkerBindingEntry {
+    pub capability: CapabilityHandle,
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub reclaimed: bool,
+}
+
+/// Outcome of registering a capability-to-worker binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityWorkerBindingDecision {
+    Registered(CapabilityWorkerBindingEntry),
+    Replayed(CapabilityWorkerBindingEntry),
+    Superseded {
+        previous: CapabilityWorkerBindingEntry,
+        current: CapabilityWorkerBindingEntry,
+    },
+}
+
+/// Fail-closed rejections when registering a capability-to-worker binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityWorkerBindingError {
+    StaleCapabilityGeneration {
+        capability_id: CapabilityId,
+        process_id: ProcessId,
+        current: Generation,
+        presented: Generation,
+    },
+    StaleProcessGeneration {
+        capability_id: CapabilityId,
+        process_id: ProcessId,
+        current: Generation,
+        presented: Generation,
+    },
+    CapabilityGenerationMismatch {
+        capability_id: CapabilityId,
+        process_id: ProcessId,
+        registered: Generation,
+        presented: Generation,
+    },
+    LockPoisoned,
+}
+
+impl fmt::Display for CapabilityWorkerBindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleCapabilityGeneration {
+                capability_id,
+                process_id,
+                current,
+                presented,
+            } => write!(
+                formatter,
+                "stale capability generation {} for capability {capability_id:?} / process {process_id:?} (current {})",
+                presented.get(),
+                current.get()
+            ),
+            Self::StaleProcessGeneration {
+                capability_id,
+                process_id,
+                current,
+                presented,
+            } => write!(
+                formatter,
+                "stale process generation {} for capability {capability_id:?} / process {process_id:?} (current {})",
+                presented.get(),
+                current.get()
+            ),
+            Self::CapabilityGenerationMismatch {
+                capability_id,
+                process_id,
+                registered,
+                presented,
+            } => write!(
+                formatter,
+                "capability generation mismatch {} vs registered {} for capability {capability_id:?} / process {process_id:?}",
+                presented.get(),
+                registered.get()
+            ),
+            Self::LockPoisoned => {
+                formatter.write_str("capability worker registry lock is poisoned")
+            }
+        }
+    }
+}
+
+impl Error for CapabilityWorkerBindingError {}
+
+/// Classification of why a bound capability failed active validation and
+/// triggered worker process-tree reclamation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityInvalidationReason {
+    Revoked,
+    AncestorRevokedOrFenced,
+    Expired,
+    NotYetValid,
+    NotFound,
+    GenerationConflict,
+    SignerKeyRevoked,
+}
+
+/// Durable + OS process-tree reclaim outcome for one invalidated capability binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityWorkerReclaimReceipt {
+    pub capability: CapabilityHandle,
+    pub reason: CapabilityInvalidationReason,
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub os_pid: u32,
+    pub kill_scope: KillScope,
+    pub kill_decision: PlatformKillDecision,
+}
+
+/// Structured per-binding failure during capability-revocation reclamation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityWorkerReclaimError {
+    pub capability: CapabilityHandle,
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub stage: &'static str,
+    pub detail: String,
+}
+
+type CapabilityWorkerBindingKey = ([u8; 16], [u8; 16]);
+type CapabilityWorkerBindingMap =
+    BTreeMap<CapabilityWorkerBindingKey, CapabilityWorkerBindingEntry>;
+
+/// Summary report returned by [`SystemControlDaemon::reclaim_revoked_capability_workers`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityRevocationReclaimReport {
+    pub authority_configured: bool,
+    pub checked_bindings: usize,
+    pub active_bindings: usize,
+    pub revoked_detected: usize,
+    pub reclaimed: Vec<CapabilityWorkerReclaimReceipt>,
+    pub errors: Vec<CapabilityWorkerReclaimError>,
+}
+
+const CAPABILITY_RECLAIM_IDEMPOTENCY_DOMAIN: &[u8] =
+    b"llmos/system-control-daemon/capability-worker-reclaim/v1";
+
+fn classify_capability_invalidation(
+    error: &CapabilityAuthorityError,
+) -> Option<CapabilityInvalidationReason> {
+    match error {
+        CapabilityAuthorityError::CapabilityRevoked => Some(CapabilityInvalidationReason::Revoked),
+        CapabilityAuthorityError::AncestorRevokedOrFenced => {
+            Some(CapabilityInvalidationReason::AncestorRevokedOrFenced)
+        }
+        CapabilityAuthorityError::CapabilityExpired => Some(CapabilityInvalidationReason::Expired),
+        CapabilityAuthorityError::CapabilityNotYetValid => {
+            Some(CapabilityInvalidationReason::NotYetValid)
+        }
+        CapabilityAuthorityError::CapabilityNotFound(_) => {
+            Some(CapabilityInvalidationReason::NotFound)
+        }
+        CapabilityAuthorityError::GenerationFenceConflict => {
+            Some(CapabilityInvalidationReason::GenerationConflict)
+        }
+        CapabilityAuthorityError::KeyRevoked => {
+            Some(CapabilityInvalidationReason::SignerKeyRevoked)
+        }
+        _ => None,
+    }
+}
+
+fn derive_capability_reclaim_idempotency_key(
+    binding: CapabilityWorkerBindingEntry,
+) -> IdempotencyKey {
+    let mut hasher = Sha256::new();
+    hasher.update(CAPABILITY_RECLAIM_IDEMPOTENCY_DOMAIN);
+    hasher.update(binding.capability.capability_id.as_bytes());
+    hasher.update(binding.capability.generation.get().to_be_bytes());
+    hasher.update(binding.process_id.as_bytes());
+    hasher.update(binding.process_generation.get().to_be_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    IdempotencyKey::from_bytes(bytes)
+}
+
+fn push_reclaim_error(
+    report: &mut CapabilityRevocationReclaimReport,
+    entry: CapabilityWorkerBindingEntry,
+    stage: &'static str,
+    detail: String,
+) {
+    report.errors.push(CapabilityWorkerReclaimError {
+        capability: entry.capability,
+        process_id: entry.process_id,
+        process_generation: entry.process_generation,
+        stage,
+        detail,
+    });
+}
+
 /// Composite operation-level executor of the resident daemon (W59-1): one
 /// [`OperationCommandExecutor`] seam entry delegating each powered arm to
 /// the landed authority-backed executor that owns it — kill to
@@ -915,6 +1232,10 @@ pub struct SystemControlDaemon {
     /// [`Self::register_supervisor_pid`] for the honest registration-surface
     /// gap).
     supervisor_registry: SupervisorPidRegistry,
+    /// In-process `(CapabilityId, ProcessId)` worker bindings driven by
+    /// [`Self::reclaim_revoked_capability_workers`] to reclaim managed worker
+    /// process trees when their bound capability is revoked.
+    capability_workers: Mutex<CapabilityWorkerBindingMap>,
     /// Handshake nonce registry bound to the authenticated endpoint.
     pub handshake: Arc<ServerHandshakeContext>,
     /// One-time handshake nonce source, seeded from the OS.
@@ -1004,6 +1325,288 @@ impl SystemControlDaemon {
         request: RegisterSupervisorPidRequest,
     ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
         self.supervisor_registry.register(request)
+    }
+
+    /// Registers one supervisor-observed OS pid mapping with an explicit
+    /// [`KillScope`] (`Process` or `ProcessGroup` for managed worker subtrees).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SupervisorPidRegistryError`] on a stale generation, a
+    /// same-generation OS pid rebind, a kill-scope contradiction, or a
+    /// poisoned lock; rejections have zero side effect.
+    pub fn register_supervisor_pid_at_scope(
+        &self,
+        request: RegisterSupervisorPidRequest,
+        kill_scope: KillScope,
+    ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
+        self.supervisor_registry
+            .register_at_scope(request, kill_scope)
+    }
+
+    /// Binds one capability handle to a supervised managed worker process
+    /// incarnation (`(CapabilityHandle -> (ProcessId, Generation))`) so
+    /// revocation can trigger process-tree reclamation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapabilityWorkerBindingError`] on stale capability or process
+    /// generations, same-process capability generation contradictions, or a
+    /// poisoned registry lock.
+    pub fn register_capability_worker_binding(
+        &self,
+        request: CapabilityWorkerBindingRequest,
+    ) -> Result<CapabilityWorkerBindingDecision, CapabilityWorkerBindingError> {
+        let key = (
+            request.capability.capability_id.into_bytes(),
+            request.process_id.into_bytes(),
+        );
+        let entry = CapabilityWorkerBindingEntry {
+            capability: request.capability,
+            process_id: request.process_id,
+            process_generation: request.process_generation,
+            reclaimed: false,
+        };
+        let mut guard = self
+            .capability_workers
+            .lock()
+            .map_err(|_| CapabilityWorkerBindingError::LockPoisoned)?;
+        let Some(&current) = guard.get(&key) else {
+            guard.insert(key, entry);
+            return Ok(CapabilityWorkerBindingDecision::Registered(entry));
+        };
+        if request.process_generation < current.process_generation {
+            return Err(CapabilityWorkerBindingError::StaleProcessGeneration {
+                capability_id: request.capability.capability_id,
+                process_id: request.process_id,
+                current: current.process_generation,
+                presented: request.process_generation,
+            });
+        }
+        if request.capability.generation < current.capability.generation {
+            return Err(CapabilityWorkerBindingError::StaleCapabilityGeneration {
+                capability_id: request.capability.capability_id,
+                process_id: request.process_id,
+                current: current.capability.generation,
+                presented: request.capability.generation,
+            });
+        }
+        if request.process_generation == current.process_generation {
+            if request.capability.generation != current.capability.generation {
+                return Err(CapabilityWorkerBindingError::CapabilityGenerationMismatch {
+                    capability_id: request.capability.capability_id,
+                    process_id: request.process_id,
+                    registered: current.capability.generation,
+                    presented: request.capability.generation,
+                });
+            }
+            return Ok(CapabilityWorkerBindingDecision::Replayed(current));
+        }
+        guard.insert(key, entry);
+        Ok(CapabilityWorkerBindingDecision::Superseded {
+            previous: current,
+            current: entry,
+        })
+    }
+
+    /// Convenience binding helper for `(CapabilityId -> (ProcessId, Generation))`
+    /// using [`Generation::INITIAL`] for the capability handle.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CapabilityWorkerBindingError`] from
+    /// [`Self::register_capability_worker_binding`].
+    pub fn bind_capability_worker(
+        &self,
+        capability_id: CapabilityId,
+        process_id: ProcessId,
+        process_generation: Generation,
+    ) -> Result<CapabilityWorkerBindingDecision, CapabilityWorkerBindingError> {
+        self.register_capability_worker_binding(CapabilityWorkerBindingRequest::new(
+            capability_id,
+            process_id,
+            process_generation,
+        ))
+    }
+
+    /// Inspects active capability-worker bindings against `CapabilityAuthority::inspect_active`
+    /// at `now_wall_ms` and reclaims any worker process trees bound to revoked or
+    /// invalidated capabilities via `ProcessAuthority` + `PlatformKillAdapter`.
+    ///
+    /// Fail-closed / zero-side-effect guarantees:
+    /// - If `self.capabilities` is `None`, returns `authority_configured: false` with zero kills.
+    /// - Capabilities that remain active (including intact ancestor chains) leave their
+    ///   workers and sibling processes untouched.
+    #[must_use]
+    pub fn reclaim_revoked_capability_workers(
+        &self,
+        now_wall_ms: u64,
+    ) -> CapabilityRevocationReclaimReport {
+        let bindings = match self.capability_workers.lock() {
+            Ok(guard) => guard
+                .values()
+                .filter(|entry| !entry.reclaimed)
+                .copied()
+                .collect::<Vec<_>>(),
+            Err(_) => {
+                return CapabilityRevocationReclaimReport {
+                    authority_configured: self.capabilities.is_some(),
+                    checked_bindings: 0,
+                    active_bindings: 0,
+                    revoked_detected: 0,
+                    reclaimed: Vec::new(),
+                    errors: Vec::new(),
+                };
+            }
+        };
+        let Some(authority) = self.capabilities.as_ref() else {
+            return CapabilityRevocationReclaimReport {
+                authority_configured: false,
+                checked_bindings: bindings.len(),
+                active_bindings: 0,
+                revoked_detected: 0,
+                reclaimed: Vec::new(),
+                errors: Vec::new(),
+            };
+        };
+
+        let mut report = CapabilityRevocationReclaimReport {
+            authority_configured: true,
+            checked_bindings: bindings.len(),
+            active_bindings: 0,
+            revoked_detected: 0,
+            reclaimed: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        for entry in bindings {
+            match authority.inspect_active(entry.capability, now_wall_ms) {
+                Ok(_) => {
+                    report.active_bindings += 1;
+                }
+                Err(error) => {
+                    let Some(reason) = classify_capability_invalidation(&error) else {
+                        report.errors.push(CapabilityWorkerReclaimError {
+                            capability: entry.capability,
+                            process_id: entry.process_id,
+                            process_generation: entry.process_generation,
+                            stage: "capability_inspect",
+                            detail: error.to_string(),
+                        });
+                        continue;
+                    };
+                    report.revoked_detected += 1;
+                    self.reclaim_single_capability_worker(entry, reason, now_wall_ms, &mut report);
+                }
+            }
+        }
+        report
+    }
+
+    fn reclaim_single_capability_worker(
+        &self,
+        entry: CapabilityWorkerBindingEntry,
+        reason: CapabilityInvalidationReason,
+        now_wall_ms: u64,
+        report: &mut CapabilityRevocationReclaimReport,
+    ) {
+        let Some((binding, supervisor)) = self.resolve_reclaim_target(entry, report) else {
+            return;
+        };
+        let base_adapter = platform_kill_adapter(&self.supervisor_registry);
+        let tree_adapter = TreeAwareDaemonKillAdapter {
+            inner: &base_adapter,
+            kill_scope: supervisor.kill_scope,
+        };
+        let kill_decision = match self.process.request_platform_kill_with_registry(
+            RequestPlatformKillRequest {
+                process_id: entry.process_id,
+                expected_process_generation: binding.process_generation,
+                expected_process_fencing_token: binding.process_fencing_token,
+                idempotency_key: derive_capability_reclaim_idempotency_key(entry),
+                killed_at_ms: now_wall_ms,
+            },
+            &tree_adapter,
+            Some(&self.supervisor_registry),
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                push_reclaim_error(report, entry, "platform_kill", error.to_string());
+                return;
+            }
+        };
+        if let Ok(mut guard) = self.capability_workers.lock() {
+            let key = (
+                entry.capability.capability_id.into_bytes(),
+                entry.process_id.into_bytes(),
+            );
+            if let Some(current) = guard.get_mut(&key)
+                && current.capability.generation == entry.capability.generation
+                && current.process_generation == entry.process_generation
+            {
+                current.reclaimed = true;
+            }
+        }
+        report.reclaimed.push(CapabilityWorkerReclaimReceipt {
+            capability: entry.capability,
+            reason,
+            process_id: entry.process_id,
+            process_generation: entry.process_generation,
+            os_pid: supervisor.os_pid,
+            kill_scope: supervisor.kill_scope,
+            kill_decision,
+        });
+    }
+
+    fn resolve_reclaim_target(
+        &self,
+        entry: CapabilityWorkerBindingEntry,
+        report: &mut CapabilityRevocationReclaimReport,
+    ) -> Option<(ProcessBindingRecord, SupervisorPidEntry)> {
+        let binding = match self
+            .process
+            .inspect_active_process_binding(entry.process_id)
+        {
+            Ok(binding) => binding,
+            Err(error) => {
+                push_reclaim_error(report, entry, "process_inspect", error.to_string());
+                return None;
+            }
+        };
+        if binding.process_generation != entry.process_generation {
+            push_reclaim_error(
+                report,
+                entry,
+                "process_generation_fence",
+                format!(
+                    "expected process generation {}, head is {}",
+                    entry.process_generation.get(),
+                    binding.process_generation.get()
+                ),
+            );
+            return None;
+        }
+        let supervisor = match self.supervisor_registry.lookup(entry.process_id) {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                push_reclaim_error(report, entry, "supervisor_lookup", error.to_string());
+                return None;
+            }
+        };
+        if supervisor.process_generation != entry.process_generation {
+            push_reclaim_error(
+                report,
+                entry,
+                "supervisor_generation_fence",
+                format!(
+                    "expected process generation {}, supervisor mapped {}",
+                    entry.process_generation.get(),
+                    supervisor.process_generation.get()
+                ),
+            );
+            return None;
+        }
+        Some((binding, supervisor))
     }
 
     /// Builds one exchange's executor stack (W59-1): the composite
@@ -1252,6 +1855,7 @@ pub fn assemble(
         directory,
         connection_idle_timeout: options.connection_idle_timeout,
         supervisor_registry: SupervisorPidRegistry::new(),
+        capability_workers: Mutex::new(BTreeMap::new()),
         handshake,
         random,
         worker: Arc::new(SharedRecoveryWorker(Mutex::new(worker))),

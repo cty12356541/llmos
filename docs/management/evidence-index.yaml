@@ -1293,3 +1293,31 @@
   scope: "双主体签名、三平台已授权根首次打开、逐块当前授权与钉住句柄、受控 checkpoint 截止及 WAL 前缀恢复。范围限受管理本机库路径，物理断电和真实系统接线另行验收"
   assurance: H4
   date: "2026-11-16"
+
+# ---------------------------------------------------------------------------
+# Stage E W82-R2 second-wave scoped acceptance and precheck
+# ---------------------------------------------------------------------------
+- id: w82-c-acceptance-20261121
+  path: docs/evidence/stage-e/w82-c-acceptance-20261121.md
+  title: "W82-C 托管约定 C 全量验收证据（D7 权威绑定与父退出重启）"
+  scope: "macOS 本机验收 D7 32 位小写 hex 槽位格式校验、CapabilityAuthority inspect_active 与 holder==principal 预检、operator_root_capability=<32-hex> READY 输出及父退出同 --root 无冲突重启；三平台远端 CI 与跨权限 breakaway 仍保留既有边界"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-d-py-sdk-20261121
+  path: docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+  title: "W82-D-PY-SDK：Python SDK SABI v1.1 客户端与轮子打包收口回执"
+  scope: "macOS 本机验收 Python 12 通道 SABI_V1_CHANNELS、Ed25519 持久认证会话、5 个 SABI 新客户端、源码树外独立 verify_wheel.py（12 *_pb2.py 零漂移）及对真实 5 通道守护进程 6/6 一致性校验；SDK-3 保持 PARTIAL-PASS、未晋升 SDK-4"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-d-ts-sdk-20261121
+  path: docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
+  title: "W82-D-TS-SDK：TypeScript SABI v1.1 SDK 窄腰实现与一致性验证"
+  scope: "macOS 本机验收 TypeScript 12 通道 SABI_V1_CHANNELS、node:crypto Ed25519 持久认证会话、5 个 SABI 新客户端与跨进程真实守护进程/本地实 socket 12/12 一致性校验；SDK-3 保持 PARTIAL-PASS、未发版 npm 且未晋升 SDK-4"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-int-precheck-20261121
+  path: docs/evidence/stage-e/w82-int-precheck-20261121.md
+  title: "W82-INT 预检、吊销回收联动与全 8 通道前置签认清册"
+  scope: "macOS 本机合流 W82-C/D/DEL-BASE Wave 1 成果，交付 nlos-compat-shim 三保留名映射、SystemControlDaemon 令牌吊销联动真实进程树回收、14 处 WASI 导入勘误清零与 DEL-BASE 索引挂接，并按源码精确行号固化阻塞全 8 通道挂载的三项前置契约/实现/策略缺口（H8=0，未含 qq-agent 实机消费闭环）"
+  assurance: H4
+  date: "2026-11-21"

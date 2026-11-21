@@ -15,9 +15,9 @@
 ## 1. 事实起点、权威归属与范围
 
 - A–D 在各自验收边界内已 `EXITED`；E0–E7 为 8/8 工程完成，阶段 E 仍待维护者签字，不能代签 `EXITED` 或 SABI v1.0 长期冻结。
-- W82 的 A 会话和 B1–B4 库级服务已通过验收，整车道 `2/5 DONE`。`B82-SDK` 已开放。C 的 D7 与重启、D 的 SDK 主体仍在推进，INT 待 C、D 验收。
+- W82 的 A 会话与 B1–B4 库级服务已完成三平台验收；`W82-C` 与 `W82-D` 已完成 macOS 本地验收（[W82-C](../evidence/stage-e/w82-c-acceptance-20261121.md)、[Python SDK](../evidence/stage-e/w82-d-py-sdk-20261121.md)、[TypeScript SDK](../evidence/stage-e/w82-d-ts-sdk-20261121.md)，三平台 CI 待补跑）；`W82-INT` 维持 `IN_PROGRESS / PARTIAL`（已完成 `nlos-compat-shim` 三保留名映射、Daemon 吊销联动进程树回收、14 处勘误清零与三项前置阻塞固化，见 [W82-INT 预检与签认清册](../evidence/stage-e/w82-int-precheck-20261121.md)）。
 - 历史基线 `a3a1c007` 的 push CI 常规 9 作业成功，2 个规模作业跳过，Pages 部署成功。`d2a32de9` 的原 Worker E2E 失败已诊断并在首波集成代码的 `include-ignored` 作业复验通过，原负面证据保留。[历史 push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) · [历史 Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) · [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)
-- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-三服务库验证)及原始台账为准。
+- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-21-w82-r2-集成预检与合规收口)及原始台账为准。
 - 本文负责跨能力交付顺序、工作包和终局验收；阶段进度归 `stage-*-progress.md`，需求归 v0.5，决策归 ADR，事实归源提交/Evidence，风险归 `risks.yaml`，声明归 `claims.yaml`。本计划不得覆盖这些对象。
 - 后续 `DEL-*` 仅为管理工作包 ID，分别承接既有 B/C/D/E 能力；不新增正式阶段或 Requirement。全球联邦、完整硬件生态、消费级完善等按 §29.2 分包演进；裸机不是完成终局的前置条件。
 
@@ -105,7 +105,7 @@ flowchart LR
 **R/W**：R=`crates/nlos-up/tests/workers_e2e.rs`、定时 workflow、C 已合并代码；W=`crates/nlos-up/**`、`crates/nlos-package/**`、`crates/nlos-process/**` 中具名最小修复集与 Evidence；workflow 改动先交 integrator。
 - [x] 保存 43530982662 原日志，定位通用 READY 前缀允许在 brain 启动前返回的竞态；等待带 Worker 数量的完整行，保留确定性红绿结果。诊断、验收及环境差异见 [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)。
 - [x] Ubuntu 22.04 局部执行 `cargo test --locked -p nlos-up --test workers_e2e -- --nocapture`；Windows 执行 `cargo test -p nlos-process --test platform_kill`，见真实父子树与兄弟不误杀用例。
-- [ ] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收均需整体验收。吊销触发实际回收留 INT，跨权限/breakaway 归 U-2。
+- [x] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收已在 macOS 本机验收；[W82-INT](../evidence/stage-e/w82-int-precheck-20261121.md) 已落地 Daemon 令牌吊销联动进程树回收，三平台 CI 复跑与跨权限/breakaway 残域继续按 U-2 保留。[C 验收 Evidence](../evidence/stage-e/w82-c-acceptance-20261121.md)
 - [x] 集成代码 `4fc70be1` 在 Ubuntu 26.04.1 的 `cargo test --workspace --no-fail-fast -- --include-ignored` 作业成功。原失败项 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 实测通过，关闭原定时失败的 C-DIAG 子门。[复验记录](../evidence/stage-e/w82-c-diag-20261116.md#2026-11-16-集成代码的-ubuntu-worker-复验)
 
 ### CI-WINDOWS-SCALE-BARRIER：Windows Regime B 规模探针准备屏障
@@ -179,16 +179,17 @@ flowchart LR
 
 **Owner**：SDK Sol；跨语言安全与错误语义审查 Astra。**入口**：B82-SDK 已开放；**blocks**：B82-INT、DEL-SDK。
 **R/W**：R=A/B 定稿、已合并 wheel/认证前置件、SDK 等级定义；W=`sdk/python/**`、`sdk/typescript/**`、`tests/conformance/ipc/**` 与 Evidence。新增 `wait/operation/llm_gateway/tool_sandbox/blob_reference` 客户端模块，名称和类型从已合并生成物取得。
-- [ ] 正向：目录协商、认证持久连接、Wait/Operation/LLM/Tool/Blob 调用，脱离源码树安装并消费；失败：超时、半帧、poison、重连、uncertain 同键重试；安全：holder 错配、私钥/回执脱敏、未知 major/critical、上界拒绝。
-- [ ] 运行 `python -m unittest discover -s sdk/python/tests`、`npm run schema:typecheck`、现有 `npm run ipc:test:typescript` / `directory:test:typescript` / `wait-control:test:typescript` 及 Python 对应脚本；新增三服务跨进程脚本纳入同一 CI 门，不能只做 mock 自测。
-- [ ] 复用 `python sdk/python/scripts/verify_wheel.py`；当前脚本把 venv 解释器写死为 `bin/python`，先改为按宿主选 `Scripts/python.exe`/`bin/python`，并让 probe cwd 位于源码树外、清除 PYTHONPATH 后再算三平台独立安装通过。
-- [ ] Evidence 分列 SDK-0..4、语言/平台/profile；wheel 可安装和新增客户端完成不等于已在 PyPI/npm 发布、也不自动晋升 SDK-4。
+- [x] 正向与失败边界（目录协商、认证持久连接、Wait/Operation/LLM/Tool/Blob 客户端、wheel 树外安装与本地 socket 安全边界）已在 macOS 完成本地验收；Py/TS `SDK-3` 保持受限 `PARTIAL_PASS`（live daemon 暂缺三新服务挂载，见下节三项前置缺口）。[Python SDK Evidence](../evidence/stage-e/w82-d-py-sdk-20261121.md) · [TypeScript SDK Evidence](../evidence/stage-e/w82-d-ts-sdk-20261121.md)
+- [x] `python3 -m unittest discover -s sdk/python/tests`、`npm run schema:typecheck`、`npm run ipc:test:typescript` / `directory:test:typescript` / `wait-control:test:typescript` / `sabi-v1-1:test:typescript` 与 Python 一致性脚本已在 macOS 接入并实跑通过。
+- [x] `python3 sdk/python/scripts/verify_wheel.py` 已按宿主选择解释器并在源码树外、剥离 `PYTHONPATH` 验证 12 个 `*_pb2.py` 与 27Exports；三平台远端 CI 复验待跑。
+- [ ] Evidence 已分列 SDK-0..4 与受测平台；wheel 可安装与新增客户端不等于 PyPI/npm 发布，也不自动晋升 SDK-4。
 
 ### W82-INT-DOGFOOD-E2E：系统挂载、撤销联动与真实消费者
 
-**Owner**：单一 integrator Sol，整条安全/故障链独立终审 Astra；外部仓负责人维护 qq-agent。**blocked-by**：B82-INT；**blocks**：W82 DONE、后续交付候选基线。
+**Owner**：单一 integrator Sol，整条安全/故障链独立终审 Astra；外部仓负责人维护 qq-agent。**blocked-by**：B82-INT + 三项前置契约/库/策略签认；**blocks**：W82 DONE、后续交付候选基线。
 **R/W**：R=各车道回执；W=`crates/nlos-system-control/**`、`crates/nlos-compat-shim/src/sabi_adapter.rs`、Studio 徽标实际文件、根依赖/锁文件、W82 Evidence 与共享治理台账。qq-agent 是单独 Task/write-set，取得对应仓授权后执行，不隐式扩大本仓权限。
-- [ ] 挂载三服务、认证 principal→会话槽位→权威 CapabilityId 与 C 根 ID，验证签名与 custody 输送、受信 workspace resolver、Blob 大参数 materializer 和重启接线；正向双 Worker 快慢双脑、LLM/工具/富媒体闭环；失败含 daemon/worker/provider 故障；安全含令牌吊销触发进程树回收、下块拒读、伪造根 ID 拒绝、跨应用隔离与计费守恒。
+- [x] 预检阶段（`W82-INT-WAVE2` `IN_PROGRESS / PARTIAL`）已完成 `nlos-compat-shim` 三保留名映射、Daemon 令牌吊销联动进程树回收（`SystemControlDaemon::reclaim_revoked_capability_workers`）、14 处「13→14 导入」勘误清零与 4 份新证据入账；同时固化阻塞全 8 通道挂载的三项源码前置缺口（`BlobReferenceService` sidecar/非空摘要、`Gateway::handle_wire` schema 与 `attenuate_budget` `ChildSessionBinding`、`CapabilityRights` 分服务策略签认，见 [W82-INT 预检与签认清册](../evidence/stage-e/w82-int-precheck-20261121.md)）。
+- [ ] 待上述三项前置修复与维护者签认落地后：挂载三服务、认证 principal→会话槽位→权威 CapabilityId 与 C 根 ID，验证签名与 custody 输送、受信 workspace resolver、Blob 大参数 materializer 和重启接线，并完成双 Worker 快慢双脑闭环。
 - [ ] 真实消费者验证零应用明文 provider key、自建预算库/防火墙/supervisor 可退役；逐个核对旧实现删改与替代路径。模拟消费者可以先验接口，不能代替 qq-agent 真实回执或独立生态。
 - [ ] 执行 `cargo test -p nlos-system-control --features daemon`、`cargo test --workspace`、`python scripts/run_road_e001_upgrade_matrix.py`，核对 8 个 N-1 冻结包、16 份封存制品及零源码修改/重编译/重签；新服务失败、吊销、重启与旧客户端兼容必须同时覆盖。
 - [ ] 补跑受影响 CI/定时门，运行 `python scripts/lint_claims.py`、`python tools/verify_stage_e_ledger_coverage.py --mode strict`、`git diff --check`。按最终 SHA 汇总每车道 Evidence，更新 stage E/claims/risks/index 与 L0，独立终审后才晋升 W82；E 正式退出仍是另一个人类决定。
@@ -200,8 +201,8 @@ flowchart LR
 ### DEL-BASE：规范到实际产品的覆盖审计（承接 B/C/D/E）
 
 **Owner/依赖**：架构 Astra + 事实核验 Sol；可立即准备，与 W82 独立；阻塞后续包范围定稿。R=v0.5 最高目标/路线、现有进度/claims/risks/相关 Evidence；W=本计划各包输入及按权威对象分配的差距修订。
-- [ ] 输出“需求→能力→现有 Evidence→缺口→本计划包→release profile”映射，逐条核 U-1..U-14、过期风险描述、SDK 探针/正式支持区别；已闭合项仅设置复验触发器。
-- [ ] 验收：§1.1 十类完整性目标与 §28 全部 ROAD 门有归属，未知项有 owner/调查命令/裁定条件；`lint_claims.py` 与 strict 覆盖率通过。不得用全局百分比或同名第二份规范替代缺口。
+- [x] 已完成首轮只读覆盖审计产出 [DEL-BASE 规范到实际产品覆盖审计报告](./del-base-coverage-audit.md)，覆盖“需求→能力→现有 Evidence→缺口→本计划包→release profile”映射、逐条核对 U-1..U-14 与风险台账，并在本计划与 [README](./README.md) 挂接索引入口。
+- [ ] 待结合 W82 完整挂载复验与后续交付包启动窗口按权威对象闭环缺口修订。验收：§1.1 十类完整性目标与 §28 全部 ROAD 门有归属，未知项有 owner/调查命令/裁定条件；`lint_claims.py` 与 strict 覆盖率通过。不得用全局百分比或同名第二份规范替代缺口。
 
 ### DEL-DIST：独立发行、安装和升级（承接 B/D/E）
 

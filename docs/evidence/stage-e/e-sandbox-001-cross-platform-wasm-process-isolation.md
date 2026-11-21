@@ -29,7 +29,7 @@
 
 ## 2. 关键设计决策与边界（如实声明）
 
-1. **手写 WASI p1 白名单面而非链接 `wasmtime-wasi`**：`W80-0-SCAFFOLD` 预锁供应链（`RISK-E-04`）的 `Cargo.lock` 中不含 `wasmtime-wasi`/`wasi-common`，且车道任务书禁止动根 `Cargo.lock`。本车道因此直接在 `wasmtime::Linker` 上注册**自有的 13 个导入**（`args_sizes_get`、`args_get`、`environ_sizes_get`、`environ_get`、`clock_time_get`、`clock_res_get`、`proc_exit`、`fd_write`、`fd_read`、`fd_close`、`fd_seek`、`fd_prestat_get`、`fd_prestat_dir_name`、`path_open`）。这是比链接通用 WASI 实现更强的「白名单由构造保证」：能力存在当且仅当在 `add_to_linker` 单点注册处注册。`add_to_linker` 因此豁免 `clippy::too_many_lines`（单点可审计是安全属性，仓库 `nlos-application` 既有先例）。
+1. **手写 WASI p1 白名单面而非链接 `wasmtime-wasi`**：`W80-0-SCAFFOLD` 预锁供应链（`RISK-E-04`）的 `Cargo.lock` 中不含 `wasmtime-wasi`/`wasi-common`，且车道任务书禁止动根 `Cargo.lock`。本车道因此直接在 `wasmtime::Linker` 上注册**自有的 14 个导入**（`args_sizes_get`、`args_get`、`environ_sizes_get`、`environ_get`、`clock_time_get`、`clock_res_get`、`proc_exit`、`fd_write`、`fd_read`、`fd_close`、`fd_seek`、`fd_prestat_get`、`fd_prestat_dir_name`、`path_open`）。这是比链接通用 WASI 实现更强的「白名单由构造保证」：能力存在当且仅当在 `add_to_linker` 单点注册处注册。`add_to_linker` 因此豁免 `clippy::too_many_lines`（单点可审计是安全属性，仓库 `nlos-application` 既有先例）。
 2. **errno 策略**：遵循 WASI preview 1 编号；能力违规（绝对路径、`..` 逃逸、符号链接逃逸、只读授信写打开）一律 `ENOTCAPABLE(76)`；未授信 fd 为 `EBADF(8)`；挂载内不存在文件 `ENOENT(44)`。与 b-sandbox-001 实测的 `EBADF(8)`/`EPERM` 家族语义同向（p1 实现间 62/63/76 映射存在差异，本实现取 p1 规范枚举 `ENOTCAPABLE` 并全程自洽，测试断言精确数字）。
 3. **双重围栏**：词法围栏（拒绝绝对路径、反斜杠、空组件、越出挂载根的 `..`）+ canonicalize 包含围栏（`realpath` 必须落在 canonicalize 后的授信根之内，拒绝符号链接逃逸；写路径对父目录 canonicalize 后包含校验）。**残留边界（如实）**：canonicalize 与 open 之间存在理论 TOCTOU 窗口，需要已获写授信的攻击者在树内竞速替换符号链接；无 `openat2`/`O_NOFOLLOW` 跨平台原语下不声称根除，与通用 WASI preopen 实现同级。读取侧对 Windows 驱动器形态（`C:/`、`C:\`）显式拒绝。
 4. **熵边界**：`random_get` 不在白名单面（导入即实例化拒绝）。E6 基线显式不授信熵源；后续车道引入经批准的熵源时须补负向回归。

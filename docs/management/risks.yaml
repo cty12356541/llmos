@@ -234,7 +234,7 @@
   severity: P1
   status: partial
   description: "跨 OS 与 WASI 碎片化导致第三方不可信扩展逃逸沙箱（关联 U-9）"
-  mitigation: "已落地 nlos-wasm-sandbox L1 专职空环境宿主子进程（env_clear + 显式 argv + 墙钟死线硬杀）与 L2 手写 13 导入 WASI 白名单（零 socket 导入注册、词法+canonicalize 双重路径围栏、64KiB 页硬限、确定性 fuel 与 epoch 中断，Windows 11 本机 54/54 通过闭合 U-9）；Linux/macOS #[cfg(unix)] 符号链接分支与写授信树内极端 TOCTOU 窗口由三平台 CI 与后续生产硬化持续守护"
+  mitigation: "已落地 nlos-wasm-sandbox L1 专职空环境宿主子进程（env_clear + 显式 argv + 墙钟死线硬杀）与 L2 手写 14 导入 WASI 白名单（零 socket 导入注册、词法+canonicalize 双重路径围栏、64KiB 页硬限、确定性 fuel 与 epoch 中断，Windows 11 本机 54/54 通过闭合 U-9）；Linux/macOS #[cfg(unix)] 符号链接分支与写授信树内极端 TOCTOU 窗口由三平台 CI 与后续生产硬化持续守护"
   evidence_refs:
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
     - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
