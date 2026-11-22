@@ -7,25 +7,34 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use ed25519_dalek::{Signer as _, SigningKey};
+#[cfg(unix)]
 use nlos_capability::{
     CapabilityAuthority, CapabilityHandle, CapabilityRecord, CapabilityRights, CapabilityTarget,
     DelegateCapabilityRequest, RevokeCapabilityRequest, SignedDelegateCapabilityRequest,
     SignedRevokeCapabilityRequest, delegate_command_message, revoke_command_message,
 };
+#[cfg(unix)]
 use nlos_identity::{IdentityAuthority, IdentityBinding};
 use nlos_process::{
-    CreateIsolationDomainRequest, KillScope, PlatformKillDecision, ProcessAuthority,
-    ProcessBindingRecord, RegisterDelegatedProcessRequest, RegisterSupervisorPidRequest,
+    CreateIsolationDomainRequest, ProcessAuthority, ProcessBindingRecord,
+    RegisterDelegatedProcessRequest, RegisterSupervisorPidRequest,
 };
+#[cfg(unix)]
+use nlos_process::{KillScope, PlatformKillDecision};
+#[cfg(unix)]
+use nlos_system_control::daemon::{CapabilityInvalidationReason, SystemControlDaemon};
 use nlos_system_control::daemon::{
-    CapabilityInvalidationReason, CapabilityRevocationReclaimReport,
-    CapabilityWorkerBindingDecision, CapabilityWorkerReclaimError, CapabilityWorkerReclaimReceipt,
-    DaemonOptions, SystemControlDaemon, assemble,
+    CapabilityRevocationReclaimReport, CapabilityWorkerBindingDecision,
+    CapabilityWorkerReclaimError, CapabilityWorkerReclaimReceipt, DaemonOptions, assemble,
 };
-use nlos_types::{Generation, IdempotencyKey, NamespaceId, TaskAttemptId, TaskId};
+#[cfg(unix)]
+use nlos_types::NamespaceId;
+use nlos_types::{Generation, IdempotencyKey, TaskAttemptId, TaskId};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -62,6 +71,7 @@ impl ChildGuard {
         self.0.as_mut().expect("child still owned")
     }
 
+    #[cfg(unix)]
     fn take(&mut self) -> Child {
         self.0.take().expect("child still owned")
     }
@@ -76,8 +86,10 @@ impl Drop for ChildGuard {
     }
 }
 
+#[cfg(unix)]
 struct TempKeyFile(PathBuf);
 
+#[cfg(unix)]
 impl TempKeyFile {
     fn from_seed(label: &str, seed: &[u8; 32]) -> Self {
         let seq = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -104,6 +116,7 @@ impl TempKeyFile {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TempKeyFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -154,6 +167,7 @@ fn process_fixture(authority: &ProcessAuthority, seed: u8) -> ProcessBindingReco
         .clone()
 }
 
+#[cfg(unix)]
 fn delegate_child_cap(
     authority: &CapabilityAuthority,
     identity: &IdentityAuthority,
@@ -191,6 +205,7 @@ fn delegate_child_cap(
         .record()
 }
 
+#[cfg(unix)]
 fn revoke_cap(
     authority: &CapabilityAuthority,
     identity: &IdentityAuthority,
