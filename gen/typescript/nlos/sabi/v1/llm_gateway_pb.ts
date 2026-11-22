@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file nlos/sabi/v1/llm_gateway.proto.
  */
 export const file_nlos_sabi_v1_llm_gateway: GenFile = /*@__PURE__*/
-  fileDesc("Ch5ubG9zL3NhYmkvdjEvbGxtX2dhdGV3YXkucHJvdG8SDG5sb3Muc2FiaS52MSIsCgtMbG1DaGF0VHVybhIMCgRyb2xlGAEgASgJEg8KB2NvbnRlbnQYAiABKAkiwwEKDkxsbUNoYXRSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRINCgVtb2RlbBgCIAEoCRIoCgV0dXJucxgDIAMoCzIZLm5sb3Muc2FiaS52MS5MbG1DaGF0VHVybhIZChFtYXhfb3V0cHV0X3Rva2VucxgEIAEoDRIZChF0ZW1wZXJhdHVyZV9taWxsaRgFIAEoDRIUCgxzZXNzaW9uX2hpbnQYBiABKAkipQEKDUxsbUNoYXRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Eg0KBW1vZGVsGAIgASgJEhQKDGNvbnRlbnRfdXRmOBgDIAEoCRIWCg5yZWFzb25pbmdfdXRmOBgEIAEoCRIpCgV1c2FnZRgFIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUihAEKDExsbVVzYWdlV2lyZRIRCglhcGlfY2FsbHMYASABKAQSFQoNcHJvbXB0X3Rva2VucxgCIAEoBBIZChFjb21wbGV0aW9uX3Rva2VucxgDIAEoBBIUCgx0b3RhbF90b2tlbnMYBCABKAQSGQoRY29zdF9taWNyb2NyZWRpdHMYBSABKAQiQgoSUXVlcnlCdWRnZXRSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eSKAAgoRUXVlcnlCdWRnZXRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EikKBWxpbWl0GAIgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIsCghjb25zdW1lZBgDIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUSLQoJcmVtYWluaW5nGAQgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRI1ChFleHRlcm5hbF9hZHZpc29yeRgFIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUijwEKFkF0dGVudWF0ZUJ1ZGdldFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei8KC2NoaWxkX2xpbWl0GAIgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIWCg52YWxpZF91bnRpbF9tcxgDIAEoBCKQAQoVQXR0ZW51YXRlQnVkZ2V0UmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIxCg1ncmFudGVkX2xpbWl0GAIgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIWCg52YWxpZF91bnRpbF9tcxgDIAEoBCKuAQoaUmVjb3JkRXh0ZXJuYWxVc2FnZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhAKCHByb3ZpZGVyGAIgASgJEg0KBW1vZGVsGAMgASgJEikKBXVzYWdlGAQgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIWCg5yZWNvcmRlZF9hdF9tcxgFIAEoBCJbChlSZWNvcmRFeHRlcm5hbFVzYWdlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIQCghyZXBsYXllZBgCIAEoCGIGcHJvdG8z", [file_nlos_sabi_v1_envelope]);
+  fileDesc("Ch5ubG9zL3NhYmkvdjEvbGxtX2dhdGV3YXkucHJvdG8SDG5sb3Muc2FiaS52MSIsCgtMbG1DaGF0VHVybhIMCgRyb2xlGAEgASgJEg8KB2NvbnRlbnQYAiABKAkiwwEKDkxsbUNoYXRSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRINCgVtb2RlbBgCIAEoCRIoCgV0dXJucxgDIAMoCzIZLm5sb3Muc2FiaS52MS5MbG1DaGF0VHVybhIZChFtYXhfb3V0cHV0X3Rva2VucxgEIAEoDRIZChF0ZW1wZXJhdHVyZV9taWxsaRgFIAEoDRIUCgxzZXNzaW9uX2hpbnQYBiABKAkipQEKDUxsbUNoYXRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Eg0KBW1vZGVsGAIgASgJEhQKDGNvbnRlbnRfdXRmOBgDIAEoCRIWCg5yZWFzb25pbmdfdXRmOBgEIAEoCRIpCgV1c2FnZRgFIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUihAEKDExsbVVzYWdlV2lyZRIRCglhcGlfY2FsbHMYASABKAQSFQoNcHJvbXB0X3Rva2VucxgCIAEoBBIZChFjb21wbGV0aW9uX3Rva2VucxgDIAEoBBIUCgx0b3RhbF90b2tlbnMYBCABKAQSGQoRY29zdF9taWNyb2NyZWRpdHMYBSABKAQiQgoSUXVlcnlCdWRnZXRSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eSKAAgoRUXVlcnlCdWRnZXRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EikKBWxpbWl0GAIgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIsCghjb25zdW1lZBgDIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUSLQoJcmVtYWluaW5nGAQgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRI1ChFleHRlcm5hbF9hZHZpc29yeRgFIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUi3wEKFkF0dGVudWF0ZUJ1ZGdldFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei8KC2NoaWxkX2xpbWl0GAIgASgLMhoubmxvcy5zYWJpLnYxLkxsbVVzYWdlV2lyZRIWCg52YWxpZF91bnRpbF9tcxgDIAEoBBIYChBjaGlsZF9wcm9jZXNzX2lkGAQgASgMEhgKEGNoaWxkX3Nlc3Npb25faWQYBSABKAwSGgoSY2hpbGRfcHJpbmNpcGFsX2lkGAYgASgMIsgBChVBdHRlbnVhdGVCdWRnZXRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EjEKDWdyYW50ZWRfbGltaXQYAiABKAsyGi5ubG9zLnNhYmkudjEuTGxtVXNhZ2VXaXJlEhYKDnZhbGlkX3VudGlsX21zGAMgASgEEhgKEGNoaWxkX2FjY291bnRfaWQYBCABKAwSHAoUY2hpbGRfYmluZGluZ19kaWdlc3QYBSABKAwirgEKGlJlY29yZEV4dGVybmFsVXNhZ2VSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIQCghwcm92aWRlchgCIAEoCRINCgVtb2RlbBgDIAEoCRIpCgV1c2FnZRgEIAEoCzIaLm5sb3Muc2FiaS52MS5MbG1Vc2FnZVdpcmUSFgoOcmVjb3JkZWRfYXRfbXMYBSABKAQiWwoZUmVjb3JkRXh0ZXJuYWxVc2FnZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSEAoIcmVwbGF5ZWQYAiABKAhiBnByb3RvMw", [file_nlos_sabi_v1_envelope]);
 
 /**
  * One ordered conversation turn carried inline by `llm_chat`.
@@ -248,6 +248,32 @@ export type AttenuateBudgetRequest = Message<"nlos.sabi.v1.AttenuateBudgetReques
    * @generated from field: uint64 valid_until_ms = 3;
    */
   validUntilMs: bigint;
+
+  /**
+   * ADR-0028 decision 3A (W82-R5): optional child selectors used ONLY to look
+   * up and cross-check a real registered child session/process in the
+   * daemon's authoritative registry. They carry zero authorization weight;
+   * an unregistered or mismatched target fails closed (child = None).
+   *
+   * optional 16-byte managed ProcessId
+   *
+   * @generated from field: bytes child_process_id = 4;
+   */
+  childProcessId: Uint8Array;
+
+  /**
+   * optional 16-byte handshaken SessionId
+   *
+   * @generated from field: bytes child_session_id = 5;
+   */
+  childSessionId: Uint8Array;
+
+  /**
+   * optional 16-byte PrincipalId anchor; when
+   *
+   * @generated from field: bytes child_principal_id = 6;
+   */
+  childPrincipalId: Uint8Array;
 };
 
 /**
@@ -277,6 +303,23 @@ export type AttenuateBudgetResult = Message<"nlos.sabi.v1.AttenuateBudgetResult"
    * @generated from field: uint64 valid_until_ms = 3;
    */
   validUntilMs: bigint;
+
+  /**
+   * ADR-0028 decision 3A (W82-R5): auditable binding receipt fields for the
+   * child account created (or replayed) by this attenuation.
+   *
+   * 16-byte child ResourceAccountId
+   *
+   * @generated from field: bytes child_account_id = 4;
+   */
+  childAccountId: Uint8Array;
+
+  /**
+   * 32-byte domain-separated ChildBudgetBinding digest
+   *
+   * @generated from field: bytes child_binding_digest = 5;
+   */
+  childBindingDigest: Uint8Array;
 };
 
 /**

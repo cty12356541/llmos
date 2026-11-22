@@ -299,6 +299,46 @@ entries:
     state: "ACTIVE"
 
   - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetRequest.child_process_id"
+    kind: "FIELD"
+    parent_type: "AttenuateBudgetRequest"
+    field_number: 4
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetRequest.child_session_id"
+    kind: "FIELD"
+    parent_type: "AttenuateBudgetRequest"
+    field_number: 5
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetRequest.child_principal_id"
+    kind: "FIELD"
+    parent_type: "AttenuateBudgetRequest"
+    field_number: 6
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetResult.child_account_id"
+    kind: "FIELD"
+    parent_type: "AttenuateBudgetResult"
+    field_number: 4
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
+    symbol: "AttenuateBudgetResult.child_binding_digest"
+    kind: "FIELD"
+    parent_type: "AttenuateBudgetResult"
+    field_number: 5
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.LlmGateway"
     symbol: "RecordExternalUsageRequest"
     kind: "MESSAGE"
     introduced_in_epoch: 1
@@ -381,5 +421,33 @@ entries:
   - channel: "nlos.sabi.BlobReference"
     symbol: "ReleaseReferenceResult"
     kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "BlobCommandScopeWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "BlobCommandProofWire"
+    kind: "MESSAGE"
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "MintReferenceRequest.command_proof"
+    kind: "FIELD"
+    parent_type: "MintReferenceRequest"
+    field_number: 9
+    introduced_in_epoch: 1
+    state: "ACTIVE"
+
+  - channel: "nlos.sabi.BlobReference"
+    symbol: "ReleaseReferenceRequest.command_proof"
+    kind: "FIELD"
+    parent_type: "ReleaseReferenceRequest"
+    field_number: 3
     introduced_in_epoch: 1
     state: "ACTIVE"

@@ -51,6 +51,35 @@ message MintReferenceRequest {
   // Missing/invalid recipient MUST be rejected by the service. Historical
   // messages without field 8 remain decodable, but confer no recipient grant.
   bytes recipient_principal_id = 8;
+
+  // ADR-0028 decision 2A (W82-R5): signed command proof. Frames without
+  // field 9 remain decodable, but the service keeps failing closed with
+  // MissingSignature; the daemon never signs on a caller's behalf (ADR-0010).
+  BlobCommandProofWire command_proof = 9;
+}
+
+// `BlobCommandScopeWire` binds a signed mint/release command to its
+// authoritative execution scope (ADR-0028 decision 2A). The scope fields are
+// consumed only by the daemon-side adapter and `BlobCommandProof`; they carry
+// no authorization weight on their own.
+message BlobCommandScopeWire {
+  bytes workspace_id = 1;                  // 16 bytes
+  bytes namespace_id = 2;                  // 16 bytes
+  uint64 workspace_revision = 3;           // >= 1
+  bytes source_capability_id = 4;          // 16 bytes; must match the daemon-resolved session capability
+  uint64 source_capability_generation = 5; // >= 1
+  uint64 issued_at_ms = 6;                 // signer claim timestamp (checked <= server now.wall_ms)
+}
+
+// `BlobCommandProofWire` carries the caller's Ed25519 command signature over
+// the canonical mint_command_message / release_command_message preimage
+// (ADR-0028 decision 2A). The preimage is built field-by-field from the
+// request's semantic fields, so this additive field never enters the signed
+// bytes (no self-reference cycle).
+message BlobCommandProofWire {
+  BlobCommandScopeWire scope = 1;
+  bytes signer_principal_id = 2;           // 16 bytes; must equal the authenticated caller.principal
+  bytes signature = 3;                     // 64 bytes Ed25519 signature
 }
 
 // `blob_reference.mint_reference` result.
@@ -92,6 +121,9 @@ message ReadReferenceResult {
 message ReleaseReferenceRequest {
   SchemaIdentity schema = 1;
   bytes reference_id = 2;
+  // ADR-0028 decision 2A (W82-R5): signed command proof, same fail-closed rule
+  // as mint (missing proof -> MissingSignature, never server-side signing).
+  BlobCommandProofWire command_proof = 3;
 }
 
 // `blob_reference.release_reference` result.

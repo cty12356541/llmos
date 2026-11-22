@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file nlos/sabi/v1/blob_reference.proto.
  */
 export const file_nlos_sabi_v1_blob_reference: GenFile = /*@__PURE__*/
-  fileDesc("CiFubG9zL3NhYmkvdjEvYmxvYl9yZWZlcmVuY2UucHJvdG8SDG5sb3Muc2FiaS52MSLtAQoUTWludFJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhMKC3BhdGhfaGFuZGxlGAIgASgJEhoKEmZpbGVfZGlnZXN0X3NoYTI1NhgDIAEoDBISCgpzaXplX2J5dGVzGAQgASgEEhEKCW1heF9yZWFkcxgFIAEoBBIXCg9tYXhfY2h1bmtfYnl0ZXMYBiABKAQSFgoOdmFsaWRfdW50aWxfbXMYByABKAQSHgoWcmVjaXBpZW50X3ByaW5jaXBhbF9pZBgIIAEoDCJvChNNaW50UmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIUCgxyZWZlcmVuY2VfaWQYAiABKAwSFAoMbWludGVkX2F0X21zGAMgASgEIoABChRSZWFkUmVmZXJlbmNlUmVxdWVzdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSFAoMcmVmZXJlbmNlX2lkGAIgASgMEg4KBm9mZnNldBgDIAEoBBIUCgxsZW5ndGhfYnl0ZXMYBCABKAQifwoTUmVhZFJlZmVyZW5jZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSDQoFY2h1bmsYAiABKAwSDgoGb2Zmc2V0GAMgASgEEhsKE2NodW5rX2RpZ2VzdF9zaGEyNTYYBCABKAwiXQoXUmVsZWFzZVJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhQKDHJlZmVyZW5jZV9pZBgCIAEoDCJYChZSZWxlYXNlUmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIQCghyZWxlYXNlZBgCIAEoCGIGcHJvdG8z", [file_nlos_sabi_v1_envelope]);
+  fileDesc("CiFubG9zL3NhYmkvdjEvYmxvYl9yZWZlcmVuY2UucHJvdG8SDG5sb3Muc2FiaS52MSKoAgoUTWludFJlZmVyZW5jZVJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhMKC3BhdGhfaGFuZGxlGAIgASgJEhoKEmZpbGVfZGlnZXN0X3NoYTI1NhgDIAEoDBISCgpzaXplX2J5dGVzGAQgASgEEhEKCW1heF9yZWFkcxgFIAEoBBIXCg9tYXhfY2h1bmtfYnl0ZXMYBiABKAQSFgoOdmFsaWRfdW50aWxfbXMYByABKAQSHgoWcmVjaXBpZW50X3ByaW5jaXBhbF9pZBgIIAEoDBI5Cg1jb21tYW5kX3Byb29mGAkgASgLMiIubmxvcy5zYWJpLnYxLkJsb2JDb21tYW5kUHJvb2ZXaXJlIrgBChRCbG9iQ29tbWFuZFNjb3BlV2lyZRIUCgx3b3Jrc3BhY2VfaWQYASABKAwSFAoMbmFtZXNwYWNlX2lkGAIgASgMEhoKEndvcmtzcGFjZV9yZXZpc2lvbhgDIAEoBBIcChRzb3VyY2VfY2FwYWJpbGl0eV9pZBgEIAEoDBIkChxzb3VyY2VfY2FwYWJpbGl0eV9nZW5lcmF0aW9uGAUgASgEEhQKDGlzc3VlZF9hdF9tcxgGIAEoBCJ5ChRCbG9iQ29tbWFuZFByb29mV2lyZRIxCgVzY29wZRgBIAEoCzIiLm5sb3Muc2FiaS52MS5CbG9iQ29tbWFuZFNjb3BlV2lyZRIbChNzaWduZXJfcHJpbmNpcGFsX2lkGAIgASgMEhEKCXNpZ25hdHVyZRgDIAEoDCJvChNNaW50UmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIUCgxyZWZlcmVuY2VfaWQYAiABKAwSFAoMbWludGVkX2F0X21zGAMgASgEIoABChRSZWFkUmVmZXJlbmNlUmVxdWVzdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSFAoMcmVmZXJlbmNlX2lkGAIgASgMEg4KBm9mZnNldBgDIAEoBBIUCgxsZW5ndGhfYnl0ZXMYBCABKAQifwoTUmVhZFJlZmVyZW5jZVJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSDQoFY2h1bmsYAiABKAwSDgoGb2Zmc2V0GAMgASgEEhsKE2NodW5rX2RpZ2VzdF9zaGEyNTYYBCABKAwimAEKF1JlbGVhc2VSZWZlcmVuY2VSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIUCgxyZWZlcmVuY2VfaWQYAiABKAwSOQoNY29tbWFuZF9wcm9vZhgDIAEoCzIiLm5sb3Muc2FiaS52MS5CbG9iQ29tbWFuZFByb29mV2lyZSJYChZSZWxlYXNlUmVmZXJlbmNlUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIQCghyZWxlYXNlZBgCIAEoCGIGcHJvdG8z", [file_nlos_sabi_v1_envelope]);
 
 /**
  * `blob_reference.mint_reference` request: the sender declares an existing
@@ -72,6 +72,15 @@ export type MintReferenceRequest = Message<"nlos.sabi.v1.MintReferenceRequest"> 
    * @generated from field: bytes recipient_principal_id = 8;
    */
   recipientPrincipalId: Uint8Array;
+
+  /**
+   * ADR-0028 decision 2A (W82-R5): signed command proof. Frames without
+   * field 9 remain decodable, but the service keeps failing closed with
+   * MissingSignature; the daemon never signs on a caller's behalf (ADR-0010).
+   *
+   * @generated from field: nlos.sabi.v1.BlobCommandProofWire command_proof = 9;
+   */
+  commandProof?: BlobCommandProofWire | undefined;
 };
 
 /**
@@ -80,6 +89,102 @@ export type MintReferenceRequest = Message<"nlos.sabi.v1.MintReferenceRequest"> 
  */
 export const MintReferenceRequestSchema: GenMessage<MintReferenceRequest> = /*@__PURE__*/
   messageDesc(file_nlos_sabi_v1_blob_reference, 0);
+
+/**
+ * `BlobCommandScopeWire` binds a signed mint/release command to its
+ * authoritative execution scope (ADR-0028 decision 2A). The scope fields are
+ * consumed only by the daemon-side adapter and `BlobCommandProof`; they carry
+ * no authorization weight on their own.
+ *
+ * @generated from message nlos.sabi.v1.BlobCommandScopeWire
+ */
+export type BlobCommandScopeWire = Message<"nlos.sabi.v1.BlobCommandScopeWire"> & {
+  /**
+   * 16 bytes
+   *
+   * @generated from field: bytes workspace_id = 1;
+   */
+  workspaceId: Uint8Array;
+
+  /**
+   * 16 bytes
+   *
+   * @generated from field: bytes namespace_id = 2;
+   */
+  namespaceId: Uint8Array;
+
+  /**
+   * >= 1
+   *
+   * @generated from field: uint64 workspace_revision = 3;
+   */
+  workspaceRevision: bigint;
+
+  /**
+   * 16 bytes; must match the daemon-resolved session capability
+   *
+   * @generated from field: bytes source_capability_id = 4;
+   */
+  sourceCapabilityId: Uint8Array;
+
+  /**
+   * >= 1
+   *
+   * @generated from field: uint64 source_capability_generation = 5;
+   */
+  sourceCapabilityGeneration: bigint;
+
+  /**
+   * signer claim timestamp (checked <= server now.wall_ms)
+   *
+   * @generated from field: uint64 issued_at_ms = 6;
+   */
+  issuedAtMs: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.BlobCommandScopeWire.
+ * Use `create(BlobCommandScopeWireSchema)` to create a new message.
+ */
+export const BlobCommandScopeWireSchema: GenMessage<BlobCommandScopeWire> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_blob_reference, 1);
+
+/**
+ * `BlobCommandProofWire` carries the caller's Ed25519 command signature over
+ * the canonical mint_command_message / release_command_message preimage
+ * (ADR-0028 decision 2A). The preimage is built field-by-field from the
+ * request's semantic fields, so this additive field never enters the signed
+ * bytes (no self-reference cycle).
+ *
+ * @generated from message nlos.sabi.v1.BlobCommandProofWire
+ */
+export type BlobCommandProofWire = Message<"nlos.sabi.v1.BlobCommandProofWire"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.BlobCommandScopeWire scope = 1;
+   */
+  scope?: BlobCommandScopeWire | undefined;
+
+  /**
+   * 16 bytes; must equal the authenticated caller.principal
+   *
+   * @generated from field: bytes signer_principal_id = 2;
+   */
+  signerPrincipalId: Uint8Array;
+
+  /**
+   * 64 bytes Ed25519 signature
+   *
+   * @generated from field: bytes signature = 3;
+   */
+  signature: Uint8Array;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.BlobCommandProofWire.
+ * Use `create(BlobCommandProofWireSchema)` to create a new message.
+ */
+export const BlobCommandProofWireSchema: GenMessage<BlobCommandProofWire> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_blob_reference, 2);
 
 /**
  * `blob_reference.mint_reference` result.
@@ -108,7 +213,7 @@ export type MintReferenceResult = Message<"nlos.sabi.v1.MintReferenceResult"> & 
  * Use `create(MintReferenceResultSchema)` to create a new message.
  */
 export const MintReferenceResultSchema: GenMessage<MintReferenceResult> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_blob_reference, 1);
+  messageDesc(file_nlos_sabi_v1_blob_reference, 3);
 
 /**
  * `blob_reference.read_reference` request: one aligned mint-time block or
@@ -148,7 +253,7 @@ export type ReadReferenceRequest = Message<"nlos.sabi.v1.ReadReferenceRequest"> 
  * Use `create(ReadReferenceRequestSchema)` to create a new message.
  */
 export const ReadReferenceRequestSchema: GenMessage<ReadReferenceRequest> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_blob_reference, 2);
+  messageDesc(file_nlos_sabi_v1_blob_reference, 4);
 
 /**
  * `blob_reference.read_reference` result. `chunk_digest_sha256` is the
@@ -187,7 +292,7 @@ export type ReadReferenceResult = Message<"nlos.sabi.v1.ReadReferenceResult"> & 
  * Use `create(ReadReferenceResultSchema)` to create a new message.
  */
 export const ReadReferenceResultSchema: GenMessage<ReadReferenceResult> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_blob_reference, 3);
+  messageDesc(file_nlos_sabi_v1_blob_reference, 5);
 
 /**
  * `blob_reference.release_reference` request: hygienic early discard; TTL
@@ -205,6 +310,14 @@ export type ReleaseReferenceRequest = Message<"nlos.sabi.v1.ReleaseReferenceRequ
    * @generated from field: bytes reference_id = 2;
    */
   referenceId: Uint8Array;
+
+  /**
+   * ADR-0028 decision 2A (W82-R5): signed command proof, same fail-closed rule
+   * as mint (missing proof -> MissingSignature, never server-side signing).
+   *
+   * @generated from field: nlos.sabi.v1.BlobCommandProofWire command_proof = 3;
+   */
+  commandProof?: BlobCommandProofWire | undefined;
 };
 
 /**
@@ -212,7 +325,7 @@ export type ReleaseReferenceRequest = Message<"nlos.sabi.v1.ReleaseReferenceRequ
  * Use `create(ReleaseReferenceRequestSchema)` to create a new message.
  */
 export const ReleaseReferenceRequestSchema: GenMessage<ReleaseReferenceRequest> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_blob_reference, 4);
+  messageDesc(file_nlos_sabi_v1_blob_reference, 6);
 
 /**
  * `blob_reference.release_reference` result.
@@ -236,4 +349,4 @@ export type ReleaseReferenceResult = Message<"nlos.sabi.v1.ReleaseReferenceResul
  * Use `create(ReleaseReferenceResultSchema)` to create a new message.
  */
 export const ReleaseReferenceResultSchema: GenMessage<ReleaseReferenceResult> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_blob_reference, 5);
+  messageDesc(file_nlos_sabi_v1_blob_reference, 7);
