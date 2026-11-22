@@ -47,7 +47,7 @@
   severity: P1
   status: partial
   description: "Resource/Budget 超卖：Reservation/消耗记账旁路或高水位失效"
-  mitigation: "单节点高水位/隔离冻结/同事务退款与 ADR-0017 coordinator 已证；阶段 C 补齐三族持久化租约与 FenceBarrierAck 非互换对账（C-LEASE-001）、EnforcementGatewayReconciliationAuthority 验签结算回执闭环（C-CUSTODY-001）及跨进程断网 PartitionBoundedLossProof 有界损耗精确守恒（C-PARTITION-001 / C-ROAD-001）；W82-B2（w82-b2-llm-gateway-20261116）交付五维 LLM 网关库级影子预留与 OBSERVED 外部账本；DEL-RES 首轮审计（b-res-profile-audit-20261121，H3，188 passed）与 del-res-resource-profile.md 已固化 12 维 x 3 平台约束画像，核实全仓零 cgroup v2 / Win32 JobObject / setrlimit 硬控制器实现；宿主内核级硬件配额 shim、ENOSPC 救援池与物理 GPU/NPU 驱动仍待 DEL-RES / DEL-EXT 实施"
+  mitigation: "单节点高水位/隔离冻结/同事务退款与 ADR-0017 coordinator 已证；阶段 C 补齐三族持久化租约与 FenceBarrierAck 非互换对账（C-LEASE-001）、EnforcementGatewayReconciliationAuthority 验签结算回执闭环（C-CUSTODY-001）及跨进程断网 PartitionBoundedLossProof 有界损耗精确守恒（C-PARTITION-001 / C-ROAD-001）；W82-B2（w82-b2-llm-gateway-20261116）交付五维 LLM 网关库级影子预留与 OBSERVED 外部账本；DEL-RES 首轮审计（b-res-profile-audit-20261121，H3，188 passed）与 del-res-resource-profile.md 已固化 12 维 x 3 平台约束画像，核实全仓零 cgroup v2 / Win32 JobObject / setrlimit 硬控制器实现；2026-11-22 W82-R4-IND（d-notify-attention-policy-20261122，H4，nlos-notify 42 passed）落地第 12 维人类注意力边车策略引擎 AttentionPolicyController（attention-policy.db v1 WAL+FULL，双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过拒接 REJECTED_PAYMENT_BYPASS 与伪造 ConsentPrompt 拒接），但桌面端 Tauri Z4/UI 与通知分发总线真实连线（DEL-UX）、OS 级 cgroup v2 / JobObject / setrlimit 宿主执行器、ENOSPC 救援池、物理 GPU/NPU 驱动（DEL-EXT）及人类真实使用试点（DEL-FIELD，H8=0）均仍未完成"
   evidence_refs:
     - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
     - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
@@ -60,7 +60,8 @@
     - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
     - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
     - docs/evidence/stage-b/b-res-profile-audit-20261121.md
-  review_point: "W67 阶段 C 退出评审已复核软件账本与网关结算闭环；DEL-RES 落地宿主 cgroup v2 / JobObject 硬件级资源 shim 或 DEL-EXT 接入物理设备驱动时复审"
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
+  review_point: "W67 阶段 C 退出评审已复核软件账本与网关结算闭环；DEL-RES 落地宿主 cgroup v2 / JobObject 硬件级资源 shim、DEL-UX 接通 AttentionPolicyController 桌面分发总线或 DEL-EXT 接入物理设备驱动时复审"
 
 - id: RISK-B-04
   category: cancel-effect-unknown
@@ -122,7 +123,7 @@
   severity: P1
   status: partial
   description: "规模目标被冷 metadata 数量冒充或以 debug/test 口径外推：以注册行/waiting Fiber 冒充 10K/100K 逻辑 TaskNode，或以单平台 debug-profile 数字冒充生产量级"
-  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死；W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1），结合阶段 C Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL 及 1->8 子进程分片扩展基准（C-BENCH-001）；2026-11-16 W82 定时 CI 暴露 Windows Regime B 失败（43649840304，准备屏障修正 862b5ca9 后于 4fc70be1 43744122670 通过但缺逐分片时序）与 Ubuntu 主作业 Regime C 4->8 吞吐倒退 0.59x/0.51x/0.41x（43744122670，独立诊断通过为 1.03x 但原长尾根因待配对遥测取证，c-bench-readiness-20261116）；残余未证域为 1M_LOGICAL 裸金属/WAN 档位、Linux/macOS 8-Cell 分片基准与单分片 O(N/S) select 二级索引化，维持 partial"
+  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死；W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1），结合阶段 C Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL 及 1->8 子进程分片扩展基准（C-BENCH-001）；2026-11-16 W82 定时 CI 暴露 Windows Regime B 失败（43649840304，准备屏障修正 862b5ca9 后于 4fc70be1 43744122670 通过但缺逐分片时序）与 Ubuntu 主作业 Regime C 4->8 吞吐倒退 0.59x/0.51x/0.41x（43744122670，独立诊断通过为 1.03x 但原长尾根因待配对遥测取证，c-bench-readiness-20261116）；2026-11-22 W82-R4-IND 在单机 macOS --release 补齐两项算法去瓶颈：C-SCHED-002（c-sched-002-indexed-select-scale-20261122，H4）不改 SCHEMA_VERSION=9 新增 plan_nodes_state_order 覆盖索引与 MaterializationScheduler::select_bounded 6 路游标零 Temp B-Tree 归并（100K 并发提速 216x-750x / 单线程 p50=163-481us 提速 518x-745x 且与 select() 100% 等价，原 select() 诊断口保留）与 B-RUNTIME-U11（b-runtime-u11-o1-purge-and-wake-storm-20261122，H4）消除 nlos-runtime-tokio 终态 wait purge O(n^2)->O(k) 与 deliver O(1) 并实测 100K 同时唤醒风暴（wake_settle=85.971ms，4 host threads，零泄漏）；残余未证域为 Linux/Windows 三平台 CI 复跑、Linux/macOS 8-Cell 分片基准、1M_LOGICAL 裸金属/WAN、100K@50% 完整细胞回收再入场及 2026-11-16 Regime B/C 反例根因，诚实维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
@@ -132,14 +133,16 @@
     - docs/evidence/stage-c/c-bench-readiness-20261116.md
     - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
-  review_point: "W67 核入 Windows --release 8-Cell 100K_LOGICAL，W76 核入三平台 CI --release 五探针，2026-11-16 核入 c-bench-readiness-20261116 Windows Regime B 屏障修正与 Ubuntu Regime C 0.59x/0.51x/0.41x 反例；收集失败台对比 CPU/I/O 遥测、推进 1M_LOGICAL、Linux/macOS 8-Cell 分片基准或发布跨平台生产量级声明前必复审"
+    - docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
+  review_point: "W67 核入 Windows --release 8-Cell 100K_LOGICAL，W76 核入三平台 CI --release 五探针，2026-11-16 核入 c-bench-readiness-20261116 Windows Regime B 屏障修正与 Ubuntu Regime C 0.59x/0.51x/0.41x 反例，2026-11-22 核入 macOS C-SCHED-002 select_bounded 索引归并与 B-RUNTIME-U11 O(k) purge/100K 唤醒风暴实证；收集失败台对比 CPU/I/O 遥测、三平台 CI 复验、Linux/macOS 8-Cell 分片、1M_LOGICAL 裸金属或发布跨平台生产量级声明前必复审"
 
 - id: RISK-B-08
   category: single-person-dependency
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——220 份证据文件逐车道留痕（stage-b 148 + stage-c 31 + stage-d 12 + stage-e 29）、ADR-0001..0027 + ADR-0028（PROPOSED）、机器台账 ledger-schema v1.3（169 claims / 17 risks / 220 evidence-index + lint_claims.py 44/44 与 verify_stage_e_ledger_coverage.py 13/13 单测机械门）、DEL-BASE 审计与 DEL-RES 约束画像、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——224 份证据文件逐车道留痕（stage-b 149 + stage-c 32 + stage-d 13 + stage-e 30）、ADR-0001..0027 + ADR-0028（PROPOSED）、机器台账 ledger-schema v1.3（169 claims / 17 risks / 224 evidence-index + lint_claims.py 44/44 与 verify_stage_e_ledger_coverage.py 13/13 单测机械门）、DEL-BASE 审计与 DEL-RES 约束画像（含 W82-R4-IND 四路独立加固留痕）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 

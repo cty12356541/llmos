@@ -34,6 +34,7 @@
     - docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
     - docs/evidence/stage-c/c-app-payload-001-sample-cli-execution.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
+    - docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
   assurance: H3
   limitations:
     - "构造性证明为 PARTIAL（W33-H §2 四具名边界，W34-A §1 沿引不删）：载荷执行面未做、Os 服务替身为 sleep 子进程、消费端为库驱动（nlos package install CLI 未做）、模板编译只到 proposal"
@@ -42,6 +43,7 @@
     - "证据口径：单节点、单写者、macOS/arm64 实跑 + 非 Unix 契约道"
     - "deferred minors：迁移面 kill-9 矩阵/abandon 命令/跨进程并发注入、patch-downgrade 拒绝、跨进程 uninstall 审批、capability revoke、uninstall 不解除 artifact 引用、GC 跨进程并发 tick 未证明"
     - "[后续承接] W76 三平台 CI（Run 40868357139）已置换早先 35531478487 口径；87ef288（B-SLICE-K-001 §17）闭合 09d 孤儿误收与 RISK-B-12（U-6 退役）；C-APP-PAYLOAD-001 与 W80 E-SANDBOX-001 闭合载荷执行与 U-9 沙箱；W82-R3-U12-GC（b-artifact-u12-concurrent-gc-20261121.md，H4）已在 macOS 修复 nlos-artifact put_revision/stage_revision BEGIN IMMEDIATE 跨进程 GC TOCTOU（保留三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 边界）；nlos package install CLI 已由阶段 E E-STORE-001/E-CERTIFY-001 承接，真实生态与第三方独立安装 H8=0 仍保留"
+    - "[后续承接 2026-11-22 W82-R4-IND] e-eco-001-road-a003-pure-code-no-model-20261122.md（H4）在单机 macOS arm64 完成无模型（零 LLM/HTTP 客户端 crate、双跳 .env_clear() 零密钥/代理变量）纯代码应用安装、Fast 写 Artifact Rev 1、真实 SIGKILL 恢复写 Rev 2、门控卸载/SIGTERM/双版本 Artifact 保留端到端闭环（nlos-slice-k 129 passed / 18 ignored）；仍属仓内无头构造性证明，Linux/Windows 实机与外部独立第三方团队交付验收（DEL-ECO / DEL-DIST，H8=0）显式保留"
   source: "stage-b-progress.md §6 ROAD-B-001 行 + §3 B-APPLICATION/B-ARTIFACT/B-SLICE-K 行（base a01fd57）；W33-H 评审 + W34-A §1 状态更新：构造性证明成立、裁决 PARTIAL-residuals（近收口）"
 
 - requirement_id: ROAD-B-002
@@ -120,6 +122,7 @@
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
   assurance: H3
   limitations:
     - "全部规模数字为 debug/test profile、单平台 macOS（release 复测、Linux/Windows 多平台与 CI 化未做）；「未完成前不得声称 PID 级 Agent 容量」——生产量级声明以 release/多平台复测为前置"
@@ -128,6 +131,7 @@
     - "Task 面 reclaim 闭环与 plan 侧 residency 轴未互连；PINNED tier 未落；比例矩阵无 100K@50% cell 且 occupancy 只单调填充、无回收再入场动态；调度器自身规模探针未跑"
     - "故障矩阵 kill-9=页缓存存活的进程崩溃；真实断电/跨 Cell/三权威原子性未测；G6 边界 1 的 CI 半边待当前 run 35531478487 绿后解除"
     - "[后续承接] W67 C-BENCH-001 与 W76 B-SCALE-RELEASE-001（Run 40868357139）补齐 Windows --release 8-Cell 分片及三平台 CI --release 五探针基线；W79 E-TRUST-001 闭合 G3 三条件与 G4 7 类 typed selector（U-7 / U-8）；2026-11-16 c-bench-readiness-20261116.md 收录 Windows Regime B 与 Ubuntu Regime C（0.59x/0.51x/0.41x）退化反例；1M_LOGICAL 裸金属/WAN、Linux/macOS 8-Cell、O(N/S) 二级索引、PINNED tier 与 100K@50% 仍保留（U-1 / U-11）"
+    - "[后续承接 2026-11-22 W82-R4-IND] c-sched-002-indexed-select-scale-20261122.md（H4）在保持 SCHEMA_VERSION = 9 不变下新增 plan_nodes_state_order 覆盖索引与 MaterializationScheduler::select_bounded 6 路单值游标零 Temp B-Tree 归并，单机 macOS --release 100K 节点（1%/5%/50%）提速 216.32x-749.87x（单线程 p50=163-481us，提速 517.85x-744.63x）且与 select() 100% 等价；原 select() 历史诊断路径、1M_LOGICAL、Linux/macOS 8-Cell、2026-11-16 CI 反例、PINNED tier 与 100K@50% 完整细胞回收再入场仍保留（U-1 / U-11）"
   source: "stage-b-progress.md §6 ROAD-B-004 行（base a01fd57）；W31-G 评审：G1–G6 全 SATISFIED-WITH-BOUNDARIES、无一 NOT-SATISFIED；W34-A §4 维持裁决（具名边界随裁定带入 limitations）"
 
 - requirement_id: ROAD-B-005
@@ -170,6 +174,7 @@
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
     - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
     - docs/evidence/stage-e/w82-c-diag-20261116.md
+    - docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
   assurance: H3
   limitations:
     - "单平台 macOS arm64、debug/test profile 数字；多平台（Linux/Windows）与 release-profile 复测未做；「coroutine 级大规模并发」生产量级声明以此为前置"
@@ -178,6 +183,7 @@
     - "Windows 实杀精确口径（W34-A §6 residual 4）：run 35511878717 的 platform kill 步骤 step 级 success、job 级因无关 Clippy 步失败（根因已修）；且步骤绿也不含 live-child 实杀断言——「Windows 真 OS kill 集成测试」仅收窄「CI 复验已跑」半维（RISK-B-10）"
     - "100K fiber/activation-meter 探针为 #[ignore] 定档，常规 CI 不跑"
     - "[后续承接] W62-CWINKILL、w82-c-diag-20261116.md 与 W82-C 推进 Windows 同权限进程树实杀与 Worker E2E 复验（保留 U-2 跨权限/Breakaway 残域）；W67 C-BENCH-001 与 W76 B-SCALE-RELEASE-001（Run 40868357139）补齐三平台 --release 规模基线并暴露 c-bench-readiness-20261116.md Regime B/C 退化反例；100K cancel O(n²) purge、wake 跨 worker 墙钟与 OS 资源约束仍保留（U-1 / U-11 / DEL-RES）"
+    - "[后续承接 2026-11-22 W82-R4-IND] b-runtime-u11-o1-purge-and-wake-storm-20261122.md（H4）在 nlos-runtime-tokio 引入 OperationWaitRegistry/ChannelWaitRegistry by_fiber 与 by_wait_id 二级索引消除终态 purge O(n^2)->O(k) 与 deliver O(1) 并新增 ChannelWaitKey::orphaned 判别位，单机 macOS arm64 实测 181 passed / 0 failed / 16 ignored、5K 非 ignore 回归及 --release 100K 同时唤醒风暴 + 全量终态清理独立基线（wake_settle=85.971ms，4 host threads，零泄漏，batch_cancel 100K/10K=0.58x）；Linux/Windows 三平台 CI、1M_LOGICAL、Windows 跨权限 U-2 与 OS 资源约束（DEL-RES）仍保留（H8=0）"
   source: "stage-b-progress.md §6 ROAD-B-006 行 + §3 B-RUNTIME 行（base a01fd57）；W34-A §6 新评审：门六条款全部具名测试/探针闭合，裁决 SATISFIED-WITH-BOUNDARIES（提案）；本 claim 因具名边界未清仍为 PARTIAL_PASS"
 
 # ===== §3 工作包行（按进度单 §3 表序）=====
@@ -307,10 +313,12 @@
     - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
+    - docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
   assurance: H3
   limitations:
     - "跨平台 supervisor spawn/suspend/kill、完整 BirthDecision、runtime kill receipt 消费与 meter 联动未做"
     - "100K 探针为 #[ignore] 定档（常规 CI 不跑）；wake latency/fairness 测试为 current_thread 确定性口径（多 worker 交错不外推——W34-A §6 residual 2）"
+    - "[后续承接 2026-11-22 W82-R4-IND] b-runtime-u11-o1-purge-and-wake-storm-20261122.md（H4）实证 nlos-runtime-tokio 终态 wait 清理 O(k)、deliver O(1)、ChannelWaitKey::orphaned 判别位及单机 macOS --release 100K 同时唤醒风暴（wake_settle=85.971ms，4 host threads，零泄漏）；跨平台 supervisor spawn/suspend/kill、完整 BirthDecision、Linux/Windows CI 与 1M_LOGICAL 仍保留（H8=0）"
   source: "stage-b-progress.md §3 B-RUNTIME 行（base a01fd57）：PARTIAL_PASS"
 
 - requirement_id: B-OP-FENCE
@@ -539,11 +547,13 @@
     - docs/evidence/stage-c/w73-qq-agent-dogfood-closure.md
     - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
     - docs/evidence/stage-b/b-res-profile-audit-20261121.md
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
   assurance: H3
   limitations:
     - "完整 Ledger/risk/rebate、AdmissionPlan、ControllerBinding、真实 enforcement shim 与平台 Device adapter 未做"
     - "多维 demand 谓词（W22-R）与跨 authority prepare/finalize（ADR-0017/W28-C）已落地为前缀"
     - "[后续承接] w73-qq-agent-dogfood-closure.md、w82-b2-llm-gateway-20261116.md 与 2026-11-21 DEL-RES 基线（del-res-resource-profile.md、b-res-profile-audit-20261121.md H3：nlos-resource 61 + nlos-lease 30 + nlos-wasm-sandbox 97 = 188 passed）完成 ROAD-A-004 12 维 x 3 平台边界盘点；实证零 OS cgroup v2 / JobObject / setrlimit 宿主执行器实现，待 Lane-RES-1..4 推进"
+    - "[后续承接 2026-11-22 W82-R4-IND] d-notify-attention-policy-20261122.md（H4）在 crates/nlos-notify/src/attention.rs 落地第 12 维人类注意力 AttentionPolicyController 边车策略引擎与 attention-policy.db v1（WAL+FULL 不可变审计、双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过/伪造 ConsentPrompt 拒接，nlos-notify 42 passed）；桌面 Tauri Z4/UI 分发总线连线（DEL-UX）、OS cgroup v2/JobObject 控制器（DEL-RES）及真实人类使用试点（DEL-FIELD，H8=0）仍未完成"
   source: "stage-b-progress.md §3 B-RESOURCE 行（base a01fd57）：IN_PROGRESS；001/003/004/005 各最小前缀 PARTIAL PASS"
 
 - requirement_id: B-TASK
@@ -1177,11 +1187,13 @@
   evidence_refs:
     - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
     - docs/evidence/stage-b/b-application-007-third-party-sample.md
+    - docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
   assurance: H3
   limitations:
     - "单机单进程演示级；application↔task 关联已下沉（W29-A TaskSpec 关联字段）、teardown 链与 NL 控制真全链已落（W30-D）、自动 GC tick 已落（W28-E）"
     - "demo STEP 09d 登记 defect 待处置（W33-H HEAD 复现）；W33-B lifecycle.sh 为现行构造性演示"
     - "[后续承接] 87ef288（B-SLICE-K-001 §17）已闭合 STEP 09d 孤儿误收根因并退役 U-6 / 关闭 RISK-B-12；阶段 C C-ROAD-001 与 C-XHOST-005 已将单机推进至跨进程与跨物理机域；跨进程 GC 并发 TOCTOU 在 macOS 另由 b-artifact-u12-concurrent-gc-20261121.md 修复（保留 U-12 残域）"
+    - "[后续承接 2026-11-22 W82-R4-IND] e-eco-001-road-a003-pure-code-no-model-20261122.md（H4）新增 crates/nlos-slice-k/tests/road_a003_pure_code_e2e.rs 实证零模型/零 HTTP 客户端纯代码纵切面端到端闭环（2 passed / 1 ignored，nlos-slice-k 129 passed / 18 ignored）；仍属仓内单机 macOS 构造性证明，Linux/Windows 实机与外部独立第三方生态验收（DEL-ECO / DEL-DIST，H8=0）显式保留"
   source: "stage-b-progress.md §3 B-SLICE-K 行（base a01fd57）：PARTIAL_PASS"
 
 # ===== §6.5.3 收官波最小服务（X-1/X-2/X-3）=====
@@ -1310,11 +1322,13 @@
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
     - docs/evidence/stage-c/reviews/w73-stage-c-xhost-exit-review.md
     - docs/evidence/stage-c/c-bench-readiness-20261116.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
   assurance: H6
   limitations:
     - "W67 + W73 独立终审裁定 SATISFIED-WITH-BOUNDARIES：已在 Windows 11 x86_64（SQLite WAL+FULL）实测 1->2->4->8 子进程分片无全局锁扩展（release 4.44x）、8-Cell 10K/100K_LOGICAL、以及跨网络套接字 1/2/4 Cell 分片数据面 spawn/message/commit 0 Raft RPC 扩展与五类故障全覆盖（C-XHOST-005）；1M_LOGICAL 裸金属多数据中心 WAN 档位显式未声称"
     - "W76（e77c094，Run 40868357139）已回填 Ubuntu/macOS/Windows 三平台 CI --release 五探针数字（B-SCALE-RELEASE-001 §6.1），但单分片内 MaterializationScheduler::select 仍为按分片 O(N/S) 表扫描，且 Linux/macOS 8-Cell 分片基准与 1M_LOGICAL 未覆盖（RISK-B-07 / U-1），故不发布无限定生产量级口号"
     - "2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过。准备屏障修正后，4fc70be1 的 Windows 原吞吐目标通过，旧失败因果未定。同 SHA 的 Ubuntu 主作业 Regime C 失败，独立诊断通过但未复现长尾。见 [准备屏障与 CI 证据](../evidence/stage-c/c-bench-readiness-20261116.md)"
+    - "[后续承接 2026-11-22 W82-R4-IND] c-sched-002-indexed-select-scale-20261122.md（H4）在保持 SCHEMA_VERSION = 9 不变下新增 plan_nodes_state_order 覆盖索引与 MaterializationScheduler::select_bounded / run_pass_bounded 6 路单值游标零 Temp B-Tree 归并，单机 macOS Apple M5 --release 100K 节点（1%/5%/50%）提速 216.32x-749.87x（单线程 p50=163-481us，提速 517.85x-744.63x）且与 select() 100% 等价；原 select() 诊断接口、Linux/macOS 8-Cell 分片基准、1M_LOGICAL 裸金属/WAN 与 2026-11-16 Regime B/C 反例根因仍保留（RISK-B-07 / U-1，H8=0）"
   source: "stage-c-progress.md §C.1.1 / §C.3.1 / §C.3.3 C-XHOST-GATE / §C.8 W66-W76 + W73 退出门终审 + W76 三平台 release 回填（base e77c094）：SATISFIED-WITH-BOUNDARIES"
 
 # ===== 阶段 C 核心工作包（stage-c-progress.md §C.3.1 C-core）=====
@@ -1456,9 +1470,11 @@
   evidence_refs:
     - docs/evidence/stage-c/c-sched-001-three-tier-scheduler-domain.md
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
   assurance: H6
   limitations:
     - "Global->Cell->Worker 三层无全局锁热路径、DRR 公平队列与饥饿老化、禁止窃取活跃 EffectPermit/Reservation/DeviceLease 的原子窃取、Context 亲和路由及反向背压跨 Cell 卸载已在 8-Cell 100K_LOGICAL 压测下验证；跨物理主机远程调度 RPC 保留于 RISK-B-11"
+    - "[后续承接 2026-11-22 W82-R4-IND] c-sched-002-indexed-select-scale-20261122.md（H4）在 nlos-plan 物化调度端新增 plan_nodes_state_order 覆盖索引与 MaterializationScheduler::select_bounded 6 路游标零 Temp B-Tree 有序归并（单机 macOS --release 100K 节点单线程 p50=163-481us，提速 517.85x-744.63x，与 select() 100% 等价）；原 select() 全量 skips 诊断语义、Linux/Windows 8-Cell 分片基准、1M_LOGICAL 与跨机远程调度 RPC 仍保留（H8=0）"
   source: "stage-c-progress.md §C.3.1 C-SCHED 行（base 9e5e0edc）：PARTIAL_PASS"
 
 - requirement_id: C-PARTITION
@@ -1491,10 +1507,12 @@
   evidence_refs:
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
     - docs/evidence/stage-c/c-bench-readiness-20261116.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
   assurance: H6
   limitations:
     - "已在单机 Windows 11 x86_64 6C/12T（SQLite WAL+FULL）验证 PERF-CLASS-001、1->8 子进程分片无全局锁扩展、8-Cell 10K/100K_LOGICAL（1%/5%/10% 工作集）、PERF-CONTROL-001（p50=84-85us）及 ROAD-C-002 五类故障；1M_LOGICAL 与跨物理机网络基准显式未声称"
     - "上述数字适用于历史受测工作站。2026-11-16 定时运行 43649840304 的 Windows Regime B 2→8 分片吞吐门未通过，修后候选 4fc70be1 的 Windows 原目标通过，成功日志无 Regime 或时序数值。Ubuntu 主作业 Regime C 仍有失败样本，具体瓶颈待取证。见 [准备屏障与 CI 证据](../evidence/stage-c/c-bench-readiness-20261116.md)"
+    - "[后续承接 2026-11-22 W82-R4-IND] c-sched-002-indexed-select-scale-20261122.md（H4）实测单机 macOS Apple M5 --release 下 plan_nodes_state_order + select_bounded 在 100K 节点（1%/5%/50%）提速 216.32x-749.87x（单线程 517.85x-744.63x）；Linux/macOS 8-Cell 分片基准、1M_LOGICAL 与 2026-11-16 Regime B/C 反例根因仍保留（H8=0）"
   source: "stage-c-progress.md §C.3.1 C-BENCH 行（base 9e5e0edc）：PARTIAL_PASS"
 
 # ===== 阶段 B -> C 移交项工作包与服务解冻扩展（stage-c-progress.md §C.3.2 #1-#17）=====
@@ -1593,9 +1611,11 @@
   evidence_refs:
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
   assurance: H6
   limitations:
     - "100K batch-cancel 比值、多 worker wake fairness 与墙钟分布首割（B-RUNTIME-002 §6.19）及 8-Cell 100K_LOGICAL M:N Fiber 压测（C-BENCH-001）已落地；durable-wait 全量挂起下终态 purge 二次复杂度与单点 100K 同时唤醒风暴留后续优化"
+    - "[后续承接 2026-11-22 W82-R4-IND] b-runtime-u11-o1-purge-and-wake-storm-20261122.md（H4）在 nlos-runtime-tokio 以 OperationWaitRegistry/ChannelWaitRegistry by_fiber 与 by_wait_id 二级索引将终态 purge 从 O(n^2) 降至 O(k)、deliver 降至 O(1) 并通过单机 macOS --release 100K 同时唤醒风暴 + 全量终态清理独立基线（wake_settle=85.971ms，4 host threads，零泄漏，batch_cancel 100K/10K=0.58x）；Linux/Windows 三平台 CI 与 1M_LOGICAL 仍保留（H8=0）"
   source: "stage-c-progress.md §C.3.2 C-RUNTIME-SCALE（移交#6，merge 4df55d6，base 9e5e0edc）：PARTIAL_PASS"
 
 - requirement_id: C-SELECTOR
@@ -1626,9 +1646,11 @@
   evidence_refs:
     - docs/evidence/stage-b/b-plan-001-declaration-surface.md
     - docs/evidence/stage-b/b-task-scale-001.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
   assurance: H3
   limitations:
     - "apply 侧 TaskNode admission consult、Task-reclaim × plan-residency 互连、PINNED tier、调度器规模探针与 100K@50% 回收再入场已验证（merge 8ed592a）；nlos-system-control 测试夹具 ungated 辅助入口与 PINNED SABI 投影递延"
+    - "[后续承接 2026-11-22 W82-R4-IND] c-sched-002-indexed-select-scale-20261122.md（H4）在 scheduler_scale_probe.rs 补齐 10K/100K select vs select_bounded --release 对照探针、EXPLAIN QUERY PLAN 零 Temp B-Tree 验证与全拓扑微分等价验证（nlos-plan 125 passed / 5 ignored）；nlos-system-control apply_plan_revision_ungated / UnlinkedReclaimResidency 与 PINNED SABI 投影仍保留（U-11）"
   source: "stage-c-progress.md §C.3.2 C-PLAN-HARDEN（移交#8，merge 8ed592a，base 9e5e0edc）：PARTIAL_PASS"
 
 - requirement_id: C-PROVIDER-REAL
@@ -1792,9 +1814,11 @@
   evidence_refs:
     - docs/evidence/stage-c/c-notify-001-task-lifecycle-action-token.md
     - docs/evidence/stage-c/c-unfreeze-001-search-notify-production-wiring.md
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
   assurance: H4
   limitations:
     - "已解除 F1 冻结声明并实现 schema v2（WAL+FULL）、TASK-NOTIFY-001 16 态任务通知、DUI-NOTIFY-001 一次性绑定 ActionToken、DUI-OFFLINE-001 离线游标分页历史与 O(1) inspect_subscription，且已接入 SystemControlDaemon/CLI/NL/Desktop 与 SliceKRuntime/CellHost/slice-k-demo；跨物理主机推送网关与系统原生 OS 通知中心弹窗归阶段 D"
+    - "[后续承接 2026-11-22 W82-R4-IND] d-notify-attention-policy-20261122.md（H4）在 nlos-notify 新增边车 AttentionPolicyController（attention-policy.db v1，保持 notify-service.db v2 零改动），实现双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过/伪造 ConsentPrompt 拒接与不可变审计回执（nlos-notify 42 passed）；桌面 Tauri Z4/UI 及 SystemControlDaemon 实时分发总线连线（DEL-UX）与真实人类试点（DEL-FIELD，H8=0）仍未完成"
   source: "stage-c-progress.md §C.3.2 C-MULTICELL + §C.8 W65-NOTIFY-EXT / W66-UNFREEZE-SC（base 9e5e0edc）：PARTIAL_PASS"
 
 - requirement_id: C-POWER-LOSS
@@ -2079,9 +2103,11 @@
   evidence_refs:
     - docs/evidence/stage-d/d-notify-search-001-action-token-spotlight-and-offline.md
     - docs/evidence/stage-d/reviews/w74-stage-d-exit-gates.md
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
   assurance: H4
   limitations:
     - "已实证右下角实心通知中心（[TASK-NOTIFY-001] 16 态生命周期通知与 [DUI-NOTIFY-001] SHA-256 一次性 ActionToken 核销、重放与跨应用冒用双拒绝）、Ctrl+K Spotlight 搜索（硬锁 0x1F NON_AUTHORITATIVE 五门零写禁区与强制权威回跳重验）及 [DUI-OFFLINE-001] 本地六大表面 100% 离线自治与 L0 托盘 PartitionAutonomyGate 态势指示；移动端推送网关不在桌面范围内"
+    - "[后续承接 2026-11-22 W82-R4-IND] d-notify-attention-policy-20261122.md（H4）在 crates/nlos-notify/src/attention.rs 实现 #![forbid(unsafe_code)] AttentionPolicyController 边车策略引擎与 attention-policy.db v1（WAL+FULL 不可变审计、双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过/伪造 ConsentPrompt 拒接，nlos-notify 42 passed）；桌面端 Tauri Z4/UI 与通知分发总线真实连线（DEL-UX）及真实人类使用试点（DEL-FIELD，H8=0）仍未完成，故整机/UI 端维持受限分级"
   source: "stage-d-progress.md §D.3.1 D-NOTIFY-SEARCH-OFFLINE（W72-W74，base 40f9967a）：PARTIAL_PASS"
 
 - requirement_id: D-CONTROL-SETTINGS-A11Y
@@ -2128,9 +2154,11 @@
     - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
     - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
     - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
+    - docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
   assurance: H7
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在本地确定性多纪元宿主矩阵上实证冻结签名 N-1（target_sabi_epoch=1）参考多组件应用与用户态驱动在主系统原地升级至 N 后零重编译/零重打包/零重签完成状态恢复、能力续期、IPC、nlos-compat-shim 垫片协商、驱动热插拔、回滚与零残留卸载；公网多租户云市场分发、商业法币计费及维护者签署 SABI v1.0 / EXITED 批复保持显式边界"
+    - "[后续承接 2026-11-22 W82-R4-IND] e-eco-001-road-a003-pure-code-no-model-20261122.md（H4）实证单机 macOS arm64 下无模型纯代码应用（零 LLM/HTTP 客户端 crate、双跳 .env_clear() 零密钥/代理变量）端到端安装、Fast 写 Artifact Rev 1、真实 SIGKILL 恢复写 Rev 2 与门控卸载/双版本保留闭环（nlos-slice-k 129 passed / 18 ignored）；仍属仓内无头构造性闭环，Linux/Windows 实机与外部独立第三方生态验收（DEL-ECO / DEL-DIST，H8=0）及维护者签认 ADR-0028 / SABI v1.0 保持显式边界"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E7 / §E.5.5 ROAD-E-001（W81）：PARTIAL_PASS"
 
 - requirement_id: COMPAT-VER-001
@@ -2665,9 +2693,11 @@
   evidence_refs:
     - docs/evidence/stage-e/e-certify-001-automated-conformance-and-uninstall-gate.md
     - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+    - docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
   assurance: H7
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：已在 Gate 4 与 H7 卸载残留对抗测试中实证活跃后台任务门控、能力即时吊销、零私有缓存残留、共享导出 Artifact 完好可读及默认 100% 保留 UserDataContainer（仅签名 Z4 收据可清除）；本地确定性对抗回归级别"
+    - "[后续承接 2026-11-22 W82-R4-IND] e-eco-001-road-a003-pure-code-no-model-20261122.md（H4）在 macOS arm64 无模型纯代码应用全链路中实证活跃任务阻断卸载（ApplicationActiveTasksRunning）、run_application_teardown（SIGTERM 与逐字节重放等价）、collect_orphan_blobs 与 reopen 后用户 Artifact Rev 1/Rev 2 完好保留；跨平台 CI 与外部第三方独立交付验收（H8=0）仍保留"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E5,E6（W79-W80）：PARTIAL_PASS"
 
 - requirement_id: PKG-OCI-001
@@ -2864,9 +2894,11 @@
   evidence_refs:
     - docs/evidence/stage-e/e-trial-001-llm-http-driver.md
     - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
   assurance: H4
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：桌面商店敏感动作（INSTALL / IRREVERSIBLE_UPGRADE / DOWNGRADE_SANDBOX）强制在线复验发布者证书链并 100% 投影至既有 Z4 实心确认屏（零自绘确认弹窗、零行话、零 Emoji）；确定性桥接与前端 1933 断言组件测试级别"
+    - "[后续承接 2026-11-22 W82-R4-IND] d-notify-attention-policy-20261122.md（H4）在 crates/nlos-notify/src/attention.rs 落地 AttentionPolicyController 边车策略引擎，无条件拒接非受信 AttentionOrigin::Application 伪造 ConsentPrompt/SystemCritical 与付费绕过（REJECTED_UNTRUSTED_ORIGIN / REJECTED_PAYMENT_BYPASS）并落盘 WAL+FULL 不可变审计回执（nlos-notify 42 passed）；桌面端 Tauri Z4/UI 与通知分发总线真实连线（DEL-UX）及真实人类使用试点（DEL-FIELD，H8=0）仍未完成"
   source: "stage-e-progress.md §E.1.1 / §E.2.2 E0,E5,E6（W77-PRE..W80）：PARTIAL_PASS"
 
 - requirement_id: NLOS-DEFER-001
@@ -3116,9 +3148,11 @@
     - docs/evidence/stage-e/e-market-001-reference-apps-and-drivers.md
     - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
     - docs/evidence/stage-e/e-security-001-h7-supply-chain-and-revocation-adversarial.md
+    - docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
   assurance: H7
   limitations:
     - "SATISFIED-WITH-BOUNDARIES：工作包 E6（W80 / M-E4）已交付双层不可信 Wasm 强沙箱（54/54 测试，闭合 U-9）、2 款参考多组件应用 + 2 款用户态驱动及 16/16 字节确定性封存 N-1 基准包、桌面实心商店 L1/L2/L3 透明面板与 Z4 联动（1933 断言）及 H7 供应链/吊销六类攻击对抗回归；Linux/macOS #[cfg(unix)] 沙箱分支由远端三平台 CI 常态守护"
+    - "[后续承接 2026-11-22 W82-R4-IND] e-eco-001-road-a003-pure-code-no-model-20261122.md（H4）新增 ROAD-A-003 / NLOS-GEN-001 无模型纯代码应用端到端套件（road_a003_pure_code_e2e：零 LLM/HTTP 客户端依赖、双跳 .env_clear() 零密钥泄漏、SIGKILL 恢复写 Rev 2 与门控卸载 Artifact 保留，nlos-slice-k 129 passed / 18 ignored）；仍属仓内单机 macOS 构造性闭环，Linux/Windows 实机与外部独立第三方团队生态交付验收（DEL-ECO / DEL-DIST，H8=0）显式保留"
   source: "stage-e-progress.md §E.2.2 E6（W80）：PARTIAL_PASS"
 
 - requirement_id: E-UPGRADE-GATE-ROADE001
