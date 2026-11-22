@@ -127,7 +127,7 @@ def main() -> int:
         print(f"[verify_wheel] {len(GEN_MODULES)} 个生成模块与 gen/ 逐字节一致(零漂移)")
 
         venv_dir = tmp / "venv"
-        venv.create(venv_dir, with_pip=True)
+        venv.create(venv_dir, with_pip=True, symlinks=os.name != "nt")
         py = _venv_python(venv_dir)
         install = run(
             [
