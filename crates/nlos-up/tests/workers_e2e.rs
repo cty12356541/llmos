@@ -8,6 +8,15 @@
 
 mod workers_readiness;
 
+use ed25519_dalek::{Signer as _, SigningKey};
+use nlos_capability::{
+    CapabilityAuthority, CapabilityHandle, CapabilityRights, CapabilityTarget,
+    DelegateCapabilityRequest, RevokeCapabilityRequest, SignedDelegateCapabilityRequest,
+    SignedRevokeCapabilityRequest, delegate_command_message, revoke_command_message,
+};
+use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
+use nlos_types::{Generation, IdempotencyKey, NamespaceId};
+use nlos_up::{BootstrapOptions, bootstrap_trial_root, encode_hex};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +29,12 @@ struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
+        let base = if Path::new("/tmp").is_dir() {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let dir = base.join(format!(
             "w82c-up-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
@@ -185,46 +199,15 @@ fn spawn_nlos_up_workers(root: &Path, manifest: &Path) -> RunningUp {
     }
 }
 
-#[test]
-fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
-    let scratch = ScratchDir::new("e2e");
-    let root = scratch.0.join("root");
-    let manifest_path = scratch.0.join("workers.manifest");
-    let dump_base = |name: &str| scratch.0.join(name);
-
-    std::fs::write(
-        &manifest_path,
-        format!(
-            "# W82-C e2e dual-unit manifest\n\
-             worker = adapter /bin/sh {sh} {a}\n\
-             slot = adapter adapter-slot-token\n\
-             worker = brain /bin/sh {sh} {b}\n\
-             slot = brain brain-slot-token\n",
-            sh = fixture("worker_env_dump.sh").display(),
-            a = dump_base("adapter").display(),
-            b = dump_base("brain").display(),
-        ),
-    )
-    .expect("write manifest");
-
-    let up = spawn_nlos_up_workers(&root, &manifest_path);
-    let stdout_head = up.wait_for_workers(2, 60);
-    assert!(stdout_head.contains("WORKERS manifest="), "{stdout_head}");
-    assert!(stdout_head.contains("units=2"), "{stdout_head}");
-    assert!(
-        stdout_head.contains("WORKER name=adapter pid="),
-        "{stdout_head}"
-    );
-    assert!(
-        stdout_head.contains("WORKER name=brain pid="),
-        "{stdout_head}"
-    );
-
-    for (unit, slot) in [
-        ("adapter", "adapter-slot-token"),
-        ("brain", "brain-slot-token"),
-    ] {
-        let dump = poll_file(&dump_base(unit).with_extension("env"), 30)
+fn assert_dual_sh_whitelist_and_collect_pids(
+    scratch: &ScratchDir,
+    root: &Path,
+    slot: &str,
+) -> Vec<(String, u32, u32)> {
+    let mut pids = Vec::new();
+    for unit in ["adapter", "brain"] {
+        let base = scratch.0.join(unit);
+        let dump = poll_file(&base.with_extension("env"), 30)
             .unwrap_or_else(|| panic!("{unit} env dump missing"));
         let map = parse_env_dump(&dump);
         // 恰三 LLMOS_* 注入;PWD/SHLVL/_ 为 bash-as-sh 子进程自合成(Task 3 裁定,
@@ -259,38 +242,94 @@ fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
             &root.join("keys/operator-ed25519.key").display().to_string()
         );
         assert_eq!(map.get("LLMOS_ROOT_CAPABILITY_SLOT").unwrap(), slot);
+        let pid: u32 = poll_file(&base.with_extension("pid"), 5)
+            .unwrap_or_else(|| panic!("{unit} pid file missing"))
+            .trim()
+            .parse()
+            .unwrap();
+        let grandpid: u32 = poll_file(&base.with_extension("grandpid"), 5)
+            .unwrap_or_else(|| panic!("{unit} grandpid file missing"))
+            .trim()
+            .parse()
+            .unwrap();
+        pids.push((unit.to_owned(), pid, grandpid));
     }
+    pids
+}
 
-    // 主进程退出(SIGTERM)→ 子进程树(直子 + 孙)回收
-    let (stdout, status) = up.sigterm_and_collect();
+fn assert_dual_reclaim_output_and_pids_gone(
+    stdout: &str,
+    status: std::process::ExitStatus,
+    pids: &[(String, u32, u32)],
+) {
+    assert!(status.success(), "exit {:?}\n{stdout}", status.code());
     assert!(stdout.contains("KILL name=adapter outcome="), "{stdout}");
     assert!(stdout.contains("KILL name=brain outcome="), "{stdout}");
     assert!(
         stdout.contains("STOPPED service=system_control"),
         "{stdout}"
     );
-    assert!(status.success(), "exit {:?}\n{stdout}", status.code());
-
-    for unit in ["adapter", "brain"] {
-        let pid: u32 = poll_file(&dump_base(unit).with_extension("pid"), 5)
-            .unwrap_or_else(|| panic!("{unit} pid file missing"))
-            .trim()
-            .parse()
-            .unwrap();
-        let grandpid: u32 = poll_file(&dump_base(unit).with_extension("grandpid"), 5)
-            .unwrap_or_else(|| panic!("{unit} grandpid file missing"))
-            .trim()
-            .parse()
-            .unwrap();
+    for (unit, pid, grandpid) in pids {
         assert!(
-            pid_gone(pid, 20),
+            pid_gone(*pid, 20),
             "worker {unit} pid {pid} survived main-exit reclaim"
         );
         assert!(
-            pid_gone(grandpid, 20),
+            pid_gone(*grandpid, 20),
             "grandchild of {unit} pid {grandpid} survived main-exit reclaim"
         );
     }
+}
+
+#[test]
+fn workers_launch_env_whitelist_and_sigterm_reclaims_tree() {
+    let scratch = ScratchDir::new("e2e");
+    let root = scratch.0.join("root");
+    let receipt = bootstrap_trial_root(
+        &BootstrapOptions::new()
+            .with_root(&root)
+            .without_default_keypool_probe(),
+    )
+    .expect("bootstrap trial root for real operator capability");
+    let real_cap_slot = receipt.operator_root_capability_hex.clone();
+    assert_eq!(real_cap_slot.len(), 32);
+
+    let manifest_path = scratch.0.join("workers.manifest");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "# W82-C e2e dual-unit manifest (bound to real authority CapabilityId)\n\
+             worker = adapter /bin/sh {sh} {a}\n\
+             slot = adapter {real_cap_slot}\n\
+             worker = brain /bin/sh {sh} {b}\n\
+             slot = brain {real_cap_slot}\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            a = scratch.0.join("adapter").display(),
+            b = scratch.0.join("brain").display(),
+        ),
+    )
+    .expect("write manifest");
+
+    let up = spawn_nlos_up_workers(&root, &manifest_path);
+    let stdout_head = up.wait_for_workers(2, 60);
+    assert!(stdout_head.contains("WORKERS manifest="), "{stdout_head}");
+    assert!(stdout_head.contains("units=2"), "{stdout_head}");
+    assert!(
+        stdout_head.contains(&format!("operator_root_capability={real_cap_slot}")),
+        "{stdout_head}"
+    );
+    assert!(
+        stdout_head.contains("WORKER name=adapter pid="),
+        "{stdout_head}"
+    );
+    assert!(
+        stdout_head.contains("WORKER name=brain pid="),
+        "{stdout_head}"
+    );
+
+    let pids = assert_dual_sh_whitelist_and_collect_pids(&scratch, &root, &real_cap_slot);
+    let (stdout, status) = up.sigterm_and_collect();
+    assert_dual_reclaim_output_and_pids_gone(&stdout, status, &pids);
 }
 
 #[test]
@@ -402,4 +441,331 @@ fn resolve_python3() -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|dir| dir.join("python3"))
         .find(|candidate| candidate.is_file())
+}
+
+fn parse_seed32(hex: &str) -> [u8; 32] {
+    let trimmed = hex.trim();
+    assert_eq!(trimmed.len(), 64);
+    let mut out = [0_u8; 32];
+    for (idx, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&trimmed[2 * idx..2 * idx + 2], 16).expect("valid hex byte");
+    }
+    out
+}
+
+fn run_workers_output(root: &Path, manifest: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_nlos-up"))
+        .args([
+            "workers",
+            "--root",
+            &root.display().to_string(),
+            "--workers-manifest",
+            &manifest.display().to_string(),
+        ])
+        .output()
+        .expect("run nlos-up workers")
+}
+
+#[test]
+fn workers_rejects_forged_and_malformed_slots_fail_closed_zero_residual() {
+    let scratch = ScratchDir::new("fgd");
+    let root = scratch.0.join("root");
+
+    // 1. 合法 D7 格式但权威中不存在的伪造 32-hex slot (含前置无 slot 单元):
+    //    必须在拉起任何单元前于权威处 fail-closed 拒绝,零进程残留。
+    let forged_manifest = scratch.0.join("forged.manifest");
+    let good_base = scratch.0.join("good");
+    let forged_base = scratch.0.join("forged");
+    std::fs::write(
+        &forged_manifest,
+        format!(
+            "worker = good /bin/sh {sh} {good}\n\
+             worker = forged /bin/sh {sh} {forged}\n\
+             slot = forged deadbeefdeadbeefdeadbeefdeadbeef\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            good = good_base.display(),
+            forged = forged_base.display(),
+        ),
+    )
+    .expect("write forged manifest");
+
+    let out = run_workers_output(&root, &forged_manifest);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "forged 32-hex slot must fail closed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("rejected by capability authority"),
+        "expected capability authority error in stderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("WORKER name="),
+        "no worker may spawn when pre-flight fails:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("STOPPED service=system_control"),
+        "embedded daemon must stop cleanly on rejection:\n{stdout}"
+    );
+    assert!(!good_base.with_extension("pid").exists());
+    assert!(!good_base.with_extension("env").exists());
+    assert!(!forged_base.with_extension("pid").exists());
+
+    // 2. 非 D7 格式(大写/带分隔符/长度非法)同样 fail-closed 拒绝且零拉起。
+    for bad_slot in [
+        "0123456789ABCDEF0123456789ABCDEF",
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "short-slot",
+    ] {
+        let bad_manifest = scratch.0.join("bad.manifest");
+        let bad_base = scratch.0.join("bad");
+        std::fs::write(
+            &bad_manifest,
+            format!(
+                "worker = bad /bin/sh {sh} {bad}\n\
+                 slot = bad {bad_slot}\n",
+                sh = fixture("worker_env_dump.sh").display(),
+                bad = bad_base.display(),
+            ),
+        )
+        .expect("write bad manifest");
+        let bad_out = run_workers_output(&root, &bad_manifest);
+        assert!(
+            !bad_out.status.success(),
+            "malformed slot {bad_slot:?} must fail"
+        );
+        assert!(!bad_base.with_extension("pid").exists());
+    }
+}
+
+#[test]
+fn workers_rejects_revoked_capability_slot_fail_closed() {
+    let scratch = ScratchDir::new("rev");
+    let root = scratch.0.join("root");
+    let receipt = bootstrap_trial_root(
+        &BootstrapOptions::new()
+            .with_root(&root)
+            .without_default_keypool_probe(),
+    )
+    .expect("bootstrap");
+
+    let seed = parse_seed32(&std::fs::read_to_string(&receipt.key_file).expect("read seed"));
+    let signing_key = SigningKey::from_bytes(&seed);
+
+    {
+        let identity = IdentityAuthority::open(root.join("identity")).expect("open identity");
+        let binding = identity
+            .inspect_current_principal_binding(receipt.principal_id)
+            .expect("inspect operator binding");
+        let capabilities =
+            CapabilityAuthority::open(root.join("capability")).expect("open capability");
+        let cmd = RevokeCapabilityRequest {
+            handle: CapabilityHandle {
+                capability_id: receipt.operator_root_capability_id,
+                generation: Generation::INITIAL,
+            },
+            revoker_key_id: binding.key_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x44; 16]),
+            revoked_at_ms: 1,
+        };
+        capabilities
+            .revoke_signed(
+                &identity,
+                SignedRevokeCapabilityRequest {
+                    command: cmd,
+                    signer: receipt.principal_id,
+                    signature: signing_key.sign(&revoke_command_message(cmd)).to_bytes(),
+                },
+            )
+            .expect("revoke operator root capability");
+    }
+
+    let manifest_path = scratch.0.join("revoked.manifest");
+    let adapter_base = scratch.0.join("adapter");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "worker = adapter /bin/sh {sh} {a}\n\
+             slot = adapter {slot}\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            a = adapter_base.display(),
+            slot = receipt.operator_root_capability_hex,
+        ),
+    )
+    .expect("write revoked manifest");
+
+    let out = run_workers_output(&root, &manifest_path);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "revoked capability must fail closed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("rejected by capability authority"),
+        "expected capability authority rejection in stderr:\n{stderr}"
+    );
+    assert!(!stdout.contains("WORKER name="), "{stdout}");
+    assert!(!adapter_base.with_extension("pid").exists());
+}
+
+#[test]
+fn workers_rejects_holder_mismatch_capability_slot_fail_closed() {
+    let scratch = ScratchDir::new("mis");
+    let root = scratch.0.join("root");
+    let receipt = bootstrap_trial_root(
+        &BootstrapOptions::new()
+            .with_root(&root)
+            .without_default_keypool_probe(),
+    )
+    .expect("bootstrap");
+
+    let seed = parse_seed32(&std::fs::read_to_string(&receipt.key_file).expect("read seed"));
+    let operator_key = SigningKey::from_bytes(&seed);
+
+    let delegated_hex = {
+        let identity = IdentityAuthority::open(root.join("identity")).expect("open identity");
+        let operator_binding = identity
+            .inspect_current_principal_binding(receipt.principal_id)
+            .expect("inspect operator binding");
+        let other_key = SigningKey::from_bytes(&[0x5c; 32]);
+        let other_binding = match identity
+            .bootstrap_principal(BootstrapPrincipalRequest {
+                principal_profile_digest: [0x51; 32],
+                control_domain_policy_digest: [0x52; 32],
+                public_key: other_key.verifying_key().to_bytes(),
+                key_purpose: KeyPurpose::SemanticSigning,
+                key_valid_from_ms: 0,
+                key_valid_until_ms: 4_102_444_800_000,
+                idempotency_key: IdempotencyKey::from_bytes([0x53; 16]),
+                created_at_ms: 0,
+            })
+            .expect("other binding")
+        {
+            BootstrapDecision::Created(b) | BootstrapDecision::Replayed(b) => b,
+        };
+        let capabilities =
+            CapabilityAuthority::open(root.join("capability")).expect("open capability");
+        let cmd = DelegateCapabilityRequest {
+            parent: CapabilityHandle {
+                capability_id: receipt.operator_root_capability_id,
+                generation: Generation::INITIAL,
+            },
+            delegator_key_id: operator_binding.key_id,
+            recipient_key_id: other_binding.key_id,
+            target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0; 16])),
+            rights: CapabilityRights::SEMANTIC_APPEND,
+            purpose_digest: None,
+            valid_from_ms: 0,
+            valid_until_ms: 4_102_444_800_000,
+            delegation_depth_remaining: 1,
+            call_limit: None,
+            idempotency_key: IdempotencyKey::from_bytes([0x54; 16]),
+            delegated_at_ms: 1,
+        };
+        let child = capabilities
+            .delegate_signed(
+                &identity,
+                SignedDelegateCapabilityRequest {
+                    command: cmd,
+                    signer: receipt.principal_id,
+                    signature: operator_key.sign(&delegate_command_message(cmd)).to_bytes(),
+                },
+            )
+            .expect("delegate to other holder")
+            .record();
+        encode_hex(child.handle.capability_id.as_bytes())
+    };
+
+    let manifest_path = scratch.0.join("mismatch.manifest");
+    let adapter_base = scratch.0.join("adapter");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "worker = adapter /bin/sh {sh} {a}\n\
+             slot = adapter {delegated_hex}\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            a = adapter_base.display(),
+        ),
+    )
+    .expect("write mismatch manifest");
+
+    let out = run_workers_output(&root, &manifest_path);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "holder-mismatched capability must fail closed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("holder mismatch"),
+        "expected holder mismatch in stderr:\n{stderr}"
+    );
+    assert!(!stdout.contains("WORKER name="), "{stdout}");
+    assert!(!adapter_base.with_extension("pid").exists());
+}
+
+#[test]
+fn workers_restart_on_same_root_after_sigterm_reclaims_and_restarts_cleanly() {
+    let scratch = ScratchDir::new("restart");
+    let root = scratch.0.join("root");
+    let receipt = bootstrap_trial_root(
+        &BootstrapOptions::new()
+            .with_root(&root)
+            .without_default_keypool_probe(),
+    )
+    .expect("bootstrap");
+    let slot = receipt.operator_root_capability_hex.clone();
+
+    let manifest_path = scratch.0.join("workers.manifest");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "worker = adapter /bin/sh {sh} {a}\n\
+             slot = adapter {slot}\n\
+             worker = brain /bin/sh {sh} {b}\n\
+             slot = brain {slot}\n",
+            sh = fixture("worker_env_dump.sh").display(),
+            a = scratch.0.join("adapter").display(),
+            b = scratch.0.join("brain").display(),
+        ),
+    )
+    .expect("write manifest");
+
+    // Run 1: 启动双单元 + 验证三变量白名单 + SIGTERM 回收全树
+    let up1 = spawn_nlos_up_workers(&root, &manifest_path);
+    let head1 = up1.wait_for_workers(2, 60);
+    assert!(workers_are_ready(&head1, 2), "{head1}");
+    let run1_pids = assert_dual_sh_whitelist_and_collect_pids(&scratch, &root, &slot);
+
+    let (stdout1, status1) = up1.sigterm_and_collect();
+    assert_dual_reclaim_output_and_pids_gone(&stdout1, status1, &run1_pids);
+    assert!(stdout1.contains("group_drained=true"), "{stdout1}");
+    for unit in ["adapter", "brain"] {
+        let base = scratch.0.join(unit);
+        for ext in ["env", "pid", "grandpid"] {
+            let _ = std::fs::remove_file(base.with_extension(ext));
+        }
+    }
+
+    // Run 2: 立即使用同一 `--root` 重启 `nlos-up workers`,验证无 socket/lock/进程冲突
+    let up2 = spawn_nlos_up_workers(&root, &manifest_path);
+    let head2 = up2.wait_for_workers(2, 60);
+    assert!(workers_are_ready(&head2, 2), "{head2}");
+    assert!(
+        head2.contains(&format!("operator_root_capability={slot}")),
+        "{head2}"
+    );
+    let run2_pids = assert_dual_sh_whitelist_and_collect_pids(&scratch, &root, &slot);
+    for (idx, (unit, pid2, _)) in run2_pids.iter().enumerate() {
+        assert_ne!(
+            *pid2, run1_pids[idx].1,
+            "run2 {unit} must spawn a fresh process"
+        );
+    }
+
+    let (stdout2, status2) = up2.sigterm_and_collect();
+    assert_dual_reclaim_output_and_pids_gone(&stdout2, status2, &run2_pids);
+    assert!(stdout2.contains("group_drained=true"), "{stdout2}");
 }

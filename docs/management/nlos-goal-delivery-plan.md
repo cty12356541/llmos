@@ -15,9 +15,9 @@
 ## 1. 事实起点、权威归属与范围
 
 - A–D 在各自验收边界内已 `EXITED`；E0–E7 为 8/8 工程完成，阶段 E 仍待维护者签字，不能代签 `EXITED` 或 SABI v1.0 长期冻结。
-- W82 的 A 会话和 B1–B4 库级服务已通过验收，整车道 `2/5 DONE`。`B82-SDK` 已开放。C 的 D7 与重启、D 的 SDK 主体仍在推进，INT 待 C、D 验收。
+- W82 的 A 会话与 B1–B4 库级服务已完成三平台验收；`W82-C` 与 `W82-D` 已完成 macOS 本地验收（[W82-C](../evidence/stage-e/w82-c-acceptance-20261121.md)、[Python SDK](../evidence/stage-e/w82-d-py-sdk-20261121.md)、[TypeScript SDK](../evidence/stage-e/w82-d-ts-sdk-20261121.md)，三平台 CI 待补跑）；`W82-INT` 维持 `IN_PROGRESS / PARTIAL`（已完成 `nlos-compat-shim` 三保留名映射、Daemon 吊销联动进程树回收、14 处勘误清零，并在 `W82-R3` 完成 `GAP-2 Part A` 网关信封对齐修复 [W82-R3-GW-FIX](../evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md) 与起草 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) `PROPOSED`，**待人类维护者批复 `1A/2A/3A/4` 以解锁 `W82-R4` `GAP-1/2B/3` 与全 8 通道 Daemon 实时挂载**；另 `DEL-BASE` 表 3A 首轮校准与 `DEL-RES` 12 维画像已入账，见 [W82-INT 预检与签认清册](../evidence/stage-e/w82-int-precheck-20261121.md)、[DEL-RES 资源边界画像](./del-res-resource-profile.md)）；`W82-R4-IND`（2026-11-22，`DEL-BASE` 后不阻塞于 `ADR-0028` 的 4 路独立工程加固波）已在单机 macOS 完成本地实测（[B-RUNTIME-U11](../evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md) `H4`、`nlos-runtime-tokio` `181 passed` & `100K` 唤醒风暴 `wake_settle=85.97ms`；[C-SCHED-002](../evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md) `H4`、`nlos-plan` `select_bounded` `100K` 提速 `216x-750x`；[D-NOTIFY-ATTN-001](../evidence/stage-d/d-notify-attention-policy-20261122.md) `H4`、`nlos-notify` `42 passed`；[E-ECO-001](../evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md) `H4`、`nlos-slice-k` `ROAD-A-003` 无模型纯代码闭环 `129 passed`），台账同步至 `224` 份证据（`H8 = 0`、三平台 CI 与桌面/外部生态门仍保留）。
 - 历史基线 `a3a1c007` 的 push CI 常规 9 作业成功，2 个规模作业跳过，Pages 部署成功。`d2a32de9` 的原 Worker E2E 失败已诊断并在首波集成代码的 `include-ignored` 作业复验通过，原负面证据保留。[历史 push CI](https://github.com/cty12356541/llmos/actions/runs/43571919333) · [历史 Pages](https://github.com/cty12356541/llmos/actions/runs/43571919328) · [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)
-- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md#2026-11-16-三服务库验证)及原始台账为准。
+- 当前 H8 为 0；H4/H7、同仓参考应用、三平台 CI 均不能替代生产用户、独立开发者或实际发行安装证据。动态数量和最新 CI 以[阶段 E 当前执行记录](./stage-e-progress.md)及原始台账为准。
 - 本文负责跨能力交付顺序、工作包和终局验收；阶段进度归 `stage-*-progress.md`，需求归 v0.5，决策归 ADR，事实归源提交/Evidence，风险归 `risks.yaml`，声明归 `claims.yaml`。本计划不得覆盖这些对象。
 - 后续 `DEL-*` 仅为管理工作包 ID，分别承接既有 B/C/D/E 能力；不新增正式阶段或 Requirement。全球联邦、完整硬件生态、消费级完善等按 §29.2 分包演进；裸机不是完成终局的前置条件。
 
@@ -105,7 +105,7 @@ flowchart LR
 **R/W**：R=`crates/nlos-up/tests/workers_e2e.rs`、定时 workflow、C 已合并代码；W=`crates/nlos-up/**`、`crates/nlos-package/**`、`crates/nlos-process/**` 中具名最小修复集与 Evidence；workflow 改动先交 integrator。
 - [x] 保存 43530982662 原日志，定位通用 READY 前缀允许在 brain 启动前返回的竞态；等待带 Worker 数量的完整行，保留确定性红绿结果。诊断、验收及环境差异见 [C 诊断 Evidence](../evidence/stage-e/w82-c-diag-20261116.md)。
 - [x] Ubuntu 22.04 局部执行 `cargo test --locked -p nlos-up --test workers_e2e -- --nocapture`；Windows 执行 `cargo test -p nlos-process --test platform_kill`，见真实父子树与兄弟不误杀用例。
-- [ ] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收均需整体验收。吊销触发实际回收留 INT，跨权限/breakaway 归 U-2。
+- [x] 清单启动 adapter/brain、最小环境、根 ID 格式及真实权威绑定、父退出后重启、安全回收已在 macOS 本机验收；[W82-INT](../evidence/stage-e/w82-int-precheck-20261121.md) 已落地 Daemon 令牌吊销联动进程树回收，三平台 CI 复跑与跨权限/breakaway 残域继续按 U-2 保留。[C 验收 Evidence](../evidence/stage-e/w82-c-acceptance-20261121.md)
 - [x] 集成代码 `4fc70be1` 在 Ubuntu 26.04.1 的 `cargo test --workspace --no-fail-fast -- --include-ignored` 作业成功。原失败项 `workers_launch_env_whitelist_and_sigterm_reclaims_tree` 实测通过，关闭原定时失败的 C-DIAG 子门。[复验记录](../evidence/stage-e/w82-c-diag-20261116.md#2026-11-16-集成代码的-ubuntu-worker-复验)
 
 ### CI-WINDOWS-SCALE-BARRIER：Windows Regime B 规模探针准备屏障
@@ -179,16 +179,18 @@ flowchart LR
 
 **Owner**：SDK Sol；跨语言安全与错误语义审查 Astra。**入口**：B82-SDK 已开放；**blocks**：B82-INT、DEL-SDK。
 **R/W**：R=A/B 定稿、已合并 wheel/认证前置件、SDK 等级定义；W=`sdk/python/**`、`sdk/typescript/**`、`tests/conformance/ipc/**` 与 Evidence。新增 `wait/operation/llm_gateway/tool_sandbox/blob_reference` 客户端模块，名称和类型从已合并生成物取得。
-- [ ] 正向：目录协商、认证持久连接、Wait/Operation/LLM/Tool/Blob 调用，脱离源码树安装并消费；失败：超时、半帧、poison、重连、uncertain 同键重试；安全：holder 错配、私钥/回执脱敏、未知 major/critical、上界拒绝。
-- [ ] 运行 `python -m unittest discover -s sdk/python/tests`、`npm run schema:typecheck`、现有 `npm run ipc:test:typescript` / `directory:test:typescript` / `wait-control:test:typescript` 及 Python 对应脚本；新增三服务跨进程脚本纳入同一 CI 门，不能只做 mock 自测。
-- [ ] 复用 `python sdk/python/scripts/verify_wheel.py`；当前脚本把 venv 解释器写死为 `bin/python`，先改为按宿主选 `Scripts/python.exe`/`bin/python`，并让 probe cwd 位于源码树外、清除 PYTHONPATH 后再算三平台独立安装通过。
-- [ ] Evidence 分列 SDK-0..4、语言/平台/profile；wheel 可安装和新增客户端完成不等于已在 PyPI/npm 发布、也不自动晋升 SDK-4。
+- [x] 正向与失败边界（目录协商、认证持久连接、Wait/Operation/LLM/Tool/Blob 客户端、wheel 树外安装与本地 socket 安全边界）已在 macOS 完成本地验收；Py/TS `SDK-3` 保持受限 `PARTIAL_PASS`（live daemon 暂缺三新服务挂载，见下节三项前置缺口）。[Python SDK Evidence](../evidence/stage-e/w82-d-py-sdk-20261121.md) · [TypeScript SDK Evidence](../evidence/stage-e/w82-d-ts-sdk-20261121.md)
+- [x] `python3 -m unittest discover -s sdk/python/tests`、`npm run schema:typecheck`、`npm run ipc:test:typescript` / `directory:test:typescript` / `wait-control:test:typescript` / `sabi-v1-1:test:typescript` 与 Python 一致性脚本已在 macOS 接入并实跑通过。
+- [x] `python3 sdk/python/scripts/verify_wheel.py` 已按宿主选择解释器并在源码树外、剥离 `PYTHONPATH` 验证 12 个 `*_pb2.py` 与 27Exports；三平台远端 CI 复验待跑。
+- [ ] Evidence 已分列 SDK-0..4 与受测平台；wheel 可安装与新增客户端不等于 PyPI/npm 发布，也不自动晋升 SDK-4。
 
 ### W82-INT-DOGFOOD-E2E：系统挂载、撤销联动与真实消费者
 
-**Owner**：单一 integrator Sol，整条安全/故障链独立终审 Astra；外部仓负责人维护 qq-agent。**blocked-by**：B82-INT；**blocks**：W82 DONE、后续交付候选基线。
+**Owner**：单一 integrator Sol，整条安全/故障链独立终审 Astra；外部仓负责人维护 qq-agent。**blocked-by**：B82-INT + 三项前置契约/库/策略签认；**blocks**：W82 DONE、后续交付候选基线。
 **R/W**：R=各车道回执；W=`crates/nlos-system-control/**`、`crates/nlos-compat-shim/src/sabi_adapter.rs`、Studio 徽标实际文件、根依赖/锁文件、W82 Evidence 与共享治理台账。qq-agent 是单独 Task/write-set，取得对应仓授权后执行，不隐式扩大本仓权限。
-- [ ] 挂载三服务、认证 principal→会话槽位→权威 CapabilityId 与 C 根 ID，验证签名与 custody 输送、受信 workspace resolver、Blob 大参数 materializer 和重启接线；正向双 Worker 快慢双脑、LLM/工具/富媒体闭环；失败含 daemon/worker/provider 故障；安全含令牌吊销触发进程树回收、下块拒读、伪造根 ID 拒绝、跨应用隔离与计费守恒。
+- [x] 预检阶段（`W82-INT-WAVE2` `IN_PROGRESS / PARTIAL`）已完成 `nlos-compat-shim` 三保留名映射、Daemon 令牌吊销联动进程树回收（`SystemControlDaemon::reclaim_revoked_capability_workers`）、14 处「13→14 导入」勘误清零与 4 份新证据入账；同时固化阻塞全 8 通道挂载的三项源码前置缺口（`BlobReferenceService` sidecar/非空摘要、`Gateway::handle_wire` schema 与 `attenuate_budget` `ChildSessionBinding`、`CapabilityRights` 分服务策略签认，见 [W82-INT 预检与签认清册](../evidence/stage-e/w82-int-precheck-20261121.md)）。
+- [x] `W82-R3` 增量修复与架构定稿草案（`2026-11-21`）：已完成 `GAP-2 Part A` 网关 `Envelope` 编解码对齐修复（[W82-R3-GW-FIX](../evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md)，`H4`）并起草 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md)（`PROPOSED / DESIGN`，推荐方案 `1A/2A/3A/4`），待人类维护者显式签认后进入 `W82-R4` 实施 `GAP-1 / GAP-2 Part B / GAP-3`。
+- [ ] 待维护者签认 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) 并完成上述剩余前置修复后：挂载全 8 通道服务、认证 principal→会话槽位→权威 CapabilityId 与 C 根 ID，验证签名与 custody 输送、受信 workspace resolver、Blob 大参数 materializer 和重启接线，并完成双 Worker 快慢双脑与外部 `qq-agent` 消费闭环。
 - [ ] 真实消费者验证零应用明文 provider key、自建预算库/防火墙/supervisor 可退役；逐个核对旧实现删改与替代路径。模拟消费者可以先验接口，不能代替 qq-agent 真实回执或独立生态。
 - [ ] 执行 `cargo test -p nlos-system-control --features daemon`、`cargo test --workspace`、`python scripts/run_road_e001_upgrade_matrix.py`，核对 8 个 N-1 冻结包、16 份封存制品及零源码修改/重编译/重签；新服务失败、吊销、重启与旧客户端兼容必须同时覆盖。
 - [ ] 补跑受影响 CI/定时门，运行 `python scripts/lint_claims.py`、`python tools/verify_stage_e_ledger_coverage.py --mode strict`、`git diff --check`。按最终 SHA 汇总每车道 Evidence，更新 stage E/claims/risks/index 与 L0，独立终审后才晋升 W82；E 正式退出仍是另一个人类决定。
@@ -200,8 +202,8 @@ flowchart LR
 ### DEL-BASE：规范到实际产品的覆盖审计（承接 B/C/D/E）
 
 **Owner/依赖**：架构 Astra + 事实核验 Sol；可立即准备，与 W82 独立；阻塞后续包范围定稿。R=v0.5 最高目标/路线、现有进度/claims/risks/相关 Evidence；W=本计划各包输入及按权威对象分配的差距修订。
-- [ ] 输出“需求→能力→现有 Evidence→缺口→本计划包→release profile”映射，逐条核 U-1..U-14、过期风险描述、SDK 探针/正式支持区别；已闭合项仅设置复验触发器。
-- [ ] 验收：§1.1 十类完整性目标与 §28 全部 ROAD 门有归属，未知项有 owner/调查命令/裁定条件；`lint_claims.py` 与 strict 覆盖率通过。不得用全局百分比或同名第二份规范替代缺口。
+- [x] 已完成首轮只读覆盖审计产出 [DEL-BASE 规范到实际产品覆盖审计报告](./del-base-coverage-audit.md)，覆盖“需求→能力→现有 Evidence→缺口→本计划包→release profile”映射、逐条核对 U-1..U-14 与风险台账，并在本计划与 [README](./README.md) 挂接索引入口；**`W82-R3` 已完成表 3A 共享台账首轮校准**（注册 3 份新证据至 `220`、将 17 份零引用已入库证据回填至 `claims.yaml`、并同步校准 `ADR-0027` / `w82-b-design-draft` / `language-sdk-support-plan` / `risks` / `exit-unknown-risks`）；**`2026-11-22` `W82-R4-IND` 已同步 4 路独立工程加固实证至 `224` 份证据**（回填 `claims.yaml`、`risks.yaml`、`del-res-resource-profile.md`、`exit-unknown-risks.md`）。
+- [ ] 待结合 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md)（`PROPOSED`，待人类维护者批复 `1A/2A/3A/4` 以解锁全 8 通道 Daemon 实时挂载）签认、`W82-R4` 实施复验与后续交付包启动窗口，按权威对象继续闭环表 3B 与架构缺口修订。验收：§1.1 十类完整性目标与 §28 全部 ROAD 门有归属，未知项有 owner/调查命令/裁定条件；`lint_claims.py` 与 strict 覆盖率通过。不得用全局百分比或同名第二份规范替代缺口。
 
 ### DEL-DIST：独立发行、安装和升级（承接 B/D/E）
 
@@ -233,16 +235,19 @@ flowchart LR
 ### DEL-RES：现代资源与可控执行的生产边界（承接 B/C）
 
 **Owner/依赖**：资源实现 Sol、跨宿主执法审查 Astra；依赖 DEL-BASE；硬件侧依赖 DEL-EXT。R=ResourceGroup/controller、ResourceAccount、Capacity/Device lease 与 RISK-B-03/10；W=定位后的 controller/driver 适配与测试。
-- [ ] 输出 CPU/内存/存储/I/O/网络/accelerator/energy/context/capacity/rate/attention 各维“已强制/仅计量/不支持”profile；复验已有控制器，调查缺失 shim/部署策略并保留 fail-closed/COOPERATIVE 降档。
+- [x] 首轮产出 12 维 x 3 平台资源能力画像与基线审计（[DEL-RES 资源边界画像](./del-res-resource-profile.md) `IN_PROGRESS / DESIGN`、[B-RES-PROFILE-AUDIT](../evidence/stage-b/b-res-profile-audit-20261121.md) `H3`：`nlos-resource` `61` + `nlos-lease` `30` + `nlos-wasm-sandbox` `97` = `188` macOS 测试通过），实证零 OS `cgroup v2`/`JobObject`/`setrlimit` 宿主执行器实装并明确 `COOPERATIVE`/fail-closed 降档策略。
+- [x] `2026-11-22` `W82-R4-IND / DEL-RES-ATTN-CTRL`（[D-NOTIFY-ATTN-001](../evidence/stage-d/d-notify-attention-policy-20261122.md)，`H4`）在 `crates/nlos-notify/src/attention.rs` 落地第 12 维人类注意力 `AttentionPolicyController` 边车策略引擎与 `attention-policy.db` v1（`WAL+FULL` 不可变审计、双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过/伪造 `ConsentPrompt` 拒接，`nlos-notify` `42 passed`）；桌面 Tauri `Z4`/UI 与分发总线真实连线（`DEL-UX`）及真实人类试用（`DEL-FIELD`, `H8=0`）仍未完成，整机/UI 端维持受限分级。
+- [ ] 待按 `DEL-RES` `Lane-RES-1..4 & INT` 推进真实 OS `cgroup v2`/Windows `JobObject`（禁 breakaway `U-2`）/`setrlimit` 宿主执行器、`SystemStorageReservePool` 与 `B-CONTROL` `pause/resume/cancel` 深层接线；调查缺失 shim/部署策略并维持 fail-closed 降档。
 - [ ] 验收包含争抢、pressure/reclaim/OOM、父子配额、取消/迟到回调、Windows breakaway/跨权限与设备租约失联；证明资源守恒和兄弟故障隔离，不能以 token 预算代替系统资源。
 - [ ] Evidence 记录宿主权限与硬件、分维 meter/Receipt、旁路尝试和损失界；设备无法物理撤销时明确隔离/停用，不宣称物理副作用已擦除。
 
 ### DEL-CAP：容量、分布式可靠性与真实硬件（承接 C）
 
 **Owner/依赖**：性能/可靠性 Sol，分布式终审 Astra；依赖 DEL-BASE、DEL-RES 可测 profile；真机/WAN/断电依赖 DEL-EXT。R=U-1/U-4/U-5/U-11、ScaleProfile 与 H6；W=对应探针/故障注入/最小性能修复和 Evidence。
-- [ ] 先复验 10K/100K 与多 active 比例，补 Linux/macOS 8-Cell、100K@50%、调度器/PINNED/admission/cancel 缺口；硬件允许后跑 1M，不将云 runner 推断为裸金属/WAN。
+- [x] `2026-11-22` `W82-R4-IND` 在单机 macOS `--release` 完成两项规模瓶颈加固（[B-RUNTIME-U11](../evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md) `H4`：`nlos-runtime-tokio` 终态 wait 清理 `O(n²)->O(k)`、`deliver` `O(1)`、`100K` 同时唤醒风暴 + 全量清理 `wake_settle=85.971ms` / `4` host threads、`batch_cancel` `100K/10K=0.58x`；[C-SCHED-002](../evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md) `H4`：`nlos-plan` `SCHEMA_VERSION=9` 下新增 `plan_nodes_state_order` 覆盖索引与 `select_bounded` 6 路游标零 Temp B-Tree 归并，`100K` 并发提速 `216.32x–749.87x` / 单线程 `517.85x–744.63x` 且与 `select()` 100% 等价）。
+- [ ] 先复验三平台 CI、Linux/macOS 8-Cell、`100K@50%` 完整细胞回收再入场、`nlos-system-control` `apply_plan_revision_ungated`/`UnlinkedReclaimResidency` 及 `2026-11-16` Regime B/C 根因；硬件允许后跑 1M，不将云 runner 或单机 macOS 推断为裸金属/WAN。
 - [ ] 复用 workflow 的 `cargo test --release --no-fail-fast -p nlos-plan --test tasknode_scale_probe -- --include-ignored --nocapture` 及 task/runtime 探针；针对 stale epoch、双主、fanout storm、provider stall、迁移重启和真实 durability barrier 增补场景。
-- [ ] 输出每节点 metadata、RSS/磁盘、p50/p95/p99、CPU/I/O、恢复扫描/控制可用性与损失界；暴露 O(N/S) 扫描，必要优化以 before/after 证据验收。物理断电、M4/M6/M8 校准、STONITH 各自独立取证，不用 Layer 2 代替。
+- [ ] 输出每节点 metadata、RSS/磁盘、p50/p95/p99、CPU/I/O、恢复扫描/控制可用性与损失界；保留原 `select()` 全量诊断接口与 `select_bounded` 分域对照，必要优化以 before/after 证据验收。物理断电、M4/M6/M8 校准、STONITH 各自独立取证，不用 Layer 2 代替。
 
 ### DEL-FIELD：真实多用户长期运行与运维（承接 C/D/E）
 
@@ -254,9 +259,10 @@ flowchart LR
 ### DEL-ECO：独立第三方生态、兼容与治理（承接 E）
 
 **Owner/依赖**：生态工具/文档 Sol，供应链/兼容审查 Astra，独立开发者与维护者；依赖 DEL-SDK/DIST、DEL-BASE，公网商店依赖 DEL-EXT/安全准入。R=现有样板/商店/PKI/认证/迁移；W=真实缺口对应生态工具、治理流程和 Evidence。
+- [x] `2026-11-22` `W82-R4-IND / DEL-ECO-PURE-CODE`（[E-ECO-001](../evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md)，`H4`）在单机 macOS 交付仓内无头 `ROAD-A-003` 零模型纯代码 E2E 闭环（`crates/nlos-slice-k/tests/road_a003_pure_code_e2e.rs`，`cargo tree` 零 LLM/HTTP 客户端、双跳 `.env_clear()` 子进程零密钥/代理变量，完成签名安装、Fast 写 Artifact Rev 1、`SIGKILL` 恢复写 Rev 2、门控卸载与双版本保留，`nlos-slice-k` `129 passed / 18 ignored`）；Linux/Windows 实机与外部独立第三方团队正式交付验收（`H8=0`）仍待后续推进。
 - [ ] 招募不掌握内核内部实现的开发者自行定义未预设应用，覆盖后台/交互/多组件/数据/驱动组合；记录遇到的协议缺口，优先公开 SABI 演进或核外扩展，不以为某应用定制内核通过验收。
 - [ ] 验收贯通发现→安装→权限→组合→持续运行→撤回/升级/回滚/卸载；冻结第三方 N-1 制品后升级宿主，验证零整体重写；公开商店补恶意包/签名根轮换/举报撤回/灾备/审计，持续执行依赖维护与 CVE 复查。
-- [ ] 显式覆盖无模型场景：在不配置模型 provider/凭据且封禁其访问的干净受测 profile 中，独立安装确定性 pure-code 应用，运行本地代码/小 IPC Fast 路径、生成并持久化用户 Artifact，强制终止后恢复并核对数据 digest，最后卸载并核验后台/权限回收及用户数据保留。归档无 provider 调用的网络/审计记录与完整生命周期 Receipt；对应 [ROAD-A-003](../design/06-架构设计总纲-v0.5.md#281-阶段-a启动微内核)、[§27 Fast 路径](../design/06-架构设计总纲-v0.5.md#27-性能与工作负载类别)及 NLOS-GEN-001，这是场景覆盖而非用应用数量证明通用性。
+- [ ] 显式覆盖无模型场景（外部独立团队 + 正式发行宿主）：在不配置模型 provider/凭据且封禁其访问的干净受测 profile 中，由独立第三方开发者安装确定性 pure-code 应用，运行本地代码/小 IPC Fast 路径、生成并持久化用户 Artifact，强制终止后恢复并核对数据 digest，最后卸载并核验后台/权限回收及用户数据保留。归档无 provider 调用的网络/审计记录与完整生命周期 Receipt；对应 [ROAD-A-003](../design/06-架构设计总纲-v0.5.md#281-阶段-a启动微内核)、[§27 Fast 路径](../design/06-架构设计总纲-v0.5.md#27-性能与工作负载类别)及 NLOS-GEN-001，这是场景覆盖而非用应用数量证明通用性。
 - [ ] **待维护者确认的生态建议，非规范**：至少两个互不受同一实现控制域支配的真实开发者团队完成独立复现；数量只是样本下限，最终看未预见能力是否无需改内核、能力增长来源及跨版本存活证据，不以任意应用数冒充通用性。
 
 ### DEL-EXT：外部资源、长期承诺与维护接续（横切 C/D/E）

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import {
   EnvelopeSchema,
   ExchangeRequestSchema,
+  SabiRequestContextSchema,
   SchemaIdentitySchema,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 import {
@@ -13,11 +14,14 @@ import {
   NegotiateServiceResponseSchema,
   type ServiceBinding,
 } from "../../../gen/typescript/nlos/sabi/v1/service_directory_pb.ts";
+import { validateResponseContext } from "./common.ts";
 import {
   IpcError,
   LocalRpcClient,
+  equalBytes,
   type TransportConfig,
 } from "./local_rpc.ts";
+import { SessionIdentity } from "./principal_session.ts";
 
 const ENVELOPE_SCHEMA = "nlos.sabi.Envelope";
 const DIRECTORY_SCHEMA = "nlos.sabi.ServiceDirectory";
@@ -51,17 +55,29 @@ export class DirectoryNegotiationError extends Error {
 
 export class ServiceDirectoryClient {
   readonly #rpc: LocalRpcClient;
+  readonly #identity: SessionIdentity;
 
-  private constructor(rpc: LocalRpcClient) {
+  private constructor(rpc: LocalRpcClient, identity?: SessionIdentity) {
     this.#rpc = rpc;
+    this.#identity =
+      identity ?? SessionIdentity.derive(Uint8Array.from(randomBytes(16)));
+  }
+
+  static fromClient(
+    rpc: LocalRpcClient,
+    identity?: SessionIdentity,
+  ): ServiceDirectoryClient {
+    return new ServiceDirectoryClient(rpc, identity);
   }
 
   static async connect(
     trustedBootstrapEndpoint: string,
     config: Partial<TransportConfig> = {},
+    identity?: SessionIdentity,
   ): Promise<ServiceDirectoryClient> {
     return new ServiceDirectoryClient(
       await LocalRpcClient.connect(trustedBootstrapEndpoint, config),
+      identity,
     );
   }
 
@@ -69,10 +85,12 @@ export class ServiceDirectoryClient {
     trustedBootstrapEndpoint: string,
     requirement: ServiceRequirement,
     config: Partial<TransportConfig> = {},
+    identity?: SessionIdentity,
   ): Promise<ConnectedService> {
     const directory = await ServiceDirectoryClient.connect(
       trustedBootstrapEndpoint,
       config,
+      identity,
     );
     let binding: ServiceBinding;
     try {
@@ -106,22 +124,49 @@ export class ServiceDirectoryClient {
         "ServiceDirectory request exceeds 64 KiB",
       );
     }
+    const correlationId = Uint8Array.from(randomBytes(16));
     const response = await this.#rpc.exchange(
       create(ExchangeRequestSchema, {
         envelope: create(EnvelopeSchema, {
           schema: create(SchemaIdentitySchema, {
             name: ENVELOPE_SCHEMA,
             major: 1,
-            minor: 0,
+            minor: 1,
           }),
           requestId: Uint8Array.from(randomBytes(16)),
           service: DIRECTORY_SERVICE,
           method: "negotiate",
+          commonContext: {
+            case: "requestContext",
+            value: create(SabiRequestContextSchema, {
+              caller: this.#identity.toCallerIdentity(),
+              correlationId,
+            }),
+          },
           payload,
         }),
       }),
     );
-    const responsePayload = response.envelope?.payload;
+    const responseEnvelope = response.envelope;
+    if (responseEnvelope?.commonContext.case === "responseContext") {
+      const responseContext = validateResponseContext(responseEnvelope, {
+        sideEffecting: false,
+        longRunning: false,
+      });
+      if (!equalBytes(responseContext.correlationId, correlationId)) {
+        throw new IpcError(
+          "CORRELATION_ID_MISMATCH",
+          "ServiceDirectory response correlation_id does not match the request",
+        );
+      }
+      if (responseContext.failure !== undefined) {
+        throw new IpcError(
+          "COMPATIBILITY",
+          `ServiceDirectory rejected request: ${responseContext.failure.safeMessage}`,
+        );
+      }
+    }
+    const responsePayload = responseEnvelope?.payload;
     if (
       responsePayload === undefined ||
       responsePayload.byteLength > MAX_DIRECTORY_PAYLOAD_BYTES

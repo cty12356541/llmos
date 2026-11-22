@@ -7,8 +7,13 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
+
+_SDK_PY = str(Path(__file__).resolve().parents[1])
+if _SDK_PY not in sys.path:
+    sys.path.insert(0, _SDK_PY)
 
 from nlos_sdk.handshake import (  # noqa: E402  (先导入以挂 gen/python 路径)
     CHANNEL_BINDING_DOMAIN,

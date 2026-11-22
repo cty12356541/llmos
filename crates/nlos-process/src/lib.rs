@@ -30,8 +30,9 @@ use sha2::{Digest, Sha256};
 
 pub use managed::{
     MANAGED_ENV_AUTH_ENDPOINT, MANAGED_ENV_PROCESS_IDENTITY_SEED, MANAGED_ENV_ROOT_CAPABILITY_SLOT,
-    ManagedKillOutcome, ManagedKillReceipt, ManagedWorkerEnv, prepare_managed_command,
-    spawn_managed_worker, terminate_group_with_escalation,
+    ManagedKillOutcome, ManagedKillReceipt, ManagedWorkerEnv, ManagedWorkerEnvError,
+    parse_root_capability_slot, prepare_managed_command, spawn_managed_worker,
+    terminate_group_with_escalation, validate_managed_worker_env,
 };
 pub use migration::{
     CapabilityRebindProof, CheckpointPayloadKind, DriverSessionAttachment,

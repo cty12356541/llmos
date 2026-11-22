@@ -69,9 +69,17 @@ use nlos_wait::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+pub mod attention;
 mod schema;
 pub mod task_notify;
 
+pub use attention::{
+    ATTENTION_POLICY_DB_FILENAME, ATTENTION_POLICY_SCHEMA_VERSION, AttentionDecision,
+    AttentionDeliveryRequest, AttentionLaneClass, AttentionOrigin, AttentionOutcomeKind,
+    AttentionPolicyController, AttentionPolicyError, AttentionQueueTarget, AttentionRatePolicy,
+    AttentionReceiptRecord, CoalesceCounterRecord, MAX_COALESCE_KEY_LEN, MAX_RECEIPT_LIST_LIMIT,
+    QuietHoursPolicy, WindowUsageSnapshot,
+};
 pub use task_notify::{
     DeliveredTaskNotification, TASK_NOTIFICATION_WIRE_LEN, TASK_NOTIFICATION_WIRE_MAGIC,
     TaskHistoryMetadata, TaskNotificationEnvelope, TaskNotificationWireError, TaskTransitionKind,

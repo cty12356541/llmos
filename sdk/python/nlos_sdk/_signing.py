@@ -52,6 +52,9 @@ class Ed25519Signer:
 
         return bytes(self._key.sign(bytes(message)).signature)
 
+    def __repr__(self) -> str:
+        return f"Ed25519Signer(public_key_prefix={self.public_key[:4].hex()}...)"
+
 
 __all__ = [
     "ED25519_SEED_BYTES",

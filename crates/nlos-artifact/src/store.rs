@@ -253,11 +253,15 @@ impl ArtifactStore {
     /// Phase 1 commits the blob bytes durably under their digest; phase 2
     /// inserts the immutable revision row and compare-and-swaps the head in
     /// one `BEGIN IMMEDIATE` transaction. Both phases run inside one
-    /// writer critical section (the mutex taken by [`Self::lock_connection`]):
-    /// the orphan GC scan (`collect_orphan_blobs`, same mutex) can therefore
-    /// never observe this put's in-flight blob as unreferenced and delete it
-    /// between the two phases. The new revision number is derived
-    /// as `expected_head_revision + 1` (authority-issued, deterministic).
+    /// writer critical section (the process-local mutex taken by
+    /// [`Self::lock_connection`] **and** the storage-level `SQLite`
+    /// `BEGIN IMMEDIATE` write lock): the orphan GC scan
+    /// (`collect_orphan_blobs`, same lock discipline) can therefore never
+    /// observe this put's in-flight blob as unreferenced and delete it
+    /// between the two phases — even across separate `ArtifactStore`
+    /// handles or independent OS processes. The new revision number is
+    /// derived as `expected_head_revision + 1` (authority-issued,
+    /// deterministic).
     ///
     /// Decision order inside the transaction: an exact re-put (same derived
     /// revision, same digest) replays as [`PutRevisionDecision::Replayed`];
@@ -275,20 +279,23 @@ impl ArtifactStore {
     ) -> Result<PutRevisionDecision, ArtifactError> {
         let digest = ContentDigest::of_bytes(request.bytes);
         // Phase 1: durable blob BEFORE any metadata referencing it exists —
-        // and inside the writer critical section (deep-audit/32 H1). The
-        // mutex is held from before the blob bytes hit disk until the
-        // metadata transaction commits, serializing this put against
-        // `collect_orphan_blobs` (same mutex): the GC scan can never
-        // sentence this in-flight digest as an unreferenced orphan and
-        // delete it before the referencing row lands, which would leave the
-        // revision permanently `BlobMissing`. The digest above is pure
-        // computation; the held interval contains only the blob fsyncs and
-        // the `SQLite` transaction, and every failure path releases the
-        // guard by ordinary drop.
+        // and inside the full cross-process writer critical section
+        // (deep-audit/32 H1, U-12). Both the process-local mutex and the
+        // `SQLite` `BEGIN IMMEDIATE` write lock are acquired BEFORE the blob
+        // bytes hit disk and held until the metadata transaction commits,
+        // serializing this put against `collect_orphan_blobs` /
+        // `tick_auto_gc` both within one process and across OS processes: an
+        // external GC scan can never grab `BEGIN IMMEDIATE` between the blob
+        // rename and the metadata commit, sentence this in-flight digest as
+        // an unreferenced orphan, and delete it before the referencing row
+        // lands (which would leave the revision permanently `BlobMissing`).
+        // The digest above is pure computation; the held interval contains
+        // only the blob fsyncs and the `SQLite` transaction, and every
+        // failure path releases the transaction rollback and mutex guard by
+        // ordinary drop.
         let mut connection = self.lock_connection()?;
-        blob::commit_blob(&self.paths.artifacts, digest, request.bytes)?;
-
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        blob::commit_blob(&self.paths.artifacts, digest, request.bytes)?;
         let artifact = load_artifact_optional(&transaction, request.artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(request.artifact_id))?;
         let head = artifact.head_revision;

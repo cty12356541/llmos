@@ -189,10 +189,10 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 2026-11-16 首波受测代码基线为 `4fc70be1`。阶段 A–D 按各自评审边界 `EXITED`，阶段 E 的 `E0`–`E7` 共 `8/8` 个工程包 `DONE`（`H4` / `H7`）。技术门禁 1–5 在 W81 评审基线内满足，阶段 E 正式退出及 `SABI v1.0` 长期冻结仍待维护者签字。[W81 终审](../evidence/stage-e/reviews/w81-stage-e-exit-gates.md)
 
-- [阶段 E 权威进度单](./stage-e-progress.md#2026-11-16-三服务库验证)记录三服务库终验，也保留首波证据与规模反例。[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已 `VERIFIED`，规范路线见 [v0.5 §28.5](../design/06-架构设计总纲-v0.5.md)（`[ROAD-E-001]`）。
-- W82 为 `IN_PROGRESS / PARTIALLY_MERGED`。A 与 B 已验收，完成 `2/5` 车道。`B82-SDK` 已开放，C 的 Worker 权威绑定和重启及 D 的 SDK 继续推进。INT 仍待 C、D 验收。[W82 进度](./stage-e-progress.md#2026-11-16-三服务库验证)
-- [机器台账口径](./stage-e-progress.md#2026-11-16-三服务库验证)：`169` 条声明、`213` 条证据（阶段 E 有 `24` 条）、`17` 项风险；`H8` 声明与证据均为 `0`。详见 [claims](./claims.yaml)、[证据索引](./evidence-index.yaml)和[风险](./risks.yaml)。
-- [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)（`IN_PROGRESS`，适用 v0.5）：A 会话和 B 三服务库已验收，C 诊断只关闭 Worker 的局部失败。SDK、系统接线、发行及生产生态按依赖和取证门逐包推进。
+- [阶段 E 权威进度单](./stage-e-progress.md)记录 `W82-R3` 并行推进、前置阻塞清册与 `W82-R2` 合流基线。[ADR-0027](./adrs/0027-stage-e-sabi-long-term-compatibility-and-store-governance.md) 已 `VERIFIED`，[ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md) 为 `PROPOSED / DESIGN`（待维护者签认 `1A/2A/3A/4` 以解锁 `W82-R4` 全 8 通道实时挂载），规范路线见 [v0.5 §28.5](../design/06-架构设计总纲-v0.5.md)（`[ROAD-E-001]`）。
+- W82 为 `IN_PROGRESS / PARTIALLY_MERGED`：`W82-A` 与 `W82-B` 三服务库已完成三平台验收，`W82-C`（[验收证据](../evidence/stage-e/w82-c-acceptance-20261121.md)）与 `W82-D`（[Python SDK](../evidence/stage-e/w82-d-py-sdk-20261121.md)、[TypeScript SDK](../evidence/stage-e/w82-d-ts-sdk-20261121.md)）已完成 macOS 本地验收（三平台 CI 待跑、Py/TS `SDK-3` 受限 `PARTIAL_PASS`）；`W82-R3` 在 `W82-INT` 预检基线（[W82-INT 预检与签认清册](../evidence/stage-e/w82-int-precheck-20261121.md)）上进一步完成 `GAP-2 Part A` 网关信封修复（[W82-R3-GW-FIX](../evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md)，`H4`）并起草 [ADR-0028](./adrs/0028-w82-int-service-authorization-and-wire-binding.md)，其余 `GAP-1 / GAP-2 Part B / GAP-3` 待签认与实现后推进全 8 通道挂载。
+- [机器台账口径](./stage-e-progress.md)：`169` 条声明、`220` 条证据（`stage-b 148`、`stage-e 29`）、`17` 项风险（`open_P0 = 0`）；`H8` 声明与证据均为 `0`。详见 [claims](./claims.yaml)、[证据索引](./evidence-index.yaml)和[风险](./risks.yaml)。
+- [NLOS 总任务计划书](./nlos-goal-delivery-plan.md)（`IN_PROGRESS`，适用 v0.5）、[DEL-BASE 规范到实际产品覆盖审计](./del-base-coverage-audit.md)（已完成表 3A 共享台账首轮校准）与 [DEL-RES 资源边界画像](./del-res-resource-profile.md)（`IN_PROGRESS / DESIGN`，附 [资源审计证据](../evidence/stage-b/b-res-profile-audit-20261121.md) `H3` 与 [U-12 并发 GC 修复证据](../evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md) `H4`）。
 
 ## 11.4 阶段 D 管理入口（完整自然语言桌面，已 EXITED（2026-10-29 W76 维护者显式批复退出））
 
@@ -241,6 +241,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
+- 现代资源与可控执行基线（`DEL-RES`）：[DEL-RES 资源边界画像](./del-res-resource-profile.md)（`IN_PROGRESS / DESIGN`）、[资源与沙箱基线审计](../evidence/stage-b/b-res-profile-audit-20261121.md)（`H3`）及 `U-12` macOS Artifact 并发 GC TOCTOU 修复（[b-artifact-u12-concurrent-gc-20261121.md](../evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md)，`H4`）
 
 阶段 B 立项时建议的首个纵切面：
 

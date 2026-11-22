@@ -42,6 +42,11 @@ use nlos_artifact::{
     PackageManifest, PackageManifestEntry, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
     package_manifest_message,
 };
+use nlos_capability::{
+    CapabilityAuthority, CapabilityAuthorityError, CapabilityHandle, CapabilityIssueDecision,
+    CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
+    SignedIssueRootCapabilityRequest, issue_root_command_message,
+};
 use nlos_driver_llm_http::{
     HttpUrl, KeyPoolCompiledIntent, KeyPoolHealthSnapshot, LlmChatRequest, LlmDriverError,
     LlmEnforcementShim, MeteredBudgetContext, MeteredLlmChatOutcome,
@@ -57,9 +62,10 @@ use nlos_resource::{
     LlmTokenBudgetRecord, LlmTokenLimits, ResourceAuthority, ResourceAuthorityError,
 };
 use nlos_slice_k::provenance_triple;
-use nlos_system_control::daemon::{DaemonError, DaemonOptions};
+use nlos_system_control::daemon::{DaemonError, DaemonOptions, SystemControlDaemon};
 use nlos_types::{
-    ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId, ResourceAccountId,
+    ArtifactId, CapabilityId, Generation, IdempotencyKey, NamespaceId, PackageId, PrincipalId,
+    ProcessId, ResourceAccountId,
 };
 use sha2::{Digest, Sha256};
 
@@ -91,6 +97,13 @@ pub const DEFAULT_KEYPOOL_PORT: u16 = 8317;
 
 /// Key validity ceiling matching `nlos_system_control::daemon` (2100-01-01 UTC).
 const BOOTSTRAP_KEY_VALID_UNTIL_MS: u64 = 4_102_444_800_000;
+/// ADR-0022 operator root-issuance constants matching `nlos_system_control::daemon`.
+const OPERATOR_ROOT_VALID_FROM_MS: u64 = 0;
+const OPERATOR_ROOT_DELEGATION_DEPTH: u8 = 3;
+const OPERATOR_ROOT_RIGHTS: CapabilityRights = CapabilityRights::SEMANTIC_APPEND
+    .union(CapabilityRights::SEMANTIC_RETRACT)
+    .union(CapabilityRights::SEMANTIC_ADJUDICATE)
+    .union(CapabilityRights::DELEGATE);
 
 const TRIAL_ACCOUNT_KEY_DOMAIN: &[u8] = b"llmos/nlos-up/trial-account-idempotency/v1";
 const TRIAL_BUDGET_KEY_DOMAIN: &[u8] = b"llmos/nlos-up/trial-llm-budget-idempotency/v1";
@@ -110,6 +123,8 @@ pub enum UpError {
     InsecureKeyMode(u32),
     /// `IdentityAuthority` rejected principal bootstrap.
     Identity(Box<IdentityAuthorityError>),
+    /// `CapabilityAuthority` rejected ADR-0022 operator root issuance or lookup.
+    Capability(Box<CapabilityAuthorityError>),
     /// `ResourceAuthority` rejected trial account or LLM budget seeding.
     Resource(Box<ResourceAuthorityError>),
     /// `ArtifactStore` rejected sample package materialization or verification.
@@ -137,6 +152,12 @@ impl From<std::io::Error> for UpError {
 impl From<IdentityAuthorityError> for UpError {
     fn from(error: IdentityAuthorityError) -> Self {
         Self::Identity(Box::new(error))
+    }
+}
+
+impl From<CapabilityAuthorityError> for UpError {
+    fn from(error: CapabilityAuthorityError) -> Self {
+        Self::Capability(Box::new(error))
     }
 }
 
@@ -184,6 +205,9 @@ impl fmt::Display for UpError {
                 )
             }
             Self::Identity(error) => write!(formatter, "identity bootstrap failure: {error}"),
+            Self::Capability(error) => {
+                write!(formatter, "capability root issuance failure: {error}")
+            }
             Self::Resource(error) => write!(formatter, "resource seed failure: {error}"),
             Self::Artifact(error) => write!(formatter, "sample package artifact failure: {error}"),
             Self::Application(error) => {
@@ -205,6 +229,7 @@ impl Error for UpError {
         match self {
             Self::Io(error) => Some(error),
             Self::Identity(error) => Some(error.as_ref()),
+            Self::Capability(error) => Some(error.as_ref()),
             Self::Resource(error) => Some(error.as_ref()),
             Self::Artifact(error) => Some(error.as_ref()),
             Self::Application(error) => Some(error.as_ref()),
@@ -390,6 +415,12 @@ pub struct BootstrapReceipt {
     pub principal_hex: String,
     /// `true` when the principal binding was replayed from an existing identity store.
     pub principal_replayed: bool,
+    /// ADR-0022 operator root `CapabilityId` (16B) bound to `principal_id`.
+    pub operator_root_capability_id: CapabilityId,
+    /// 32-lowercase-hex D7 representation of `operator_root_capability_id`.
+    pub operator_root_capability_hex: String,
+    /// `true` when the operator root capability issuance was replayed from capability authority.
+    pub operator_root_replayed: bool,
     /// Default trial `ResourceAccountId`.
     pub account_id: ResourceAccountId,
     /// 32-lowercase-hex representation of `account_id`.
@@ -629,9 +660,11 @@ pub fn bootstrap_trial_root(options: &BootstrapOptions) -> Result<BootstrapRecei
     let public_key = signing_key.verifying_key().to_bytes();
     let public_key_hex = encode_hex(&public_key);
 
-    // Step 1: Bootstrap (or replay) operator principal in `<root>/identity`, then drop handle.
-    let (principal_id, principal_replayed) = bootstrap_operator_principal(&root, public_key)?;
+    // Step 1: Bootstrap (or replay) operator principal & ADR-0022 root capability, then drop handles.
+    let (principal_id, principal_replayed, operator_root_capability_id, operator_root_replayed) =
+        bootstrap_operator_principal_and_root(&root, &signing_key, public_key)?;
     let principal_hex = encode_hex(principal_id.as_bytes());
+    let operator_root_capability_hex = encode_hex(operator_root_capability_id.as_bytes());
     write_marker_file(&root.join(TRIAL_PRINCIPAL_FILE), &principal_hex)?;
 
     // Step 2: Seed (or replay) default trial AccountRecord & LlmTokenBudgetRecord, then drop handle.
@@ -667,6 +700,9 @@ pub fn bootstrap_trial_root(options: &BootstrapOptions) -> Result<BootstrapRecei
         principal_id,
         principal_hex,
         principal_replayed,
+        operator_root_capability_id,
+        operator_root_capability_hex,
+        operator_root_replayed,
         account_id,
         account_id_hex,
         account_record,
@@ -1277,10 +1313,11 @@ fn generate_dev_trial_seed() -> Result<[u8; 32], UpError> {
     Ok(hasher.finalize().into())
 }
 
-fn bootstrap_operator_principal(
+fn bootstrap_operator_principal_and_root(
     root: &Path,
+    signing_key: &SigningKey,
     public_key: [u8; 32],
-) -> Result<(PrincipalId, bool), UpError> {
+) -> Result<(PrincipalId, bool, CapabilityId, bool), UpError> {
     let identity = IdentityAuthority::open(root.join("identity"))?;
     let decision = identity.bootstrap_principal(BootstrapPrincipalRequest {
         principal_profile_digest: digest32(
@@ -1301,11 +1338,64 @@ fn bootstrap_operator_principal(
         )),
         created_at_ms: 0,
     })?;
+    let (binding, principal_replayed) = match decision {
+        BootstrapDecision::Created(binding) => (binding, false),
+        BootstrapDecision::Replayed(binding) => (binding, true),
+    };
+
+    let capabilities = CapabilityAuthority::open(root.join("capability"))?;
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: binding.key_id,
+        holder_key_id: binding.key_id,
+        target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0; 16])),
+        rights: OPERATOR_ROOT_RIGHTS,
+        purpose_digest: None,
+        valid_from_ms: OPERATOR_ROOT_VALID_FROM_MS,
+        valid_until_ms: BOOTSTRAP_KEY_VALID_UNTIL_MS,
+        delegation_depth_remaining: OPERATOR_ROOT_DELEGATION_DEPTH,
+        call_limit: None,
+        idempotency_key: operator_root_idempotency_key(public_key),
+        issued_at_ms: 0,
+    };
+    let cap_decision = capabilities.issue_root_signed(
+        &identity,
+        SignedIssueRootCapabilityRequest {
+            command,
+            signer: binding.principal_id,
+            signature: signing_key
+                .sign(&issue_root_command_message(command))
+                .to_bytes(),
+        },
+    )?;
+    let operator_root_replayed = matches!(cap_decision, CapabilityIssueDecision::Replayed(..));
+    let operator_root_capability_id = cap_decision.record().handle.capability_id;
+    drop(capabilities);
     drop(identity);
-    match decision {
-        BootstrapDecision::Created(binding) => Ok((binding.principal_id, false)),
-        BootstrapDecision::Replayed(binding) => Ok((binding.principal_id, true)),
-    }
+
+    Ok((
+        binding.principal_id,
+        principal_replayed,
+        operator_root_capability_id,
+        operator_root_replayed,
+    ))
+}
+
+fn operator_root_idempotency_key(public_key: [u8; 32]) -> IdempotencyKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/system-control-daemon/operator-root-idempotency/v1");
+    hasher.update(public_key);
+    hasher.update([1u8]);
+    hasher.update([0u8; 16]);
+    hasher.update(OPERATOR_ROOT_RIGHTS.bits().to_be_bytes());
+    hasher.update([0u8]);
+    hasher.update(OPERATOR_ROOT_VALID_FROM_MS.to_be_bytes());
+    hasher.update(BOOTSTRAP_KEY_VALID_UNTIL_MS.to_be_bytes());
+    hasher.update([OPERATOR_ROOT_DELEGATION_DEPTH]);
+    hasher.update([0u8]);
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut key = [0_u8; 16];
+    key.copy_from_slice(&digest[..16]);
+    IdempotencyKey::from_bytes(key)
 }
 
 fn seed_trial_resource_budget(
@@ -1669,6 +1759,86 @@ pub fn resolve_program_path(program: &str, path_env: Option<&str>) -> Option<Pat
         }
     }
     None
+}
+
+/// Validates a managed worker's declared `LLMOS_ROOT_CAPABILITY_SLOT` against
+/// the assembled [`SystemControlDaemon`] capability authority.
+///
+/// Empty strings return `Ok(None)` so manifests omitting `slot = ...` stay
+/// backward-compatible. Any non-empty slot must conform strictly to W82-B D7
+/// (`^[0-9a-f]{32}$`), resolve to an active (non-revoked, non-expired,
+/// active-ancestor) record in the daemon's [`CapabilityAuthority`], and bind
+/// `record.holder == expected_holder`.
+///
+/// # Errors
+///
+/// Fails closed with [`UpError::ManagedWorker`] if the slot is malformed, the
+/// daemon has no assembled capability authority, the capability is unknown or
+/// revoked/expired, or the capability holder does not match `expected_holder`.
+pub fn validate_worker_capability_slot(
+    daemon: &SystemControlDaemon,
+    expected_holder: PrincipalId,
+    unit_name: &str,
+    raw_slot: &str,
+) -> Result<Option<CapabilityId>, UpError> {
+    if raw_slot.is_empty() {
+        return Ok(None);
+    }
+    let capability_id = nlos_process::parse_root_capability_slot(raw_slot).map_err(|error| {
+        UpError::ManagedWorker(format!(
+            "worker {unit_name:?}: invalid root capability slot {raw_slot:?}: {error}"
+        ))
+    })?;
+    let Some(capabilities) = daemon.capabilities.as_deref() else {
+        return Err(UpError::ManagedWorker(format!(
+            "worker {unit_name:?}: capability slot {raw_slot} declared, but daemon capability authority is unavailable"
+        )));
+    };
+    let expected_holder_hex = encode_hex(expected_holder.as_bytes());
+    if let Some(bootstrapped_hex) = daemon.bootstrapped_principal_hex.as_deref()
+        && bootstrapped_hex != expected_holder_hex
+    {
+        return Err(UpError::ManagedWorker(format!(
+            "worker {unit_name:?}: daemon bootstrapped principal {bootstrapped_hex} disagrees with operator principal {expected_holder_hex}"
+        )));
+    }
+    let at_ms = authority_check_time_ms(&daemon.clock)?;
+    let record = capabilities
+        .inspect_active(
+            CapabilityHandle {
+                capability_id,
+                generation: Generation::INITIAL,
+            },
+            at_ms,
+        )
+        .map_err(|error| {
+            UpError::ManagedWorker(format!(
+                "worker {unit_name:?}: root capability slot {raw_slot} rejected by capability authority: {error}"
+            ))
+        })?;
+    if record.holder != expected_holder {
+        return Err(UpError::ManagedWorker(format!(
+            "worker {unit_name:?}: root capability slot {raw_slot} holder mismatch (expected {expected_holder_hex}, found {})",
+            encode_hex(record.holder.as_bytes()),
+        )));
+    }
+    Ok(Some(capability_id))
+}
+
+fn authority_check_time_ms(clock: &nlos_clock::AuthorityClock) -> Result<u64, UpError> {
+    let durable_ms = clock
+        .inspect_wall()
+        .map_err(|error| {
+            UpError::ManagedWorker(format!("authority clock inspect_wall failed: {error}"))
+        })?
+        .as_u64();
+    let system_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| UpError::ManagedWorker(format!("system wall clock unavailable: {error}")))?
+        .as_millis();
+    let system_ms = u64::try_from(system_ms)
+        .map_err(|_| UpError::ManagedWorker("system wall clock overflows u64 ms".to_owned()))?;
+    Ok(durable_ms.max(system_ms))
 }
 
 #[cfg(test)]

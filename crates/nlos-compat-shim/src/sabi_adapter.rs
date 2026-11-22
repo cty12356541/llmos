@@ -29,9 +29,10 @@ use nlos_schema::sabi::v1::{
 use nlos_schema::{
     CompatibilityError, DeprecationEntry, DeprecationManifest, MAX_ACTIVITY_CONTEXT_BYTES,
     MAX_ENVELOPE_BYTES, MAX_EXTENSION_IDS, MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS, REQUEST_ID_BYTES,
-    SABI_CHANNEL_CONTROL_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA, SABI_ENVELOPE_SCHEMA,
-    SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
-    SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
+    SABI_BLOB_REFERENCE_SCHEMA, SABI_CHANNEL_CONTROL_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA,
+    SABI_ENVELOPE_SCHEMA, SABI_LLM_GATEWAY_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA,
+    SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
+    SABI_TAKEOVER_CONTROL_SCHEMA, SABI_TOOL_SANDBOX_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
     SymbolAuditVerdict, VersionCompatibilityPolicy, canonical_deprecation_manifest,
 };
 use nlos_service_directory::DeprecationWarningReceipt;
@@ -856,6 +857,9 @@ pub(crate) fn map_service_to_channel(service: &str) -> Option<&'static str> {
         }
         "driver_provider" | SABI_DRIVER_PROVIDER_SCHEMA => Some(SABI_DRIVER_PROVIDER_SCHEMA),
         "channel_control" | SABI_CHANNEL_CONTROL_SCHEMA => Some(SABI_CHANNEL_CONTROL_SCHEMA),
+        "llm_gateway" | SABI_LLM_GATEWAY_SCHEMA => Some(SABI_LLM_GATEWAY_SCHEMA),
+        "tool_sandbox" | SABI_TOOL_SANDBOX_SCHEMA => Some(SABI_TOOL_SANDBOX_SCHEMA),
+        "blob_reference" | SABI_BLOB_REFERENCE_SCHEMA => Some(SABI_BLOB_REFERENCE_SCHEMA),
         SABI_ENVELOPE_SCHEMA => Some(SABI_ENVELOPE_SCHEMA),
         _ => None,
     }
@@ -1284,5 +1288,123 @@ fn synthesize_client_rejection_envelope(
             },
         )),
         payload: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nlos_schema::sabi::v1::{CallerIdentity, SabiRequestContext};
+
+    use super::*;
+
+    #[test]
+    fn map_service_to_channel_preserves_v1_0_and_adds_v1_1_reserved_names() {
+        let cases = [
+            ("service_directory", SABI_SERVICE_DIRECTORY_SCHEMA),
+            (SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA),
+            ("operation_control", SABI_OPERATION_CONTROL_SCHEMA),
+            (SABI_OPERATION_CONTROL_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA),
+            ("system_control", SABI_SYSTEM_CONTROL_SCHEMA),
+            (SABI_SYSTEM_CONTROL_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA),
+            ("takeover_control", SABI_TAKEOVER_CONTROL_SCHEMA),
+            (SABI_TAKEOVER_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA),
+            ("wait_control", SABI_WAIT_CONTROL_SCHEMA),
+            (SABI_WAIT_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA),
+            ("principal_handshake", SABI_PRINCIPAL_HANDSHAKE_SCHEMA),
+            (
+                SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+                SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+            ),
+            ("driver_provider", SABI_DRIVER_PROVIDER_SCHEMA),
+            (SABI_DRIVER_PROVIDER_SCHEMA, SABI_DRIVER_PROVIDER_SCHEMA),
+            ("channel_control", SABI_CHANNEL_CONTROL_SCHEMA),
+            (SABI_CHANNEL_CONTROL_SCHEMA, SABI_CHANNEL_CONTROL_SCHEMA),
+            ("llm_gateway", SABI_LLM_GATEWAY_SCHEMA),
+            (SABI_LLM_GATEWAY_SCHEMA, SABI_LLM_GATEWAY_SCHEMA),
+            ("tool_sandbox", SABI_TOOL_SANDBOX_SCHEMA),
+            (SABI_TOOL_SANDBOX_SCHEMA, SABI_TOOL_SANDBOX_SCHEMA),
+            ("blob_reference", SABI_BLOB_REFERENCE_SCHEMA),
+            (SABI_BLOB_REFERENCE_SCHEMA, SABI_BLOB_REFERENCE_SCHEMA),
+            (SABI_ENVELOPE_SCHEMA, SABI_ENVELOPE_SCHEMA),
+        ];
+
+        for (service, expected_channel) in cases {
+            assert_eq!(
+                map_service_to_channel(service),
+                Some(expected_channel),
+                "unexpected channel mapping for {service}"
+            );
+        }
+        assert_eq!(map_service_to_channel("unknown_reserved_service"), None);
+    }
+
+    #[test]
+    fn epoch_adapter_cell_translates_v1_1_service_envelopes_preserving_idempotency() {
+        let manifest = canonical_deprecation_manifest().expect("canonical manifest");
+        let mut cell = SabiEpochAdapterCell::new(
+            1,
+            2,
+            MIN_SABI_COMPATIBILITY_WINDOW_EPOCHS,
+            Vec::new(),
+            manifest,
+            EpochTranslationRules::default(),
+        )
+        .expect("construct adapter cell");
+
+        for (idx, (service, method)) in [
+            ("llm_gateway", "query_budget"),
+            ("tool_sandbox", "list_tools"),
+            ("blob_reference", "read_reference"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tag = u8::try_from(idx + 1).expect("small index");
+            let request_id = vec![0xA0 + tag; REQUEST_ID_BYTES];
+            let idempotency_key = vec![0xB0 + tag; REQUEST_ID_BYTES];
+            let frame = Envelope {
+                schema: Some(SchemaIdentity {
+                    name: SABI_ENVELOPE_SCHEMA.to_owned(),
+                    major: 1,
+                    minor: 1,
+                    critical_extension_ids: Vec::new(),
+                    non_critical_extension_ids: Vec::new(),
+                }),
+                request_id: request_id.clone(),
+                service: service.to_owned(),
+                method: method.to_owned(),
+                common_context: Some(envelope::CommonContext::RequestContext(
+                    SabiRequestContext {
+                        caller: Some(CallerIdentity {
+                            principal_id: vec![0x01; 16],
+                            application_id: vec![0x02; 16],
+                            process_id: vec![0x03; 16],
+                            process_generation: 1,
+                        }),
+                        activity_context: Vec::new(),
+                        task_execution_binding: None,
+                        correlation_id: Vec::new(),
+                        idempotency_key: idempotency_key.clone(),
+                        deadline_monotonic_ns: 0,
+                        capability_handles: Vec::new(),
+                        reservation_handle: None,
+                        proposal_or_input_digest_sha256: Vec::new(),
+                    },
+                )),
+                payload: Vec::new(),
+            };
+            let translated = cell
+                .translate_client_to_host_wire(&frame.encode_to_vec())
+                .expect("v1.1 service envelope translates cleanly");
+            let decoded = Envelope::decode(translated.wire.as_slice()).expect("decode host wire");
+            assert_eq!(decoded.service, service);
+            assert_eq!(decoded.method, method);
+            assert_eq!(decoded.request_id, request_id);
+            assert_eq!(decoded.schema.as_ref().map(|s| s.major), Some(2));
+            let Some(envelope::CommonContext::RequestContext(ctx)) = decoded.common_context else {
+                panic!("expected request context");
+            };
+            assert_eq!(ctx.idempotency_key, idempotency_key);
+        }
     }
 }

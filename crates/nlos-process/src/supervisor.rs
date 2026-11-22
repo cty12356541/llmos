@@ -145,6 +145,8 @@ pub enum SupervisorError {
     /// syscall or subprocess failure); the discovery scan fails closed
     /// with zero side effect and produces no report.
     LivenessProbe(&'static str),
+    /// Managed worker environment rejected fail-closed before spawn.
+    InvalidManagedEnv(crate::managed::ManagedWorkerEnvError),
 }
 
 impl fmt::Display for SupervisorError {
@@ -168,6 +170,9 @@ impl fmt::Display for SupervisorError {
             Self::LivenessProbe(reason) => {
                 write!(formatter, "supervisor pid liveness probe failure: {reason}")
             }
+            Self::InvalidManagedEnv(error) => {
+                write!(formatter, "supervisor managed worker env rejected: {error}")
+            }
         }
     }
 }
@@ -178,6 +183,7 @@ impl Error for SupervisorError {
             Self::Registry(error) | Self::SpawnRefused { cause: error, .. } => Some(error),
             Self::Spawn(error) => Some(error),
             Self::PlatformKill(error) => Some(error),
+            Self::InvalidManagedEnv(error) => Some(error),
             Self::UnsupportedOnPlatform { .. } | Self::Signal(_) | Self::LivenessProbe(_) => None,
         }
     }

@@ -13,7 +13,7 @@
   severity: P1
   status: partial
   description: "安全与权限旁路：reference monitor、IPC 认证或 sandbox 隔离存在未验证旁路"
-  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）且 GUI 壳以认证入口为唯一 IPC 路径（B-GUI-001，无明文捷径）；双层隔离已定案（ADR-0015）并已于 W80（E-SANDBOX-001，H4）落地 crates/nlos-wasm-sandbox 三平台双层 Process + Wasmtime 强沙箱（L1 env_clear/显式 argv/墙钟 kill 硬杀 + L2 手写 WASI 白名单/零 socket 导入/PageLimiter/fuel 与 epoch 中断，54/54 单元与真实子进程逃逸对抗矩阵通过，闭合 U-9）；签名强制收敛（W24-004，无签名 TCB 入口删除）；真实 Capability authorizer、principal-level peer attestation 与 Windows 认证面仍未接线（W34-A §5/§6 residual 沿引）"
+  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证（ADR-0011）已在 W52（D-IPC-001）与 W82-A-VERIFY（w82-a-verify-20261116）验证跨平台 Unix socket 与 Windows Named Pipe 认证会话，且 GUI 壳以认证入口为唯一 IPC 路径（B-GUI-001，无明文捷径）；双层隔离已定案（ADR-0015）并已于 W80（E-SANDBOX-001，H4）落地 crates/nlos-wasm-sandbox 三平台双层 Process + Wasmtime 强沙箱（54/54 逃逸对抗闭合 U-9），W82-B3/B4 完成沙箱工具与签名 Blob 引用服务库及三平台原生边界测试；W82-R2 落地令牌吊销联动进程树回收（w82-int-precheck-20261121）；签名强制收敛（W24-004）。真实未闭环项为：生产 CapabilityAuthorizer 全量接线、principal-level peer attestation，以及 w82-b-contract-20261116.md §4.2（GAP-3）三新服务 CapabilityRights 权限策略映射（拟定方案见 ADR-0028 PROPOSED，待维护者签认前 daemon 保持 fail-closed）"
   evidence_refs:
     - docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
     - docs/evidence/stage-b/b-capability-004-fault-matrix.md
@@ -21,14 +21,17 @@
     - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
     - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
-  review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）；真实 Capability authorizer 接线时复审"
+    - docs/evidence/stage-e/w82-a-verify-20261116.md
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-int-precheck-20261121.md
+  review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）；ADR-0028（GAP-3）维护者签认及真实 CapabilityAuthorizer 全 8 通道实时挂载时复审"
 
 - id: RISK-B-02
   category: durable-state-loss
   severity: P1
   status: partial
   description: "durable 状态丢失或双重提交：崩溃窗口/撕裂写导致 permit 重复或收据丢失"
-  mitigation: "双 Attempt 唯一 CommitPermit + kill-window/torn-WAL/静默丢写故障矩阵覆盖 task/effect/takeover/coordinator 表组；统一恢复面（schema v42）双域自动收敛；六域混合写集 seal→permit→终结→统一 TaskCommitReceipt 闭环验收（W30-A，e2e 3/3 + 故障矩阵 9/9）；分层掉电证据阶梯已开道（层 1 APFS fault-VFS 校准、层 2 dm-flakey CI run 33895972272）；真实硬件掉电未做（X-6 登记态）；Artifact 混合终结门为结构性登记（W30-A §3）"
+  mitigation: "双 Attempt 唯一 CommitPermit + kill-window/torn-WAL/静默丢写故障矩阵覆盖 task/effect/takeover/coordinator 表组；统一恢复面（schema v42）双域自动收敛；六域混合写集 seal→permit→终结→统一 TaskCommitReceipt 闭环验收（W30-A，e2e 3/3 + 故障矩阵 9/9）；分层掉电证据阶梯已开道（层 1 APFS fault-VFS 校准、层 2 dm-flakey CI run 33895972272 / 43661915371）；W82-R3（b-artifact-u12-concurrent-gc-20261121，H4）已在 macOS 修复 ArtifactStore::put_revision/stage_revision 跨进程并发 GC TOCTOU 并在 7 子进程锤击矩阵闭环（保留三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 边界）；真实硬件掉电未做（U-4 / X-6 登记态）；Artifact 混合终结门为结构性登记（W30-A §3）"
   evidence_refs:
     - docs/evidence/stage-b/b-task-001-fault-injection.md
     - docs/evidence/stage-b/b-task-003-crash-windows.md
@@ -36,14 +39,15 @@
     - docs/evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md
     - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
     - docs/evidence/stage-b/b-store-fs-semantics-001-apfs-calibration.md
-  review_point: "阶段 B 退出评审门；X-6 分层掉电与 M4/M6/M8 校准推进；Artifact 混合终结门补齐时复审"
+    - docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
+  review_point: "阶段 B 退出评审门；X-6 分层掉电与 M4/M6/M8 校准推进；Artifact 混合终结门及 U-12 三平台 CI / sync.rs / store-registry 跨 crate 边界补齐时复审"
 
 - id: RISK-B-03
   category: resource-oversell
   severity: P1
   status: partial
   description: "Resource/Budget 超卖：Reservation/消耗记账旁路或高水位失效"
-  mitigation: "单节点高水位/隔离冻结/同事务退款与 ADR-0017 coordinator 已证；阶段 C 补齐三族持久化租约与 FenceBarrierAck 非互换对账（C-LEASE-001）、EnforcementGatewayReconciliationAuthority 验签结算回执闭环（C-CUSTODY-001）及跨进程断网 PartitionBoundedLossProof 有界损耗精确守恒（C-PARTITION-001 / C-ROAD-001）；宿主内核级硬件配额 shim 与物理 GPU/NPU 固件重置驱动仍属部署适配边界"
+  mitigation: "单节点高水位/隔离冻结/同事务退款与 ADR-0017 coordinator 已证；阶段 C 补齐三族持久化租约与 FenceBarrierAck 非互换对账（C-LEASE-001）、EnforcementGatewayReconciliationAuthority 验签结算回执闭环（C-CUSTODY-001）及跨进程断网 PartitionBoundedLossProof 有界损耗精确守恒（C-PARTITION-001 / C-ROAD-001）；W82-B2（w82-b2-llm-gateway-20261116）交付五维 LLM 网关库级影子预留与 OBSERVED 外部账本；DEL-RES 首轮审计（b-res-profile-audit-20261121，H3，188 passed）与 del-res-resource-profile.md 已固化 12 维 x 3 平台约束画像，核实全仓零 cgroup v2 / Win32 JobObject / setrlimit 硬控制器实现；2026-11-22 W82-R4-IND（d-notify-attention-policy-20261122，H4，nlos-notify 42 passed）落地第 12 维人类注意力边车策略引擎 AttentionPolicyController（attention-policy.db v1 WAL+FULL，双队列隔离、跨午夜静默时段、同类聚合、单应用/全局频控、付费绕过拒接 REJECTED_PAYMENT_BYPASS 与伪造 ConsentPrompt 拒接），但桌面端 Tauri Z4/UI 与通知分发总线真实连线（DEL-UX）、OS 级 cgroup v2 / JobObject / setrlimit 宿主执行器、ENOSPC 救援池、物理 GPU/NPU 驱动（DEL-EXT）及人类真实使用试点（DEL-FIELD，H8=0）均仍未完成"
   evidence_refs:
     - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
     - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
@@ -54,7 +58,10 @@
     - docs/evidence/stage-c/c-lease-001-durable-three-family-reconciliation.md
     - docs/evidence/stage-c/c-custody-001-key-custody-gateway-reconciliation.md
     - docs/evidence/stage-c/c-partition-001-partition-autonomy-bounded-loss.md
-  review_point: "W67 阶段 C 退出评审已复核软件账本与网关结算闭环；引入宿主硬件级资源 shim / 物理设备驱动时复审"
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
+    - docs/evidence/stage-b/b-res-profile-audit-20261121.md
+    - docs/evidence/stage-d/d-notify-attention-policy-20261122.md
+  review_point: "W67 阶段 C 退出评审已复核软件账本与网关结算闭环；DEL-RES 落地宿主 cgroup v2 / JobObject 硬件级资源 shim、DEL-UX 接通 AttentionPolicyController 桌面分发总线或 DEL-EXT 接入物理设备驱动时复审"
 
 - id: RISK-B-04
   category: cancel-effect-unknown
@@ -74,7 +81,7 @@
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "W77（8c4ad8c2a + 0d1ccce5b，E-SABI-001 / E-SABI-002，H4）已完成第一步（第 7 通道 nlos.sabi.PrincipalHandshake 入冻达成 crates/nlos-schema REGISTRY 全部 9/9 SABI 通道 frozen=true、N/N-1/N-2 版本兼容矩阵、COMPAT-VER-002 未知关键扩展拒绝、schema/nlos/sabi/v1/deprecation-manifest.yaml 弃用遥测及 schema/golden/epochs/v1.0/ 五语言黄金不可变语料库）；W78（bd8cf7a + 85ca119，E-SHIM-001 / E-MIGRATE-001，H4）已完成核外无特权兼容垫片 crates/nlos-compat-shim（40/40 测试）与声明式契约检查/跨纪元差异/三态迁移回滚工具链 crates/nlos-migrate + tools/sabi-compat-diff（18/18 Rust + 8/8 Python 测试）；W80-W81（E-MARKET-001 H4 + E-ROAD-001 H7 + W81 独立终审 H7）已完成 16 份冻结签名 N-1 第三方参考 App/Driver 基准制品跨主系统 N-1->N（host_epoch 1->2）零重编译、零重打包、零重签原地升级全链路实证并触发 ADR-0027 晋升 VERIFIED；依决策点 E2 与 AGENTS.md 规则 7 审慎护栏继续维持 partial（Ready for Maintainer SABI v1.0 Freeze Sign-Off），待人类维护者显式签字后正式闭合本项"
+  mitigation: "SABI v1.0 9/9 基线冻结前提已于 W77-W81 闭环（8c4ad8c2a + 0d1ccce5b + bd8cf7a + 85ca119 + E-ROAD-001 H7 + W81 独立终审 H7，ADR-0027 晋升 VERIFIED，epochs/v1.0 11 向量字节锁定）；随后 W82-B1（w82-b-contract-20261116，H4）在不触动 v1.0 9 通道的前提下依 SABI v1.1 纯增量合入 3 个薄通道（LlmGateway / ToolSandbox / BlobReference，REGISTRY 共 12 通道），W82-B2/B3/B4 三服务库已完成三平台验收，W82-R3-GW-FIX（w82-r3-gateway-envelope-fix-20261121，H4）关闭 GAP-2 Part A；当前 SABI v1.0 长期冻结签署仍待人类维护者显式签字，W82-R4 全 8 通道实时挂载尚待 ADR-0028（PROPOSED）签认，故严守审慎护栏维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
@@ -86,7 +93,12 @@
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
     - docs/evidence/stage-e/reviews/w81-stage-e-exit-gates.md
-  review_point: "W77-W81 已完成 9/9 SABI 通道 frozen=true、五语言 v1.0 黄金语料库、nlos-compat-shim 核外垫片、nlos-migrate 迁移工具链与 [ROAD-E-001] N-1->N 零重编译跨版本升级门禁实证（H7，ADR-0027 晋升 VERIFIED），全部技术前提已闭环；外部 qq-agent Dogfood 二期登记的 L-008..L-014 最小完备窄腰补面（BOUND-E-06，0 改动接线 + 2 个 SABI v1.1 纯增量薄通道）不破坏亦不阻塞 SABI v1.0 基线冻结，已排入 W82（DESIGN）；按决策点 E2 呈请维护者审阅 W81 终审报告并显式签字批准 SABI v1.0 长期冻结承诺后正式闭合本项"
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-b2-llm-gateway-20261116.md
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
+    - docs/evidence/stage-e/w82-b4-blob-service-20261116.md
+    - docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
+  review_point: "SABI v1.0 9/9 基线冻结技术前提已闭环（待人类维护者显式签字）；W82-B1 已纯增量扩至 12 通道且 W82-B2/B3/B4 库级完成；呈请维护者签认 SABI v1.0 长期冻结及 ADR-0028（1A/2A/3A/4）解锁 W82-R4 全 8 通道挂载与 ROAD-E-001 回归时复审"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
@@ -111,23 +123,26 @@
   severity: P1
   status: partial
   description: "规模目标被冷 metadata 数量冒充或以 debug/test 口径外推：以注册行/waiting Fiber 冒充 10K/100K 逻辑 TaskNode，或以单平台 debug-profile 数字冒充生产量级"
-  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死；W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1，闭合多平台 CI --release 五探针基线半边），结合阶段 C Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL（1%/5%/10% 活跃工作集、634 B/node 终态落盘、p50=84-85us 手动控制响应）及 1->8 子进程分片无全局锁扩展基准（C-BENCH-001）；残余未证域为 1M_LOGICAL 裸金属/WAN 档位、Linux/macOS 8-Cell 分片基准与单分片 O(N/S) select 二级索引化，故仍维持 partial 并严禁无边界生产容量口号"
+  mitigation: "阶段 B 单机 100K 逻辑节点边界已钉死；W76（e77c094，workflow_dispatch Run 40868357139 13/13 全绿）已完成 Ubuntu/macOS/Windows 三平台 CI --release 五探针实测数字回填（B-SCALE-RELEASE-001 §6.1），结合阶段 C Windows 11 x86_64 --release 实盘 SQLite WAL+FULL 8-Cell 分片 10K_LOGICAL / 100K_LOGICAL 及 1->8 子进程分片扩展基准（C-BENCH-001）；2026-11-16 W82 定时 CI 暴露 Windows Regime B 失败（43649840304，准备屏障修正 862b5ca9 后于 4fc70be1 43744122670 通过但缺逐分片时序）与 Ubuntu 主作业 Regime C 4->8 吞吐倒退 0.59x/0.51x/0.41x（43744122670，独立诊断通过为 1.03x 但原长尾根因待配对遥测取证，c-bench-readiness-20261116）；2026-11-22 W82-R4-IND 在单机 macOS --release 补齐两项算法去瓶颈：C-SCHED-002（c-sched-002-indexed-select-scale-20261122，H4）不改 SCHEMA_VERSION=9 新增 plan_nodes_state_order 覆盖索引与 MaterializationScheduler::select_bounded 6 路游标零 Temp B-Tree 归并（100K 并发提速 216x-750x / 单线程 p50=163-481us 提速 518x-745x 且与 select() 100% 等价，原 select() 诊断口保留）与 B-RUNTIME-U11（b-runtime-u11-o1-purge-and-wake-storm-20261122，H4）消除 nlos-runtime-tokio 终态 wait purge O(n^2)->O(k) 与 deliver O(1) 并实测 100K 同时唤醒风暴（wake_settle=85.971ms，4 host threads，零泄漏）；残余未证域为 Linux/Windows 三平台 CI 复跑、Linux/macOS 8-Cell 分片基准、1M_LOGICAL 裸金属/WAN、100K@50% 完整细胞回收再入场及 2026-11-16 Regime B/C 反例根因，诚实维持 partial"
   evidence_refs:
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-b/b-plan-001-declaration-surface.md
     - docs/evidence/stage-b/b-scale-release-001.md
     - docs/evidence/stage-c/c-bench-001-road-c002-distributed-benchmark.md
+    - docs/evidence/stage-c/c-bench-readiness-20261116.md
     - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
     - docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
-  review_point: "W67 核入 Windows --release 8-Cell 100K_LOGICAL 实盘基准，W76（e77c094）核入三平台 CI --release 五探针数字；推进 1M_LOGICAL、Linux/macOS 8-Cell 分片基准或发布跨平台生产量级声明前必复审"
+    - docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
+    - docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
+  review_point: "W67 核入 Windows --release 8-Cell 100K_LOGICAL，W76 核入三平台 CI --release 五探针，2026-11-16 核入 c-bench-readiness-20261116 Windows Regime B 屏障修正与 Ubuntu Regime C 0.59x/0.51x/0.41x 反例，2026-11-22 核入 macOS C-SCHED-002 select_bounded 索引归并与 B-RUNTIME-U11 O(k) purge/100K 唤醒风暴实证；收集失败台对比 CPU/I/O 遥测、三平台 CI 复验、Linux/macOS 8-Cell 分片、1M_LOGICAL 裸金属或发布跨平台生产量级声明前必复审"
 
 - id: RISK-B-08
   category: single-person-dependency
   severity: P1
   status: open
   description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
-  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——204 份证据文件逐车道留痕、ADR-0001..0027、机器台账 ledger-schema v1.3（169 claims / 17 risks / 204 evidence-index + lint_claims.py 44/44 与 verify_stage_e_ledger_coverage.py 13/13 单测机械门）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——224 份证据文件逐车道留痕（stage-b 149 + stage-c 32 + stage-d 13 + stage-e 30）、ADR-0001..0027 + ADR-0028（PROPOSED）、机器台账 ledger-schema v1.3（169 claims / 17 risks / 224 evidence-index + lint_claims.py 44/44 与 verify_stage_e_ledger_coverage.py 13/13 单测机械门）、DEL-BASE 审计与 DEL-RES 约束画像（含 W82-R4-IND 四路独立加固留痕）、stage-b/c/d/e 全波次编排与增量日志、未知风险清单与维护者记忆恢复手册；第二名人类维护者实际接入前维持 open"
   evidence_refs: []
   review_point: "W34-D 与 W76 维护者批复已确认单人维护登记态并推进阶段 E；第二维护者接入或每四个周期复审知识分布清单"
 
@@ -197,13 +212,15 @@
   severity: P1
   status: partial
   description: "在兼容性边界与演进规则未充分暴露前过早宣称 SABI v1.0 冻结，导致后续小版本被迫破坏契约（关联 RISK-B-05）"
-  mitigation: "已通过 E1 SABI 9/9 通道黄金线级语料不可变门禁（check_golden_immutability.py）、E3 sabi-compat-diff 破坏性变更阻断器、E6 四款解耦生态样板与 E7 ROAD-E-001 N-1->N 零重编译升级矩阵完成多工作负载实证；正式 SABI v1.0 冻结签署仍保留维护者终批门控"
+  mitigation: "明确区分两层：SABI v1.0 9/9 基线已通过 E1 黄金不可变门禁（epochs/v1.0 11 向量）、E3 sabi-compat-diff 破坏性变更阻断器、E6 四款解耦生态样板与 E7 ROAD-E-001 N-1->N 零重编译升级矩阵实证，其正式长期冻结仍待维护者终批；W82-B1（w82-b-contract-20261116）在不改 v1.0 9 通道的前提下依 SABI v1.1 纯增量新增 3 个通道（REGISTRY 共 12 通道，新增 epochs/v1.1 与 v1.1-blob-20261116），W82-B2/B3/B4 库级完成、W82-R3-GW-FIX（w82-r3-gateway-envelope-fix-20261121）修复 GAP-2 Part A，全 8 通道 daemon 挂载及后续 ROAD-E-001 复验尚待 ADR-0028（PROPOSED）签认"
   evidence_refs:
     - docs/evidence/stage-e/e-sabi-001-version-matrix-and-deprecation.md
     - docs/evidence/stage-e/e-sabi-002-five-lang-golden-corpus.md
     - docs/evidence/stage-e/e-migrate-001-static-checker-and-rollbacks.md
     - docs/evidence/stage-e/e-road-001-zero-recompile-host-upgrade-gate.md
-  review_point: "阶段 E 退出呈批维护者签署 SABI v1.0 正式冻结及后续每次 SABI 次版本演进 PR 时复核"
+    - docs/evidence/stage-e/w82-b-contract-20261116.md
+    - docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
+  review_point: "阶段 E 退出呈批维护者签署 SABI v1.0 正式冻结、ADR-0028 签认解锁 W82-R4 全 8 通道挂载及后续每次 SABI 次版本演进 PR 时复核"
 
 - id: RISK-E-02
   category: security-bypass
@@ -234,11 +251,13 @@
   severity: P1
   status: partial
   description: "跨 OS 与 WASI 碎片化导致第三方不可信扩展逃逸沙箱（关联 U-9）"
-  mitigation: "已落地 nlos-wasm-sandbox L1 专职空环境宿主子进程（env_clear + 显式 argv + 墙钟死线硬杀）与 L2 手写 13 导入 WASI 白名单（零 socket 导入注册、词法+canonicalize 双重路径围栏、64KiB 页硬限、确定性 fuel 与 epoch 中断，Windows 11 本机 54/54 通过闭合 U-9）；Linux/macOS #[cfg(unix)] 符号链接分支与写授信树内极端 TOCTOU 窗口由三平台 CI 与后续生产硬化持续守护"
+  mitigation: "已落地 nlos-wasm-sandbox L1 专职空环境宿主子进程（env_clear + 显式 argv + 墙钟死线硬杀）与 L2 手写 14 导入 WASI 白名单（零 socket 导入注册、词法+canonicalize 双重路径围栏、64KiB 页硬限、确定性 fuel 与 epoch 中断，Windows 11 本机 54/54 通过闭合 U-9）；W82-B3（w82-b3-tool-service-20261116，H4）与 DEL-RES 审计（b-res-profile-audit-20261121，H3，97/97）进一步验证 per-call 工具宿主、8 MiB 写/256 KiB stdout/60 KiB stderr 界、孤儿自灭与三平台 symlink/junction/openat2 拒止（仅限 Wasm 沙箱边界 GUEST_SANDBOX_ONLY，宿主原生进程不具此硬限且 daemon 挂载待 ADR-0028 决策 4）；Linux/macOS #[cfg(unix)] 符号链接分支与写授信树内极端 TOCTOU 窗口由三平台 CI 与后续生产硬化持续守护"
   evidence_refs:
     - docs/evidence/stage-e/e-sandbox-001-cross-platform-wasm-process-isolation.md
     - docs/evidence/stage-e/e-market-002-desktop-store-transparency-ui.md
-  review_point: "远端三平台 CI 常态化守护及未来扩展 WASI 导入面（如熵源或多线程提案）前强制复审"
+    - docs/evidence/stage-e/w82-b3-tool-service-20261116.md
+    - docs/evidence/stage-b/b-res-profile-audit-20261121.md
+  review_point: "远端三平台 CI 常态化守护、ADR-0028 决策 4 挂载 ToolSandboxService 及未来扩展 WASI 导入面（如熵源或多线程提案）前强制复审"
 
 - id: RISK-E-05
   category: durable-state-loss

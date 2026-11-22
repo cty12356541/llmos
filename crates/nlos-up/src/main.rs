@@ -9,13 +9,13 @@ use nlos_system_control::control::ControlCommand;
 use nlos_system_control::daemon::{
     SystemControlDaemon, assemble, serve_authenticated_endpoint, serve_plain_endpoint,
 };
-use nlos_types::Generation;
+use nlos_types::{Generation, PrincipalId};
 use nlos_up::{
     BootstrapOptions, BootstrapReceipt, DesktopSessionEnv, KeyOrigin, LocalKeyPoolStatusReport,
     SampleAppSeedStatus, ShellKind, TrialCompiledIntentRequest, TrialMeteredChatRequest, UpError,
     bootstrap_trial_root, daemon_options_for_receipt, derive_managed_worker_process_id, encode_hex,
     inspect_trial_keypool_status, resolve_desktop_env, run_trial_compiled_intent,
-    run_trial_metered_chat,
+    run_trial_metered_chat, validate_worker_capability_slot,
 };
 
 const REASONING_EXCERPT_MAX_CHARS: usize = 240;
@@ -639,6 +639,7 @@ async fn run_workers(
     );
 
     let receipt = bootstrap_trial_root(options)?;
+    let mut shutdown = ShutdownSignals::install();
     let (daemon, endpoints) = assemble(
         daemon_options_for_receipt(&receipt),
         tokio::runtime::Handle::current(),
@@ -663,14 +664,32 @@ async fn run_workers(
     let session_env = session_env_from_live_daemon(&daemon, &receipt);
     print_daemon_ready(&daemon, &receipt);
 
+    // 预检:任一声明了 `slot` 的单元必须先过 D7 32-hex 与活守护能力权威
+    // 校验(存在、未吊销/未过期/祖先有效、holder == operator principal),否则
+    // 在拉起任何子进程前 fail-closed 退出。
+    for unit in &manifest.units {
+        if let Err(error) = validate_worker_capability_slot(
+            &daemon,
+            receipt.principal_id,
+            &unit.name,
+            &unit.root_capability_slot,
+        ) {
+            shutdown_embedded_daemon(&daemon, &stop, authenticated, plain).await;
+            println!("STOPPED service=system_control");
+            return Err(error);
+        }
+    }
+
     // 三变量派生(spec §4.2):endpoint = 活守护认证 socket;seed = operator
-    // 种子文件路径;slot = 清单字节透传(格式契约 TODO 对表 W82-B)。
+    // 种子文件路径;slot = 经能力权威校验后的 D7 32-hex CapabilityId(或空串)。
     let supervisor = nlos_process::ProcessSupervisor::new();
     let mut launched: Vec<LaunchedWorker> = Vec::new();
     let grace = std::time::Duration::from_millis(grace_ms);
     for unit in &manifest.units {
         match spawn_worker_unit(
             &supervisor,
+            &daemon,
+            receipt.principal_id,
             workers_manifest,
             &manifest_dir,
             &session_env,
@@ -705,7 +724,7 @@ async fn run_workers(
             break;
         }
         tokio::select! {
-            () = wait_for_shutdown_signal() => break,
+            () = shutdown.recv() => break,
             () = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
         }
     }
@@ -718,19 +737,27 @@ async fn run_workers(
     Ok(())
 }
 
-/// 拉起单个受管 worker 单元:父侧解释器解析 + 三变量白名单分组 spawn。
+/// 拉起单个受管 worker 单元:权威槽位/白名单校验 + 父侧解释器解析 + 分组 spawn。
 ///
 /// # Errors
 ///
-/// 解释器不可解析/非 UTF-8、或宿主 spawn 失败时返回
-/// [`UpError::ManagedWorker`];调用方负责回收已拉起的先前单元。
+/// 能力槽位拒绝、环境变量校验失败、解释器不可解析/非 UTF-8、或宿主 spawn
+/// 失败时返回 [`UpError::ManagedWorker`];调用方负责回收已拉起的先前单元。
 fn spawn_worker_unit(
     supervisor: &nlos_process::ProcessSupervisor,
+    daemon: &SystemControlDaemon,
+    operator_principal: PrincipalId,
     workers_manifest: &Path,
     manifest_dir: &Path,
     session_env: &DesktopSessionEnv,
     unit: &nlos_package::ManagedWorkerUnit,
 ) -> Result<LaunchedWorker, UpError> {
+    let _ = validate_worker_capability_slot(
+        daemon,
+        operator_principal,
+        &unit.name,
+        &unit.root_capability_slot,
+    )?;
     let program = nlos_up::resolve_program_path(&unit.interpreter, None).ok_or_else(|| {
         UpError::ManagedWorker(format!(
             "worker {:?}: interpreter {:?} could not be resolved to an absolute path",
@@ -746,6 +773,8 @@ fn spawn_worker_unit(
         process_identity_seed: session_env.key_file.display().to_string(),
         root_capability_slot: unit.root_capability_slot.clone(),
     };
+    nlos_process::validate_managed_worker_env(&env)
+        .map_err(|error| UpError::ManagedWorker(format!("worker {:?}: {error}", unit.name)))?;
     let process_id = derive_managed_worker_process_id(workers_manifest, &unit.name);
     let request = nlos_process::SpawnSupervisedRequest {
         process_id,
@@ -883,6 +912,10 @@ fn print_bootstrap_summary(receipt: &BootstrapReceipt) {
         receipt.principal_hex, receipt.principal_replayed
     );
     println!(
+        "operator_root_cap = {} (replayed={})",
+        receipt.operator_root_capability_hex, receipt.operator_root_replayed
+    );
+    println!(
         "trial_account    = {} (initial_credit={}, max_prompt_tokens={}, max_completion_tokens={}, max_total_tokens={}, max_api_calls={}, max_cost_microcredits={}, replayed={})",
         receipt.account_id_hex,
         receipt.account_record.initial_credit,
@@ -925,8 +958,12 @@ fn print_daemon_ready(daemon: &SystemControlDaemon, receipt: &BootstrapReceipt) 
         || "none".to_owned(),
         |issuance| encode_hex(issuance.receipt.receipt_id.as_bytes()),
     );
+    let operator_root_capability = daemon.operator_root.as_ref().map_or_else(
+        || "none".to_owned(),
+        |issuance| encode_hex(issuance.record.handle.capability_id.as_bytes()),
+    );
     println!(
-        "READY service=system_control root={} auth_socket={} plain_socket={} principal={} trial_account={} operator_root_receipt={}",
+        "READY service=system_control root={} auth_socket={} plain_socket={} principal={} trial_account={} operator_root_receipt={} operator_root_capability={}",
         daemon.root.display(),
         daemon.auth_socket_path.display(),
         daemon.plain_socket_path.display(),
@@ -936,32 +973,78 @@ fn print_daemon_ready(daemon: &SystemControlDaemon, receipt: &BootstrapReceipt) 
             .unwrap_or(&receipt.principal_hex),
         receipt.account_id_hex,
         operator_root_receipt,
+        operator_root_capability,
     );
 }
 
 #[cfg(unix)]
-async fn wait_for_shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
+struct ShutdownSignals {
+    interrupt: Option<tokio::signal::unix::Signal>,
+    terminate: Option<tokio::signal::unix::Signal>,
+}
 
-    let interrupt = signal(SignalKind::interrupt());
-    let terminate = signal(SignalKind::terminate());
-    match (interrupt, terminate) {
-        (Ok(mut interrupt), Ok(mut terminate)) => {
-            tokio::select! {
-                _ = interrupt.recv() => {},
-                _ = terminate.recv() => {},
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let interrupt = match signal(SignalKind::interrupt()) {
+            Ok(sig) => Some(sig),
+            Err(error) => {
+                eprintln!("nlos-up: unix SIGINT handler unavailable: {error}");
+                None
             }
+        };
+        let terminate = match signal(SignalKind::terminate()) {
+            Ok(sig) => Some(sig),
+            Err(error) => {
+                eprintln!("nlos-up: unix SIGTERM handler unavailable: {error}");
+                None
+            }
+        };
+        Self {
+            interrupt,
+            terminate,
         }
-        (Err(error), _) | (_, Err(error)) => {
-            eprintln!("nlos-up: unix signal handler unavailable: {error}");
-            let _ = tokio::signal::ctrl_c().await;
+    }
+
+    async fn recv(&mut self) {
+        match (&mut self.interrupt, &mut self.terminate) {
+            (Some(interrupt), Some(terminate)) => {
+                tokio::select! {
+                    _ = interrupt.recv() => {},
+                    _ = terminate.recv() => {},
+                }
+            }
+            (Some(interrupt), None) => {
+                let _ = interrupt.recv().await;
+            }
+            (None, Some(terminate)) => {
+                let _ = terminate.recv().await;
+            }
+            (None, None) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
         }
     }
 }
 
 #[cfg(windows)]
+struct ShutdownSignals;
+
+#[cfg(windows)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        Self
+    }
+
+    async fn recv(&mut self) {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 async fn wait_for_shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    ShutdownSignals::install().recv().await;
 }
 
 const MSYS2_UCRT64_BIN_DIR: &str = r"C:\msys64\ucrt64\bin";

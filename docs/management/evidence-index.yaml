@@ -880,6 +880,24 @@
   scope: "移交#10 三子项最小前缀：consume_platform_kill 与 Activation meter 联动、ProcessSupervisor 复用 pid registry、合同层 BirthDecision/BirthRejection；非跨 authority BirthDecision，非 ROAD-B-006 整体"
   assurance: H3
   date: "2026-09-22"
+- id: b-artifact-u12-concurrent-gc-20261121
+  path: docs/evidence/stage-b/b-artifact-u12-concurrent-gc-20261121.md
+  title: "B-ARTIFACT-U12：ArtifactStore 跨进程并发孤儿 GC 竞态修复与实证"
+  scope: "将 nlos-artifact ArtifactStore::put_revision 与 stage_revision 的 BEGIN IMMEDIATE 提前至 blob::commit_blob 之前（保持 SQLite SCHEMA_VERSION = 8 不变），并在 macOS arm64 实跑 u12_cross_process_gc 7 OS 子进程并发锤击、确定性屏障与 SIGKILL 崩溃残留回收对抗矩阵（nlos-artifact 113 passed; 0 failed; 1 ignored，连续复跑 5 次全通过）；三平台 CI、sync.rs ReplicaSyncRetentionSet 与 nlos-store-registry 跨 crate 边界保留"
+  assurance: H4
+  date: "2026-11-21"
+- id: b-res-profile-audit-20261121
+  path: docs/evidence/stage-b/b-res-profile-audit-20261121.md
+  title: "B-RES-PROFILE-001：12 维现代资源平面现网基线核验与降档画像"
+  scope: "DEL-RES 启动基线核验与一手源码审计：macOS arm64 实跑 nlos-resource（61 passed）、nlos-lease（30 passed）与 nlos-wasm-sandbox（97 passed）共 188 passed / 0 failed，核实全仓零 cgroup v2 / Win32 JobObject / setrlimit 强制控制器实现并固化 12 维 x 3 平台分级约束画像与 DESIGN 宿主 shim 规划（H8=0，Linux/Windows 未在本轮实跑）"
+  assurance: H3
+  date: "2026-11-21"
+- id: b-runtime-u11-o1-purge-and-wake-storm-20261122
+  path: docs/evidence/stage-b/b-runtime-u11-o1-purge-and-wake-storm-20261122.md
+  title: "B-RUNTIME-U11：终态 O(k) Wait Purge、O(1) 唤醒索引与 100K 同时唤醒风暴实证"
+  scope: "crates/nlos-runtime-tokio 引入 OperationWaitRegistry/ChannelWaitRegistry by_fiber 与 by_wait_id 二级索引（终态 wait 清理 O(n^2)->O(k)、deliver 按 WaitId 查找 O(n)->O(1)）及 ChannelWaitKey::orphaned 判别位防零号 fiber 键碰撞；单机 macOS arm64 实测 35 targets 181 passed / 0 failed / 16 ignored、5K 混合非 ignore 回归及 --release 100K 同时唤醒风暴与全量终态清理独立基线（wake_settle=85.971ms，4 host threads，零泄漏，batch_cancel 100K/10K=0.58x）；Linux/Windows CI、1M_LOGICAL 与 H8=0 保留"
+  assurance: H4
+  date: "2026-11-22"
 - id: c-shard-001-cross-cell-takeover-drive
   path: docs/evidence/stage-c/c-shard-001-cross-cell-takeover-drive.md
   title: "C-SHARD-001 / W54-CS0A：跨 Cell 接管驱动器 + 双进程 PoC（成功路径）"
@@ -1018,6 +1036,12 @@
   scope: "真实 SQLite 预置屏障、子进程 ready/go 与早退回收回归、分片计时上下界及修后 Windows 原吞吐目标通过。保留同 SHA 的 Ubuntu 主作业失败、include-ignored 通过与独立成功样本，精确跨进程跨度及失败根因未知"
   assurance: H4
   date: "2026-11-16"
+- id: c-sched-002-indexed-select-scale-20261122
+  path: docs/evidence/stage-c/c-sched-002-indexed-select-scale-20261122.md
+  title: "C-SCHED-002：plan_nodes_state_order 覆盖索引与有界 select_bounded 零 Temp B-Tree 归并调度扩展证据"
+  scope: "crates/nlos-plan 在保持 SCHEMA_VERSION = 9 不变下幂等新增 plan_nodes_state_order 覆盖索引，并实现 MaterializationScheduler::select_bounded / run_pass_bounded 6 路单值游标 Rust 有序归并（EXPLAIN QUERY PLAN 实证零 SCAN、零 USE TEMP B-TREE FOR ORDER BY，保留原 select() 全量 skips 语义）；单机 macOS Apple M5 --release 实测 100K 节点（1%/5%/50%）select_bounded 单线程 p50=163-481us（提速 517.85x-744.63x，并发 216.32x-749.87x）且与 select() 100% 等价（nlos-plan 21 targets 125 passed / 0 failed / 5 ignored）；Linux/Windows 8-Cell 分片、1M_LOGICAL、2026-11-16 CI 反例根因与 H8=0 保留"
+  assurance: H4
+  date: "2026-11-22"
 - id: w67-stage-c-exit-gates
   path: docs/evidence/stage-c/reviews/w67-stage-c-exit-gates.md
   title: "W67 阶段 C 退出门综合证据评审记录（ROAD-C-001 / ROAD-C-002 / C-core 九包 / 移交 #1–#17 / 全仓零冻结审计）"
@@ -1138,6 +1162,12 @@
   scope: "独立审查 v0.5 §28.4 七大核心交付物、[ROAD-D-001]、[UI-PARITY-001]、D-core 八大工作包（D-TOKENS-KIT / D-IPC-ENUM / D-COMPOSITOR-WM / D-OMNIBAR-MULTIMODAL / D-TRUSTED-UI / D-TASK-SPACE-DAG / D-NOTIFY-SEARCH-OFFLINE / D-CONTROL-SETTINGS-A11Y）、#3 C-GUI-CAMPAIGN 与 stage-d-progress.md §D.5.5 六项退出条件（证据 D-TOKENS-001..D-ROAD-001）；晋升 ADR-0025 为 VERIFIED；裁定阶段 D 达成 SATISFIED-WITH-BOUNDARIES（H4，P0=0），呈请维护者显式批准翻转 EXITED"
   assurance: H4
   date: "2026-10-29"
+- id: d-notify-attention-policy-20261122
+  path: docs/evidence/stage-d/d-notify-attention-policy-20261122.md
+  title: "D-NOTIFY-ATTN-001：nlos-notify AttentionPolicyController 边车策略引擎与对抗验证"
+  scope: "crates/nlos-notify/src/attention.rs 实现 #![forbid(unsafe_code)] 人类注意力策略控制器 AttentionPolicyController 及独立 WAL+FULL 边车库 attention-policy.db v1（notify-service.db v2 零改动），强守双队列隔离（500 条普通洪泛 0 饥饿）、静默时段（含跨午夜 22:00..07:00 与负 UTC 偏移）、同类窗口聚合、单应用/全局频控、付费绕过拒接（REJECTED_PAYMENT_BYPASS）、非受信应用伪造 ConsentPrompt/SystemCritical 拒接（REJECTED_UNTRUSTED_ORIGIN）、幂等重放与 SQLite BEFORE UPDATE/DELETE 不可变审计回执（nlos-notify 42 passed / 0 failed，含 13 项集成对抗）；桌面 Tauri Z4/通知中心连线（DEL-UX）与真实人类长稳试点（DEL-FIELD，H8=0）未做"
+  assurance: H4
+  date: "2026-11-22"
 - id: e-trial-001-llm-http-driver
   path: docs/evidence/stage-e/e-trial-001-llm-http-driver.md
   title: "E-TRIAL-001: Bounded Local HTTP/1.1 KeyPool LLM Driver Plane, 5D Token Budget Enforcement Shim, and NL Intent Guardrail Evidence (W77-PRE-B / W77-PRE-D / W77-PRE-INT)"
@@ -1293,3 +1323,51 @@
   scope: "双主体签名、三平台已授权根首次打开、逐块当前授权与钉住句柄、受控 checkpoint 截止及 WAL 前缀恢复。范围限受管理本机库路径，物理断电和真实系统接线另行验收"
   assurance: H4
   date: "2026-11-16"
+
+# ---------------------------------------------------------------------------
+# Stage E W82-R2 second-wave scoped acceptance and precheck
+# ---------------------------------------------------------------------------
+- id: w82-c-acceptance-20261121
+  path: docs/evidence/stage-e/w82-c-acceptance-20261121.md
+  title: "W82-C 托管约定 C 全量验收证据（D7 权威绑定与父退出重启）"
+  scope: "macOS 本机验收 D7 32 位小写 hex 槽位格式校验、CapabilityAuthority inspect_active 与 holder==principal 预检、operator_root_capability=<32-hex> READY 输出及父退出同 --root 无冲突重启；三平台远端 CI 与跨权限 breakaway 仍保留既有边界"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-d-py-sdk-20261121
+  path: docs/evidence/stage-e/w82-d-py-sdk-20261121.md
+  title: "W82-D-PY-SDK：Python SDK SABI v1.1 客户端与轮子打包收口回执"
+  scope: "macOS 本机验收 Python 12 通道 SABI_V1_CHANNELS、Ed25519 持久认证会话、5 个 SABI 新客户端、源码树外独立 verify_wheel.py（12 *_pb2.py 零漂移）及对真实 5 通道守护进程 6/6 一致性校验；SDK-3 保持 PARTIAL-PASS、未晋升 SDK-4"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-d-ts-sdk-20261121
+  path: docs/evidence/stage-e/w82-d-ts-sdk-20261121.md
+  title: "W82-D-TS-SDK：TypeScript SABI v1.1 SDK 窄腰实现与一致性验证"
+  scope: "macOS 本机验收 TypeScript 12 通道 SABI_V1_CHANNELS、node:crypto Ed25519 持久认证会话、5 个 SABI 新客户端与跨进程真实守护进程/本地实 socket 12/12 一致性校验；SDK-3 保持 PARTIAL-PASS、未发版 npm 且未晋升 SDK-4"
+  assurance: H4
+  date: "2026-11-21"
+- id: w82-int-precheck-20261121
+  path: docs/evidence/stage-e/w82-int-precheck-20261121.md
+  title: "W82-INT 预检、吊销回收联动与全 8 通道前置签认清册"
+  scope: "macOS 本机合流 W82-C/D/DEL-BASE Wave 1 成果，交付 nlos-compat-shim 三保留名映射、SystemControlDaemon 令牌吊销联动真实进程树回收、14 处 WASI 导入勘误清零与 DEL-BASE 索引挂接，并按源码精确行号固化阻塞全 8 通道挂载的三项前置契约/实现/策略缺口（H8=0，未含 qq-agent 实机消费闭环）"
+  assurance: H4
+  date: "2026-11-21"
+
+# ---------------------------------------------------------------------------
+# Stage E W82-R3 Gateway Envelope Alignment (GAP-2 Part A)
+# ---------------------------------------------------------------------------
+- id: w82-r3-gateway-envelope-fix-20261121
+  path: docs/evidence/stage-e/w82-r3-gateway-envelope-fix-20261121.md
+  title: "W82-R3 Gateway Wire 外层信封一致性修复（GAP-2 Part A）"
+  scope: "修复 crates/nlos-driver-llm-http/src/gateway_wire.rs 入站与回包（含 SabiFailure）外层 Envelope.schema 由 nlos.sabi.LlmGateway 错配对齐至 SABI_ENVELOPE_SCHEMA（nlos.sabi.Envelope major=1 minor=1），保持内层业务载荷契约不变；macOS arm64 实测 nlos-driver-llm-http 42 passed / 0 failed（含 3 项新增外层信封回归）、fmt 与 clippy -D warnings 退出 0（仅关闭 GAP-2 Part A，不含 GAP-2 Part B / GAP-1 / GAP-3 与 daemon 挂载，H8=0）"
+  assurance: H4
+  date: "2026-11-21"
+
+# ---------------------------------------------------------------------------
+# Stage E W82-R4-IND ROAD-A-003 Pure-Code Zero-Model E2E Closure
+# ---------------------------------------------------------------------------
+- id: e-eco-001-road-a003-pure-code-no-model-20261122
+  path: docs/evidence/stage-e/e-eco-001-road-a003-pure-code-no-model-20261122.md
+  title: "E-ECO-001：ROAD-A-003 / NLOS-GEN-001 无模型纯代码应用端到端纵切面证据"
+  scope: "crates/nlos-slice-k/tests/road_a003_pure_code_e2e.rs 在单机 macOS arm64 完成零模型/零 HTTP 客户端纯代码应用端到端闭环（cargo tree 零 llm/http/reqwest/hyper/tonic 匹配，双跳 .env_clear() 子进程零模型密钥/代理变量泄漏，Ed25519 验签安装 2x Executable 零 AgentRole -> Fast 无模型写 Artifact Rev 1 -> 真实 SIGKILL 崩溃注入与取消 Attempt 后无损恢复提交 Rev 2 -> 活跃任务门控卸载拦截、SIGTERM 清理与 ArtifactStore 双版本 SHA-256 保留；road_a003_pure_code_e2e 2 passed / 1 ignored，nlos-slice-k 39 targets 129 passed / 18 ignored）；仅属仓内无头构造性闭环（H4），Linux/Windows 实机与外部独立第三方团队正式交付验收（DEL-ECO/DEL-DIST，H8=0）显式保留"
+  assurance: H4
+  date: "2026-11-22"
