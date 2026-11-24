@@ -1493,10 +1493,19 @@ fn attenuation_reply(
     provision: &Provision,
     account: GatewayAccountBinding,
 ) -> Result<AttenuationReply, GatewayError> {
+    let child_binding_digest = {
+        let mut sha = Sha256::new();
+        sha.update(b"nlos/llm-gateway/child-binding/v1");
+        sha.update(provision.identity);
+        sha.update(account.account_id().as_bytes());
+        sha.finalize().to_vec()
+    };
     let result = AttenuateBudgetResult {
         schema: Some(llm_gateway_schema_identity()),
         granted_limit: Some(provision.limits.wire()),
         valid_until_ms: account.valid_until_ms(),
+        child_account_id: account.account_id().as_bytes().to_vec(),
+        child_binding_digest,
     };
     let receipt = ReceiptId::from_bytes(
         derive_idempotency_key(

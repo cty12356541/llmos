@@ -63,12 +63,12 @@ message MintReferenceRequest {
 // consumed only by the daemon-side adapter and `BlobCommandProof`; they carry
 // no authorization weight on their own.
 message BlobCommandScopeWire {
-  bytes workspace_id = 1;                  // 16 bytes
-  bytes namespace_id = 2;                  // 16 bytes
-  uint64 workspace_revision = 3;           // >= 1
-  bytes source_capability_id = 4;          // 16 bytes; must match the daemon-resolved session capability
+  bytes workspace_id = 1; // 16 bytes
+  bytes namespace_id = 2; // 16 bytes
+  uint64 workspace_revision = 3; // >= 1
+  bytes source_capability_id = 4; // 16 bytes; must match the daemon-resolved session capability
   uint64 source_capability_generation = 5; // >= 1
-  uint64 issued_at_ms = 6;                 // signer claim timestamp (checked <= server now.wall_ms)
+  uint64 issued_at_ms = 6; // signer claim timestamp (checked <= server now.wall_ms)
 }
 
 // `BlobCommandProofWire` carries the caller's Ed25519 command signature over
@@ -78,8 +78,8 @@ message BlobCommandScopeWire {
 // bytes (no self-reference cycle).
 message BlobCommandProofWire {
   BlobCommandScopeWire scope = 1;
-  bytes signer_principal_id = 2;           // 16 bytes; must equal the authenticated caller.principal
-  bytes signature = 3;                     // 64 bytes Ed25519 signature
+  bytes signer_principal_id = 2; // 16 bytes; must equal the authenticated caller.principal
+  bytes signature = 3; // 64 bytes Ed25519 signature
 }
 
 // `blob_reference.mint_reference` result.

@@ -86,10 +86,10 @@ message AttenuateBudgetRequest {
   // up and cross-check a real registered child session/process in the
   // daemon's authoritative registry. They carry zero authorization weight;
   // an unregistered or mismatched target fails closed (child = None).
-  bytes child_process_id = 4;    // optional 16-byte managed ProcessId
-  bytes child_session_id = 5;    // optional 16-byte handshaken SessionId
-  bytes child_principal_id = 6;  // optional 16-byte PrincipalId anchor; when
-                                 // present it must byte-match the registry
+  bytes child_process_id = 4; // optional 16-byte managed ProcessId
+  bytes child_session_id = 5; // optional 16-byte handshaken SessionId
+  bytes child_principal_id = 6; // optional 16-byte PrincipalId anchor; when
+  // present it must byte-match the registry
 }
 
 // `llm_gateway.attenuate_budget` result.
@@ -99,7 +99,7 @@ message AttenuateBudgetResult {
   uint64 valid_until_ms = 3;
   // ADR-0028 decision 3A (W82-R5): auditable binding receipt fields for the
   // child account created (or replayed) by this attenuation.
-  bytes child_account_id = 4;     // 16-byte child ResourceAccountId
+  bytes child_account_id = 4; // 16-byte child ResourceAccountId
   bytes child_binding_digest = 5; // 32-byte domain-separated ChildBudgetBinding digest
 }
 
