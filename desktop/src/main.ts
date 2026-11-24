@@ -2,11 +2,14 @@ import "./style.css";
 
 import {
   createWorkstationCompositor,
+  mountIndustrialWorkstationSurfaces,
   type WorkstationTaskRowInput,
 } from "./compositor";
+import { mountOperatorStudio } from "./studio";
 import { formatTaskbarClock, type InstalledApplicationEntry } from "./dock";
 import {
   assistIntentWithKeyPool,
+  chatWithLlmKeyPool,
   compositorGetSnapshot,
   compositorSessionTransition,
   compositorSetLayout,
@@ -1730,6 +1733,79 @@ function storeCatalogView(controller: StoreCatalogController): HTMLElement {
   return host;
 }
 
+function keypoolProbeView(): HTMLElement {
+  const wrap = el("div", { className: "nlos-keypool-console-card" });
+  wrap.append(
+    el("h3", { text: "本地模型池直连探针 (glm-5.3 · 127.0.0.1:8317)" }),
+  );
+  const controls = el("div", { className: "row" });
+  const statusBtn = el("button", {
+    className: "nlos-btn nlos-btn--primary",
+    text: "探测模型池状态",
+  });
+  const promptInput = document.createElement("input");
+  promptInput.type = "text";
+  promptInput.className = "nlos-text-input";
+  promptInput.value = "整理当前工作区构建产物并生成核验报告";
+  promptInput.placeholder = "输入自然语言任务或对话指令…";
+  const assistBtn = el("button", {
+    className: "nlos-btn",
+    text: "测试意图拆解 (glm-5.3)",
+  });
+  const chatBtn = el("button", {
+    className: "nlos-btn",
+    text: "测试模型对话 (glm-5.3)",
+  });
+  controls.append(statusBtn, promptInput, assistBtn, chatBtn);
+
+  const outputPre = el("pre", {
+    className: "nlos-keypool-result-pre",
+    text: "点击上方按钮可实时调用本机 glm-keypool (127.0.0.1:8317) 并核验五维 Token 预算回执。",
+  });
+
+  statusBtn.addEventListener("click", () => {
+    outputPre.textContent = "正在探测本机模型池状态…";
+    inspectLlmKeyPoolStatus()
+      .then((res) => {
+        outputPre.textContent = JSON.stringify(res, null, 2);
+      })
+      .catch((err: unknown) => {
+        outputPre.textContent = `本地模型池离线或未在 Tauri 宿主内运行: ${JSON.stringify(err)}`;
+      });
+  });
+
+  assistBtn.addEventListener("click", () => {
+    outputPre.textContent = "正在调用 glm-5.3 意图拆解与 5D 预算记账…";
+    assistIntentWithKeyPool({
+      utterance: promptInput.value.trim() || "整理工作区构建产物",
+      locale: "zh-CN",
+    })
+      .then((res) => {
+        outputPre.textContent = JSON.stringify(res, null, 2);
+      })
+      .catch((err: unknown) => {
+        outputPre.textContent = `调用失败(非 Tauri 宿主或网关离线): ${JSON.stringify(err)}`;
+      });
+  });
+
+  chatBtn.addEventListener("click", () => {
+    outputPre.textContent = "正在调用 glm-5.3 计量推理对话…";
+    chatWithLlmKeyPool({
+      prompt: promptInput.value.trim() || "请用一句话汇报系统状态",
+      maxTokens: 256,
+    })
+      .then((res) => {
+        outputPre.textContent = JSON.stringify(res, null, 2);
+      })
+      .catch((err: unknown) => {
+        outputPre.textContent = `调用失败(非 Tauri 宿主或网关离线): ${JSON.stringify(err)}`;
+      });
+  });
+
+  wrap.append(controls, outputPre);
+  return wrap;
+}
+
 function buildL3DiagnosticInspectorLayout(
   config: ConfigDto,
   storeCatalogController: StoreCatalogController,
@@ -1761,11 +1837,12 @@ function buildL3DiagnosticInspectorLayout(
     });
     sidebar.append(tab);
     node.classList.add("view");
-    if (id === "health") {
+    if (id === "keypool-probe") {
       node.classList.add("active");
     }
     main.append(node);
   };
+  register("keypool-probe", "模型池探针", keypoolProbeView());
   register("health", "恢复总览", healthView("恢复总览(InspectHealth)", inspectHealth));
   register(
     "semantic",
@@ -1823,6 +1900,14 @@ function buildL3DiagnosticInspectorLayout(
 async function bootstrap(): Promise<void> {
   const app = document.querySelector("#app");
   if (!(app instanceof HTMLElement)) {
+    return;
+  }
+
+  const useLegacyCompositor =
+    typeof window !== "undefined" &&
+    window.location.search.includes("legacy=compositor");
+  if (!useLegacyCompositor) {
+    mountOperatorStudio(app);
     return;
   }
 
@@ -2044,7 +2129,8 @@ async function bootstrap(): Promise<void> {
   });
 
   const taskSpaceController = createTaskSpaceSurfaceController({
-    locale: "zh-CN",
+    disclosureModel: compositor.disclosureModel,
+    locale: initialCompSnap.locale,
   });
   const notificationController = new NotificationCenterController();
   const spotlightController = new SpotlightController();
@@ -2052,61 +2138,66 @@ async function bootstrap(): Promise<void> {
   const controlCenterController = createSystemControlCenterController();
   const settingsSuiteController = createWorkstationSettingsSuiteController();
   const a11yI18nSuite = createWorkstationA11yI18nSuiteController("zh-CN", false);
+  const openZ4ChallengeFromStore: NonNullable<
+    Parameters<typeof createStoreCatalogController>[0]["openZ4Challenge"]
+  > = (spec) => {
+    const nowMono = performance.now();
+    const activeLocale = compositor.getSnapshot().locale;
+    const isIrreversible =
+      spec.reversibilityAndRisk.reversibilityClass === "IRREVERSIBLE";
+    const challenge = trustedUi.z4Dialog.openChallenge(
+      { kind: "tcb_trusted_broker" },
+      spec,
+      nowMono,
+    );
+    compositor.openZ4Modal(
+      {
+        promptId: challenge.challengeIdHex,
+        title: spec.requestingApp.displayName,
+        summary: `${spec.actionScope.plainSummary[activeLocale]} · ${spec.resourceCeiling.plainCeiling[activeLocale]}`,
+        blastRadiusItems: spec.reversibilityAndRisk.blastRadiusRows,
+        statutoryLock: isIrreversible ? "IRREVERSIBLE_NO_UNDO" : undefined,
+        onConfirm: () => {
+          try {
+            trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+              confirm: true,
+              origin: "trusted_shell",
+              source: "POINTER",
+              irreversibleHighContrastAck: isIrreversible,
+              nowMonoMs: performance.now(),
+            });
+          } catch {
+            // Arming guard or session lock handled by Z4SecurityDialogController.
+          }
+        },
+        onCancel: () => {
+          try {
+            trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
+              confirm: false,
+              origin: "trusted_shell",
+              source: "KEYBOARD",
+              nowMonoMs: performance.now(),
+            });
+          } catch {
+            // Challenge may already be invalidated by session lock.
+          }
+        },
+      },
+      nowMono,
+    );
+  };
+
   const storeCatalogController = createStoreCatalogController({
     client: createTauriStoreCatalogClient(),
     initialLocale: initialCompSnap.locale,
     initialDisclosure: initialCompSnap.disclosure,
-    openZ4Challenge: (spec) => {
-      const nowMono = performance.now();
-      const activeLocale = compositor.getSnapshot().locale;
-      const isIrreversible =
-        spec.reversibilityAndRisk.reversibilityClass === "IRREVERSIBLE";
-      const challenge = trustedUi.z4Dialog.openChallenge(
-        { kind: "tcb_trusted_broker" },
-        spec,
-        nowMono,
-      );
-      compositor.openZ4Modal(
-        {
-          promptId: challenge.challengeIdHex,
-          title: spec.requestingApp.displayName,
-          summary: `${spec.actionScope.plainSummary[activeLocale]} · ${spec.resourceCeiling.plainCeiling[activeLocale]}`,
-          blastRadiusItems: spec.reversibilityAndRisk.blastRadiusRows,
-          statutoryLock: isIrreversible ? "IRREVERSIBLE_NO_UNDO" : undefined,
-          onConfirm: () => {
-            try {
-              trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
-                confirm: true,
-                origin: "trusted_shell",
-                source: "POINTER",
-                irreversibleHighContrastAck: isIrreversible,
-                nowMonoMs: performance.now(),
-              });
-            } catch {
-              // Arming guard or session lock handled by Z4SecurityDialogController.
-            }
-          },
-          onCancel: () => {
-            try {
-              trustedUi.z4Dialog.decide(challenge.challengeIdHex, {
-                confirm: false,
-                origin: "trusted_shell",
-                source: "KEYBOARD",
-                nowMonoMs: performance.now(),
-              });
-            } catch {
-              // Challenge may already be invalidated by session lock.
-            }
-          },
-        },
-        nowMono,
-      );
-    },
+    openZ4Challenge: openZ4ChallengeFromStore,
   });
 
   bindOmnibarToCompositor(compositor, omnibarController);
   bindTaskSpaceToCompositor(
     {
+      getDisclosureModel: () => compositor.disclosureModel,
       focusLandmark: () => undefined,
     },
     taskSpaceController,
@@ -2114,26 +2205,34 @@ async function bootstrap(): Promise<void> {
   compositor.subscribe((snap) => {
     a11yI18nSuite.switchLocale(snap.locale);
     trustedUi.setLocaleAndDisclosure(snap.locale, snap.disclosure);
+    notificationController.setLocale(snap.locale);
     notificationController.setDisclosureLevel(snap.disclosure);
+    spotlightController.setLocale(snap.locale);
     spotlightController.setDisclosureLevel(snap.disclosure);
+    clusterPostureController.setLocale(snap.locale);
     clusterPostureController.setDisclosureLevel(snap.disclosure);
     storeCatalogController.setLocale(snap.locale);
     storeCatalogController.setDisclosure(snap.disclosure);
-    if (snap.openZ3FlyoutIds.includes("CONTROL_CENTER")) {
-      void controlCenterController.getState();
-    } else if (snap.openZ3FlyoutIds.includes("NOTIFICATIONS")) {
-      void notificationController.getState();
-    } else if (snap.openZ3FlyoutIds.includes("SPOTLIGHT_SEARCH")) {
-      void spotlightController.getState();
-    }
-    void settingsSuiteController.settingsCas;
   });
 
   const l3DiagnosticLayout = buildL3DiagnosticInspectorLayout(
     config,
     storeCatalogController,
   );
-  compositor.setL3DiagnosticElement(l3DiagnosticLayout);
+
+  mountIndustrialWorkstationSurfaces({
+    compositor,
+    controlCenterController,
+    taskSpaceController,
+    storeCatalogController,
+    notificationController,
+    spotlightController,
+    clusterPostureController,
+    settingsSuiteController,
+    legacyDiagnosticsElement: l3DiagnosticLayout,
+    openZ4FromStore: openZ4ChallengeFromStore,
+  });
+
   compositor.mount(app);
 
   window.addEventListener("resize", () => {

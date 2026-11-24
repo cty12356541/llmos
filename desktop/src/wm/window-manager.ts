@@ -64,6 +64,11 @@ export interface ManagedWindowDescriptor {
   readonly preferredSlot?: string;
   readonly srcdoc?: string;
   readonly iframeSrc?: string;
+  readonly trustedSurfaceFactory?: (ctx: {
+    readonly doc: Document;
+    readonly locale: WorkstationLocale;
+    readonly disclosure: DisclosureLevel;
+  }) => HTMLElement;
   readonly presentImmediately?: boolean;
 }
 
@@ -84,6 +89,11 @@ export interface ManagedWindowRecord {
   readonly preferredSlot?: string;
   readonly srcdoc?: string;
   readonly iframeSrc?: string;
+  readonly trustedSurfaceFactory?: (ctx: {
+    readonly doc: Document;
+    readonly locale: WorkstationLocale;
+    readonly disclosure: DisclosureLevel;
+  }) => HTMLElement;
 }
 
 export interface WindowManagerSnapshot {
@@ -121,6 +131,7 @@ export interface TilingWindowManager {
   getSnapshot(): WindowManagerSnapshot;
   subscribe(listener: WindowManagerListener): () => void;
   registerWindow(descriptor: ManagedWindowDescriptor): ManagedWindowRecord;
+  setWindowTitle(windowId: string, title: string): boolean;
   presentWindow(windowId: string): boolean;
   minimizeWindow(windowId: string): boolean;
   restoreWindow(windowId: string): boolean;
@@ -184,6 +195,11 @@ interface InternalWindowEntry {
   preferredSlot?: string;
   srcdoc?: string;
   iframeSrc?: string;
+  trustedSurfaceFactory?: (ctx: {
+    readonly doc: Document;
+    readonly locale: WorkstationLocale;
+    readonly disclosure: DisclosureLevel;
+  }) => HTMLElement;
 }
 
 function clampRatio(val: number, min: number, max: number): number {
@@ -211,6 +227,7 @@ function toPublicRecord(entry: InternalWindowEntry): ManagedWindowRecord {
     preferredSlot: entry.preferredSlot,
     srcdoc: entry.srcdoc,
     iframeSrc: entry.iframeSrc,
+    trustedSurfaceFactory: entry.trustedSurfaceFactory,
   };
 }
 
@@ -351,6 +368,7 @@ export function createTilingWindowManager(
       preferredSlot: descriptor.preferredSlot,
       srcdoc: descriptor.srcdoc,
       iframeSrc: descriptor.iframeSrc,
+      trustedSurfaceFactory: descriptor.trustedSurfaceFactory,
     };
     entries.set(entry.windowId, entry);
 
@@ -416,9 +434,17 @@ export function createTilingWindowManager(
     if (!entry || entry.windowState === "CLOSED" || entry.windowState === "CLOSING") {
       return false;
     }
+    const wasVisible = entry.windowState === "VISIBLE";
     if (entry.windowState === "MINIMIZED" || entry.windowState === "CREATED") {
       entry.windowState = "VISIBLE";
       entry.surfaceState = "PRESENTED";
+    }
+    if (
+      wasVisible &&
+      focusedWindowId === windowId &&
+      mruWindowIds[0] === windowId
+    ) {
+      return true;
     }
     promoteMru(windowId);
     focusedWindowId = windowId;
@@ -845,6 +871,7 @@ export function createTilingWindowManager(
         geometry: geom,
         srcdoc: w.srcdoc,
         iframeSrc: w.iframeSrc,
+        trustedSurfaceFactory: w.trustedSurfaceFactory,
         locale: snap.locale,
         disclosure: snap.disclosure,
         callbacks: {
@@ -928,6 +955,18 @@ export function createTilingWindowManager(
       };
     },
     registerWindow,
+    setWindowTitle(windowId: string, nextTitle: string): boolean {
+      const entry = entries.get(windowId);
+      if (!entry) {
+        return false;
+      }
+      if (entry.title === nextTitle) {
+        return true;
+      }
+      entry.title = nextTitle;
+      emit();
+      return true;
+    },
     presentWindow,
     minimizeWindow,
     restoreWindow,

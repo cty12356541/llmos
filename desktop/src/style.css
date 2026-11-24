@@ -15,6 +15,8 @@
 @import "./views/settings/settings.css";
 @import "./views/store-catalog/store-catalog.css";
 @import "./a11y/a11y.css";
+@import "./styles/workstation-masterpiece.css";
+@import "./studio/studio.css";
 
 *,
 *::before,

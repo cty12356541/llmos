@@ -1,0 +1,1066 @@
+/* ==========================================================================
+   LLMOS Studio · Zürich Open Swiss Editorial & Braun Industrial Architecture
+   (`desktop/src/studio/studio.css`)
+   - Directly inherits A2A ChatHub v16 Zürich Open Swiss Grid DNA + Dieter Rams
+     Braun Atelier Warm Industrial Palette:
+     1) `zurich-light` (A2A ChatHub Pure Archival Paper #ffffff + Prussian Blue #1b3b88 + Vermilion #b83714)
+     2) `braun-atelier` (Dieter Rams Anodized Warm Grey #f4f3ef + Carbon #181816 + Braun Signal #c83e1b)
+     3) `zurich-dark` (A2A ChatHub Deep Carbon #0b0f17 + Steel Blue #6ea0ff + Warm Vermilion #e05a36)
+   - 0px sharp architectural geometry throughout.
+   ========================================================================== */
+
+:root,
+.nlos-studio-root[data-studio-theme="zurich-light"],
+[data-nlos-theme="paper-workstation"] .nlos-studio-root:not([data-studio-theme]) {
+  color-scheme: light;
+  --st-bg-canvas: #ffffff;
+  --st-bg-sidebar: #ffffff;
+  --st-bg-surface: #ffffff;
+  --st-bg-subtle: #f8fafc;
+  --st-bg-hover: #f4f6fa;
+  --st-bg-code: #f8fafc;
+  --st-mask: rgba(11, 15, 23, 0.48);
+
+  --st-ink-950: #0b0f17;
+  --st-ink-900: #141a24;
+  --st-ink-800: #1f2735;
+  --st-ink-700: #2b3342;
+  --st-ink-600: #414b5c;
+  --st-ink-500: #5a6578;
+  --st-ink-400: #788296;
+  --st-ink-inverse: #ffffff;
+
+  --st-rule-heavy: #0f1520;
+  --st-rule-mid: #cbd4e1;
+  --st-rule-soft: #e2e7f0;
+
+  --st-accent: #1b3b88;
+  --st-vermilion: #b83714;
+  --st-forest: #166534;
+}
+
+/* Theme 2: Dieter Rams / Braun SK4 Anodized Warm Industrial Atelier */
+.nlos-studio-root[data-studio-theme="braun-atelier"] {
+  color-scheme: light;
+  --st-bg-canvas: #f4f3ef;
+  --st-bg-sidebar: #eeede7;
+  --st-bg-surface: #f4f3ef;
+  --st-bg-subtle: #eae8e1;
+  --st-bg-hover: #e5e3da;
+  --st-bg-code: #eae8e1;
+  --st-mask: rgba(24, 24, 22, 0.48);
+
+  --st-ink-950: #161615;
+  --st-ink-900: #222220;
+  --st-ink-800: #2e2e2b;
+  --st-ink-700: #3d3d39;
+  --st-ink-600: #575651;
+  --st-ink-500: #6e6d66;
+  --st-ink-400: #8a8880;
+  --st-ink-inverse: #f4f3ef;
+
+  --st-rule-heavy: #1c1c1a;
+  --st-rule-mid: #c8c5bc;
+  --st-rule-soft: #dcd9d0;
+
+  --st-accent: #1f4e5f;
+  --st-vermilion: #c83e1b;
+  --st-forest: #2a5c43;
+}
+
+/* Theme 3: A2A ChatHub Carbon Dark */
+.nlos-studio-root[data-studio-theme="zurich-dark"] {
+  color-scheme: dark;
+  --st-bg-canvas: #0b0f17;
+  --st-bg-sidebar: #0b0f17;
+  --st-bg-surface: #0b0f17;
+  --st-bg-subtle: #111622;
+  --st-bg-hover: #141b29;
+  --st-bg-code: #111622;
+  --st-mask: rgba(3, 6, 12, 0.74);
+
+  --st-ink-950: #f1f5f9;
+  --st-ink-900: #f1f5f9;
+  --st-ink-800: #e2e8f0;
+  --st-ink-700: #cbd5e1;
+  --st-ink-600: #94a3b8;
+  --st-ink-500: #94a3b8;
+  --st-ink-400: #64748b;
+  --st-ink-inverse: #0b0f17;
+
+  --st-rule-heavy: #e2e7f0;
+  --st-rule-mid: #283244;
+  --st-rule-soft: #1b2230;
+
+  --st-accent: #6ea0ff;
+  --st-vermilion: #e05a36;
+  --st-forest: #4ade80;
+}
+
+/* Also remap legacy child view variables so embedded ownership-tree / settings /
+   store-catalog / dag-canvas inherit the active Studio palette seamlessly! */
+.nlos-studio-root {
+  --nlos-bg-backdrop: var(--st-bg-subtle);
+  --nlos-bg-canvas: var(--st-bg-canvas);
+  --nlos-bg-panel: var(--st-bg-subtle);
+  --nlos-bg-window: var(--st-bg-canvas);
+  --nlos-bg-chrome: var(--st-bg-subtle);
+  --nlos-bg-elevated: var(--st-bg-surface);
+  --nlos-bg-hover: var(--st-bg-hover);
+  --nlos-bg-active-row: var(--st-bg-subtle);
+  --nlos-bg-recessed: var(--st-bg-code);
+  --nlos-border-hairline: var(--st-rule-soft);
+  --nlos-border-focused: var(--st-rule-mid);
+  --nlos-border-strong: var(--st-rule-mid);
+  --nlos-border-input-focus: var(--st-accent);
+  --nlos-text-primary: var(--st-ink-950);
+  --nlos-text-secondary: var(--st-ink-600);
+  --nlos-text-muted: var(--st-ink-400);
+  --nlos-accent-primary: var(--st-ink-950);
+  --nlos-accent-primary-hover: var(--st-accent);
+  --nlos-accent-active: var(--st-accent);
+  --nlos-accent-fg: var(--st-ink-inverse);
+  --nlos-signal-action: var(--st-vermilion);
+  --nlos-signal-action-text: var(--st-vermilion);
+  --nlos-signal-danger: var(--st-vermilion);
+  --nlos-signal-danger-text: var(--st-vermilion);
+  --bg-canvas: var(--st-bg-canvas);
+  --bg-surface: var(--st-bg-surface);
+  --bg-subtle: var(--st-bg-subtle);
+  --bg-elevated: var(--st-bg-subtle);
+  --text-primary: var(--st-ink-950);
+  --text-secondary: var(--st-ink-600);
+  --border-subtle: var(--st-rule-soft);
+  --border-strong: var(--st-rule-mid);
+
+  --st-left-w: 236px;
+  --st-right-w: 336px;
+  --st-topbar-h: 50px;
+  --st-subbar-h: 32px;
+  --st-font-sans: "Inter", "Noto Sans SC", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --st-font-mono: "IBM Plex Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--st-bg-canvas);
+  color: var(--st-ink-700);
+  font-family: var(--st-font-sans);
+  font-feature-settings: "cv05" 1, "cv11" 1, "ss01" 1;
+  font-size: 13px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+.nlos-studio-root *,
+.nlos-studio-root *::before,
+.nlos-studio-root *::after {
+  box-sizing: border-box;
+  border-radius: 0px;
+}
+
+.nlos-studio-root ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.nlos-studio-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nlos-studio-root ::-webkit-scrollbar-thumb {
+  background: var(--st-rule-mid);
+  border-radius: 0px;
+}
+
+/* ---- 1. 2.5px Zürich Architectural Crown Bar ---- */
+.st-crown-bar {
+  height: 3px;
+  width: 100%;
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: var(--st-left-w) minmax(0, 1fr);
+  column-gap: 4px;
+  background-color: var(--st-bg-canvas);
+}
+
+.st-crown-vermilion {
+  background-color: var(--st-vermilion);
+}
+
+.st-crown-heavy {
+  background-color: var(--st-rule-heavy);
+}
+
+/* ---- 2. Square 5x5 Architectural Dots & Seals (Zero Pill Soup) ---- */
+.st-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  background-color: var(--st-ink-400);
+  flex-shrink: 0;
+}
+
+.st-dot[data-tone="live"],
+.st-dot[data-tone="vermilion"] {
+  background-color: var(--st-vermilion);
+}
+
+.st-dot[data-tone="accent"] {
+  background-color: var(--st-accent);
+}
+
+.st-dot[data-tone="forest"] {
+  background-color: var(--st-forest);
+}
+
+.st-sep-dot {
+  color: var(--st-vermilion);
+  font-weight: 700;
+  margin: 0 3px;
+  user-select: none;
+}
+
+.st-seal {
+  display: inline-block;
+  font-family: var(--st-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border: 1px solid var(--st-rule-mid);
+  color: var(--st-ink-600);
+  background: transparent;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.st-seal[data-tone="accent"] {
+  border-color: var(--st-accent);
+  color: var(--st-accent);
+}
+
+.st-seal[data-tone="vermilion"] {
+  border-color: var(--st-vermilion);
+  color: var(--st-vermilion);
+}
+
+.st-seal[data-tone="forest"] {
+  border-color: var(--st-forest);
+  color: var(--st-forest);
+}
+
+.st-seal[data-tone="heavy"] {
+  border-color: var(--st-ink-950);
+  color: var(--st-ink-950);
+}
+
+/* ---- 3. Swiss Numbered Section Header (.st-sec-head) ---- */
+.st-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 16px 7px;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-surface);
+  flex-shrink: 0;
+}
+
+.st-sec-num {
+  font-family: var(--st-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--st-vermilion);
+}
+
+.st-sec-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: var(--st-ink-950);
+  letter-spacing: -0.01em;
+}
+
+.st-sec-kicker {
+  margin-left: auto;
+  font-family: var(--st-font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.9px;
+  color: var(--st-ink-400);
+}
+
+/* ---- 4. Sharp Architectural Buttons & Segmented Bar (0px Radius, Zero Box Fill) ---- */
+.st-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 27px;
+  padding: 0 8px;
+  border: none;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background: transparent;
+  color: var(--st-ink-800);
+  font-family: var(--st-font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.st-btn:hover {
+  color: var(--st-accent);
+  border-bottom-color: var(--st-accent);
+}
+
+.st-btn--primary {
+  padding: 0 12px;
+  border: 1px solid var(--st-ink-950);
+  background-color: var(--st-ink-950);
+  color: var(--st-ink-inverse);
+}
+
+.st-btn--primary:hover {
+  background-color: var(--st-accent);
+  border-color: var(--st-accent);
+  color: #ffffff;
+}
+
+.st-btn--vermilion {
+  color: var(--st-vermilion);
+  border-bottom: 1.5px solid var(--st-vermilion);
+}
+
+.st-btn--vermilion:hover {
+  background-color: var(--st-bg-hover);
+  color: var(--st-vermilion);
+}
+
+.st-seg-group {
+  display: inline-flex;
+  align-items: stretch;
+  height: 27px;
+  border-bottom: 1px solid var(--st-rule-mid);
+}
+
+.st-seg-btn {
+  border: none;
+  border-right: 1px solid var(--st-rule-soft);
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 0 9px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--st-ink-500);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.st-seg-btn:last-child {
+  border-right: none;
+}
+
+.st-seg-btn:hover {
+  color: var(--st-ink-950);
+  background-color: var(--st-bg-hover);
+}
+
+.st-seg-btn.is-active {
+  color: var(--st-ink-950);
+  border-bottom: 2px solid var(--st-accent);
+  font-weight: 700;
+}
+
+/* ---- 5. Three-Column Open Swiss Workbench Grid ---- */
+.st-workbench {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: var(--st-left-w) minmax(0, 1fr) var(--st-right-w);
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--st-bg-canvas);
+}
+
+.st-workbench.is-inspector-closed {
+  grid-template-columns: var(--st-left-w) minmax(0, 1fr) 0px;
+}
+
+/* ---- 6. Left Masthead & Index Rail (244px) ---- */
+.st-rail-left {
+  width: var(--st-left-w);
+  background-color: var(--st-bg-sidebar);
+  border-right: 1px solid var(--st-rule-mid);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+}
+
+.st-brand-header {
+  position: relative;
+  height: var(--st-topbar-h);
+  min-height: var(--st-topbar-h);
+  padding: 0 14px;
+  border-bottom: 1.5px solid var(--st-rule-heavy);
+  background-color: var(--st-bg-surface);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.st-brand-header::after,
+.st-topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background-color: var(--st-rule-mid);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.st-brand-kicker {
+  font-family: var(--st-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.9px;
+  color: var(--st-accent);
+  line-height: 1.15;
+}
+
+.st-brand-name {
+  margin-top: 2px;
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--st-ink-950);
+  line-height: 1.22;
+}
+
+.st-posture-subbar {
+  height: var(--st-subbar-h);
+  min-height: var(--st-subbar-h);
+  margin-top: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.st-nav-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.st-nav-block {
+  border-bottom: 1px solid var(--st-rule-mid);
+}
+
+.st-nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border: none;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--st-rule-soft);
+  background: transparent;
+  color: var(--st-ink-600);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-nav-item:last-child {
+  border-bottom: none;
+}
+
+.st-nav-item:hover {
+  background-color: var(--st-bg-hover);
+  color: var(--st-ink-950);
+}
+
+.st-nav-item[aria-current="page"] {
+  border-left: 2px solid var(--st-accent);
+  color: var(--st-ink-950);
+  font-weight: 700;
+  background-color: var(--st-bg-subtle);
+}
+
+.st-nav-item[aria-current="page"] .st-dot {
+  background-color: var(--st-vermilion);
+}
+
+.st-nav-count {
+  font-family: var(--st-font-mono);
+  font-size: 11px;
+  color: var(--st-ink-400);
+}
+
+.st-nav-item[aria-current="page"] .st-nav-count {
+  color: var(--st-accent);
+  font-weight: 700;
+}
+
+.st-rail-footer {
+  border-top: 1.5px solid var(--st-rule-heavy);
+  padding: 10px 14px;
+  background-color: var(--st-bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---- 7. Center Stage: Double-Rule Topbar + Open Cross-Grid Canvas ---- */
+.st-center-stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background-color: var(--st-bg-canvas);
+  overflow: hidden;
+}
+
+.st-topbar {
+  position: relative;
+  height: var(--st-topbar-h);
+  min-height: var(--st-topbar-h);
+  padding: 0 18px;
+  border-bottom: 1.5px solid var(--st-rule-heavy);
+  background-color: var(--st-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.st-search-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 250px;
+  height: 29px;
+  padding: 0 10px;
+  border: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-surface);
+  color: var(--st-ink-500);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.st-search-box:hover {
+  border-color: var(--st-accent);
+  color: var(--st-ink-950);
+}
+
+.st-kbd {
+  font-family: var(--st-font-mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border: 1px solid var(--st-rule-mid);
+  color: var(--st-ink-400);
+}
+
+.st-main-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-top: 2px;
+}
+
+/* ---- 8. Open Editorial Page Header & Cross-Rule Metric Band (Zero Box Cards) ---- */
+.st-masthead-band {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 20px 24px 16px;
+  border-bottom: 1.5px solid var(--st-rule-heavy);
+  background-color: var(--st-bg-canvas);
+}
+
+.st-page-kicker {
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: var(--st-vermilion);
+  margin-bottom: 4px;
+}
+
+.st-page-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--st-ink-950);
+  line-height: 1.2;
+}
+
+.st-page-desc {
+  margin: 5px 0 0 0;
+  font-size: 12.5px;
+  color: var(--st-ink-600);
+  max-width: 68ch;
+}
+
+.st-metric-band {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  border-bottom: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-canvas);
+}
+
+.st-metric-cell {
+  padding: 14px 20px;
+  border-right: 1px solid var(--st-rule-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.st-metric-cell:last-child {
+  border-right: none;
+}
+
+.st-metric-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--st-ink-500);
+}
+
+.st-metric-val {
+  font-family: var(--st-font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--st-ink-950);
+  line-height: 1.2;
+}
+
+.st-metric-sub {
+  font-family: var(--st-font-mono);
+  font-size: 11px;
+  color: var(--st-ink-400);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 9. Open Cross-Grid Two-Column & Table Sections ---- */
+.st-split-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid var(--st-rule-mid);
+}
+
+.st-split-2 > section:first-child {
+  border-right: 1px solid var(--st-rule-mid);
+}
+
+.st-block {
+  border-bottom: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-canvas);
+  min-width: 0;
+}
+
+.st-block-body {
+  padding: 14px 20px;
+  min-width: 0;
+}
+
+.st-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.st-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.st-table th {
+  padding: 8px 16px;
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--st-ink-500);
+  background-color: var(--st-bg-subtle);
+  border-bottom: 1px solid var(--st-rule-mid);
+  white-space: nowrap;
+}
+
+.st-table td {
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--st-rule-soft);
+  color: var(--st-ink-800);
+  vertical-align: middle;
+}
+
+.st-table tbody tr {
+  cursor: pointer;
+}
+
+.st-table tbody tr:hover {
+  background-color: var(--st-bg-hover);
+}
+
+.st-table tbody tr[data-selected="true"] {
+  background-color: var(--st-bg-subtle);
+  box-shadow: inset 2.5px 0 0 0 var(--st-accent);
+}
+
+/* Linear Hairline Watermark Bar */
+.st-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.st-bar-track {
+  width: 44px;
+  height: 4px;
+  background-color: var(--st-rule-soft);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.st-bar-fill {
+  height: 100%;
+  background-color: var(--st-ink-900);
+}
+
+.st-bar-fill[data-tone="accent"] {
+  background-color: var(--st-accent);
+}
+
+.st-bar-fill[data-tone="vermilion"] {
+  background-color: var(--st-vermilion);
+}
+
+.st-mono {
+  font-family: var(--st-font-mono);
+  font-size: 11.5px;
+  color: var(--st-ink-600);
+}
+
+.st-input {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-surface);
+  color: var(--st-ink-950);
+  font-family: inherit;
+  font-size: 12.5px;
+  min-width: 0;
+  flex: 1 1 auto;
+  outline: none;
+}
+
+.st-input:focus {
+  border-color: var(--st-accent);
+}
+
+.st-pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--st-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  background-color: var(--st-bg-code);
+  border: 1px solid var(--st-rule-soft);
+  color: var(--st-ink-800);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.st-notice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 20px;
+  background-color: var(--st-bg-subtle);
+  border-bottom: 1px solid var(--st-rule-mid);
+  border-left: 3px solid var(--st-accent);
+  color: var(--st-ink-900);
+  font-size: 12px;
+}
+
+.st-notice-bar[data-tone="warn"],
+.st-notice-bar[data-tone="danger"] {
+  border-left-color: var(--st-vermilion);
+}
+
+/* ---- 10. Right Inspector Rail (388px Open Swiss Pane) ---- */
+.st-rail-right {
+  width: var(--st-right-w);
+  background-color: var(--st-bg-sidebar);
+  border-left: 1px solid var(--st-rule-mid);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.st-workbench.is-inspector-closed .st-rail-right {
+  visibility: hidden;
+  pointer-events: none;
+  border-left-width: 0;
+}
+
+.st-inspector-head {
+  position: relative;
+  height: var(--st-topbar-h);
+  min-height: var(--st-topbar-h);
+  padding: 0 14px;
+  border-bottom: 1.5px solid var(--st-rule-heavy);
+  background-color: var(--st-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.st-inspector-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background-color: var(--st-rule-mid);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.st-inspector-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.st-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--st-rule-soft);
+  font-size: 12px;
+}
+
+/* ---- 11. Modal Mask & Sharp Architectural Dialog (Z4 & Search) ---- */
+.st-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background-color: var(--st-mask);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.st-modal-dialog {
+  width: 100%;
+  max-width: 660px;
+  background-color: var(--st-bg-canvas);
+  color: var(--st-ink-900);
+  border: 1.5px solid var(--st-rule-heavy);
+  border-top: 4px solid var(--st-accent);
+  overflow: hidden;
+}
+
+.st-modal-dialog[data-z4-danger="true"] {
+  border-top-color: var(--st-vermilion);
+}
+
+/* ---- 12. Unify All Embedded Sub-Views into Zürich Open Swiss Grid ---- */
+.nlos-studio-root .nlos-control-center-btn,
+.nlos-studio-root .nlos-settings-btn,
+.nlos-studio-root .nlos-cell-btn {
+  height: 24px;
+  padding: 0 7px;
+  border: none;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background: transparent;
+  color: var(--st-ink-800);
+  font-family: var(--st-font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 0px;
+  box-shadow: none;
+}
+
+.nlos-studio-root .nlos-control-center-btn:hover,
+.nlos-studio-root .nlos-settings-btn:hover,
+.nlos-studio-root .nlos-cell-btn:hover {
+  background: transparent;
+  color: var(--st-accent);
+  border-bottom-color: var(--st-accent);
+}
+
+.nlos-studio-root .nlos-control-center-btn--danger,
+.nlos-studio-root .nlos-settings-btn--danger {
+  background: transparent !important;
+  color: var(--st-vermilion) !important;
+  border: none !important;
+  border-bottom: 1.5px solid var(--st-vermilion) !important;
+}
+
+.nlos-studio-root .nlos-control-center-btn--danger:hover,
+.nlos-studio-root .nlos-settings-btn--danger:hover {
+  background: var(--st-bg-hover) !important;
+  color: var(--st-vermilion) !important;
+}
+
+.nlos-studio-root .nlos-fault-domain-badge,
+.nlos-studio-root .nlos-settings-badge,
+.nlos-studio-root .nlos-statutory-lock-badge {
+  background: transparent !important;
+  color: var(--st-vermilion) !important;
+  border: 1px solid var(--st-vermilion) !important;
+  border-radius: 0px !important;
+  padding: 1px 5px !important;
+  font-family: var(--st-font-mono) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+
+.nlos-studio-root .nlos-ownership-tree__row {
+  grid-template-columns: minmax(220px, 2.3fr) minmax(68px, 0.6fr) minmax(115px, 0.9fr) minmax(150px, 1.5fr) !important;
+}
+
+.nlos-studio-root .nlos-settings-badge {
+  color: var(--st-accent) !important;
+  border-color: var(--st-accent) !important;
+}
+
+.nlos-studio-root .nlos-settings-workstation,
+.nlos-studio-root .nlos-settings-table,
+.nlos-studio-root .nlos-associations-table,
+.nlos-studio-root .nlos-keychain-table,
+.nlos-studio-root .nlos-ownership-tree,
+.nlos-studio-root .nlos-cell-lease-panel {
+  background-color: var(--st-bg-canvas) !important;
+  color: var(--st-ink-800) !important;
+  border: none !important;
+}
+
+.nlos-studio-root .nlos-settings-layer-tabs {
+  background-color: var(--st-bg-subtle) !important;
+  border-bottom: 1px solid var(--st-rule-mid) !important;
+  padding: 0 16px !important;
+  gap: 0 !important;
+}
+
+.nlos-studio-root .nlos-settings-tab-btn {
+  border: none !important;
+  border-right: 1px solid var(--st-rule-soft) !important;
+  border-bottom: 2px solid transparent !important;
+  background: transparent !important;
+  color: var(--st-ink-500) !important;
+  padding: 8px 12px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+.nlos-studio-root .nlos-settings-tab-btn--active {
+  color: var(--st-ink-950) !important;
+  border-bottom: 2px solid var(--st-accent) !important;
+  font-weight: 700 !important;
+}
+
+.nlos-studio-root .nlos-association-proposal-banner {
+  background-color: var(--st-bg-subtle) !important;
+  border: 1px solid var(--st-rule-mid) !important;
+  border-left: 2.5px solid var(--st-accent) !important;
+  color: var(--st-ink-900) !important;
+}
+
+.nlos-studio-root .nlos-cell-card {
+  background-color: var(--st-bg-canvas) !important;
+  border: 1px solid var(--st-rule-mid) !important;
+  padding: 10px 14px !important;
+  margin-bottom: 8px !important;
+}
+
+.st-facet-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background-color: var(--st-bg-subtle);
+}
+
+.st-facet-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 0;
+  border: none;
+  border-bottom: 1px solid var(--st-rule-mid);
+  background: transparent;
+  color: var(--st-ink-700);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.st-facet-pill:hover {
+  color: var(--st-accent);
+  border-bottom-color: var(--st-accent);
+}
+
+.st-facet-pill.is-active {
+  color: var(--st-accent);
+  border-bottom: 2px solid var(--st-accent);
+  font-weight: 700;
+}
