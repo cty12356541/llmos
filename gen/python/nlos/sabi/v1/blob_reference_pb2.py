@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from nlos.sabi.v1 import envelope_pb2 as nlos_dot_sabi_dot_v1_dot_envelope__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!nlos/sabi/v1/blob_reference.proto\x12\x0cnlos.sabi.v1\x1a\x1bnlos/sabi/v1/envelope.proto\"\xdb\x02\n\x14MintReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1f\n\x0bpath_handle\x18\x02 \x01(\tR\npathHandle\x12,\n\x12\x66ile_digest_sha256\x18\x03 \x01(\x0cR\x10\x66ileDigestSha256\x12\x1d\n\nsize_bytes\x18\x04 \x01(\x04R\tsizeBytes\x12\x1b\n\tmax_reads\x18\x05 \x01(\x04R\x08maxReads\x12&\n\x0fmax_chunk_bytes\x18\x06 \x01(\x04R\rmaxChunkBytes\x12$\n\x0evalid_until_ms\x18\x07 \x01(\x04R\x0cvalidUntilMs\x12\x34\n\x16recipient_principal_id\x18\x08 \x01(\x0cR\x14recipientPrincipalId\"\x90\x01\n\x13MintReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\x12 \n\x0cminted_at_ms\x18\x03 \x01(\x04R\nmintedAtMs\"\xaa\x01\n\x14ReadReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\x12\x16\n\x06offset\x18\x03 \x01(\x04R\x06offset\x12!\n\x0clength_bytes\x18\x04 \x01(\x04R\x0blengthBytes\"\xa9\x01\n\x13ReadReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x14\n\x05\x63hunk\x18\x02 \x01(\x0cR\x05\x63hunk\x12\x16\n\x06offset\x18\x03 \x01(\x04R\x06offset\x12.\n\x13\x63hunk_digest_sha256\x18\x04 \x01(\x0cR\x11\x63hunkDigestSha256\"r\n\x17ReleaseReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\"j\n\x16ReleaseReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1a\n\x08released\x18\x02 \x01(\x08R\x08releasedb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!nlos/sabi/v1/blob_reference.proto\x12\x0cnlos.sabi.v1\x1a\x1bnlos/sabi/v1/envelope.proto\"\xa4\x03\n\x14MintReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1f\n\x0bpath_handle\x18\x02 \x01(\tR\npathHandle\x12,\n\x12\x66ile_digest_sha256\x18\x03 \x01(\x0cR\x10\x66ileDigestSha256\x12\x1d\n\nsize_bytes\x18\x04 \x01(\x04R\tsizeBytes\x12\x1b\n\tmax_reads\x18\x05 \x01(\x04R\x08maxReads\x12&\n\x0fmax_chunk_bytes\x18\x06 \x01(\x04R\rmaxChunkBytes\x12$\n\x0evalid_until_ms\x18\x07 \x01(\x04R\x0cvalidUntilMs\x12\x34\n\x16recipient_principal_id\x18\x08 \x01(\x0cR\x14recipientPrincipalId\x12G\n\rcommand_proof\x18\t \x01(\x0b\x32\".nlos.sabi.v1.BlobCommandProofWireR\x0c\x63ommandProof\"\xa1\x02\n\x14\x42lobCommandScopeWire\x12!\n\x0cworkspace_id\x18\x01 \x01(\x0cR\x0bworkspaceId\x12!\n\x0cnamespace_id\x18\x02 \x01(\x0cR\x0bnamespaceId\x12-\n\x12workspace_revision\x18\x03 \x01(\x04R\x11workspaceRevision\x12\x30\n\x14source_capability_id\x18\x04 \x01(\x0cR\x12sourceCapabilityId\x12@\n\x1csource_capability_generation\x18\x05 \x01(\x04R\x1asourceCapabilityGeneration\x12 \n\x0cissued_at_ms\x18\x06 \x01(\x04R\nissuedAtMs\"\x9e\x01\n\x14\x42lobCommandProofWire\x12\x38\n\x05scope\x18\x01 \x01(\x0b\x32\".nlos.sabi.v1.BlobCommandScopeWireR\x05scope\x12.\n\x13signer_principal_id\x18\x02 \x01(\x0cR\x11signerPrincipalId\x12\x1c\n\tsignature\x18\x03 \x01(\x0cR\tsignature\"\x90\x01\n\x13MintReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\x12 \n\x0cminted_at_ms\x18\x03 \x01(\x04R\nmintedAtMs\"\xaa\x01\n\x14ReadReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\x12\x16\n\x06offset\x18\x03 \x01(\x04R\x06offset\x12!\n\x0clength_bytes\x18\x04 \x01(\x04R\x0blengthBytes\"\xa9\x01\n\x13ReadReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x14\n\x05\x63hunk\x18\x02 \x01(\x0cR\x05\x63hunk\x12\x16\n\x06offset\x18\x03 \x01(\x04R\x06offset\x12.\n\x13\x63hunk_digest_sha256\x18\x04 \x01(\x0cR\x11\x63hunkDigestSha256\"\xbb\x01\n\x17ReleaseReferenceRequest\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12!\n\x0creference_id\x18\x02 \x01(\x0cR\x0breferenceId\x12G\n\rcommand_proof\x18\x03 \x01(\x0b\x32\".nlos.sabi.v1.BlobCommandProofWireR\x0c\x63ommandProof\"j\n\x16ReleaseReferenceResult\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1a\n\x08released\x18\x02 \x01(\x08R\x08releasedb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,15 +33,19 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'nlos.sabi.v1.blob_reference
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_MINTREFERENCEREQUEST']._serialized_start=81
-  _globals['_MINTREFERENCEREQUEST']._serialized_end=428
-  _globals['_MINTREFERENCERESULT']._serialized_start=431
-  _globals['_MINTREFERENCERESULT']._serialized_end=575
-  _globals['_READREFERENCEREQUEST']._serialized_start=578
-  _globals['_READREFERENCEREQUEST']._serialized_end=748
-  _globals['_READREFERENCERESULT']._serialized_start=751
-  _globals['_READREFERENCERESULT']._serialized_end=920
-  _globals['_RELEASEREFERENCEREQUEST']._serialized_start=922
-  _globals['_RELEASEREFERENCEREQUEST']._serialized_end=1036
-  _globals['_RELEASEREFERENCERESULT']._serialized_start=1038
-  _globals['_RELEASEREFERENCERESULT']._serialized_end=1144
+  _globals['_MINTREFERENCEREQUEST']._serialized_end=501
+  _globals['_BLOBCOMMANDSCOPEWIRE']._serialized_start=504
+  _globals['_BLOBCOMMANDSCOPEWIRE']._serialized_end=793
+  _globals['_BLOBCOMMANDPROOFWIRE']._serialized_start=796
+  _globals['_BLOBCOMMANDPROOFWIRE']._serialized_end=954
+  _globals['_MINTREFERENCERESULT']._serialized_start=957
+  _globals['_MINTREFERENCERESULT']._serialized_end=1101
+  _globals['_READREFERENCEREQUEST']._serialized_start=1104
+  _globals['_READREFERENCEREQUEST']._serialized_end=1274
+  _globals['_READREFERENCERESULT']._serialized_start=1277
+  _globals['_READREFERENCERESULT']._serialized_end=1446
+  _globals['_RELEASEREFERENCEREQUEST']._serialized_start=1449
+  _globals['_RELEASEREFERENCEREQUEST']._serialized_end=1636
+  _globals['_RELEASEREFERENCERESULT']._serialized_start=1638
+  _globals['_RELEASEREFERENCERESULT']._serialized_end=1744
 # @@protoc_insertion_point(module_scope)

@@ -87,6 +87,9 @@ async fn four_methods_recover_and_keep_advisory_out_of_the_hard_budget() {
         schema: Some(llm_gateway_schema_identity()),
         child_limit: Some(budget(60)),
         valid_until_ms: 15_000,
+        child_process_id: Vec::new(),
+        child_session_id: Vec::new(),
+        child_principal_id: Vec::new(),
     };
     let child_binding = gateway
         .attenuate_budget(&call(7, 42), &account, Some(&child), &attenuation)
@@ -336,6 +339,9 @@ async fn all_wire_methods_use_canonical_codec_and_reject_header_substitution() {
         schema: Some(llm_gateway_schema_identity()),
         child_limit: Some(budget(60)),
         valid_until_ms: 19_000,
+        child_process_id: Vec::new(),
+        child_session_id: Vec::new(),
+        child_principal_id: Vec::new(),
     };
     let attenuation = wire_call(
         "attenuate_budget",
@@ -600,6 +606,9 @@ fn child_limit(amount: u64, valid_until_ms: u64) -> AttenuateBudgetRequest {
         schema: Some(llm_gateway_schema_identity()),
         child_limit: Some(budget(amount)),
         valid_until_ms,
+        child_process_id: Vec::new(),
+        child_session_id: Vec::new(),
+        child_principal_id: Vec::new(),
     }
 }
 

@@ -151,6 +151,9 @@ async fn provisioning_replays_both_transactions_and_activates_only_after_sync() 
             schema: Some(llm_gateway_schema_identity()),
             child_limit: Some(budget(100)),
             valid_until_ms: 12_000,
+            child_process_id: Vec::new(),
+            child_session_id: Vec::new(),
+            child_principal_id: Vec::new(),
         };
         gateway.lock().unwrap().fault = Some(point);
         assert!(matches!(
