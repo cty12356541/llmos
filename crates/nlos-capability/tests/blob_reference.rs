@@ -417,6 +417,7 @@ impl Fixture {
             max_chunk_bytes: block_size,
             valid_until_ms: 4_000,
             recipient_principal_id: self.holder.principal_id.as_bytes().to_vec(),
+            command_proof: None,
         }
     }
 
@@ -535,6 +536,7 @@ impl Fixture {
         let request = ReleaseReferenceRequest {
             schema: Some(blob_reference_schema_identity()),
             reference_id: reference.to_vec(),
+            command_proof: None,
         };
         let proof = SignedReleaseCommand {
             scope,
@@ -1949,6 +1951,7 @@ fn short_deadline_bounds_wait_for_the_sqlite_writer() {
     let request = ReleaseReferenceRequest {
         schema: Some(blob_reference_schema_identity()),
         reference_id: reference.clone(),
+        command_proof: None,
     };
     let wire = envelope(
         &call,

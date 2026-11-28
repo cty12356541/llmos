@@ -351,6 +351,7 @@ impl Fixture {
             max_chunk_bytes: 2,
             valid_until_ms: 1000,
             recipient_principal_id: self.recipient.principal.as_bytes().to_vec(),
+            command_proof: None,
         };
         let scope = self.scope();
         let proof = SignedMintCommand {
@@ -404,6 +405,7 @@ impl Fixture {
         let request = ReleaseReferenceRequest {
             schema: Some(blob_reference_schema_identity()),
             reference_id: reference.to_vec(),
+            command_proof: None,
         };
         let scope = self.scope();
         let proof = SignedReleaseCommand {
